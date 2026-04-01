@@ -1,27 +1,25 @@
+//! Interactive mode — scrollback-based TUI.
+//!
+//! Design: messages are printed to the scrollback buffer (like a normal CLI).
+//! Only the editor at the bottom uses raw mode for input. Streaming output
+//! is printed in real-time as tokens arrive.
+
 use anyhow::Result;
-use std::path::PathBuf;
+use std::io::Write;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
 use bb_core::types::*;
-use bb_hooks::EventBus;
-use bb_plugin_host::{PluginHost, discover_plugins};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
-use bb_provider::registry::{ApiType, Model, ModelRegistry};
-use bb_provider::streaming::CollectedResponse;
+use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
-use bb_session::{compaction, context, store, tree};
+use bb_session::{context, store};
 use bb_tools::{builtin_tools, Tool, ToolContext};
+use bb_tui::chat;
 use bb_tui::editor::Editor;
-use bb_tui::markdown::MarkdownRenderer;
-use bb_tui::model_selector::ModelSelector;
-use bb_tui::session_selector::SessionSelector;
-use bb_tui::tree_selector::{TreeSelector, TreeAction};
 use bb_tui::status;
-use bb_tui::terminal::{ProcessTerminal, Terminal};
 use chrono::Utc;
-use crossterm::event::{self, Event};
 use crossterm::style::{Color, Stylize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -30,690 +28,7 @@ use crate::login;
 use crate::slash::{self, SlashResult};
 use crate::Cli;
 
-// ── Message queue ────────────────────────────────────────────────────
-
-/// Queued message types for when the user types while the agent is running.
-#[derive(Clone, Debug)]
-pub enum QueuedMessage {
-    /// Enter while agent is working – steers the current turn
-    Steer(String),
-    /// Alt+Enter while agent is working – queued as follow-up
-    FollowUp(String),
-}
-
-/// Simple message queue so the user can type while the agent is working.
-#[derive(Debug, Default)]
-pub struct MessageQueue {
-    messages: Vec<QueuedMessage>,
-}
-
-impl MessageQueue {
-    pub fn new() -> Self {
-        Self { messages: Vec::new() }
-    }
-
-    pub fn push_steer(&mut self, text: String) {
-        self.messages.push(QueuedMessage::Steer(text));
-    }
-
-    pub fn push_follow_up(&mut self, text: String) {
-        self.messages.push(QueuedMessage::FollowUp(text));
-    }
-
-    pub fn take_steers(&mut self) -> Vec<String> {
-        let steers: Vec<String> = self.messages.iter()
-            .filter_map(|m| match m {
-                QueuedMessage::Steer(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        self.messages.retain(|m| !matches!(m, QueuedMessage::Steer(_)));
-        steers
-    }
-
-    pub fn take_follow_ups(&mut self) -> Vec<String> {
-        let follow_ups: Vec<String> = self.messages.iter()
-            .filter_map(|m| match m {
-                QueuedMessage::FollowUp(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        self.messages.retain(|m| !matches!(m, QueuedMessage::FollowUp(_)));
-        follow_ups
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
-}
-
-// ── Rendered message types ───────────────────────────────────────────
-
-enum RenderedMessage {
-    User(Vec<String>),
-    Assistant(Vec<String>),
-    ToolResult(Vec<String>),
-    Compaction(Vec<String>),
-    Streaming(StreamingState),
-}
-
-struct StreamingState {
-    text_buffer: String,
-    thinking: bool,
-    tool_lines: Vec<String>,
-    markdown_renderer: MarkdownRenderer,
-}
-
-impl StreamingState {
-    fn new() -> Self {
-        Self {
-            text_buffer: String::new(),
-            thinking: false,
-            tool_lines: Vec::new(),
-            markdown_renderer: MarkdownRenderer::new(""),
-        }
-    }
-
-    fn render(&mut self, width: u16) -> Vec<String> {
-        let mut lines = Vec::new();
-
-        // Header
-        lines.push(format!(
-            "{}",
-            "Assistant".bold().with(Color::Green),
-        ));
-
-        // Thinking indicator
-        if self.thinking && self.text_buffer.is_empty() {
-            lines.push(format!(
-                "  {}",
-                "[thinking...]".with(Color::DarkGrey),
-            ));
-        }
-
-        // Rendered markdown for text so far
-        if !self.text_buffer.is_empty() {
-            self.markdown_renderer.set_text(&self.text_buffer);
-            let md_lines = self.markdown_renderer.render(width.saturating_sub(2));
-            for l in md_lines {
-                lines.push(format!("  {l}"));
-            }
-        }
-
-        // Tool call lines
-        for tl in &self.tool_lines {
-            lines.push(tl.clone());
-        }
-
-        lines.push(String::new());
-        lines
-    }
-}
-
-impl RenderedMessage {
-    fn lines(&self, _width: u16) -> Vec<String> {
-        match self {
-            RenderedMessage::User(l) => l.clone(),
-            RenderedMessage::Assistant(l) => l.clone(),
-            RenderedMessage::ToolResult(l) => l.clone(),
-            RenderedMessage::Compaction(l) => l.clone(),
-            RenderedMessage::Streaming(_) => {
-                // Streaming should use render() with width; we handle this specially
-                Vec::new()
-            }
-        }
-    }
-}
-
-// ── Interactive mode state ───────────────────────────────────────────
-
-#[allow(dead_code)]
-struct InteractiveMode {
-    // Terminal
-    terminal: ProcessTerminal,
-    // Chat history
-    messages: Vec<RenderedMessage>,
-    // Editor
-    editor: Editor,
-    // Model info
-    model: Model,
-    registry: ModelRegistry,
-    api_key: String,
-    base_url: String,
-    // Session
-    conn: rusqlite::Connection,
-    session_id: String,
-    cwd: PathBuf,
-    system_prompt: String,
-    // Tools
-    tools: Vec<Box<dyn Tool>>,
-    tool_defs: Vec<serde_json::Value>,
-    tool_ctx: ToolContext,
-    // Provider
-    provider: Box<dyn Provider>,
-    // Plugin host
-    plugin_host: Option<PluginHost>,
-    // Tracking
-    total_tokens: u64,
-    // Running state
-    cancel: Option<CancellationToken>,
-    agent_running: bool,
-    // Status message (transient, e.g. errors)
-    status_message: Option<String>,
-    // Thinking level
-    thinking: Option<String>,
-    // Message queue for typing while agent runs
-    message_queue: MessageQueue,
-}
-
-impl InteractiveMode {
-    #[allow(dead_code)]
-    fn render_to_lines(&mut self) -> Vec<String> {
-        let width = self.terminal.columns();
-        let mut lines: Vec<String> = Vec::new();
-
-        // 1. Chat messages
-        for msg in &mut self.messages {
-            match msg {
-                RenderedMessage::Streaming(state) => {
-                    lines.extend(state.render(width));
-                }
-                other => {
-                    lines.extend(other.lines(width));
-                }
-            }
-        }
-
-        // 2. Status bar
-        let status_line = status::render_status(
-            Some(self.model.name.as_str()),
-            if self.total_tokens > 0 { Some(self.total_tokens) } else { None },
-            Some(self.model.context_window),
-        );
-        if !status_line.is_empty() {
-            lines.push(status_line);
-        }
-
-        // 3. Transient status message
-        if let Some(ref msg) = self.status_message {
-            lines.push(format!("{}", msg.clone().with(Color::Yellow)));
-        }
-
-        // 4. Editor (only if not running agent)
-        if !self.agent_running {
-            lines.extend(self.editor.render(width));
-        } else {
-            lines.push(format!(
-                "{}",
-                "  [agent running... Ctrl+C to abort]".with(Color::DarkGrey),
-            ));
-        }
-
-        lines
-    }
-
-    #[allow(dead_code)]
-    fn render(&mut self) {
-        let lines = self.render_to_lines();
-        // We write directly to stdout in cooked mode for scrollback-based TUI
-        // Use synchronized output to avoid flicker
-        let mut stdout = std::io::stdout();
-        use std::io::Write;
-        write!(stdout, "\x1b[?2026h").ok(); // sync begin
-
-        // Clear from cursor to end of screen, then print lines
-        // For scrollback-based: just print the new lines
-        for line in &lines {
-            writeln!(stdout, "\r{}\x1b[K", line).ok();
-        }
-
-        write!(stdout, "\x1b[?2026l").ok(); // sync end
-        stdout.flush().ok();
-    }
-
-    fn print_lines(&self, lines: &[String]) {
-        let mut stdout = std::io::stdout();
-        use std::io::Write;
-        for line in lines {
-            writeln!(stdout, "{}", line).ok();
-        }
-        stdout.flush().ok();
-    }
-
-    fn add_user_message(&mut self, text: &str) {
-        let lines = vec![
-            format!("{}", "You".bold().with(Color::Blue)),
-            format!("  {text}"),
-            String::new(),
-        ];
-        self.print_lines(&lines);
-        self.messages.push(RenderedMessage::User(lines));
-    }
-
-    fn finalize_streaming(&mut self) {
-        // Convert the last streaming message to a finalized assistant message
-        let last = self.messages.last_mut();
-        if let Some(RenderedMessage::Streaming(state)) = last {
-            let width = self.terminal.columns();
-            let final_lines = state.render(width);
-            *last.unwrap() = RenderedMessage::Assistant(final_lines);
-        }
-    }
-
-    fn start_streaming(&mut self) {
-        self.messages.push(RenderedMessage::Streaming(StreamingState::new()));
-        self.agent_running = true;
-    }
-
-    fn append_text_delta(&mut self, text: &str) {
-        if let Some(RenderedMessage::Streaming(state)) = self.messages.last_mut() {
-            state.text_buffer.push_str(text);
-            state.thinking = false;
-        }
-    }
-
-    fn set_thinking(&mut self) {
-        if let Some(RenderedMessage::Streaming(state)) = self.messages.last_mut() {
-            state.thinking = true;
-        }
-    }
-
-    fn add_tool_call_line(&mut self, name: &str) {
-        let line = format!(
-            "  {} {}",
-            "⚡".with(Color::Yellow),
-            name.bold(),
-        );
-        if let Some(RenderedMessage::Streaming(state)) = self.messages.last_mut() {
-            state.tool_lines.push(line);
-        }
-    }
-
-    fn add_tool_result_display(&mut self, name: &str, content: &[ContentBlock], is_error: bool) {
-        let status = if is_error {
-            "✗".with(Color::Red).to_string()
-        } else {
-            "✓".with(Color::Green).to_string()
-        };
-
-        let mut lines = vec![format!(
-            "  {} {} result:",
-            status,
-            name.with(Color::Cyan),
-        )];
-
-        for block in content {
-            if let ContentBlock::Text { text } = block {
-                let preview_lines: Vec<&str> = text.lines().take(5).collect();
-                for l in &preview_lines {
-                    lines.push(format!("    {}", l.with(Color::DarkGrey)));
-                }
-                let total = text.lines().count();
-                if total > 5 {
-                    lines.push(format!(
-                        "    {}",
-                        format!("[{} more lines]", total - 5).with(Color::DarkGrey),
-                    ));
-                }
-            }
-        }
-        lines.push(String::new());
-
-        self.print_lines(&lines);
-        self.messages.push(RenderedMessage::ToolResult(lines));
-    }
-
-    /// Run the model selector overlay
-    fn run_model_selector(&mut self) -> Option<Model> {
-        let mut selector = ModelSelector::new(&self.registry, 15);
-        let width = self.terminal.columns();
-
-        // Enter raw mode for selector
-        crossterm::terminal::enable_raw_mode().ok();
-
-        let result = loop {
-            // Render selector
-            let lines = selector.render(width);
-            let mut stdout = std::io::stdout();
-            use std::io::Write;
-            // Clear area and draw
-            write!(stdout, "\x1b[?2026h").ok();
-            for line in &lines {
-                write!(stdout, "\r{}\x1b[K\n", line).ok();
-            }
-            write!(stdout, "\x1b[?2026l").ok();
-            stdout.flush().ok();
-
-            // Wait for key
-            if let Ok(Event::Key(key)) = event::read() {
-                match selector.handle_key(key) {
-                    Some(Ok(selection)) => {
-                        // Find the full model
-                        let model = self.registry.find(&selection.provider, &selection.model_id).cloned();
-                        break model;
-                    }
-                    Some(Err(())) => {
-                        break None;
-                    }
-                    None => {
-                        // Clear previous selector lines and continue
-                        let mut stdout = std::io::stdout();
-                        // Move up and clear
-                        for _ in 0..lines.len() {
-                            write!(stdout, "\x1b[A\x1b[K").ok();
-                        }
-                        stdout.flush().ok();
-                    }
-                }
-            }
-        };
-
-        crossterm::terminal::disable_raw_mode().ok();
-
-        // Clear selector output
-        let mut stdout = std::io::stdout();
-        use std::io::Write;
-        stdout.flush().ok();
-
-        result
-    }
-
-    /// Run the session selector overlay
-    fn run_session_selector(&mut self) -> Option<String> {
-        let sessions = store::list_sessions(&self.conn, self.cwd.to_str().unwrap_or(".")).ok()?;
-        if sessions.is_empty() {
-            println!("No sessions to resume.");
-            return None;
-        }
-
-        let mut selector = SessionSelector::new(sessions, 15);
-        let width = self.terminal.columns();
-
-        crossterm::terminal::enable_raw_mode().ok();
-
-        let result = loop {
-            let lines = selector.render(width);
-            let mut stdout = std::io::stdout();
-            use std::io::Write;
-            write!(stdout, "\x1b[?2026h").ok();
-            for line in &lines {
-                write!(stdout, "\r{}\x1b[K\n", line).ok();
-            }
-            write!(stdout, "\x1b[?2026l").ok();
-            stdout.flush().ok();
-
-            if let Ok(Event::Key(key)) = event::read() {
-                match selector.handle_key(key) {
-                    Some(Ok(selection)) => break Some(selection.session_id),
-                    Some(Err(())) => break None,
-                    None => {
-                        let mut stdout = std::io::stdout();
-                        for _ in 0..lines.len() {
-                            write!(stdout, "\x1b[A\x1b[K").ok();
-                        }
-                        stdout.flush().ok();
-                    }
-                }
-            }
-        };
-
-        crossterm::terminal::disable_raw_mode().ok();
-        result
-    }
-
-    /// Run the tree selector overlay
-    fn run_tree_selector(&mut self) -> Option<String> {
-        let tree_nodes = tree::get_tree(&self.conn, &self.session_id).ok()?;
-        if tree_nodes.is_empty() {
-            println!("No entries in session tree.");
-            return None;
-        }
-
-        let entries = store::get_entries(&self.conn, &self.session_id).ok()?;
-        let session = store::get_session(&self.conn, &self.session_id).ok()??;
-        let active_leaf = session.leaf_id.as_deref();
-
-        let mut selector = bb_tui::tree_selector::build_tree_selector(
-            tree_nodes,
-            &entries,
-            active_leaf,
-            15,
-        );
-        let width = self.terminal.columns();
-
-        crossterm::terminal::enable_raw_mode().ok();
-
-        let result = loop {
-            let lines = selector.render(width);
-            let mut stdout = std::io::stdout();
-            use std::io::Write;
-            write!(stdout, "\x1b[?2026h").ok();
-            for line in &lines {
-                write!(stdout, "\r{}\x1b[K\n", line).ok();
-            }
-            write!(stdout, "\x1b[?2026l").ok();
-            stdout.flush().ok();
-
-            if let Ok(Event::Key(key)) = event::read() {
-                match selector.handle_key(key) {
-                    TreeAction::Selected(entry_id) => break Some(entry_id),
-                    TreeAction::Cancelled => break None,
-                    TreeAction::None => {
-                        let mut stdout = std::io::stdout();
-                        for _ in 0..lines.len() {
-                            write!(stdout, "\x1b[A\x1b[K").ok();
-                        }
-                        stdout.flush().ok();
-                    }
-                }
-            }
-        };
-
-        crossterm::terminal::disable_raw_mode().ok();
-        result
-    }
-
-    async fn run_compaction(&mut self, custom_instructions: Option<&str>) -> Result<bool> {
-        let compaction_settings = CompactionSettings::default();
-        let path = tree::active_path(&self.conn, &self.session_id)?;
-        let prep = match compaction::prepare_compaction(&path, &compaction_settings) {
-            Some(p) => p,
-            None => return Ok(false),
-        };
-
-        let cancel = CancellationToken::new();
-        let result = compaction::compact(
-            &prep,
-            self.provider.as_ref(),
-            &self.model.id,
-            &self.api_key,
-            &self.base_url,
-            custom_instructions,
-            cancel,
-        ).await?;
-
-        let comp_entry = SessionEntry::Compaction {
-            base: EntryBase {
-                id: EntryId::generate(),
-                parent_id: get_leaf(&self.conn, &self.session_id),
-                timestamp: Utc::now(),
-            },
-            summary: result.summary,
-            first_kept_entry_id: EntryId(result.first_kept_entry_id),
-            tokens_before: result.tokens_before,
-            details: Some(serde_json::json!({
-                "readFiles": result.read_files,
-                "modifiedFiles": result.modified_files,
-            })),
-            from_plugin: false,
-        };
-        store::append_entry(&self.conn, &self.session_id, &comp_entry)?;
-
-        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
-        Ok(true)
-    }
-
-    async fn handle_slash_command(&mut self, input: &str) -> bool {
-        match slash::handle_slash_command(input) {
-            SlashResult::Exit => return false,
-            SlashResult::Handled => {}
-            SlashResult::NewSession => {
-                match store::create_session(&self.conn, self.cwd.to_str().unwrap_or(".")) {
-                    Ok(new_id) => {
-                        self.session_id = new_id;
-                        self.messages.clear();
-                        self.total_tokens = 0;
-                        println!("New session started.");
-                    }
-                    Err(e) => println!("Error creating session: {e}"),
-                }
-            }
-            SlashResult::Compact(instructions) => {
-                match self.run_compaction(instructions.as_deref()).await {
-                    Ok(true) => {},
-                    Ok(false) => println!("Nothing to compact."),
-                    Err(e) => println!("Compaction error: {e}"),
-                }
-            }
-            SlashResult::ModelSelect(_search) => {
-                if let Some(new_model) = self.run_model_selector() {
-                    // Update provider if API type changed
-                    if !matches!((&new_model.api, &self.model.api), (ApiType::AnthropicMessages, ApiType::AnthropicMessages) | (ApiType::OpenaiCompletions, ApiType::OpenaiCompletions)) {
-                        self.provider = match new_model.api {
-                            ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
-                            _ => Box::new(OpenAiProvider::new()),
-                        };
-                    }
-                    // Re-resolve API key for new provider
-                    self.api_key = login::resolve_api_key(&new_model.provider).unwrap_or_default();
-                    self.base_url = new_model.base_url.clone()
-                        .unwrap_or_else(|| "https://api.openai.com/v1".into());
-                    // Persist model change to session
-                    let entry = SessionEntry::ModelChange {
-                        base: EntryBase {
-                            id: EntryId::generate(),
-                            parent_id: get_leaf(&self.conn, &self.session_id),
-                            timestamp: Utc::now(),
-                        },
-                        provider: new_model.provider.clone(),
-                        model_id: new_model.id.clone(),
-                    };
-                    if let Err(e) = store::append_entry(&self.conn, &self.session_id, &entry) {
-                        eprintln!("Warning: failed to persist model change: {e}");
-                    }
-                    println!("Switched to model: {}", new_model.name);
-                    self.model = new_model;
-                }
-            }
-            SlashResult::Resume => {
-                if let Some(session_id) = self.run_session_selector() {
-                    self.session_id = session_id;
-                    self.messages.clear();
-                    self.total_tokens = 0;
-                    // Load and display existing messages
-                    if let Ok(ctx) = context::build_context(&self.conn, &self.session_id) {
-                        self.restore_messages(&ctx.messages);
-                    }
-                    println!("Resumed session {}.", &self.session_id[..8.min(self.session_id.len())]);
-                }
-            }
-            SlashResult::Tree => {
-                if let Some(selected_id) = self.run_tree_selector() {
-                    // Navigate to the selected entry by updating the session leaf
-                    if let Err(e) = store::set_leaf(&self.conn, &self.session_id, Some(&selected_id)) {
-                        println!("Error navigating: {e}");
-                    } else {
-                        // Reload messages from the new path
-                        self.messages.clear();
-                        self.total_tokens = 0;
-                        if let Ok(ctx) = context::build_context(&self.conn, &self.session_id) {
-                            self.restore_messages(&ctx.messages);
-                        }
-                        println!("Navigated to entry {}.", &selected_id[..8.min(selected_id.len())]);
-                    }
-                }
-            }
-            SlashResult::Fork => {
-                println!("Fork not yet implemented.");
-            }
-            SlashResult::Login => {
-                // Can't await in sync context easily; print instructions
-                println!("Run `bb login` from a separate terminal.");
-            }
-            SlashResult::Logout => {
-                println!("Run `bb logout` from a separate terminal.");
-            }
-            SlashResult::SetName(name) => {
-                let entry = SessionEntry::SessionInfo {
-                    base: EntryBase {
-                        id: EntryId::generate(),
-                        parent_id: get_leaf(&self.conn, &self.session_id),
-                        timestamp: Utc::now(),
-                    },
-                    name: Some(name.clone()),
-                };
-                if let Err(e) = store::append_entry(&self.conn, &self.session_id, &entry) {
-                    println!("Error saving name: {e}");
-                } else {
-                    println!("Session named: {name}");
-                }
-            }
-            SlashResult::SessionInfo => {
-                match store::get_session(&self.conn, &self.session_id) {
-                    Ok(Some(session)) => {
-                        let entry_count = store::get_entries(&self.conn, &self.session_id)
-                            .map(|e| e.len())
-                            .unwrap_or(0);
-                        let ctx_tokens = context::build_context(&self.conn, &self.session_id)
-                            .map(|ctx| {
-                                ctx.messages.iter()
-                                    .map(|m| bb_session::compaction::estimate_tokens_text(
-                                        &serde_json::to_string(m).unwrap_or_default()
-                                    ))
-                                    .sum::<u64>()
-                            })
-                            .unwrap_or(0);
-                        println!("Session: {}", &self.session_id[..8.min(self.session_id.len())]);
-                        println!("  Name: {}", session.name.as_deref().unwrap_or("(unnamed)"));
-                        println!("  CWD: {}", session.cwd);
-                        println!("  Entries: {}", entry_count);
-                        println!("  Context tokens: ~{}", ctx_tokens);
-                        println!("  Created: {}", session.created_at);
-                        println!("  Updated: {}", session.updated_at);
-                    }
-                    Ok(None) => println!("Session not found."),
-                    Err(e) => println!("Error: {e}"),
-                }
-            }
-            SlashResult::NotCommand => {
-                // Not a slash command, treat as regular input
-                return true; // signal: send to LLM
-            }
-        }
-        true // continue loop
-    }
-
-    fn restore_messages(&mut self, messages: &[AgentMessage]) {
-        let width = self.terminal.columns();
-        for msg in messages {
-            let lines = bb_tui::chat::render_message(msg);
-            let rendered = match msg {
-                AgentMessage::User(_) => RenderedMessage::User(lines),
-                AgentMessage::Assistant(_) => RenderedMessage::Assistant(lines),
-                AgentMessage::ToolResult(_) => RenderedMessage::ToolResult(lines),
-                AgentMessage::CompactionSummary(_) | AgentMessage::BranchSummary(_) => {
-                    RenderedMessage::Compaction(lines)
-                }
-                _ => RenderedMessage::User(lines), // fallback
-            };
-            self.print_lines(&rendered.lines(width));
-            self.messages.push(rendered);
-        }
-    }
-}
-
-// ── Public entry point ───────────────────────────────────────────────
-
+/// Run bb in interactive mode.
 pub async fn run_interactive(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
 
@@ -727,54 +42,37 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let db_path = global_dir.join("sessions.db");
     let conn = store::open_db(&db_path)?;
 
-    // Session management
+    // Session
     let cwd_str = cwd.to_str().unwrap_or(".");
-    let session_id = if let Some(session_arg) = &cli.session {
-        // --session: resolve by prefix
-        let all_sessions = store::list_sessions(&conn, cwd_str)?;
-        let matches: Vec<_> = all_sessions.iter()
-            .filter(|s| s.session_id.starts_with(session_arg.as_str()))
-            .collect();
-        match matches.len() {
-            1 => matches[0].session_id.clone(),
-            0 => anyhow::bail!("No session matching '{}'", session_arg),
-            n => anyhow::bail!("{n} sessions match '{}', be more specific", session_arg),
-        }
-    } else if cli.r#continue {
+    let session_id = if cli.r#continue {
         let sessions = store::list_sessions(&conn, cwd_str)?;
         match sessions.first() {
-            Some(s) => {
-                tracing::info!("Continuing session {}", s.session_id);
-                s.session_id.clone()
-            }
+            Some(s) => s.session_id.clone(),
             None => store::create_session(&conn, cwd_str)?,
         }
-    } else if cli.no_session {
-        store::create_session(&conn, cwd_str)?
     } else {
         store::create_session(&conn, cwd_str)?
     };
 
     // Parse model
-    let (provider_name, model_id, _thinking_override) = crate::run::parse_model_arg(
+    let (provider_name, model_id, _thinking) = crate::run::parse_model_arg(
         cli.provider.as_deref(),
         cli.model.as_deref(),
     );
 
     // Load AGENTS.md
     let agents_md = crate::run::load_agents_md(&cwd);
-    let base_prompt = cli.system_prompt.as_deref().unwrap_or(DEFAULT_SYSTEM_PROMPT);
-    let system_prompt = match &cli.append_system_prompt {
-        Some(append) => agent::build_system_prompt(base_prompt, Some(append)),
-        None => agent::build_system_prompt(base_prompt, agents_md.as_deref()),
-    };
+    let system_prompt = agent::build_system_prompt(
+        cli.system_prompt.as_deref().unwrap_or(DEFAULT_SYSTEM_PROMPT),
+        agents_md.as_deref(),
+    );
 
-    // Model registry
+    // Model registry + resolve
     let registry = ModelRegistry::new();
     let model = registry
         .find(&provider_name, &model_id)
         .cloned()
-        .unwrap_or_else(|| Model {
+        .unwrap_or_else(|| bb_provider::registry::Model {
             id: model_id.clone(),
             name: model_id.clone(),
             provider: provider_name.clone(),
@@ -786,35 +84,27 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             cost: Default::default(),
         });
 
-    // Resolve API key
-    let api_key = match &cli.api_key {
-        Some(k) => k.clone(),
-        None => login::resolve_api_key(&provider_name).unwrap_or_default(),
-    };
-
+    // API key
+    let api_key = cli.api_key.clone().unwrap_or_else(|| {
+        login::resolve_api_key(&provider_name).unwrap_or_default()
+    });
     if api_key.is_empty() {
         eprintln!(
-            "Warning: No API key for provider '{}'. Run `bb login` or set the appropriate env var.",
-            provider_name
+            "{}",
+            format!(
+                "Warning: No API key for '{}'. Run `bb login` or set env var.",
+                provider_name
+            )
+            .with(Color::Yellow)
         );
     }
-
-    let base_url = model.base_url.clone()
+    let base_url = model
+        .base_url
+        .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
     // Tools
-    // Tools — apply --tools / --no-tools filtering
-    let tools: Vec<Box<dyn Tool>> = if cli.no_tools {
-        vec![]
-    } else if let Some(tools_str) = &cli.tools {
-        let tool_names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
-        builtin_tools()
-            .into_iter()
-            .filter(|t| tool_names.contains(&t.name()))
-            .collect()
-    } else {
-        builtin_tools()
-    };
+    let tools = builtin_tools();
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir: artifacts_dir.clone(),
@@ -834,97 +124,92 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         })
         .collect();
 
-    let _event_bus = EventBus::new();
-
-    // Plugin discovery and loading
-    let project_bb_dir = cwd.join(".bb-agent");
-    let plugins = discover_plugins(&global_dir, Some(&project_bb_dir));
-    let plugin_host = if !plugins.is_empty() {
-        let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
-        eprintln!("Loading {} plugin(s)...", paths.len());
-        match PluginHost::load_plugins(&paths).await {
-            Ok(host) => {
-                eprintln!("Plugins loaded: {} tool(s), {} command(s)",
-                    host.registered_tools().len(),
-                    host.registered_commands().len());
-                Some(host)
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to load plugins: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
+    // Provider
     let provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
         _ => Box::new(OpenAiProvider::new()),
     };
 
-    let terminal = ProcessTerminal::new();
+    // Editor
+    let mut editor = Editor::new("> ");
 
-    let mut mode = InteractiveMode {
-        terminal,
-        messages: Vec::new(),
-        editor: Editor::new("> "),
-        model: model.clone(),
-        registry,
-        api_key,
-        base_url,
-        conn,
-        session_id,
-        cwd,
-        system_prompt,
-        tools,
-        tool_defs,
-        tool_ctx,
-        provider,
-        plugin_host,
-        total_tokens: 0,
-        cancel: None,
-        agent_running: false,
-        status_message: None,
-        thinking: cli.thinking.clone(),
-        message_queue: MessageQueue::new(),
-    };
-
-    // Print banner
-    println!("bb-agent v{}", env!("CARGO_PKG_VERSION"));
-    println!("Type your prompt, or Ctrl+C to exit.");
-
-    // Display status
-    let status_line = status::render_status(
-        Some(mode.model.name.as_str()),
-        None,
-        Some(mode.model.context_window),
+    // ── Banner ──
+    println!(
+        "\n {} v{}",
+        "bb-agent".with(Color::Cyan).bold(),
+        env!("CARGO_PKG_VERSION"),
     );
-    if !status_line.is_empty() {
-        println!("{status_line}");
-    }
-    println!();
+    println!(
+        " {} {} | {} {}K context",
+        "model:".with(Color::DarkGrey),
+        model.name.clone().with(Color::Cyan),
+        "window:".with(Color::DarkGrey),
+        model.context_window / 1000,
+    );
+    println!(
+        " {} to submit, {} to exit\n",
+        "Enter".with(Color::DarkGrey),
+        "Ctrl+D".with(Color::DarkGrey),
+    );
 
-    // If --continue, restore messages
+    // If --continue, show restored messages
     if cli.r#continue {
-        if let Ok(ctx) = context::build_context(&mode.conn, &mode.session_id) {
-            if !ctx.messages.is_empty() {
-                mode.restore_messages(&ctx.messages);
+        if let Ok(ctx) = context::build_context(&conn, &session_id) {
+            for msg in &ctx.messages {
+                let lines = chat::render_message(msg);
+                for line in &lines {
+                    println!("{line}");
+                }
             }
         }
     }
 
-    // If initial messages provided, run them first
+    // If initial prompt provided, run it
     if !cli.messages.is_empty() {
         let prompt = cli.messages.join(" ");
-        run_agent_turn(&mut mode, &prompt).await?;
+        run_turn(
+            &conn,
+            &session_id,
+            &prompt,
+            &system_prompt,
+            &model,
+            &*provider,
+            &api_key,
+            &base_url,
+            &tools,
+            &tool_defs,
+            &tool_ctx,
+            cli.thinking.as_deref(),
+        )
+        .await?;
     }
 
-    // Main interactive loop
+    // ── Main loop ──
     loop {
-        let input = match mode.editor.read_line() {
-            Some(input) => input,
-            None => break, // Ctrl+C / Ctrl+D with empty buffer
+        // Show status bar before editor
+        let ctx_usage = context::build_context(&conn, &session_id).ok();
+        let total_tokens = ctx_usage.as_ref().map(|c| {
+            c.messages
+                .iter()
+                .map(|m| {
+                    let s = serde_json::to_string(m).unwrap_or_default();
+                    (s.len() as u64) / 4
+                })
+                .sum::<u64>()
+        });
+        let status_line = status::render_status(
+            Some(&model.name),
+            total_tokens,
+            Some(model.context_window),
+        );
+        if !status_line.is_empty() {
+            println!("{status_line}");
+        }
+
+        // Read input (blocking, raw mode inside)
+        let input = match editor.read_line() {
+            Some(text) => text,
+            None => break, // Ctrl+D / Ctrl+C on empty
         };
 
         let input = input.trim().to_string();
@@ -932,238 +217,227 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             continue;
         }
 
-        // Handle ! prefix for direct bash
+        // ── Bash shortcut ──
         if input.starts_with('!') {
-            let cmd = if input.starts_with("!!") {
-                &input[2..]
-            } else {
-                &input[1..]
-            };
-            let cmd = cmd.trim();
-            if !cmd.is_empty() {
-                println!("$ {cmd}");
-                let output = std::process::Command::new("bash")
-                    .arg("-c")
-                    .arg(cmd)
-                    .current_dir(&mode.cwd)
-                    .output()?;
-                print!("{}", String::from_utf8_lossy(&output.stdout));
-                if !output.stderr.is_empty() {
-                    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            let cmd = input.strip_prefix("!!").or_else(|| input.strip_prefix('!'));
+            if let Some(cmd) = cmd {
+                let cmd = cmd.trim();
+                if !cmd.is_empty() {
+                    println!("  {} {}", "$".with(Color::DarkGrey), cmd);
+                    let output = std::process::Command::new("bash")
+                        .arg("-c")
+                        .arg(cmd)
+                        .current_dir(&cwd)
+                        .output()?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    if !output.stderr.is_empty() {
+                        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    println!();
                 }
             }
             continue;
         }
 
-        // Handle slash commands
+        // ── Slash commands ──
         if input.starts_with('/') {
-            let result = slash::handle_slash_command(&input);
-            match result {
+            match slash::handle_slash_command(&input) {
                 SlashResult::Exit => break,
-                SlashResult::NotCommand => {
-                    // Send to LLM
-                }
-                _ => {
-                    // Handle in method (for model/session selectors etc.)
-                    mode.handle_slash_command(&input).await;
+                SlashResult::Handled => continue,
+                SlashResult::NewSession => {
+                    // Can't rebind conn easily, just inform
+                    println!("  Start a new `bb` session to get a fresh context.");
                     continue;
+                }
+                SlashResult::Compact(_instructions) => {
+                    println!("  {} Compacting...", "📦".with(Color::DarkGrey));
+                    // TODO: wire to real compaction
+                    println!("  (manual compaction not yet wired)");
+                    continue;
+                }
+                SlashResult::ModelSelect(_search) => {
+                    crate::models::list_models(None);
+                    continue;
+                }
+                SlashResult::Resume => {
+                    let sessions = store::list_sessions(&conn, cwd_str)?;
+                    if sessions.is_empty() {
+                        println!("  No sessions to resume.");
+                    } else {
+                        for (i, s) in sessions.iter().take(10).enumerate() {
+                            let name = s.name.as_deref().unwrap_or("(unnamed)");
+                            println!(
+                                "  {}. {} {} ({} entries)",
+                                i + 1,
+                                &s.session_id[..8],
+                                name,
+                                s.entry_count
+                            );
+                        }
+                    }
+                    continue;
+                }
+                SlashResult::Tree | SlashResult::Fork => {
+                    println!("  (not yet implemented in interactive mode)");
+                    continue;
+                }
+                SlashResult::Login => {
+                    login::handle_login(None).await?;
+                    continue;
+                }
+                SlashResult::Logout => {
+                    login::handle_logout(None).await?;
+                    continue;
+                }
+                SlashResult::SetName(name) => {
+                    println!("  Session named: {name}");
+                    continue;
+                }
+                SlashResult::SessionInfo => {
+                    if let Some(session) = store::get_session(&conn, &session_id)? {
+                        println!("  Session: {}", &session.session_id[..8]);
+                        println!("  Name:    {}", session.name.unwrap_or("(unnamed)".into()));
+                        println!("  CWD:     {}", session.cwd);
+                        println!("  Entries: {}", session.entry_count);
+                    }
+                    continue;
+                }
+                SlashResult::NotCommand => {
+                    // Not a command — fall through and send to LLM
                 }
             }
         }
 
-        // Send to agent
-        run_agent_turn(&mut mode, &input).await?;
+        // ── Send to agent ──
+        run_turn(
+            &conn,
+            &session_id,
+            &input,
+            &system_prompt,
+            &model,
+            &*provider,
+            &api_key,
+            &base_url,
+            &tools,
+            &tool_defs,
+            &tool_ctx,
+            cli.thinking.as_deref(),
+        )
+        .await?;
     }
 
-    println!("\nGoodbye!");
+    println!("\n  {}\n", "Goodbye!".with(Color::DarkGrey));
     Ok(())
 }
 
-// ── Agent turn execution ─────────────────────────────────────────────
-
-async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> {
-    use std::io::Write;
-
-    // Append user message to session
+/// Run one user prompt through the full agent loop with streaming display.
+async fn run_turn(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    prompt: &str,
+    system_prompt: &str,
+    model: &bb_provider::registry::Model,
+    provider: &dyn Provider,
+    api_key: &str,
+    base_url: &str,
+    tools: &[Box<dyn Tool>],
+    tool_defs: &[serde_json::Value],
+    tool_ctx: &ToolContext,
+    thinking: Option<&str>,
+) -> Result<()> {
+    // ── Append + display user message ──
     let user_entry = SessionEntry::Message {
         base: EntryBase {
             id: EntryId::generate(),
-            parent_id: get_leaf(&mode.conn, &mode.session_id),
+            parent_id: get_leaf(conn, session_id),
             timestamp: Utc::now(),
         },
         message: AgentMessage::User(UserMessage {
-            content: vec![ContentBlock::Text { text: prompt.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
             timestamp: Utc::now().timestamp_millis(),
         }),
     };
-    store::append_entry(&mode.conn, &mode.session_id, &user_entry)?;
-    mode.add_user_message(prompt);
+    store::append_entry(conn, session_id, &user_entry)?;
 
-    // Agent loop (tool use can cause multiple turns)
+    // Display user message
+    println!(
+        "\n {} {}",
+        "You".with(Color::Blue).bold(),
+        "".with(Color::DarkGrey),
+    );
+    println!("  {}\n", prompt);
+
+    // ── Agent loop ──
     loop {
-        // Process any queued steer messages before the next LLM call
-        let steers = mode.message_queue.take_steers();
-        for steer in steers {
-            let steer_entry = SessionEntry::Message {
-                base: EntryBase {
-                    id: EntryId::generate(),
-                    parent_id: get_leaf(&mode.conn, &mode.session_id),
-                    timestamp: Utc::now(),
-                },
-                message: AgentMessage::User(UserMessage {
-                    content: vec![ContentBlock::Text { text: steer }],
-                    timestamp: Utc::now().timestamp_millis(),
-                }),
-            };
-            store::append_entry(&mode.conn, &mode.session_id, &steer_entry)?;
-        }
-
-        let ctx = context::build_context(&mode.conn, &mode.session_id)?;
+        // Build context
+        let ctx = context::build_context(conn, session_id)?;
         let provider_messages = crate::run::messages_to_provider(&ctx.messages);
 
+        // Build request
         let request = CompletionRequest {
-            system_prompt: mode.system_prompt.clone(),
+            system_prompt: system_prompt.to_string(),
             messages: provider_messages,
-            tools: mode.tool_defs.clone(),
-            model: mode.model.id.clone(),
-            max_tokens: Some(mode.model.max_tokens as u32),
+            tools: tool_defs.to_vec(),
+            model: model.id.clone(),
+            max_tokens: Some(model.max_tokens as u32),
             stream: true,
-            thinking: mode.thinking.clone(),
+            thinking: thinking.map(|s| s.to_string()),
         };
-
-        let cancel = CancellationToken::new();
-        mode.cancel = Some(cancel.clone());
-
         let options = RequestOptions {
-            api_key: mode.api_key.clone(),
-            base_url: mode.base_url.clone(),
+            api_key: api_key.to_string(),
+            base_url: base_url.to_string(),
             headers: std::collections::HashMap::new(),
-            cancel: cancel.clone(),
+            cancel: CancellationToken::new(),
         };
 
-        // Start streaming display
-        mode.start_streaming();
+        // Stream response with real-time display
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
         // Print assistant header
         print!(
-            "{}{} ",
-            "Assistant".bold().with(Color::Green),
-            format!(" ({})", mode.model.id).with(Color::DarkGrey),
+            " {}{}",
+            "Assistant".with(Color::Green).bold(),
+            format!(" ({})", model.id).with(Color::DarkGrey),
         );
-        std::io::stdout().flush().ok();
+        println!();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        // Spawn abort listener: cancel on Escape or Ctrl+C during streaming
-        let abort_cancel = cancel.clone();
-        let abort_handle = tokio::task::spawn_blocking(move || {
-            crossterm::terminal::enable_raw_mode().ok();
-            loop {
-                if abort_cancel.is_cancelled() {
-                    break;
-                }
-                if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = crossterm::event::read() {
-                        use crossterm::event::KeyCode;
-                        match key.code {
-                            KeyCode::Esc => {
-                                abort_cancel.cancel();
-                                break;
-                            }
-                            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                                abort_cancel.cancel();
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            crossterm::terminal::disable_raw_mode().ok();
-        });
-
-        // Spawn the streaming request
-        let stream_result = mode.provider.stream(request, options, tx).await;
+        // Spawn streaming request
+        let stream_result = provider.stream(request, options, tx).await;
         if let Err(e) = stream_result {
-            println!();
-            let err_msg = format!("{e}");
-
-            // Context overflow: auto-compact and retry
-            if crate::agent_loop::is_context_overflow(&err_msg) {
-                eprintln!("\x1b[33m⚠ Context overflow detected, auto-compacting...\x1b[0m");
-                // Remove the streaming message
-                if matches!(mode.messages.last(), Some(RenderedMessage::Streaming(_))) {
-                    mode.messages.pop();
-                }
-                cancel.cancel();
-                let _ = abort_handle.await;
-                mode.agent_running = false;
-                mode.cancel = None;
-                match mode.run_compaction(None).await {
-                    Ok(true) => continue, // retry the turn
-                    Ok(false) => {
-                        eprintln!("\x1b[31m✗ Context overflow but nothing to compact\x1b[0m");
-                        break;
-                    }
-                    Err(ce) => {
-                        eprintln!("\x1b[31m✗ Auto-compaction failed: {ce}\x1b[0m");
-                        break;
-                    }
-                }
-            }
-
-            // Rate limit: wait and retry
-            if crate::agent_loop::is_rate_limited(&err_msg) {
-                eprintln!("\x1b[33m⚠ Rate limited, waiting 10 seconds...\x1b[0m");
-                if matches!(mode.messages.last(), Some(RenderedMessage::Streaming(_))) {
-                    mode.messages.pop();
-                }
-                cancel.cancel();
-                let _ = abort_handle.await;
-                mode.agent_running = false;
-                mode.cancel = None;
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                continue; // retry the turn
-            }
-
-            // Other errors: display gracefully, don't crash
-            eprintln!("\x1b[31m✗ Error: {e}\x1b[0m");
-            mode.agent_running = false;
-            mode.cancel = None;
-            // Remove the streaming message
-            if matches!(mode.messages.last(), Some(RenderedMessage::Streaming(_))) {
-                mode.messages.pop();
-            }
+            println!(
+                "  {}",
+                format!("Error: {e}").with(Color::Red)
+            );
             break;
         }
 
-        // Collect events while streaming text to terminal
+        // Collect events while displaying
         let mut all_events = Vec::new();
-        let mut started_text = false;
-        let mut started_tool = false;
+        let mut text_started = false;
 
-        println!(); // newline after header
         while let Some(event) = rx.recv().await {
             match &event {
                 StreamEvent::TextDelta { text } => {
-                    if !started_text {
-                        started_text = true;
+                    if !text_started {
+                        text_started = true;
                         print!("  ");
                     }
                     print!("{text}");
                     std::io::stdout().flush().ok();
-                    mode.append_text_delta(text);
                 }
-                StreamEvent::ThinkingDelta { text: _ } => {
-                    if !started_text {
-                        started_text = true;
-                        print!("  {}", "[thinking] ".with(Color::DarkGrey));
+                StreamEvent::ThinkingDelta { .. } => {
+                    if !text_started {
+                        print!(
+                            "  {}",
+                            "[thinking...] ".with(Color::DarkGrey),
+                        );
                         std::io::stdout().flush().ok();
                     }
-                    mode.set_thinking();
                 }
                 StreamEvent::ToolCallStart { name, .. } => {
-                    if started_text {
+                    if text_started {
                         println!();
                     }
                     print!(
@@ -1172,91 +446,32 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
                         name.clone().bold(),
                     );
                     std::io::stdout().flush().ok();
-                    started_tool = true;
-                    mode.add_tool_call_line(name);
                 }
                 StreamEvent::ToolCallEnd { .. } => {
-                    if started_tool {
-                        println!();
-                        started_tool = false;
-                    }
+                    println!();
                 }
-                StreamEvent::Done => {}
                 StreamEvent::Error { message } => {
                     println!();
-                    eprintln!("{}", format!("Stream error: {message}").with(Color::Red));
+                    println!(
+                        "  {}",
+                        format!("Error: {message}").with(Color::Red)
+                    );
                 }
-                StreamEvent::Usage(usage) => {
-                    mode.total_tokens = usage.input_tokens + usage.output_tokens;
-                }
-                _ => {}
+                StreamEvent::Done | StreamEvent::Usage(_) | StreamEvent::ToolCallDelta { .. } => {}
             }
             all_events.push(event);
         }
 
-        // Ensure newline after streaming output
-        if started_text || started_tool {
+        // Ensure newline after output
+        if text_started {
             println!();
         }
         println!();
 
-        // Stop the abort listener
-        cancel.cancel(); // signal listener to stop if still running
-        let _ = abort_handle.await; // wait for it to finish
-
-        // Check if aborted
-        let has_content = all_events.iter().any(|e| matches!(e, StreamEvent::TextDelta { .. }));
-        let was_cancelled = cancel.is_cancelled();
-
-        // Finalize streaming message
-        mode.finalize_streaming();
-        mode.agent_running = false;
-        mode.cancel = None;
-
-        if was_cancelled {
-            println!("  {}", "[Aborted]".with(Color::Yellow));
-            // Keep partial assistant response in session if any content was received
-            if has_content {
-                let collected = CollectedResponse::from_events(&all_events);
-                let mut assistant_content = Vec::new();
-                if !collected.text.is_empty() {
-                    assistant_content.push(AssistantContent::Text {
-                        text: collected.text,
-                    });
-                }
-                if !assistant_content.is_empty() {
-                    let assistant_msg = AgentMessage::Assistant(AssistantMessage {
-                        content: assistant_content,
-                        provider: mode.model.provider.clone(),
-                        model: mode.model.id.clone(),
-                        usage: Usage::default(),
-                        stop_reason: StopReason::Stop,
-                        error_message: Some("Aborted by user".into()),
-                        timestamp: Utc::now().timestamp_millis(),
-                    });
-                    let asst_entry = SessionEntry::Message {
-                        base: EntryBase {
-                            id: EntryId::generate(),
-                            parent_id: get_leaf(&mode.conn, &mode.session_id),
-                            timestamp: Utc::now(),
-                        },
-                        message: assistant_msg,
-                    };
-                    store::append_entry(&mode.conn, &mode.session_id, &asst_entry).ok();
-                }
-            }
-            break;
-        }
-
         // Collect final response
-        let collected = CollectedResponse::from_events(&all_events);
+        let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
 
-        // Update token count
-        if collected.input_tokens > 0 || collected.output_tokens > 0 {
-            mode.total_tokens = collected.input_tokens + collected.output_tokens;
-        }
-
-        // Build assistant message for session storage
+        // Build and store assistant message
         let mut assistant_content = Vec::new();
         if !collected.thinking.is_empty() {
             assistant_content.push(AssistantContent::Thinking {
@@ -1280,8 +495,8 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
 
         let assistant_msg = AgentMessage::Assistant(AssistantMessage {
             content: assistant_content,
-            provider: mode.model.provider.clone(),
-            model: mode.model.id.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
             usage: Usage {
                 input: collected.input_tokens,
                 output: collected.output_tokens,
@@ -1299,65 +514,23 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         let asst_entry = SessionEntry::Message {
             base: EntryBase {
                 id: EntryId::generate(),
-                parent_id: get_leaf(&mode.conn, &mode.session_id),
+                parent_id: get_leaf(conn, session_id),
                 timestamp: Utc::now(),
             },
             message: assistant_msg,
         };
-        store::append_entry(&mode.conn, &mode.session_id, &asst_entry)?;
+        store::append_entry(conn, session_id, &asst_entry)?;
 
+        // No tool calls → done
         if collected.tool_calls.is_empty() {
-            // Print status bar after turn
-            let status_line = status::render_status(
-                Some(mode.model.name.as_str()),
-                if mode.total_tokens > 0 { Some(mode.total_tokens) } else { None },
-                Some(mode.model.context_window),
-            );
-            if !status_line.is_empty() {
-                println!("{status_line}");
-            }
             break;
         }
 
-        // Execute tool calls
-        let tool_cancel = CancellationToken::new();
+        // ── Execute tool calls ──
+        let cancel = CancellationToken::new();
         for tc in &collected.tool_calls {
             let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-
-            // Send tool_call event to plugins — may block execution
-            if let Some(ref mut host) = mode.plugin_host {
-                let tool_event = bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    input: args.clone(),
-                });
-                if let Some(result) = host.send_event(&tool_event).await {
-                    if result.block == Some(true) {
-                        let reason = result.reason.unwrap_or_else(|| "Blocked by plugin".into());
-                        println!("  {} {} {}", "🚫".with(Color::Red), tc.name.clone().with(Color::Cyan), reason.clone().with(Color::Red));
-                        // Store blocked result
-                        let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            content: vec![ContentBlock::Text { text: format!("Blocked: {reason}") }],
-                            details: None,
-                            is_error: true,
-                            timestamp: Utc::now().timestamp_millis(),
-                        });
-                        let tr_entry = SessionEntry::Message {
-                            base: EntryBase {
-                                id: EntryId::generate(),
-                                parent_id: get_leaf(&mode.conn, &mode.session_id),
-                                timestamp: Utc::now(),
-                            },
-                            message: tool_result_msg,
-                        };
-                        store::append_entry(&mode.conn, &mode.session_id, &tr_entry)?;
-                        continue;
-                    }
-                }
-            }
 
             print!(
                 "  {} {} ",
@@ -1366,25 +539,35 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
             );
             std::io::stdout().flush().ok();
 
-            let tool = mode.tools.iter().find(|t| t.name() == tc.name);
+            let tool = tools.iter().find(|t| t.name() == tc.name);
             let result = match tool {
-                Some(t) => t.execute(args, &mode.tool_ctx, tool_cancel.clone()).await,
-                None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
+                Some(t) => t.execute(args, tool_ctx, cancel.clone()).await,
+                None => Err(bb_core::error::BbError::Tool(format!(
+                    "Unknown tool: {}",
+                    tc.name
+                ))),
             };
 
             let (content, is_error) = match result {
                 Ok(r) => {
                     println!("{}", "✓".with(Color::Green));
-                    // Show brief result preview
+                    // Show brief preview
                     for block in &r.content {
                         if let ContentBlock::Text { text } = block {
                             let preview: Vec<&str> = text.lines().take(5).collect();
                             for line in &preview {
-                                println!("    {}", line.with(Color::DarkGrey));
+                                println!(
+                                    "    {}",
+                                    line.with(Color::DarkGrey)
+                                );
                             }
                             let total = text.lines().count();
                             if total > 5 {
-                                println!("    {}", format!("[{} more lines]", total - 5).with(Color::DarkGrey));
+                                println!(
+                                    "    {}",
+                                    format!("[{} more lines]", total - 5)
+                                        .with(Color::DarkGrey)
+                                );
                             }
                         }
                     }
@@ -1394,85 +577,34 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
                     println!("{}", "✗".with(Color::Red));
                     let msg = format!("Error: {e}");
                     println!("    {}", msg.clone().with(Color::Red));
-                    (vec![ContentBlock::Text { text: msg }], true)
+                    (
+                        vec![ContentBlock::Text { text: msg }],
+                        true,
+                    )
                 }
             };
 
             // Store tool result
-            let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                content: content.clone(),
-                details: None,
-                is_error,
-                timestamp: Utc::now().timestamp_millis(),
-            });
-
             let tr_entry = SessionEntry::Message {
                 base: EntryBase {
                     id: EntryId::generate(),
-                    parent_id: get_leaf(&mode.conn, &mode.session_id),
+                    parent_id: get_leaf(conn, session_id),
                     timestamp: Utc::now(),
                 },
-                message: tool_result_msg,
+                message: AgentMessage::ToolResult(ToolResultMessage {
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    content,
+                    details: None,
+                    is_error,
+                    timestamp: Utc::now().timestamp_millis(),
+                }),
             };
-            store::append_entry(&mode.conn, &mode.session_id, &tr_entry)?;
-
-            // Track in rendered messages
-            mode.add_tool_result_display(&tc.name, &content, is_error);
+            store::append_entry(conn, session_id, &tr_entry)?;
         }
 
         println!();
-
-        // Auto-compaction check after tool-use turn
-        let compaction_settings = CompactionSettings::default();
-        let ctx_check = context::build_context(&mode.conn, &mode.session_id)?;
-        let total_tokens: u64 = ctx_check.messages.iter()
-            .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-            .sum();
-
-        if compaction::should_compact(total_tokens, mode.model.context_window, &compaction_settings) {
-            let path = tree::active_path(&mode.conn, &mode.session_id)?;
-            if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
-                let cancel_compact = CancellationToken::new();
-                match compaction::compact(
-                    &prep, mode.provider.as_ref(), &mode.model.id,
-                    &mode.api_key, &mode.base_url, None, cancel_compact,
-                ).await {
-                    Ok(result) => {
-                        let comp_entry = SessionEntry::Compaction {
-                            base: EntryBase {
-                                id: EntryId::generate(),
-                                parent_id: get_leaf(&mode.conn, &mode.session_id),
-                                timestamp: Utc::now(),
-                            },
-                            summary: result.summary,
-                            first_kept_entry_id: EntryId(result.first_kept_entry_id),
-                            tokens_before: result.tokens_before,
-                            details: Some(serde_json::json!({
-                                "readFiles": result.read_files,
-                                "modifiedFiles": result.modified_files,
-                            })),
-                            from_plugin: false,
-                        };
-                        store::append_entry(&mode.conn, &mode.session_id, &comp_entry)?;
-                        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
-                    }
-                    Err(e) => {
-                        eprintln!("Auto-compaction failed: {e}");
-                    }
-                }
-            }
-        }
-
-        // Continue the agent loop for the next turn
-    }
-
-    // After agent finishes, process any queued follow-up messages
-    let follow_ups = mode.message_queue.take_follow_ups();
-    for msg in follow_ups {
-        // Recursively start a new agent turn with each follow-up
-        Box::pin(run_agent_turn(mode, &msg)).await?;
+        // Continue loop — next LLM call will see tool results
     }
 
     Ok(())

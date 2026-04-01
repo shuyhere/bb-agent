@@ -522,7 +522,7 @@ pub fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interactive::MessageQueue;
+    use super::MessageQueue;
 
     #[test]
     fn test_is_context_overflow() {
@@ -575,4 +575,21 @@ mod tests {
         assert!(q.take_follow_ups().is_empty());
         assert!(q.is_empty());
     }
+}
+
+// ── Message queue (for future use) ─────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct MessageQueue {
+    steers: Vec<String>,
+    follow_ups: Vec<String>,
+}
+
+impl MessageQueue {
+    pub fn new() -> Self { Self::default() }
+    pub fn push_steer(&mut self, text: String) { self.steers.push(text); }
+    pub fn push_follow_up(&mut self, text: String) { self.follow_ups.push(text); }
+    pub fn take_steers(&mut self) -> Vec<String> { std::mem::take(&mut self.steers) }
+    pub fn take_follow_ups(&mut self) -> Vec<String> { std::mem::take(&mut self.follow_ups) }
+    pub fn is_empty(&self) -> bool { self.steers.is_empty() && self.follow_ups.is_empty() }
 }
