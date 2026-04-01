@@ -121,7 +121,7 @@ impl Editor {
             history_index: -1,
             on_submit: None,
             disable_submit: false,
-            border_color: "\x1b[90m".to_string(), // dim gray
+            border_color: "\x1b[38;2;178;148;187m".to_string(), // pi-style purple
             slash_menu: None,
             slash_commands: default_slash_commands(),
             kill_ring: KillRing::default(),

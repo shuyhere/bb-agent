@@ -369,18 +369,32 @@ impl InteractiveMode {
     }
 
     fn render_items_to_lines(items: &[ChatItem]) -> Vec<String> {
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
         items
             .iter()
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
-                ChatItem::UserMessage(text) => vec![format!("you> {text}")],
-                ChatItem::AssistantMessage(component) => component.render_lines(),
-                ChatItem::ToolExecution(component) => component.render_lines(),
-                ChatItem::BashExecution(component) => component.render_lines(),
-                ChatItem::CustomMessage { text, .. } => vec![text.clone()],
-                ChatItem::CompactionSummary(summary) => vec![format!("compaction> {summary}")],
-                ChatItem::BranchSummary(summary) => vec![format!("branch> {summary}")],
-                ChatItem::PendingMessageLine(line) => vec![line.clone()],
+                ChatItem::UserMessage(text) => {
+                    // Pi format: blank line, then indented user text
+                    vec![String::new(), format!(" {text}"), String::new()]
+                }
+                ChatItem::AssistantMessage(component) => {
+                    // Pi format: indented assistant text
+                    component.render_lines().iter().map(|l| {
+                        if l.is_empty() { String::new() } else { format!(" {l}") }
+                    }).collect()
+                }
+                ChatItem::ToolExecution(component) => {
+                    component.render_lines().iter().map(|l| format!(" {l}")).collect()
+                }
+                ChatItem::BashExecution(component) => {
+                    component.render_lines().iter().map(|l| format!(" {l}")).collect()
+                }
+                ChatItem::CustomMessage { text, .. } => vec![format!("{dim} {text}{reset}")],
+                ChatItem::CompactionSummary(summary) => vec![format!("{dim} [c] {summary}{reset}")],
+                ChatItem::BranchSummary(summary) => vec![format!("{dim} [b] {summary}{reset}")],
+                ChatItem::PendingMessageLine(line) => vec![format!(" {line}")],
             })
             .collect()
     }
@@ -1499,7 +1513,7 @@ impl InteractiveMode {
             .and_then(|name| name.to_str())
             .unwrap_or(".");
 
-        // Pi-style footer: cwd  tokens  cost  context%/window  (provider) model . thinking
+        // Pi-style footer: left=tokens cost context%  right=(provider) model . thinking
         let home = std::env::var("HOME").unwrap_or_default();
         let cwd_full = self.controller.runtime_host.cwd().display().to_string();
         let cwd_display = if !home.is_empty() && cwd_full.starts_with(&home) {
@@ -1508,28 +1522,40 @@ impl InteractiveMode {
             cwd.to_string()
         };
 
-        let model_name = self.session_setup.model.id.clone();
-        let provider_name = self.session_setup.model.provider.clone();
+        let model_name = &self.session_setup.model.id;
+        let provider_name = &self.session_setup.model.provider;
+        let thinking_display = if self.hide_thinking_block { "off" } else { "high" };
 
-        let thinking_display = if self.hide_thinking_block { "off" } else { "on" };
-        let right_side = if self.session_setup.model.reasoning {
-            format!("({provider_name}) {model_name} . {thinking_display}")
+        // Right side: (provider) model . thinking
+        let right_side = format!("({provider_name}) {model_name} \u{2022} {thinking_display}");
+
+        // Left side: $cost (sub) context%/window (auto)
+        let chat_count = self.render_state().chat_items.len() + self.chat_lines.len();
+        let left_side = if chat_count > 0 {
+            format!("$0.000 (sub) 0.0%/{}k (auto)", self.session_setup.model.context_window / 1000)
         } else {
-            format!("({provider_name}) {model_name}")
+            format!("$0.000 (sub) 0.0%/{}k (auto)", self.session_setup.model.context_window / 1000)
         };
 
-        let streaming_indicator = if self.is_streaming { " [streaming...]" } else { "" };
-        let left_side = format!("{cwd_display}{streaming_indicator}");
-
-        // Dim the whole footer line
-        let footer = format!("\x1b[90m{}  {}\x1b[0m", left_side, right_side);
+        // Build padded line
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
+        let total_content = left_side.len() + right_side.len() + 2;
+        let term_width = self.ui.columns() as usize;
+        let padding = if term_width > total_content {
+            " ".repeat(term_width - total_content)
+        } else {
+            "  ".to_string()
+        };
+        let footer = format!("{dim}{left_side}{padding}{right_side}{reset}");
         self.footer_lines = vec![footer];
         Self::replace_container_lines(&self.footer_container, &self.footer_lines);
     }
 
     fn render_widgets(&mut self) {
-        self.widgets_above_lines = vec![String::new()];
-        self.widgets_below_lines = vec![String::new()];
+        // No extra spacing around editor — pi doesn't have it
+        self.widgets_above_lines = vec![];
+        self.widgets_below_lines = vec![];
         Self::replace_container_lines(&self.widget_container_above, &self.widgets_above_lines);
         Self::replace_container_lines(&self.widget_container_below, &self.widgets_below_lines);
     }
