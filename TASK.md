@@ -1,140 +1,150 @@
-# A3: Fix Anthropic thinking/reasoning + OpenAI quirks + retry + model registry
+# A4: Implement Google Generative AI provider
 
-Working dir: `/tmp/bb-final/a3-anthropic-thinking/`
-BB-Agent Rust project. Read REVIEW.md for what's missing.
+Working dir: `/tmp/bb-final/a4-google-provider/`
+BB-Agent Rust project.
 
-## Tasks
+## Task: Create `crates/provider/src/google.rs`
 
-### 1. Fix Anthropic thinking in `crates/provider/src/anthropic.rs`
+Implement the Google Generative AI API provider (Gemini models).
 
-Currently the `thinking` field in CompletionRequest exists but isn't applied to the Anthropic API body.
-
-Add thinking support:
-```rust
-// In the body building:
-if let Some(ref thinking) = request.thinking {
-    let budget = match thinking.as_str() {
-        "minimal" => 1024,
-        "low" => 2048,
-        "medium" => 8192,
-        "high" => 16384,
-        "xhigh" => 32768,
-        _ => 8192,
-    };
-    body["thinking"] = json!({
-        "type": "enabled",
-        "budget_tokens": budget,
-    });
-    // When thinking is enabled, Anthropic requires max_tokens to be higher
-    if request.max_tokens.unwrap_or(0) < (budget as u32 + 4096) {
-        body["max_tokens"] = json!(budget + 4096);
-    }
-}
+### API endpoint
+```
+POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={apiKey}&alt=sse
 ```
 
-### 2. Fix OpenAI provider quirks in `crates/provider/src/openai.rs`
-
-Add provider-specific handling:
-```rust
-// In body building:
-// Some providers don't support max_completion_tokens, use max_tokens instead
-let is_groq = options.base_url.contains("groq.com");
-let is_ollama = options.base_url.contains("localhost") || options.base_url.contains("127.0.0.1");
-
-if let Some(max_tokens) = request.max_tokens {
-    if is_groq || is_ollama {
-        body["max_tokens"] = json!(max_tokens);
-    } else {
-        body["max_completion_tokens"] = json!(max_tokens);
-    }
-}
-
-// Add reasoning_effort for OpenAI models that support it
-if let Some(ref thinking) = request.thinking {
-    let effort = match thinking.as_str() {
-        "low" | "minimal" => "low",
-        "medium" => "medium",
-        "high" | "xhigh" => "high",
-        _ => "medium",
-    };
-    body["reasoning_effort"] = json!(effort);
-}
-```
-
-### 3. Add retry with exponential backoff in both providers
-
-Create `crates/provider/src/retry.rs`:
-```rust
-use std::time::Duration;
-use tokio::time::sleep;
-use bb_core::error::{BbError, BbResult};
-
-pub async fn with_retry<F, Fut, T>(max_retries: u32, f: F) -> BbResult<T>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = BbResult<T>>,
+### Request format
+```json
 {
-    let mut last_err = BbError::Provider("No attempts made".into());
-    for attempt in 0..max_retries {
-        match f().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                last_err = e;
-                if attempt < max_retries - 1 {
-                    let delay = Duration::from_millis(1000 * 2u64.pow(attempt));
-                    tracing::warn!("Provider request failed (attempt {}), retrying in {:?}", attempt + 1, delay);
-                    sleep(delay).await;
-                }
-            }
-        }
+    "contents": [
+        { "role": "user", "parts": [{ "text": "Hello" }] },
+        { "role": "model", "parts": [{ "text": "Hi!" }] }
+    ],
+    "systemInstruction": {
+        "parts": [{ "text": "You are a helpful assistant" }]
+    },
+    "tools": [{
+        "functionDeclarations": [{
+            "name": "read",
+            "description": "Read a file",
+            "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" } }, "required": ["path"] }
+        }]
+    }],
+    "generationConfig": {
+        "maxOutputTokens": 16384
     }
-    Err(last_err)
 }
 ```
 
-Wrap the HTTP request in both `anthropic.rs` and `openai.rs` with `with_retry(3, || async { ... })`.
+### Message role mapping
+- user → `user`
+- assistant → `model`
+- tool results → `user` with `functionResponse` parts
 
-### 4. Expand model registry in `crates/provider/src/registry.rs`
+### Tool call format
+Google returns tool calls as `functionCall` parts in model responses:
+```json
+{ "functionCall": { "name": "read", "args": { "path": "foo.rs" } } }
+```
 
-Add more models to the hardcoded list. At minimum add:
-- `claude-3-5-haiku-20241022` (Anthropic, cheap fast model)
-- `claude-3-7-sonnet-20250219` (Anthropic, older sonnet)
-- `gpt-4-turbo` (OpenAI)
-- `o1-mini` (OpenAI reasoning)
-- `llama-3.1-8b-instant` (Groq, fast)
-- `mixtral-8x7b-32768` (Groq)
+### Tool result format
+```json
+{
+    "role": "user",
+    "parts": [{
+        "functionResponse": {
+            "name": "read",
+            "response": { "content": "file contents here" }
+        }
+    }]
+}
+```
 
-### 5. Update `crates/provider/src/lib.rs`
+### SSE streaming
+Google streams via SSE with `data: {...}` lines. Each chunk has:
+```json
+{
+    "candidates": [{
+        "content": {
+            "parts": [{ "text": "delta text" }],
+            "role": "model"
+        }
+    }],
+    "usageMetadata": {
+        "promptTokenCount": 100,
+        "candidatesTokenCount": 50
+    }
+}
+```
 
-Add `pub mod retry;`
-
-### 6. Tests
+### Implementation
 
 ```rust
-#[tokio::test]
-async fn test_retry_succeeds_on_second_attempt() {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    let counter = Arc::new(AtomicU32::new(0));
-    let c = counter.clone();
-    let result = with_retry(3, || {
-        let c = c.clone();
-        async move {
-            let attempt = c.fetch_add(1, Ordering::SeqCst);
-            if attempt == 0 {
-                Err(BbError::Provider("temporary".into()))
-            } else {
-                Ok(42)
+pub struct GoogleProvider {
+    client: Client,
+}
+
+#[async_trait]
+impl Provider for GoogleProvider {
+    fn name(&self) -> &str { "google" }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+        options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let url = format!(
+            "{}/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
+            options.base_url.trim_end_matches('/'),
+            request.model,
+            options.api_key,
+        );
+
+        // Convert messages to Google format
+        let contents = convert_messages_google(&request.messages);
+
+        // Convert tools to Google format
+        let tools = convert_tools_google(&request.tools);
+
+        let mut body = json!({
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": request.max_tokens.unwrap_or(16384),
             }
+        });
+
+        if !request.system_prompt.is_empty() {
+            body["systemInstruction"] = json!({
+                "parts": [{ "text": request.system_prompt }]
+            });
         }
-    }).await;
-    assert_eq!(result.unwrap(), 42);
-    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+        if !tools.is_empty() {
+            body["tools"] = json!([{ "functionDeclarations": tools }]);
+        }
+
+        // Send request and parse SSE stream...
+    }
 }
 ```
+
+### Update `crates/provider/src/lib.rs`
+Add `pub mod google;`
+
+### Update `crates/cli/src/run.rs` (or interactive.rs)
+Add Google to provider selection:
+```rust
+ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
+```
+
+### Tests
+- Test message format conversion
+- Test tool format conversion
+- Test SSE parsing
 
 ### Build and test
 ```bash
-cd /tmp/bb-final/a3-anthropic-thinking
+cd /tmp/bb-final/a4-google-provider
 cargo build && cargo test
-git add -A && git commit -m "A3: anthropic thinking + openai quirks + retry + models"
+git add -A && git commit -m "A4: implement Google Generative AI provider"
 ```
