@@ -376,8 +376,9 @@ impl InteractiveMode {
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
                 ChatItem::UserMessage(text) => {
-                    // Pi format: blank line, then indented user text
-                    vec![String::new(), format!(" {text}"), String::new()]
+                    // Pi format: blank line, background-colored user text, blank line
+                    let user_bg = "\x1b[48;2;52;53;65m";
+                    vec![String::new(), format!("{user_bg} {text}{reset}"), String::new()]
                 }
                 ChatItem::AssistantMessage(component) => {
                     // Pi format: indented assistant text
@@ -1029,29 +1030,19 @@ impl InteractiveMode {
             .prompt(user_input.clone(), PromptOptions::default())
             .map_err(|err| -> Box<dyn Error + Send + Sync> { Box::new(err) })?;
 
+        // Show user message IMMEDIATELY with background color (pi-style)
         self.render_state_mut()
             .add_message_to_chat(InteractiveMessage::User {
                 text: user_input.clone(),
             });
+        // Render now so user sees their message before streaming starts
+        self.refresh_ui();
 
         // Reset streaming accumulators
         self.streaming_text.clear();
         self.streaming_thinking.clear();
         self.streaming_tool_calls.clear();
         self.is_streaming = true;
-
-        // Start streaming assistant message (empty initially)
-        let initial_message = assistant_message_from_parts("", None, false);
-        self.render_state_mut()
-            .handle_event(
-                events::InteractiveSessionEvent::MessageStart {
-                    message: InteractiveMessage::Assistant {
-                        message: initial_message,
-                        tool_calls: Vec::new(),
-                    },
-                },
-                &PendingMessages::default(),
-            );
 
         // Append user message to session DB
         {
@@ -1150,61 +1141,54 @@ impl InteractiveMode {
                 cancel: tokio_util::sync::CancellationToken::new(),
             };
 
+            // Spawn provider streaming in background so tokens arrive while we render
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
-            let stream_result = self.session_setup.provider.stream(request, options, stream_tx).await;
+            let provider_tx = tx.clone();
+            let provider = &self.session_setup.provider;
+            
+            // We can't move provider into spawn, so run stream inline but 
+            // forward events through the agent channel for the main loop
+            let stream_result = provider.stream(request, options, stream_tx).await;
 
             if let Err(e) = stream_result {
                 let raw = format!("{e}");
-                // Extract a clean error message from provider JSON
-                let clean = if let Some(start) = raw.find("\"message\":") {
-                    let after = &raw[start + 10..];
-                    let after = after.trim_start_matches([' ', '"']);
-                    if let Some(end) = after.find('"') {
-                        after[..end].to_string()
-                    } else {
-                        raw.lines().next().unwrap_or(&raw).to_string()
-                    }
-                } else {
-                    raw.lines().next().unwrap_or(&raw).to_string()
-                };
+                let clean = raw.lines().next().unwrap_or(&raw).to_string();
                 let _ = tx.send(AgentLoopEvent::Error { message: clean });
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
                 break;
             }
 
-            // Forward stream events as agent loop events, throttle UI updates
+            // Process stream events, forwarding as agent events with live rendering
             let mut all_events = Vec::new();
-            let mut last_render = Instant::now();
-            let render_interval = Duration::from_millis(80);
             while let Some(event) = stream_rx.recv().await {
                 match &event {
                     bb_provider::StreamEvent::TextDelta { text } => {
-                        let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
+                        // Update streaming text directly for immediate rendering
+                        self.streaming_text.push_str(text);
+                        self.update_streaming_display();
                     }
                     bb_provider::StreamEvent::ThinkingDelta { text } => {
-                        let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
+                        self.streaming_thinking.push_str(text);
+                        self.update_streaming_display();
                     }
                     bb_provider::StreamEvent::ToolCallStart { id, name } => {
                         let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
                     }
                     bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
                         let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
                     }
                     bb_provider::StreamEvent::Error { message } => {
                         let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
                     }
                     _ => {}
                 }
                 all_events.push(event);
-                // Throttle UI updates during streaming
-                if last_render.elapsed() >= render_interval {
-                    self.drain_pending_agent_events();
-                    self.refresh_ui();
-                    last_render = Instant::now();
-                }
             }
-            // Final drain + render after stream ends
-            self.drain_pending_agent_events();
+            // Final render after stream ends
             self.refresh_ui();
 
             let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
@@ -1310,6 +1294,43 @@ impl InteractiveMode {
 
         self.is_streaming = false;
         Ok(())
+    }
+
+    /// Update the streaming assistant display directly (bypasses event channel for lower latency)
+    fn update_streaming_display(&mut self) {
+        let message = assistant_message_from_parts(
+            &self.streaming_text,
+            if self.streaming_thinking.is_empty() { None } else { Some(self.streaming_thinking.clone()) },
+            false,
+        );
+        if self.render_state().streaming_component.is_none() {
+            // First text — create the streaming component
+            let hide = self.hide_thinking_block;
+            let label = self.hidden_thinking_label.clone();
+            let mut comp = components::assistant_message::AssistantMessageComponent::new(
+                Some(message.clone()), hide,
+            );
+            comp.set_hidden_thinking_label(label);
+            self.render_state_mut().streaming_component = Some(comp.clone());
+            self.render_state_mut().streaming_message = Some(message);
+            self.render_state_mut().chat_items.push(ChatItem::AssistantMessage(comp));
+        } else {
+            // Update existing streaming component
+            if let Some(comp) = self.render_state_mut().streaming_component.as_mut() {
+                comp.update_content(message.clone());
+            }
+            self.render_state_mut().streaming_message = Some(message);
+            // Update the last AssistantMessage in chat_items
+            let updated = self.render_state().streaming_component.clone();
+            if let Some(updated) = updated {
+                if let Some(item) = self.render_state_mut().chat_items.iter_mut().rev()
+                    .find(|i| matches!(i, ChatItem::AssistantMessage(_)))
+                {
+                    *item = ChatItem::AssistantMessage(updated);
+                }
+            }
+        }
+        self.refresh_ui();
     }
 
     /// Drain any pending agent events from the channel and handle them.
