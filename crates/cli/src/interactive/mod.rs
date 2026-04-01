@@ -387,7 +387,7 @@ impl InteractiveMode {
             last_sigint_time: None,
             last_escape_time: None,
             changelog_markdown: None,
-            tool_output_expanded: false,
+            tool_output_expanded: true,
             hide_thinking_block: false,
             shutdown_requested: false,
             is_bash_mode,
@@ -2466,27 +2466,9 @@ impl InteractiveMode {
             }
             AgentLoopEvent::ThinkingDelta { text } => {
                 self.streaming_thinking.push_str(&text);
-                // Update streaming component with new thinking content
-                if self.render_state().streaming_component.is_some() {
-                    let message = assistant_message_from_parts(
-                        &self.streaming_text,
-                        Some(self.streaming_thinking.clone()),
-                        false,
-                    );
-                    if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
-                        component.update_content(message.clone());
-                    }
-                    self.render_state_mut().streaming_message = Some(message.clone());
-                    let updated_component = self.render_state().streaming_component.clone();
-                    if let Some(updated_component) = updated_component {
-                        if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                            .find(|item| matches!(item, ChatItem::AssistantMessage(_)))
-                        {
-                            *chat_item = ChatItem::AssistantMessage(updated_component);
-                        }
-                    }
-                }
-                self.refresh_ui();
+                // Match pi better: thinking may arrive before text, so create/update
+                // the streaming assistant component even when text is still empty.
+                self.update_streaming_display();
             }
             AgentLoopEvent::ToolCallStart { id, name } => {
                 let args = serde_json::Value::Null;

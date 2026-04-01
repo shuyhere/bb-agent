@@ -95,21 +95,35 @@ impl Provider for AnthropicProvider {
         }
 
         if let Some(ref thinking) = request.thinking {
-            let budget = match thinking.as_str() {
-                "minimal" => 1024,
-                "low" => 2048,
-                "medium" => 8192,
-                "high" => 16384,
-                "xhigh" => 32768,
-                _ => 8192,
-            };
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": budget,
-            });
-            // When thinking is enabled, Anthropic requires max_tokens to be higher
-            if request.max_tokens.unwrap_or(0) < (budget as u32 + 4096) {
-                body["max_tokens"] = json!(budget + 4096);
+            if supports_adaptive_thinking(&request.model) {
+                let effort = match thinking.as_str() {
+                    "minimal" | "low" => "low",
+                    "medium" => "medium",
+                    "high" => "high",
+                    "xhigh" => {
+                        if request.model.contains("opus-4-6") { "max" } else { "high" }
+                    }
+                    _ => "medium",
+                };
+                body["thinking"] = json!({ "type": "adaptive" });
+                body["output_config"] = json!({ "effort": effort });
+            } else {
+                let budget = match thinking.as_str() {
+                    "minimal" => 1024,
+                    "low" => 2048,
+                    "medium" => 8192,
+                    "high" => 16384,
+                    "xhigh" => 32768,
+                    _ => 8192,
+                };
+                body["thinking"] = json!({
+                    "type": "enabled",
+                    "budget_tokens": budget,
+                });
+                // When thinking is enabled, Anthropic requires max_tokens to be higher
+                if request.max_tokens.unwrap_or(0) < (budget as u32 + 4096) {
+                    body["max_tokens"] = json!(budget + 4096);
+                }
             }
         }
 
@@ -293,4 +307,8 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
 
 fn is_anthropic_oauth_token(api_key: &str) -> bool {
     api_key.contains("sk-ant-oat")
+}
+
+fn supports_adaptive_thinking(model: &str) -> bool {
+    model.contains("claude-opus-4-6") || model.contains("claude-sonnet-4-6")
 }
