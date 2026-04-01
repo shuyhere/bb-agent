@@ -14,5 +14,8 @@ pub mod model_selector;
 pub mod session_selector;
 pub mod tree_selector;
 pub mod components;
+pub mod fuzzy;
+pub mod kill_ring;
+pub mod undo_stack;
 
 pub use components::{BgFn, BorderColorFn, BoxComponent, DynamicBorder};
