@@ -16,12 +16,14 @@ use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::agent_session::PromptOptions;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_provider::Provider;
+use bb_session::{compaction, store};
 use bb_tools::{Tool, ToolContext};
 use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
 use bb_tui::editor::Editor;
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rusqlite::params;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -134,6 +136,7 @@ enum SubmitAction {
     ArminSaysHi,
     Resume,
     Quit,
+    Help,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -776,6 +779,10 @@ impl InteractiveMode {
                 matcher: SubmitMatch::Exact("/quit"),
                 action: SubmitAction::Quit,
             },
+            SubmitRoute {
+                matcher: SubmitMatch::Exact("/help"),
+                action: SubmitAction::Help,
+            },
         ];
     }
 
@@ -794,7 +801,7 @@ impl InteractiveMode {
             KeyAction::OpenExternalEditor => self.show_placeholder("external editor"),
             KeyAction::FollowUp => self.handle_follow_up(),
             KeyAction::Dequeue => self.handle_dequeue(),
-            KeyAction::SessionNew => self.handle_clear_command(),
+            KeyAction::SessionNew => self.handle_new_session(),
             KeyAction::SessionTree => self.show_tree_selector(),
             KeyAction::SessionFork => self.show_user_message_selector(),
             KeyAction::SessionResume => self.show_session_selector(),
@@ -885,7 +892,7 @@ impl InteractiveMode {
                 }
                 SubmitAction::New => {
                     self.clear_editor();
-                    self.handle_clear_command();
+                    self.handle_new_session();
                 }
                 SubmitAction::Compact => {
                     let instructions = text
@@ -915,6 +922,10 @@ impl InteractiveMode {
                     self.clear_editor();
                     self.shutdown();
                     return Ok(SubmitOutcome::Shutdown);
+                }
+                SubmitAction::Help => {
+                    self.handle_help_command();
+                    self.clear_editor();
                 }
             }
             return Ok(SubmitOutcome::Ignored);
@@ -1474,11 +1485,29 @@ impl InteractiveMode {
     }
 
     fn handle_name_command(&mut self, text: &str) {
-        self.show_status(format!("TODO: rename session with '{text}'"));
+        let name = text.strip_prefix("/name").unwrap_or(text).trim();
+        if name.is_empty() {
+            self.show_status("Usage: /name <session name>");
+            return;
+        }
+        match self.session_setup.conn.execute(
+            "UPDATE sessions SET name = ?1, updated_at = datetime('now') WHERE session_id = ?2",
+            params![name, self.session_setup.session_id],
+        ) {
+            Ok(_) => self.show_status(format!("Session renamed to: {name}")),
+            Err(e) => self.show_status(format!("Failed to rename session: {e}")),
+        }
     }
 
     fn handle_session_command(&mut self) {
-        self.show_status("TODO: session command");
+        let session_id = &self.session_setup.session_id;
+        let model = self.options.model_display.as_deref().unwrap_or("unknown");
+        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+        let msg_count = self.chat_lines.len() + self.render_state().chat_items.len();
+        self.chat_lines.push(format!("Session ID:   {session_id}"));
+        self.chat_lines.push(format!("Model:        {model}"));
+        self.chat_lines.push(format!("Working dir:  {cwd}"));
+        self.chat_lines.push(format!("Messages:     {msg_count}"));
     }
 
     fn handle_changelog_command(&mut self) {
@@ -1486,7 +1515,25 @@ impl InteractiveMode {
     }
 
     fn handle_hotkeys_command(&mut self) {
-        self.show_status("TODO: hotkeys command");
+        let hotkeys = vec![
+            "Key Bindings:",
+            "  Ctrl+C      — Interrupt / clear input",
+            "  Ctrl+D      — Exit (on empty input)",
+            "  Ctrl+Z      — Suspend",
+            "  Ctrl+J      — Cycle thinking level",
+            "  Ctrl+K      — Cycle model forward",
+            "  Ctrl+L      — Toggle tool output expansion",
+            "  Ctrl+T      — Toggle thinking visibility",
+            "  Ctrl+E      — Open external editor",
+            "  Ctrl+R      — Resume session selector",
+            "  Ctrl+N      — New session",
+            "  Ctrl+F      — Follow-up message",
+            "  Ctrl+V      — Paste image from clipboard",
+            "  Esc         — Cancel / back",
+        ];
+        for line in hotkeys {
+            self.chat_lines.push(line.to_string());
+        }
     }
 
     fn show_user_message_selector(&mut self) {
@@ -1512,12 +1559,81 @@ impl InteractiveMode {
         self.show_status("Started a fresh interactive session shell around the core session");
     }
 
+    fn handle_new_session(&mut self) {
+        let cwd_str = self.session_setup.tool_ctx.cwd.display().to_string();
+        match store::create_session(&self.session_setup.conn, &cwd_str) {
+            Ok(new_id) => {
+                self.session_setup.session_id = new_id.clone();
+                self.options.session_id = Some(new_id.clone());
+                let _ = self.controller.runtime_host.session_mut().clear_queue();
+                self.chat_lines.clear();
+                self.pending_lines.clear();
+                self.compaction_queued_messages.clear();
+                self.render_state_mut().chat_items.clear();
+                self.render_state_mut().pending_items.clear();
+                self.show_status(format!("New session created: {new_id}"));
+            }
+            Err(e) => {
+                self.show_status(format!("Failed to create new session: {e}"));
+            }
+        }
+    }
+
+    fn handle_help_command(&mut self) {
+        let commands = vec![
+            "Available commands:",
+            "  /help        — Show this help message",
+            "  /new         — Create a new session",
+            "  /name <name> — Rename current session",
+            "  /session     — Show session info",
+            "  /compact     — Trigger conversation compaction",
+            "  /clear       — Clear chat display",
+            "  /model       — Switch model",
+            "  /hotkeys     — Show key bindings",
+            "  /export      — Export session",
+            "  /import      — Import session",
+            "  /share       — Share session",
+            "  /copy        — Copy last response",
+            "  /debug       — Show debug info",
+            "  /reload      — Reload resources",
+            "  /quit        — Exit the application",
+            "  !<cmd>       — Execute bash command",
+            "  !!<cmd>      — Execute bash (excluded from context)",
+        ];
+        for line in commands {
+            self.chat_lines.push(line.to_string());
+        }
+    }
+
     fn handle_compact_command(&mut self, instructions: Option<&str>) {
         self.is_compacting = true;
-        self.show_status(match instructions {
-            Some(instructions) => format!("TODO: compact with instructions '{instructions}'"),
-            None => "TODO: compact conversation".to_string(),
-        });
+        let session_id = self.session_setup.session_id.clone();
+        match store::get_entries(&self.session_setup.conn, &session_id) {
+            Ok(entries) => {
+                let settings = bb_core::types::CompactionSettings::default();
+                let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
+                match compaction::prepare_compaction(&entries, &settings) {
+                    Some(prep) => {
+                        let to_summarize = prep.messages_to_summarize.len();
+                        let kept = prep.kept_messages.len();
+                        self.chat_lines.push(format!(
+                            "Compaction: {total_tokens} estimated tokens, {to_summarize} messages to summarize, {kept} kept"
+                        ));
+                        if let Some(inst) = instructions {
+                            self.chat_lines.push(format!("Instructions: {inst}"));
+                        }
+                        self.show_status("Compaction prepared (async LLM summarization not wired in interactive mode yet)");
+                    }
+                    None => {
+                        self.show_status(format!("Nothing to compact ({total_tokens} estimated tokens, {} entries)", entries.len()));
+                    }
+                }
+            }
+            Err(e) => {
+                self.show_status(format!("Failed to get entries for compaction: {e}"));
+            }
+        }
+        self.is_compacting = false;
     }
 
     fn handle_reload_command(&mut self) {
@@ -1550,16 +1666,35 @@ impl InteractiveMode {
     }
 
     fn handle_bash_command(&mut self, command: &str, excluded_from_context: bool) {
-        self.pending_bash_components.push_back(format!(
-            "bash{}> {}",
-            if excluded_from_context {
-                "(excluded)"
-            } else {
-                ""
-            },
-            command
-        ));
-        self.show_status("TODO: execute bash command through runtime host");
+        let label = if excluded_from_context { "bash(excluded)" } else { "bash" };
+        self.chat_lines.push(format!("{label}> {command}"));
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&self.session_setup.tool_ctx.cwd)
+            .output();
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !stdout.is_empty() {
+                    for line in stdout.lines() {
+                        self.chat_lines.push(line.to_string());
+                    }
+                }
+                if !stderr.is_empty() {
+                    for line in stderr.lines() {
+                        self.chat_lines.push(format!("stderr: {line}"));
+                    }
+                }
+                if !out.status.success() {
+                    self.chat_lines.push(format!("exit code: {}", out.status.code().unwrap_or(-1)));
+                }
+            }
+            Err(e) => {
+                self.chat_lines.push(format!("Failed to execute command: {e}"));
+            }
+        }
     }
 
     fn flush_pending_bash_components(&mut self) {
