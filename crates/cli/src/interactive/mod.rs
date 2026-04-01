@@ -3,7 +3,7 @@
 pub mod components;
 mod api;
 mod controller;
-#[path = "../interactive_events.rs"]
+#[path = "../interactive_events/mod.rs"]
 pub mod events;
 #[path = "../interactive_commands/mod.rs"]
 pub mod interactive_commands;
