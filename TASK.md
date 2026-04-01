@@ -1,202 +1,160 @@
-# Sprint 4: Wire TUI Components into Agent Loop
+# W4: Streaming bash display + edit diff
 
-You are working in a git worktree at `/tmp/bb-worktrees/s4-wire-tui/`.
-This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md`, `PLAN.md`, and `TUI-PLAN.md` for context.
+Working dir: `/tmp/bb-w/w4-streaming-bash-diff/`
 
-## Your task
+## Problem
+1. Bash tool waits for process to finish before showing any output — no real-time feedback
+2. Edit tool shows "Applied N/N edit(s)" with no diff — user can't see what changed
 
-Create an interactive mode controller that uses the TUI components (already built in
-`crates/tui/src/`) to provide a proper terminal UI. The TUI components exist but are
-NOT wired into the CLI's main loop — the CLI currently uses inline `print!()` statements.
+## Tasks
 
-### 1. Create `crates/cli/src/interactive.rs` (~800 lines)
+### 1. Add streaming callback to bash tool
 
-This is the interactive mode controller — the equivalent of pi's `interactive-mode.ts`.
+Modify `crates/tools/src/bash.rs`:
+
+Add an `on_output` callback that streams chunks as they arrive:
 
 ```rust
-use bb_tui::terminal::{ProcessTerminal, Terminal};
-use bb_tui::renderer::DiffRenderer;
-use bb_tui::component::Container;
-use bb_tui::editor::Editor;
-use bb_tui::chat;
-use bb_tui::markdown::MarkdownRenderer;
-use bb_tui::status;
-use bb_tui::select_list::SelectList;
-use bb_tui::model_selector::ModelSelector;
-use bb_tui::session_selector::SessionSelector;
+pub struct BashTool;
 
-pub struct InteractiveMode {
-    terminal: ProcessTerminal,
-    renderer: DiffRenderer,
-    editor: Editor,
-    messages: Vec<RenderedMessage>,
-    model_name: String,
-    total_tokens: u64,
-    context_window: u64,
-    total_cost: f64,
-}
+// Add a way to set a streaming callback
+// The simplest approach: add it to ToolContext
+```
 
-enum RenderedMessage {
-    User(Vec<String>),
-    Assistant(Vec<String>),   // pre-rendered markdown lines
-    ToolResult(Vec<String>),
-    Compaction(Vec<String>),
-    Streaming(Vec<String>),   // currently-streaming assistant message
+Actually, modify `ToolContext` in `crates/tools/src/lib.rs`:
+```rust
+pub struct ToolContext {
+    pub cwd: PathBuf,
+    pub artifacts_dir: PathBuf,
+    pub on_output: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 ```
 
-#### Startup flow
-1. Create `ProcessTerminal` and enable raw mode
-2. Create `DiffRenderer`
-3. Print welcome banner
-4. Print status bar (model, context window)
-5. Show editor prompt at bottom
-6. Enter main event loop
-
-#### Main event loop
+Then in `bash.rs`, stream chunks as they arrive:
 ```rust
+// Instead of reading all stdout at once, read in chunks:
+let mut stdout = child.stdout.take().unwrap();
+let mut buf = [0u8; 4096];
 loop {
-    // Render: collect all message lines + status + editor → send to DiffRenderer
-    self.render();
+    let n = stdout.read(&mut buf).await?;
+    if n == 0 { break; }
+    let chunk = String::from_utf8_lossy(&buf[..n]);
+    if let Some(ref on_output) = ctx.on_output {
+        on_output(&chunk);
+    }
+    stdout_buf.extend_from_slice(&buf[..n]);
+}
+```
 
-    // Wait for input event (key press or agent event)
-    match event {
-        EditorSubmit(text) => {
-            if text.starts_with('/') → handle slash command
-            if text.starts_with('!') → run bash directly
-            else → send prompt to agent session
-        }
-        AgentEvent(event) => {
-            match event {
-                TextDelta { text } → append to streaming markdown
-                ThinkingDelta { text } → show thinking indicator
-                ToolCallStart { name, .. } → show tool name
-                ToolExecuting { name, .. } → show spinner
-                ToolResult { .. } → show result preview
-                AssistantDone → finalize message, re-enable editor
-                Error { .. } → show error
-            }
-            self.render();  // re-render after each event
-        }
-        Resize → self.render()
-        Ctrl+C → abort current operation
-        Ctrl+D → exit
-        Ctrl+P → show model selector overlay
+This way the TUI can display bash output in real-time as it streams.
+
+### 2. Create `crates/tools/src/diff.rs` — edit diff display
+
+When the edit tool modifies a file, show a colored inline diff.
+
+```rust
+use similar::{ChangeTag, TextDiff};
+
+pub struct DiffLine {
+    pub tag: ChangeTag,  // Equal, Delete, Insert
+    pub content: String,
+}
+
+/// Generate a unified diff between old and new text.
+pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Vec<DiffLine> {
+    let diff = TextDiff::from_lines(old, new);
+    let mut lines = Vec::new();
+
+    for change in diff.iter_all_changes() {
+        lines.push(DiffLine {
+            tag: change.tag(),
+            content: change.value().to_string(),
+        });
+    }
+
+    lines
+}
+
+/// Render diff lines with ANSI colors.
+pub fn render_diff(diff_lines: &[DiffLine]) -> Vec<String> {
+    diff_lines.iter().map(|line| {
+        let prefix = match line.tag {
+            ChangeTag::Equal => "  ",
+            ChangeTag::Delete => "- ",
+            ChangeTag::Insert => "+ ",
+        };
+        let color = match line.tag {
+            ChangeTag::Equal => "",
+            ChangeTag::Delete => "\x1b[31m",  // red
+            ChangeTag::Insert => "\x1b[32m",  // green
+        };
+        let reset = if color.is_empty() { "" } else { "\x1b[0m" };
+        format!("    {}{}{}{}", color, prefix, line.content.trim_end(), reset)
+    }).collect()
+}
+```
+
+### 3. Integrate diff into edit tool
+
+Modify `crates/tools/src/edit.rs`:
+
+Before applying the edit, save the old content. After applying, generate and display the diff:
+
+```rust
+// In execute():
+let old_content = tokio::fs::read_to_string(&path).await?;
+
+// ... apply edits ...
+
+let new_content = tokio::fs::read_to_string(&path).await?;
+
+// Generate diff
+let diff_lines = diff::generate_diff(&old_content, &new_content, 3);
+let rendered = diff::render_diff(&diff_lines);
+
+// Include diff in result
+let mut msg = format!("Applied {applied}/{} edit(s) to {path_str}", edits.len());
+if !rendered.is_empty() {
+    msg.push('\n');
+    msg.push_str(&rendered.join("\n"));
+}
+```
+
+### 4. Update lib.rs
+
+Add `pub mod diff;` to `crates/tools/src/lib.rs`.
+
+### 5. Tests
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_diff() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nmodified\nline3\n";
+        let diff = generate_diff(old, new, 1);
+        assert!(diff.iter().any(|l| l.tag == ChangeTag::Delete));
+        assert!(diff.iter().any(|l| l.tag == ChangeTag::Insert));
+    }
+
+    #[test]
+    fn test_render_diff() {
+        let old = "hello\n";
+        let new = "world\n";
+        let diff = generate_diff(old, new, 0);
+        let rendered = render_diff(&diff);
+        assert!(rendered.iter().any(|l| l.contains("hello")));
+        assert!(rendered.iter().any(|l| l.contains("world")));
     }
 }
 ```
 
-#### Render function
-```rust
-fn render(&mut self) {
-    let width = self.terminal.columns();
-    let mut lines: Vec<String> = Vec::new();
-
-    // 1. All chat messages
-    for msg in &self.messages {
-        lines.extend(msg.lines());
-    }
-
-    // 2. Status bar
-    lines.push(status::render_status(...));
-
-    // 3. Editor
-    lines.extend(self.editor.render(width));
-
-    // 4. Send to differential renderer
-    self.renderer.render(&lines, &mut self.terminal);
-}
-```
-
-#### Slash command handling
-Route to appropriate handler:
-- `/model` → show `ModelSelector` (use `select_list`)
-- `/resume` → show `SessionSelector`
-- `/compact` → call agent session compact
-- `/tree` → show tree (text for now)
-- `/login` / `/logout` → call login module
-- `/new` → create new session
-- `/help` → display help
-- `/quit` → exit
-
-#### Agent event display
-When the agent is running:
-- Add a `RenderedMessage::Streaming` entry
-- On each `TextDelta`, append text to the streaming buffer
-- Re-render the markdown for the streaming content
-- On `ToolCallStart`, show `⚡ tool_name` line
-- On `ToolResult`, show brief result preview (5 lines)
-- On `AssistantDone`, convert streaming to final `Assistant` message
-
-#### Session restore
-When `--continue` is used:
-- Load messages from session context
-- Render each message into `RenderedMessage` entries
-- Display them before showing editor
-
-### 2. Modify `crates/cli/src/main.rs`
-
-Add interactive mode routing:
-```rust
-if cli.print {
-    run::run_print_mode(cli).await
-} else {
-    interactive::run_interactive(cli).await
-}
-```
-
-### 3. Modify `crates/cli/src/run.rs`
-
-Rename/refactor the existing `run_agent` to `run_print_mode` for print mode only.
-The interactive path should go through `interactive.rs`.
-
-### 4. Handle keyboard input properly
-
-Use crossterm's event polling in the main loop:
-```rust
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
-use std::time::Duration;
-
-// Poll for input events with timeout
-if poll(Duration::from_millis(50))? {
-    if let Event::Key(key) = event::read()? {
-        // Handle key
-    }
-}
-
-// Also check for agent events from channel
-if let Ok(agent_event) = rx.try_recv() {
-    // Handle agent event
-}
-```
-
-### 5. Model selector integration
-
-When user types `/model`:
-1. Build list of models from registry
-2. Create `ModelSelector` 
-3. Enter selection loop (the selector handles its own key events)
-4. On selection: update agent session model
-5. Re-render status bar
-
-### Important notes
-
-- Do NOT use `ratatui`. Use crossterm directly + the existing TUI components.
-- The `DiffRenderer` in `tui/renderer.rs` handles differential rendering.
-- The `Editor` in `tui/editor.rs` handles user input.
-- Wrap all terminal output in synchronized output (`\x1b[?2026h` / `\x1b[?2026l`).
-- Clean up terminal on exit (disable raw mode, show cursor).
-- Handle Ctrl+C gracefully (abort current operation, don't crash).
-
-## Build and test
-
+### Build and test
 ```bash
-cd /tmp/bb-worktrees/s4-wire-tui
-cargo build
-cargo test
-```
-
-Make sure ALL existing tests still pass. Then commit:
-```bash
-git add -A && git commit -m "S4: wire TUI components into interactive mode"
+cd /tmp/bb-w/w4-streaming-bash-diff
+cargo build && cargo test
+git add -A && git commit -m "W4: streaming bash + edit diff display"
 ```

@@ -63,14 +63,27 @@ impl Tool for BashTool {
             .spawn()
             .map_err(|e| BbError::Tool(format!("Failed to spawn bash: {e}")))?;
 
+        let mut stdout_handle = child.stdout.take();
+        let mut stderr_handle = child.stderr.take();
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
 
         let child_result = async {
-            if let Some(ref mut stdout) = child.stdout {
-                let _ = stdout.read_to_end(&mut stdout_buf).await;
+            if let Some(ref mut stdout) = stdout_handle {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stdout.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(ref on_output) = ctx.on_output {
+                        on_output(&chunk);
+                    }
+                    stdout_buf.extend_from_slice(&buf[..n]);
+                }
             }
-            if let Some(ref mut stderr) = child.stderr {
+            if let Some(ref mut stderr) = stderr_handle {
                 let _ = stderr.read_to_end(&mut stderr_buf).await;
             }
             child.wait().await
