@@ -3,6 +3,9 @@ pub mod read;
 pub mod bash;
 pub mod diff;
 pub mod edit;
+pub mod find;
+pub mod grep;
+pub mod ls;
 pub mod write;
 pub mod scheduler;
 
@@ -50,5 +53,8 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(bash::BashTool),
         Box::new(edit::EditTool),
         Box::new(write::WriteTool),
+        Box::new(find::FindTool),
+        Box::new(grep::GrepTool),
+        Box::new(ls::LsTool),
     ]
 }
