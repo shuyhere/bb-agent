@@ -1039,27 +1039,30 @@ impl InteractiveMode {
                 &PendingMessages::default(),
             );
 
-        // Spawn agent streaming task
-        let (tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
-        self.agent_events = Some(rx);
+        // Append user message to session DB
+        {
+            let user_entry = bb_core::types::SessionEntry::Message {
+                base: bb_core::types::EntryBase {
+                    id: bb_core::types::EntryId::generate(),
+                    parent_id: self.get_session_leaf(),
+                    timestamp: chrono::Utc::now(),
+                },
+                message: bb_core::types::AgentMessage::User(bb_core::types::UserMessage {
+                    content: vec![bb_core::types::ContentBlock::Text {
+                        text: user_input.clone(),
+                    }],
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                }),
+            };
+            store::append_entry(
+                &self.session_setup.conn,
+                &self.session_setup.session_id,
+                &user_entry,
+            ).map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+        }
 
-        // Send TurnStart immediately
-        let _ = tx.send(AgentLoopEvent::TurnStart { turn_index: 0 });
-
-        // Spawn the background streaming task
-        // The runtime_host doesn't expose a provider directly yet, so we
-        // simulate the turn loop via AgentLoopEvent. When the real provider
-        // is wired (Wave 2C+), this task will call provider.stream() and
-        // forward StreamEvents as AgentLoopEvents.
-        tokio::spawn(async move {
-            // TODO: Wire real provider streaming here.
-            // For now, emit AssistantDone so the UI transitions correctly.
-            let _ = tx.send(AgentLoopEvent::AssistantDone);
-            // tx drops here, closing the channel
-        });
-
-        // Process agent events inline until streaming completes
-        self.process_agent_events_until_done().await?;
+        // Run the streaming turn loop
+        self.run_streaming_turn_loop().await?;
 
         self.pending_working_message = None;
         self.rebuild_footer();
@@ -1089,6 +1092,203 @@ impl InteractiveMode {
         }
         self.sync_pending_render_state();
         Ok(())
+    }
+
+    fn get_session_leaf(&self) -> Option<bb_core::types::EntryId> {
+        store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.leaf_id.map(bb_core::types::EntryId))
+    }
+
+    /// Run the full streaming turn loop: stream from provider, execute tools, loop until done.
+    async fn run_streaming_turn_loop(&mut self) -> InteractiveResult<()> {
+        let (tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
+        self.agent_events = Some(rx);
+
+        let mut turn_index: u32 = 0;
+
+        loop {
+            let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
+
+            // Build context from session
+            let ctx = bb_session::context::build_context(
+                &self.session_setup.conn,
+                &self.session_setup.session_id,
+            ).map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+
+            let provider_messages = bb_core::agent_session::messages_to_provider(&ctx.messages);
+
+            let request = bb_provider::CompletionRequest {
+                system_prompt: self.session_setup.system_prompt.clone(),
+                messages: provider_messages,
+                tools: self.session_setup.tool_defs.clone(),
+                model: self.session_setup.model.id.clone(),
+                max_tokens: Some(self.session_setup.model.max_tokens as u32),
+                stream: true,
+                thinking: None,
+            };
+
+            let options = bb_provider::RequestOptions {
+                api_key: self.session_setup.api_key.clone(),
+                base_url: self.session_setup.base_url.clone(),
+                headers: std::collections::HashMap::new(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            };
+
+            let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+            let stream_result = self.session_setup.provider.stream(request, options, stream_tx).await;
+
+            if let Err(e) = stream_result {
+                let msg = format!("{e}");
+                let _ = tx.send(AgentLoopEvent::Error { message: format!("Provider error: {msg}") });
+                let _ = tx.send(AgentLoopEvent::AssistantDone);
+                break;
+            }
+
+            // Forward stream events as agent loop events
+            let mut all_events = Vec::new();
+            while let Some(event) = stream_rx.recv().await {
+                match &event {
+                    bb_provider::StreamEvent::TextDelta { text } => {
+                        let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
+                    }
+                    bb_provider::StreamEvent::ThinkingDelta { text } => {
+                        let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
+                    }
+                    bb_provider::StreamEvent::ToolCallStart { id, name } => {
+                        let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
+                    }
+                    bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
+                        let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
+                    }
+                    bb_provider::StreamEvent::Error { message } => {
+                        let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
+                    }
+                    _ => {}
+                }
+                all_events.push(event);
+                // Drain agent events to update UI during streaming
+                self.drain_pending_agent_events();
+                self.refresh_ui();
+            }
+
+            let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
+
+            // Build assistant message and append to session
+            let mut assistant_content = Vec::new();
+            if !collected.thinking.is_empty() {
+                assistant_content.push(bb_core::types::AssistantContent::Thinking { thinking: collected.thinking.clone() });
+            }
+            if !collected.text.is_empty() {
+                assistant_content.push(bb_core::types::AssistantContent::Text { text: collected.text.clone() });
+            }
+            for tc in &collected.tool_calls {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                assistant_content.push(bb_core::types::AssistantContent::ToolCall {
+                    id: tc.id.clone(), name: tc.name.clone(), arguments: args,
+                });
+            }
+            let assistant_msg = bb_core::types::AgentMessage::Assistant(bb_core::types::AssistantMessage {
+                content: assistant_content,
+                provider: self.session_setup.model.provider.clone(),
+                model: self.session_setup.model.id.clone(),
+                usage: bb_core::types::Usage {
+                    input: collected.input_tokens,
+                    output: collected.output_tokens,
+                    ..Default::default()
+                },
+                stop_reason: if collected.tool_calls.is_empty() { bb_core::types::StopReason::Stop } else { bb_core::types::StopReason::ToolUse },
+                error_message: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            });
+            let asst_entry = bb_core::types::SessionEntry::Message {
+                base: bb_core::types::EntryBase {
+                    id: bb_core::types::EntryId::generate(),
+                    parent_id: self.get_session_leaf(),
+                    timestamp: chrono::Utc::now(),
+                },
+                message: assistant_msg,
+            };
+            store::append_entry(&self.session_setup.conn, &self.session_setup.session_id, &asst_entry)
+                .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+
+            // If no tool calls, we're done
+            if collected.tool_calls.is_empty() {
+                let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
+                let _ = tx.send(AgentLoopEvent::AssistantDone);
+                self.drain_pending_agent_events();
+                break;
+            }
+
+            // Execute tool calls
+            let cancel = tokio_util::sync::CancellationToken::new();
+            for tc in &collected.tool_calls {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                let _ = tx.send(AgentLoopEvent::ToolExecuting { id: tc.id.clone(), name: tc.name.clone() });
+                self.drain_pending_agent_events();
+                self.refresh_ui();
+
+                let tool = self.session_setup.tools.iter().find(|t| t.name() == tc.name);
+                let result = match tool {
+                    Some(t) => t.execute(args, &self.session_setup.tool_ctx, cancel.clone()).await,
+                    None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
+                };
+                let (content, is_error) = match result {
+                    Ok(r) => (r.content, r.is_error),
+                    Err(e) => (vec![bb_core::types::ContentBlock::Text { text: format!("Error: {e}") }], true),
+                };
+                let content_text = content.iter().filter_map(|c| match c {
+                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
+
+                let _ = tx.send(AgentLoopEvent::ToolResult {
+                    id: tc.id.clone(), name: tc.name.clone(), content: content_text, is_error,
+                });
+                self.drain_pending_agent_events();
+                self.refresh_ui();
+
+                // Append tool result to session
+                let tool_result_entry = bb_core::types::SessionEntry::Message {
+                    base: bb_core::types::EntryBase {
+                        id: bb_core::types::EntryId::generate(),
+                        parent_id: self.get_session_leaf(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                    message: bb_core::types::AgentMessage::ToolResult(bb_core::types::ToolResultMessage {
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        content,
+                        details: None,
+                        is_error,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    }),
+                };
+                store::append_entry(&self.session_setup.conn, &self.session_setup.session_id, &tool_result_entry)
+                    .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+            }
+
+            let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
+            self.drain_pending_agent_events();
+            turn_index += 1;
+        }
+
+        self.is_streaming = false;
+        Ok(())
+    }
+
+    /// Drain any pending agent events from the channel and handle them.
+    fn drain_pending_agent_events(&mut self) {
+        let mut events = Vec::new();
+        if let Some(rx) = self.agent_events.as_mut() {
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            self.handle_agent_event(event);
+        }
     }
 
     /// Drive the event loop while streaming is active, handling both
