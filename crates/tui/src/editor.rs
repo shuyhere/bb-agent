@@ -11,11 +11,13 @@
 //! - Scrolling within editor area (30% of terminal height)
 
 use crate::component::{Component, Focusable, CURSOR_MARKER};
+use crate::fuzzy::fuzzy_filter;
 use crate::kill_ring::KillRing;
 use crate::select_list::{SelectAction, SelectItem, SelectList};
 use crate::undo_stack::UndoStack;
 use crate::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::path::PathBuf;
 
 /// Editor state.
 struct EditorState {
@@ -69,6 +71,10 @@ pub struct Editor {
     redo_stack: UndoStack<EditorSnapshot>,
     /// Last action (for kill accumulation and yank-pop).
     last_action: LastAction,
+    /// @file autocomplete menu.
+    file_menu: Option<SelectList>,
+    /// Current working directory for file scanning.
+    cwd: PathBuf,
 }
 
 impl Editor {
@@ -93,6 +99,8 @@ impl Editor {
             undo_stack: UndoStack::default(),
             redo_stack: UndoStack::default(),
             last_action: LastAction::Other,
+            file_menu: None,
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
 
@@ -115,6 +123,7 @@ impl Editor {
         self.state.cursor_col = self.state.lines[self.state.cursor_line].len();
         self.scroll_offset = 0;
         self.update_slash_menu();
+        self.update_file_menu();
     }
 
     /// Clear the editor.
@@ -125,6 +134,7 @@ impl Editor {
         self.scroll_offset = 0;
         self.history_index = -1;
         self.slash_menu = None;
+        self.file_menu = None;
     }
 
     /// Add text to history.
@@ -166,6 +176,15 @@ impl Editor {
         self.slash_menu.is_some()
     }
 
+    pub fn is_showing_file_menu(&self) -> bool {
+        self.file_menu.is_some()
+    }
+
+    /// Set the current working directory for file scanning.
+    pub fn set_cwd(&mut self, cwd: PathBuf) {
+        self.cwd = cwd;
+    }
+
     fn slash_query(&self) -> Option<String> {
         if self.state.cursor_line != 0 {
             return None;
@@ -198,6 +217,113 @@ impl Editor {
         self.state.cursor_line = 0;
         self.state.cursor_col = self.state.lines[0].len();
         self.slash_menu = None;
+    }
+
+    /// Detect `@query` before the cursor. Returns the full `@...` token if found.
+    fn file_query(&self) -> Option<String> {
+        let line = &self.state.lines[self.state.cursor_line];
+        let before = &line[..self.state.cursor_col.min(line.len())];
+        // Walk backwards to find the `@`
+        let mut at_pos = None;
+        for (i, c) in before.char_indices().rev() {
+            if c == '@' {
+                // Make sure it's at start of line or preceded by whitespace
+                if i == 0 || before[..i].ends_with(|ch: char| ch.is_whitespace()) {
+                    at_pos = Some(i);
+                }
+                break;
+            }
+            // If we hit whitespace before finding @, no match
+            if c.is_whitespace() {
+                return None;
+            }
+        }
+        at_pos.map(|pos| before[pos..].to_string())
+    }
+
+    /// Recursively scan a directory for files up to max_depth.
+    fn scan_files(dir: &std::path::Path, base: &std::path::Path, depth: usize, max_depth: usize, results: &mut Vec<String>) {
+        if depth > max_depth {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files/dirs
+            if name.starts_with('.') {
+                continue;
+            }
+            // Skip common noisy directories
+            if path.is_dir() && matches!(name.as_str(), "node_modules" | "target" | "dist" | "build" | ".git" | "__pycache__") {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(base) {
+                let rel_str = rel.to_string_lossy().to_string();
+                results.push(rel_str);
+            }
+            if path.is_dir() {
+                Self::scan_files(&path, base, depth + 1, max_depth, results);
+            }
+        }
+    }
+
+    fn update_file_menu(&mut self) {
+        let Some(query) = self.file_query() else {
+            self.file_menu = None;
+            return;
+        };
+        let search = query.trim_start_matches('@');
+        // Scan files
+        let mut files = Vec::new();
+        Self::scan_files(&self.cwd, &self.cwd, 0, 3, &mut files);
+        files.sort();
+
+        // Filter using fuzzy_filter
+        let filtered = fuzzy_filter(files, search, |f| f.as_str());
+
+        // Build SelectItems from filtered results (cap at 100)
+        let items: Vec<SelectItem> = filtered
+            .into_iter()
+            .take(100)
+            .map(|f| SelectItem {
+                label: f.clone(),
+                detail: None,
+                value: f,
+            })
+            .collect();
+
+        if items.is_empty() {
+            self.file_menu = None;
+            return;
+        }
+
+        let mut list = SelectList::new(items, 8);
+        list.set_show_search(false);
+        self.file_menu = Some(list);
+    }
+
+    fn accept_file_selection(&mut self, path: String) {
+        let Some(query) = self.file_query() else {
+            self.file_menu = None;
+            return;
+        };
+        let line = &self.state.lines[self.state.cursor_line];
+        let before = &line[..self.state.cursor_col.min(line.len())];
+        // Find the start of the @query token
+        let at_start = before.len() - query.len();
+        let replacement = format!("@{}", path);
+        let new_line = format!(
+            "{}{}{}",
+            &line[..at_start],
+            replacement,
+            &line[self.state.cursor_col..]
+        );
+        self.state.lines[self.state.cursor_line] = new_line;
+        self.state.cursor_col = at_start + replacement.len();
+        self.file_menu = None;
     }
 
     /// Word-wrap a line into chunks for display.
@@ -774,11 +900,39 @@ impl Component for Editor {
             result.extend(menu_lines);
         }
 
+        if let Some(menu) = &self.file_menu {
+            let menu_lines = menu.render(width);
+            result.extend(menu_lines);
+        }
+
         result
     }
 
     fn handle_input(&mut self, key: &KeyEvent) {
         let KeyEvent { code, modifiers, .. } = *key;
+
+        if let Some(menu) = &mut self.file_menu {
+            match (code, modifiers) {
+                (KeyCode::Up, _) | (KeyCode::Down, _) | (KeyCode::PageUp, _) | (KeyCode::PageDown, _) | (KeyCode::Home, _) | (KeyCode::End, _) => {
+                    let _ = menu.handle_key(*key);
+                    return;
+                }
+                (KeyCode::Esc, _) => {
+                    self.file_menu = None;
+                    return;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Tab, KeyModifiers::NONE) => {
+                    match menu.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+                        SelectAction::Selected(value) => {
+                            self.accept_file_selection(value);
+                        }
+                        SelectAction::Cancelled | SelectAction::None => {}
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         if let Some(menu) = &mut self.slash_menu {
             match (code, modifiers) {
@@ -920,6 +1074,7 @@ impl Component for Editor {
         }
 
         self.update_slash_menu();
+        self.update_file_menu();
     }
 
     fn handle_raw_input(&mut self, data: &str) {
@@ -934,6 +1089,7 @@ impl Component for Editor {
         }
         self.last_action = LastAction::Other;
         self.update_slash_menu();
+        self.update_file_menu();
     }
 
     fn invalidate(&mut self) {}
@@ -952,7 +1108,7 @@ impl Focusable for Editor {
 impl Editor {
     /// Try to take a submitted value. Called from the event loop after Enter.
     pub fn try_submit(&mut self) -> Option<String> {
-        if self.slash_menu.is_some() {
+        if self.slash_menu.is_some() || self.file_menu.is_some() {
             return None;
         }
         self.submit()
