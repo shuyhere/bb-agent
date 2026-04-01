@@ -1,152 +1,202 @@
-# Sprint 3: Settings Manager + Model Resolver
+# Sprint 4: Wire TUI Components into Agent Loop
 
-You are working in a git worktree at `/tmp/bb-worktrees/s3-settings-models/`.
-This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md` and `PLAN.md` for context.
+You are working in a git worktree at `/tmp/bb-worktrees/s4-wire-tui/`.
+This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md`, `PLAN.md`, and `TUI-PLAN.md` for context.
 
 ## Your task
 
-Build a layered settings system and fuzzy model resolver.
+Create an interactive mode controller that uses the TUI components (already built in
+`crates/tui/src/`) to provide a proper terminal UI. The TUI components exist but are
+NOT wired into the CLI's main loop — the CLI currently uses inline `print!()` statements.
 
-### 1. Create `crates/core/src/settings.rs` (~300 lines)
+### 1. Create `crates/cli/src/interactive.rs` (~800 lines)
 
-Layered settings: global (`~/.bb-agent/settings.json`) merged with project (`.bb-agent/settings.json`).
+This is the interactive mode controller — the equivalent of pi's `interactive-mode.ts`.
 
 ```rust
-use serde::{Deserialize, Serialize};
-use std::path::Path;
+use bb_tui::terminal::{ProcessTerminal, Terminal};
+use bb_tui::renderer::DiffRenderer;
+use bb_tui::component::Container;
+use bb_tui::editor::Editor;
+use bb_tui::chat;
+use bb_tui::markdown::MarkdownRenderer;
+use bb_tui::status;
+use bb_tui::select_list::SelectList;
+use bb_tui::model_selector::ModelSelector;
+use bb_tui::session_selector::SessionSelector;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Settings {
-    #[serde(default)]
-    pub compaction: CompactionConfig,
-    #[serde(default)]
-    pub default_provider: Option<String>,
-    #[serde(default)]
-    pub default_model: Option<String>,
-    #[serde(default)]
-    pub default_thinking: Option<String>,
-    #[serde(default)]
-    pub tools: Option<Vec<String>>,
-    #[serde(default)]
-    pub models: Option<Vec<ModelOverride>>,
-    #[serde(default)]
-    pub providers: Option<Vec<ProviderOverride>>,
+pub struct InteractiveMode {
+    terminal: ProcessTerminal,
+    renderer: DiffRenderer,
+    editor: Editor,
+    messages: Vec<RenderedMessage>,
+    model_name: String,
+    total_tokens: u64,
+    context_window: u64,
+    total_cost: f64,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct CompactionConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_reserve")]
-    pub reserve_tokens: u64,
-    #[serde(default = "default_keep")]
-    pub keep_recent_tokens: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ModelOverride {
-    pub id: String,
-    pub name: Option<String>,
-    pub provider: String,
-    pub api: Option<String>,            // "openai-completions", "anthropic-messages", etc.
-    pub base_url: Option<String>,
-    pub context_window: Option<u64>,
-    pub max_tokens: Option<u64>,
-    pub reasoning: Option<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProviderOverride {
-    pub name: String,
-    pub base_url: Option<String>,
-    pub api_key_env: Option<String>,    // env var name for API key
-    pub api: Option<String>,
-    pub headers: Option<std::collections::HashMap<String, String>>,
-}
-
-impl Settings {
-    pub fn load_global() -> Self;
-    pub fn load_project(cwd: &Path) -> Self;
-    pub fn merge(global: &Self, project: &Self) -> Self;
+enum RenderedMessage {
+    User(Vec<String>),
+    Assistant(Vec<String>),   // pre-rendered markdown lines
+    ToolResult(Vec<String>),
+    Compaction(Vec<String>),
+    Streaming(Vec<String>),   // currently-streaming assistant message
 }
 ```
 
-The merge logic: project values override global when present (non-None/non-default).
+#### Startup flow
+1. Create `ProcessTerminal` and enable raw mode
+2. Create `DiffRenderer`
+3. Print welcome banner
+4. Print status bar (model, context window)
+5. Show editor prompt at bottom
+6. Enter main event loop
 
-### 2. Create `crates/provider/src/resolver.rs` (~200 lines)
-
-Fuzzy model matching so users can type `--model sonnet` instead of full IDs.
-
+#### Main event loop
 ```rust
-/// Parse a model argument. Supports:
-///   "gpt-4o"                  → (None, "gpt-4o", None)
-///   "openai/gpt-4o"           → (Some("openai"), "gpt-4o", None)
-///   "sonnet:high"             → (None, "sonnet", Some("high"))
-///   "anthropic/sonnet:high"   → (Some("anthropic"), "sonnet", Some("high"))
-pub fn parse_model_arg(input: &str) -> (Option<String>, String, Option<String>);
+loop {
+    // Render: collect all message lines + status + editor → send to DiffRenderer
+    self.render();
 
-/// Fuzzy-match a model pattern against the registry.
-/// "sonnet" matches "claude-sonnet-4-20250514"
-/// "gpt4o" matches "gpt-4o"
-/// Returns best match or None.
-pub fn fuzzy_find_model(registry: &ModelRegistry, pattern: &str, provider: Option<&str>) -> Option<Model>;
-
-/// Simple fuzzy matching score.
-/// Returns 0 if no match, higher = better match.
-pub fn fuzzy_score(pattern: &str, text: &str) -> u32;
-```
-
-Implementation:
-- Lowercase both pattern and candidate
-- Try exact match first
-- Try substring match (`candidate.contains(pattern)`)
-- Try fuzzy: check if all pattern chars appear in order in candidate
-- Score: prefer shorter candidates, prefer matches at word boundaries
-
-### 3. Modify `crates/provider/src/registry.rs`
-
-Add support for loading custom models from settings:
-
-```rust
-impl ModelRegistry {
-    pub fn new() -> Self;  // existing, loads builtins
-
-    /// Load additional models from settings.
-    pub fn load_custom_models(&mut self, settings: &Settings);
-
-    /// Load additional models from a JSON file (models.json).
-    pub fn load_from_file(&mut self, path: &Path);
-
-    /// Find model with fuzzy matching.
-    pub fn find_fuzzy(&self, pattern: &str, provider: Option<&str>) -> Option<&Model>;
+    // Wait for input event (key press or agent event)
+    match event {
+        EditorSubmit(text) => {
+            if text.starts_with('/') → handle slash command
+            if text.starts_with('!') → run bash directly
+            else → send prompt to agent session
+        }
+        AgentEvent(event) => {
+            match event {
+                TextDelta { text } → append to streaming markdown
+                ThinkingDelta { text } → show thinking indicator
+                ToolCallStart { name, .. } → show tool name
+                ToolExecuting { name, .. } → show spinner
+                ToolResult { .. } → show result preview
+                AssistantDone → finalize message, re-enable editor
+                Error { .. } → show error
+            }
+            self.render();  // re-render after each event
+        }
+        Resize → self.render()
+        Ctrl+C → abort current operation
+        Ctrl+D → exit
+        Ctrl+P → show model selector overlay
+    }
 }
 ```
 
-### 4. Modify `crates/cli/src/run.rs`
+#### Render function
+```rust
+fn render(&mut self) {
+    let width = self.terminal.columns();
+    let mut lines: Vec<String> = Vec::new();
 
-Update to use the new settings system:
-- Load global + project settings
-- Apply default model/provider from settings
-- Use `find_fuzzy()` for `--model` resolution
-- Pass compaction settings to session
+    // 1. All chat messages
+    for msg in &self.messages {
+        lines.extend(msg.lines());
+    }
 
-### 5. Tests
+    // 2. Status bar
+    lines.push(status::render_status(...));
 
-- `test_settings_merge` — project overrides global
-- `test_parse_model_arg` — all format variants
-- `test_fuzzy_score` — matching logic
-- `test_fuzzy_find_model` — finds correct model
-- `test_load_custom_models` — custom model appears in registry
+    // 3. Editor
+    lines.extend(self.editor.render(width));
+
+    // 4. Send to differential renderer
+    self.renderer.render(&lines, &mut self.terminal);
+}
+```
+
+#### Slash command handling
+Route to appropriate handler:
+- `/model` → show `ModelSelector` (use `select_list`)
+- `/resume` → show `SessionSelector`
+- `/compact` → call agent session compact
+- `/tree` → show tree (text for now)
+- `/login` / `/logout` → call login module
+- `/new` → create new session
+- `/help` → display help
+- `/quit` → exit
+
+#### Agent event display
+When the agent is running:
+- Add a `RenderedMessage::Streaming` entry
+- On each `TextDelta`, append text to the streaming buffer
+- Re-render the markdown for the streaming content
+- On `ToolCallStart`, show `⚡ tool_name` line
+- On `ToolResult`, show brief result preview (5 lines)
+- On `AssistantDone`, convert streaming to final `Assistant` message
+
+#### Session restore
+When `--continue` is used:
+- Load messages from session context
+- Render each message into `RenderedMessage` entries
+- Display them before showing editor
+
+### 2. Modify `crates/cli/src/main.rs`
+
+Add interactive mode routing:
+```rust
+if cli.print {
+    run::run_print_mode(cli).await
+} else {
+    interactive::run_interactive(cli).await
+}
+```
+
+### 3. Modify `crates/cli/src/run.rs`
+
+Rename/refactor the existing `run_agent` to `run_print_mode` for print mode only.
+The interactive path should go through `interactive.rs`.
+
+### 4. Handle keyboard input properly
+
+Use crossterm's event polling in the main loop:
+```rust
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
+use std::time::Duration;
+
+// Poll for input events with timeout
+if poll(Duration::from_millis(50))? {
+    if let Event::Key(key) = event::read()? {
+        // Handle key
+    }
+}
+
+// Also check for agent events from channel
+if let Ok(agent_event) = rx.try_recv() {
+    // Handle agent event
+}
+```
+
+### 5. Model selector integration
+
+When user types `/model`:
+1. Build list of models from registry
+2. Create `ModelSelector` 
+3. Enter selection loop (the selector handles its own key events)
+4. On selection: update agent session model
+5. Re-render status bar
+
+### Important notes
+
+- Do NOT use `ratatui`. Use crossterm directly + the existing TUI components.
+- The `DiffRenderer` in `tui/renderer.rs` handles differential rendering.
+- The `Editor` in `tui/editor.rs` handles user input.
+- Wrap all terminal output in synchronized output (`\x1b[?2026h` / `\x1b[?2026l`).
+- Clean up terminal on exit (disable raw mode, show cursor).
+- Handle Ctrl+C gracefully (abort current operation, don't crash).
 
 ## Build and test
 
 ```bash
-cd /tmp/bb-worktrees/s3-settings-models
+cd /tmp/bb-worktrees/s4-wire-tui
 cargo build
 cargo test
 ```
 
 Make sure ALL existing tests still pass. Then commit:
 ```bash
-git add -A && git commit -m "S3: settings manager + fuzzy model resolver"
+git add -A && git commit -m "S4: wire TUI components into interactive mode"
 ```
