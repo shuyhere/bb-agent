@@ -161,6 +161,7 @@ enum SubmitOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueuedMessageKind {
     Steer,
+    FollowUp,
 }
 
 impl Default for QueuedMessageKind {
@@ -259,6 +260,8 @@ pub struct InteractiveMode {
     streaming_thinking: String,
     streaming_tool_calls: Vec<ToolCallContent>,
     pending_bash_components: VecDeque<String>,
+    steering_queue: VecDeque<String>,
+    follow_up_queue: VecDeque<String>,
     compaction_queued_messages: VecDeque<QueuedMessage>,
     key_handlers: Vec<(KeyBinding, KeyAction)>,
     submit_routes: Vec<SubmitRoute>,
@@ -317,6 +320,8 @@ impl InteractiveMode {
             streaming_thinking: String::new(),
             streaming_tool_calls: Vec::new(),
             pending_bash_components: VecDeque::new(),
+            steering_queue: VecDeque::new(),
+            follow_up_queue: VecDeque::new(),
             compaction_queued_messages: VecDeque::new(),
             key_handlers: Vec::new(),
             submit_routes: Vec::new(),
@@ -351,10 +356,13 @@ impl InteractiveMode {
                 text: message.text.clone(),
                 mode: match message.kind {
                     QueuedMessageKind::Steer => QueuedMessageMode::Steer,
+                    QueuedMessageKind::FollowUp => QueuedMessageMode::FollowUp,
                 },
             })
             .collect::<Vec<_>>();
-        let pending = InteractiveRenderState::collect_pending_messages(&[], &[], &queued);
+        let steering: Vec<String> = self.steering_queue.iter().cloned().collect();
+        let follow_up: Vec<String> = self.follow_up_queue.iter().cloned().collect();
+        let pending = InteractiveRenderState::collect_pending_messages(&steering, &follow_up, &queued);
         self.controller.session.pending_messages = pending.clone();
         self.render_state_mut()
             .update_pending_messages_display(&pending);
@@ -466,10 +474,12 @@ impl InteractiveMode {
 
         if let Some(initial_message) = self.options.initial_message.clone() {
             self.dispatch_prompt(initial_message).await?;
+            self.drain_queued_messages().await?;
         }
 
         for message in self.options.initial_messages.clone() {
             self.dispatch_prompt(message).await?;
+            self.drain_queued_messages().await?;
         }
 
         while !self.shutdown_requested {
@@ -477,6 +487,7 @@ impl InteractiveMode {
                 break;
             };
             self.dispatch_prompt(user_input).await?;
+            self.drain_queued_messages().await?;
         }
 
         self.stop_ui();
@@ -968,7 +979,8 @@ impl InteractiveMode {
         if self.is_streaming {
             self.push_editor_history(&text);
             self.clear_editor();
-            self.pending_lines.push(format!("queued> {text}"));
+            self.steering_queue.push_back(text);
+            self.sync_pending_render_state();
             return Ok(SubmitOutcome::Ignored);
         }
 
@@ -1041,6 +1053,30 @@ impl InteractiveMode {
         Ok(())
     }
 
+    /// Drain steering queue first, then follow-up queue, dispatching each as a new prompt.
+    async fn drain_queued_messages(&mut self) -> InteractiveResult<()> {
+        // First drain all steering messages
+        while let Some(text) = self.steering_queue.pop_front() {
+            self.sync_pending_render_state();
+            self.refresh_ui();
+            self.dispatch_prompt(text).await?;
+            if self.shutdown_requested {
+                return Ok(());
+            }
+        }
+        // Then drain all follow-up messages
+        while let Some(text) = self.follow_up_queue.pop_front() {
+            self.sync_pending_render_state();
+            self.refresh_ui();
+            self.dispatch_prompt(text).await?;
+            if self.shutdown_requested {
+                return Ok(());
+            }
+        }
+        self.sync_pending_render_state();
+        Ok(())
+    }
+
     /// Drive the event loop while streaming is active, handling both
     /// terminal events (keyboard input) and agent events (streaming text,
     /// tool calls, done signals).
@@ -1086,10 +1122,26 @@ impl InteractiveMode {
                                 if !text.is_empty() {
                                     self.push_editor_history(&text);
                                     self.clear_editor();
-                                    self.pending_lines
-                                        .push(format!("queued> {text}"));
+                                    self.steering_queue.push_back(text);
+                                    self.sync_pending_render_state();
                                     self.refresh_ui();
                                 }
+                            } else if key.code == KeyCode::F(9)
+                                || (key.code == KeyCode::Enter
+                                    && key.modifiers.contains(KeyModifiers::ALT))
+                            {
+                                let text = self.editor_text();
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    self.push_editor_history(&text);
+                                    self.clear_editor();
+                                    self.follow_up_queue.push_back(text);
+                                    self.sync_pending_render_state();
+                                    self.refresh_ui();
+                                }
+                            } else if key.code == KeyCode::F(10) {
+                                self.handle_dequeue();
+                                self.refresh_ui();
                             } else {
                                 self.ui.handle_key(&key);
                                 self.sync_bash_mode_from_editor();
@@ -1443,11 +1495,37 @@ impl InteractiveMode {
     }
 
     fn handle_follow_up(&mut self) {
-        self.show_status("TODO: queue follow-up message");
+        let text = self.editor_text().trim().to_string();
+        if text.is_empty() {
+            self.show_status("Nothing to queue as follow-up");
+            return;
+        }
+        self.push_editor_history(&text);
+        self.clear_editor();
+        self.follow_up_queue.push_back(text);
+        self.sync_pending_render_state();
+        self.show_status("Queued follow-up message");
     }
 
     fn handle_dequeue(&mut self) {
-        self.show_status("TODO: edit queued follow-up messages");
+        // Pop from follow-up queue first, then steering queue
+        let popped = if let Some(text) = self.follow_up_queue.pop_back() {
+            Some(text)
+        } else {
+            self.steering_queue.pop_back()
+        };
+        if let Some(text) = popped {
+            let current = self.editor_text();
+            if current.trim().is_empty() {
+                self.set_editor_text(&text);
+            } else {
+                self.set_editor_text(&format!("{text}\n\n{current}"));
+            }
+            self.sync_pending_render_state();
+            self.show_status("Restored queued message to editor");
+        } else {
+            self.show_status("No queued messages to restore");
+        }
     }
 
     fn handle_clipboard_image_paste(&mut self) {
@@ -1553,6 +1631,8 @@ impl InteractiveMode {
         let _ = self.controller.runtime_host.session_mut().clear_queue();
         self.chat_lines.clear();
         self.pending_lines.clear();
+        self.steering_queue.clear();
+        self.follow_up_queue.clear();
         self.compaction_queued_messages.clear();
         self.render_state_mut().chat_items.clear();
         self.render_state_mut().pending_items.clear();
