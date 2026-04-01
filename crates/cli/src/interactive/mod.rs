@@ -17,7 +17,8 @@ use bb_core::agent_session::PromptOptions;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_provider::Provider;
 use bb_tools::{Tool, ToolContext};
-use bb_tui::component::{CURSOR_MARKER, Component, Container, Spacer, Text};
+use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
+use bb_tui::editor::Editor;
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -171,84 +172,7 @@ struct QueuedMessage {
     kind: QueuedMessageKind,
 }
 
-#[derive(Debug, Default)]
-struct EditorState {
-    text: String,
-    cursor: usize,
-    focused: bool,
-    history: Vec<String>,
-}
 
-impl EditorState {
-    fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
-        self.cursor = self.text.len();
-    }
-
-    fn clear(&mut self) {
-        self.text.clear();
-        self.cursor = 0;
-    }
-
-    fn text(&self) -> String {
-        self.text.clone()
-    }
-
-    fn push_history(&mut self, text: impl Into<String>) {
-        self.history.push(text.into());
-    }
-
-    fn insert_char(&mut self, ch: char) {
-        if self.cursor >= self.text.len() {
-            self.text.push(ch);
-        } else {
-            self.text.insert(self.cursor, ch);
-        }
-        self.cursor += ch.len_utf8();
-    }
-
-    fn insert_str(&mut self, s: &str) {
-        if self.cursor >= self.text.len() {
-            self.text.push_str(s);
-        } else {
-            self.text.insert_str(self.cursor, s);
-        }
-        self.cursor += s.len();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 || self.text.is_empty() {
-            return;
-        }
-        if let Some((idx, _)) = self.text[..self.cursor].char_indices().last() {
-            self.text.drain(idx..self.cursor);
-            self.cursor = idx;
-        }
-    }
-
-    fn move_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        if let Some((idx, _)) = self.text[..self.cursor].char_indices().last() {
-            self.cursor = idx;
-        } else {
-            self.cursor = 0;
-        }
-    }
-
-    fn move_right(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let next = self.text[self.cursor..]
-            .char_indices()
-            .nth(1)
-            .map(|(idx, _)| self.cursor + idx)
-            .unwrap_or(self.text.len());
-        self.cursor = next;
-    }
-}
 
 struct SharedContainer {
     inner: Arc<Mutex<Container>>,
@@ -295,65 +219,7 @@ impl Component for SharedContainer {
     }
 }
 
-#[derive(Debug)]
-struct EditorComponent {
-    state: Arc<Mutex<EditorState>>,
-    bash_mode: Arc<Mutex<bool>>,
-}
 
-impl EditorComponent {
-    fn new(state: Arc<Mutex<EditorState>>, bash_mode: Arc<Mutex<bool>>) -> Self {
-        Self { state, bash_mode }
-    }
-}
-
-impl Component for EditorComponent {
-    fn render(&self, _width: u16) -> Vec<String> {
-        let state = self.state.lock();
-        let bash_mode = self.bash_mode.lock();
-        match (state, bash_mode) {
-            (Ok(state), Ok(bash_mode)) => {
-                let prompt = if *bash_mode { "!" } else { ">" };
-                let mut line = format!("{prompt} {}", state.text);
-                if state.focused {
-                    line.push_str(CURSOR_MARKER);
-                }
-                vec![line]
-            }
-            _ => vec!["<editor unavailable>".to_string()],
-        }
-    }
-
-    fn handle_input(&mut self, key: &KeyEvent) {
-        if let Ok(mut state) = self.state.lock() {
-            match key.code {
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    state.insert_char(ch)
-                }
-                KeyCode::Backspace => state.backspace(),
-                KeyCode::Left => state.move_left(),
-                KeyCode::Right => state.move_right(),
-                KeyCode::Home => state.cursor = 0,
-                KeyCode::End => state.cursor = state.text.len(),
-                _ => {}
-            }
-        }
-    }
-
-    fn handle_raw_input(&mut self, data: &str) {
-        if let Ok(mut state) = self.state.lock() {
-            state.insert_str(data);
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
 
 pub struct InteractiveMode {
     controller: InteractiveController,
@@ -366,8 +232,7 @@ pub struct InteractiveMode {
     widget_container_above: Arc<Mutex<Container>>,
     widget_container_below: Arc<Mutex<Container>>,
     footer_container: Arc<Mutex<Container>>,
-    editor_component: Arc<Mutex<EditorComponent>>,
-    editor_state: Arc<Mutex<EditorState>>,
+    editor: Arc<Mutex<Editor>>,
     version: String,
     options: InteractiveModeOptions,
     is_initialized: bool,
@@ -407,15 +272,12 @@ pub struct InteractiveMode {
 
 impl InteractiveMode {
     pub fn new(runtime_host: AgentSessionRuntimeHost, options: InteractiveModeOptions, session_setup: InteractiveSessionSetup) -> Self {
-        let editor_state = Arc::new(Mutex::new(EditorState {
-            focused: true,
-            ..EditorState::default()
-        }));
+        let editor = {
+            let mut e = Editor::new();
+            e.set_focused(true);
+            Arc::new(Mutex::new(e))
+        };
         let is_bash_mode = Arc::new(Mutex::new(false));
-        let editor_component = Arc::new(Mutex::new(EditorComponent::new(
-            editor_state.clone(),
-            is_bash_mode.clone(),
-        )));
 
         let mut this = Self {
             controller: InteractiveController::new(runtime_host),
@@ -428,8 +290,7 @@ impl InteractiveMode {
             widget_container_above: Arc::new(Mutex::new(Container::new())),
             widget_container_below: Arc::new(Mutex::new(Container::new())),
             footer_container: Arc::new(Mutex::new(Container::new())),
-            editor_component,
-            editor_state,
+            editor,
             version: env!("CARGO_PKG_VERSION").to_string(),
             options,
             is_initialized: false,
@@ -556,7 +417,7 @@ impl InteractiveMode {
         )));
         self.ui
             .root
-            .add(Box::new(SharedEditor::new(self.editor_component.clone())));
+            .add(Box::new(SharedEditorWrapper::new(self.editor.clone())));
         self.ui.root.add(Box::new(SharedContainer::new(
             self.widget_container_below.clone(),
         )));
@@ -1391,29 +1252,29 @@ impl InteractiveMode {
     }
 
     fn editor_text(&self) -> String {
-        self.editor_state
+        self.editor
             .lock()
-            .map(|state| state.text())
+            .map(|e| e.get_text())
             .unwrap_or_default()
     }
 
     fn set_editor_text(&mut self, text: &str) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.set_text(text.to_string());
+        if let Ok(mut e) = self.editor.lock() {
+            e.set_text(text);
         }
         self.sync_bash_mode_from_editor();
     }
 
     fn clear_editor(&mut self) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.clear();
+        if let Ok(mut e) = self.editor.lock() {
+            e.clear();
         }
         self.sync_bash_mode_from_editor();
     }
 
     fn push_editor_history(&mut self, text: &str) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.push_history(text.to_string());
+        if let Ok(mut e) = self.editor.lock() {
+            e.add_to_history(text);
         }
     }
 
@@ -1949,17 +1810,17 @@ pub async fn run_interactive(
     mode.run().await
 }
 
-struct SharedEditor {
-    inner: Arc<Mutex<EditorComponent>>,
+struct SharedEditorWrapper {
+    inner: Arc<Mutex<Editor>>,
 }
 
-impl SharedEditor {
-    fn new(inner: Arc<Mutex<EditorComponent>>) -> Self {
+impl SharedEditorWrapper {
+    fn new(inner: Arc<Mutex<Editor>>) -> Self {
         Self { inner }
     }
 }
 
-impl Component for SharedEditor {
+impl Component for SharedEditorWrapper {
     fn render(&self, width: u16) -> Vec<String> {
         self.inner
             .lock()
