@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
+use bb_core::settings::Settings;
 use bb_core::types::*;
 use bb_hooks::EventBus;
 use bb_provider::anthropic::AnthropicProvider;
@@ -50,10 +51,19 @@ pub async fn run_agent(cli: Cli) -> Result<()> {
         store::create_session(&conn, cwd.to_str().unwrap_or("."))?
     };
 
+    // Load layered settings
+    let settings = Settings::load_merged(&cwd);
+
     // Parse --model (supports "provider/model" and "model:thinking")
+    // CLI flags override settings defaults
+    let model_input = cli.model.as_deref()
+        .or(settings.default_model.as_deref());
+    let provider_input = cli.provider.as_deref()
+        .or(settings.default_provider.as_deref());
+
     let (provider_name, model_id, thinking_override) = parse_model_arg(
-        cli.provider.as_deref(),
-        cli.model.as_deref(),
+        provider_input,
+        model_input,
     );
 
     // Load AGENTS.md
@@ -67,11 +77,16 @@ pub async fn run_agent(cli: Cli) -> Result<()> {
         None => agent::build_system_prompt(base_prompt, agents_md.as_deref()),
     };
 
-    // Model registry
-    let registry = ModelRegistry::new();
+    // Model registry (builtins + custom models from settings)
+    let mut registry = ModelRegistry::new();
+    registry.load_custom_models(&settings);
+
+    // Try exact match first, then fuzzy
     let model = registry
         .find(&provider_name, &model_id)
         .cloned()
+        .or_else(|| registry.find_fuzzy(&model_id, Some(&provider_name)).cloned())
+        .or_else(|| registry.find_fuzzy(&model_id, None).cloned())
         .unwrap_or_else(|| {
             bb_provider::registry::Model {
                 id: model_id.clone(),
