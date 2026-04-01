@@ -20,6 +20,7 @@ use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::{context, store};
 use bb_tools::{builtin_tools, Tool, ToolContext};
 use bb_tui::editor::Editor;
+use bb_tui::markdown::MarkdownRenderer;
 use bb_tui::status;
 use chrono::Utc;
 use crossterm::style::{Attribute, Color, Stylize};
@@ -72,8 +73,36 @@ fn style_tool_err() -> String {
     format!("{}", "✗".with(Color::Red))
 }
 
-fn style_separator() -> String {
-    format!("{}", "─".repeat(60).with(Color::DarkGrey))
+fn style_separator(width: usize) -> String {
+    format!("{}", "─".repeat(width).with(Color::DarkGrey))
+}
+
+fn style_tool_args_preview(args: &serde_json::Value) -> String {
+    let s = match args {
+        serde_json::Value::Object(map) => {
+            map.iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        serde_json::Value::String(s) => {
+                            if s.len() > 40 {
+                                format!("\"{}...\"", &s[..40])
+                            } else {
+                                format!("\"{s}\"")
+                            }
+                        }
+                        other => {
+                            let s = other.to_string();
+                            if s.len() > 40 { format!("{}...", &s[..40]) } else { s }
+                        }
+                    };
+                    format!("{k}={val}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        _ => args.to_string(),
+    };
+    format!("{}", s.with(Color::DarkGrey))
 }
 
 fn style_dim(text: &str) -> String {
@@ -87,6 +116,7 @@ fn style_error(text: &str) -> String {
 // ── Banner (matches pi's startup header) ────────────────────────────
 
 fn print_banner(model_name: &str, context_window: u64) {
+    let w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
     println!();
     println!(
         " {} v{}",
@@ -94,21 +124,32 @@ fn print_banner(model_name: &str, context_window: u64) {
         env!("CARGO_PKG_VERSION"),
     );
     println!(
-        " {} {} {} {} {} {}",
+        " {} {}",
         "escape".with(Color::DarkGrey),
         "to interrupt".with(Color::Grey),
-        "ctrl+c".with(Color::DarkGrey),
-        "to clear".with(Color::Grey),
-        "ctrl+d".with(Color::DarkGrey),
-        "to exit".with(Color::Grey),
     );
     println!(
-        " {} {} {} {}K",
-        "model:".with(Color::DarkGrey),
-        model_name.with(Color::Cyan),
-        "context:".with(Color::DarkGrey),
-        context_window / 1000,
+        " {} {}",
+        "ctrl+c".with(Color::DarkGrey),
+        "to clear".with(Color::Grey),
     );
+    println!(
+        " {} {}",
+        "ctrl+d".with(Color::DarkGrey),
+        "to exit (empty)".with(Color::Grey),
+    );
+    println!(
+        " {} {}",
+        "/".with(Color::DarkGrey),
+        "for commands".with(Color::Grey),
+    );
+    println!(
+        " {} {}",
+        "!".with(Color::DarkGrey),
+        "to run bash".with(Color::Grey),
+    );
+    println!();
+    println!(" {}", style_separator(w.saturating_sub(2)));
     println!();
 }
 
@@ -236,7 +277,11 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     // ── Main loop ──
     loop {
         // Status bar
-        print_status(&conn, &session_id, &model);
+        print_status(&conn, &session_id, &model, cwd_str);
+
+        // Editor separator
+        let w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+        println!("{}", style_separator(w));
 
         // Read input
         let input = match editor.read_line() {
@@ -349,24 +394,31 @@ fn display_message(msg: &AgentMessage, model_id: &str) {
 
 // ── Print status bar ────────────────────────────────────────────────
 
-fn print_status(conn: &rusqlite::Connection, session_id: &str, model: &bb_provider::registry::Model) {
-    let tokens = context::build_context(conn, session_id)
-        .ok()
-        .map(|c| {
-            c.messages
-                .iter()
-                .map(|m| serde_json::to_string(m).unwrap_or_default().len() as u64 / 4)
-                .sum::<u64>()
-        });
+fn print_status(conn: &rusqlite::Connection, session_id: &str, model: &bb_provider::registry::Model, cwd: &str) {
+    let w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    let ctx = context::build_context(conn, session_id).ok();
+    let tokens = ctx.as_ref().map(|c| {
+        c.messages
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap_or_default().len() as u64 / 4)
+            .sum::<u64>()
+    }).unwrap_or(0);
 
-    let line = status::render_status(
-        Some(&model.name),
-        tokens,
-        Some(model.context_window),
+    let footer = status::render_footer(
+        &status::FooterData {
+            model_name: model.name.clone(),
+            provider: model.provider.clone(),
+            thinking: "medium".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cost: 0.0,
+            context_tokens: tokens,
+            context_window: model.context_window,
+            cwd: cwd.to_string(),
+        },
+        w,
     );
-    if !line.is_empty() {
-        println!("{line}");
-    }
+    println!("{footer}");
 }
 
 // ── Agent turn with streaming ───────────────────────────────────────
@@ -453,12 +505,19 @@ async fn run_turn(
                         std::io::stdout().flush().ok();
                     }
                 }
-                StreamEvent::ToolCallStart { name, .. } => {
+                StreamEvent::ToolCallStart { name, id } => {
                     if text_started {
                         println!();
                         text_started = false;
                     }
-                    println!("{}", style_tool_call(name));
+                    // Tool call name shown, args will come via deltas
+                    print!("{}", style_tool_call(name));
+                }
+                StreamEvent::ToolCallDelta { arguments_delta, .. } => {
+                    // We could show partial args, but for now just collect
+                }
+                StreamEvent::ToolCallEnd { .. } => {
+                    println!(); // newline after tool call line
                 }
                 StreamEvent::Error { message } => {
                     if text_started {
@@ -474,10 +533,30 @@ async fn run_turn(
         if text_started {
             println!();
         }
-        println!();
 
         // Collect response
         let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
+
+        // Re-render the text with markdown formatting
+        if !collected.text.is_empty() {
+            // Move cursor up to overwrite the raw streamed text
+            let raw_line_count = collected.text.lines().count() + 1; // +1 for indent
+            // Clear and re-render with markdown
+            print!("\x1b[{}A", raw_line_count); // move up
+            for _ in 0..raw_line_count {
+                println!("\x1b[2K"); // clear each line
+            }
+            print!("\x1b[{}A", raw_line_count); // move up again
+
+            let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+            let md_width = term_width.saturating_sub(4); // 2 indent each side
+            let mut renderer = MarkdownRenderer::new(&collected.text);
+            let md_lines = renderer.render(md_width);
+            for line in &md_lines {
+                println!("  {line}");
+            }
+        }
+        println!();
 
         // Build assistant message
         let mut content = Vec::new();
