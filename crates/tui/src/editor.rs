@@ -11,7 +11,9 @@
 //! - Scrolling within editor area (30% of terminal height)
 
 use crate::component::{Component, Focusable, CURSOR_MARKER};
+use crate::kill_ring::KillRing;
 use crate::select_list::{SelectAction, SelectItem, SelectList};
+use crate::undo_stack::UndoStack;
 use crate::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -20,6 +22,22 @@ struct EditorState {
     lines: Vec<String>,
     cursor_line: usize,
     cursor_col: usize,
+}
+
+/// Snapshot for undo/redo.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct EditorSnapshot {
+    lines: Vec<String>,
+    cursor_line: usize,
+    cursor_col: usize,
+}
+
+/// Tracks the last editor action for kill-accumulation and yank-pop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LastAction {
+    Kill,
+    Yank { len: usize },
+    Other,
 }
 
 /// A multi-line editor component with top/bottom border.
@@ -43,6 +61,14 @@ pub struct Editor {
     /// Slash command autocomplete menu.
     slash_menu: Option<SelectList>,
     slash_commands: Vec<SelectItem>,
+    /// Kill ring for Emacs-style kill/yank.
+    kill_ring: KillRing,
+    /// Undo stack.
+    undo_stack: UndoStack<EditorSnapshot>,
+    /// Redo stack.
+    redo_stack: UndoStack<EditorSnapshot>,
+    /// Last action (for kill accumulation and yank-pop).
+    last_action: LastAction,
 }
 
 impl Editor {
@@ -63,6 +89,10 @@ impl Editor {
             border_color: "\x1b[90m".to_string(), // dim gray
             slash_menu: None,
             slash_commands: default_slash_commands(),
+            kill_ring: KillRing::default(),
+            undo_stack: UndoStack::default(),
+            redo_stack: UndoStack::default(),
+            last_action: LastAction::Other,
         }
     }
 
@@ -411,12 +441,22 @@ impl Editor {
         self.state.cursor_col = self.state.lines[self.state.cursor_line].len();
     }
 
-    fn kill_to_end(&mut self) {
+    fn kill_to_end(&mut self, accumulate: bool) {
+        let line = &self.state.lines[self.state.cursor_line];
+        let killed = line[self.state.cursor_col..].to_string();
+        if !killed.is_empty() {
+            self.kill_ring.push(&killed, false, accumulate);
+        }
         self.state.lines[self.state.cursor_line].truncate(self.state.cursor_col);
     }
 
-    fn kill_to_start(&mut self) {
-        let rest = self.state.lines[self.state.cursor_line][self.state.cursor_col..].to_string();
+    fn kill_to_start(&mut self, accumulate: bool) {
+        let line = &self.state.lines[self.state.cursor_line];
+        let killed = line[..self.state.cursor_col].to_string();
+        if !killed.is_empty() {
+            self.kill_ring.push(&killed, true, accumulate);
+        }
+        let rest = line[self.state.cursor_col..].to_string();
         self.state.lines[self.state.cursor_line] = rest;
         self.state.cursor_col = 0;
     }
@@ -468,7 +508,7 @@ impl Editor {
         self.state.cursor_col += advance;
     }
 
-    fn delete_word_backward(&mut self) {
+    fn delete_word_backward(&mut self, accumulate: bool) {
         if self.state.cursor_col == 0 {
             return;
         }
@@ -483,6 +523,10 @@ impl Editor {
             i -= 1;
         }
         let new_col: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
+        let killed = line[new_col..self.state.cursor_col].to_string();
+        if !killed.is_empty() {
+            self.kill_ring.push(&killed, true, accumulate);
+        }
         let rest = &line[self.state.cursor_col..];
         let new_line = format!("{}{}", &line[..new_col], rest);
         self.state.lines[self.state.cursor_line] = new_line;
@@ -503,6 +547,81 @@ impl Editor {
         } else {
             let text = self.history[self.history_index as usize].clone();
             self.set_text(&text);
+        }
+    }
+
+    // ── Snapshot / undo / redo helpers ──
+
+    fn snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            lines: self.state.lines.clone(),
+            cursor_line: self.state.cursor_line,
+            cursor_col: self.state.cursor_col,
+        }
+    }
+
+    fn restore(&mut self, snap: EditorSnapshot) {
+        self.state.lines = snap.lines;
+        self.state.cursor_line = snap.cursor_line;
+        self.state.cursor_col = snap.cursor_col;
+    }
+
+    fn push_undo(&mut self) {
+        let snap = self.snapshot();
+        self.undo_stack.push(&snap);
+        self.redo_stack.clear();
+    }
+
+    fn undo(&mut self) {
+        if let Some(snap) = self.undo_stack.pop() {
+            let current = self.snapshot();
+            self.redo_stack.push(&current);
+            self.restore(snap);
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(snap) = self.redo_stack.pop() {
+            let current = self.snapshot();
+            self.undo_stack.push(&current);
+            self.restore(snap);
+        }
+    }
+
+    // ── Yank ──
+
+    fn yank(&mut self) {
+        if let Some(text) = self.kill_ring.peek().map(|s| s.to_string()) {
+            self.push_undo();
+            let len = text.len();
+            let line = &mut self.state.lines[self.state.cursor_line];
+            line.insert_str(self.state.cursor_col, &text);
+            self.state.cursor_col += len;
+            self.last_action = LastAction::Yank { len };
+        }
+    }
+
+    fn yank_pop(&mut self) {
+        if let LastAction::Yank { len } = self.last_action {
+            if self.kill_ring.len() <= 1 {
+                return;
+            }
+            // Remove previously yanked text
+            let start = self.state.cursor_col.saturating_sub(len);
+            let line = &self.state.lines[self.state.cursor_line];
+            let new_line = format!("{}{}", &line[..start], &line[self.state.cursor_col..]);
+            self.state.lines[self.state.cursor_line] = new_line;
+            self.state.cursor_col = start;
+
+            // Rotate and insert next entry
+            self.kill_ring.rotate();
+            if let Some(text) = self.kill_ring.peek().map(|s| s.to_string()) {
+                let new_len = text.len();
+                let line = &mut self.state.lines[self.state.cursor_line];
+                line.insert_str(self.state.cursor_col, &text);
+                self.state.cursor_col += new_len;
+                self.last_action = LastAction::Yank { len: new_len };
+            }
         }
     }
 
@@ -684,6 +803,8 @@ impl Component for Editor {
             }
         }
 
+        let old_action = std::mem::replace(&mut self.last_action, LastAction::Other);
+
         match (code, modifiers) {
             // Submit (Enter, no modifiers)
             (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -693,6 +814,7 @@ impl Component for Editor {
             // Newline (Alt+Enter, Shift+Enter)
             (KeyCode::Enter, KeyModifiers::ALT) |
             (KeyCode::Enter, KeyModifiers::SHIFT) => {
+                self.push_undo();
                 self.new_line();
             }
 
@@ -735,30 +857,62 @@ impl Component for Editor {
             // Deletion
             (KeyCode::Backspace, KeyModifiers::NONE) |
             (KeyCode::Backspace, KeyModifiers::SHIFT) => {
+                self.push_undo();
                 self.backspace();
             }
             (KeyCode::Delete, _) => {
+                self.push_undo();
                 self.delete();
             }
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
-                self.kill_to_end();
+                self.push_undo();
+                let accumulate = old_action == LastAction::Kill;
+                self.kill_to_end(accumulate);
+                self.last_action = LastAction::Kill;
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                self.kill_to_start();
+                self.push_undo();
+                let accumulate = old_action == LastAction::Kill;
+                self.kill_to_start(accumulate);
+                self.last_action = LastAction::Kill;
             }
             (KeyCode::Char('w'), KeyModifiers::CONTROL) |
             (KeyCode::Backspace, KeyModifiers::ALT) => {
-                self.delete_word_backward();
+                self.push_undo();
+                let accumulate = old_action == LastAction::Kill;
+                self.delete_word_backward(accumulate);
+                self.last_action = LastAction::Kill;
+            }
+
+            // Yank
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                self.yank();
+            }
+            // Yank-pop
+            (KeyCode::Char('y'), KeyModifiers::ALT) => {
+                self.last_action = old_action;
+                self.yank_pop();
+            }
+
+            // Undo
+            (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                self.undo();
+            }
+            // Redo (Ctrl+Shift+Z)
+            (KeyCode::Char('Z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+                self.redo();
             }
 
             // Regular characters
             (KeyCode::Char(c), KeyModifiers::NONE) |
             (KeyCode::Char(c), KeyModifiers::SHIFT) => {
+                self.push_undo();
                 self.insert_char(c);
             }
 
             // Tab → 4 spaces
             (KeyCode::Tab, KeyModifiers::NONE) => {
+                self.push_undo();
                 self.insert_str("    ");
             }
 
@@ -770,6 +924,7 @@ impl Component for Editor {
 
     fn handle_raw_input(&mut self, data: &str) {
         // Handle bracketed paste
+        self.push_undo();
         for c in data.chars() {
             if c == '\n' || c == '\r' {
                 self.new_line();
@@ -777,6 +932,7 @@ impl Component for Editor {
                 self.insert_char(c);
             }
         }
+        self.last_action = LastAction::Other;
         self.update_slash_menu();
     }
 
