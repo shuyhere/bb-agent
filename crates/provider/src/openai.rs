@@ -70,6 +70,10 @@ impl Provider for OpenAiProvider {
             body["tools"] = json!(request.tools);
         }
 
+        if let Some(thinking) = &request.thinking {
+            body["reasoning_effort"] = json!(thinking);
+        }
+
         let mut req = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", options.api_key))

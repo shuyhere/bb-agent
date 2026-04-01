@@ -472,6 +472,7 @@ pub async fn compact(
         model: model.to_string(),
         max_tokens: Some(4096),
         stream: false,
+        thinking: None,
     };
 
     let options = RequestOptions {

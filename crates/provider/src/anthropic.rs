@@ -79,6 +79,18 @@ impl Provider for AnthropicProvider {
             body["tools"] = json!(tools);
         }
 
+        if let Some(thinking) = &request.thinking {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": match thinking.as_str() {
+                    "low" => 2048,
+                    "medium" => 8192,
+                    "high" => 16384,
+                    _ => 8192,
+                }
+            });
+        }
+
         let mut req = self.client
             .post(&url)
             .header("x-api-key", &options.api_key)

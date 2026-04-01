@@ -1,92 +1,127 @@
-# W2: Wire compaction into agent loop + auto-compact
+# W3: Apply --thinking, --tools, --session, abort, and model switching
 
-Working dir: `/tmp/bb-w/w2-compaction-wire/`
+Working dir: `/tmp/bb-w/w3-apply-flags/`
 
 ## Problem
-Compaction logic exists in `crates/session/src/compaction.rs` (prepare + compact + serialize) but is never called. The agent loop never checks if context is too large. `/compact` command is acknowledged but doesn't execute.
+Several CLI flags are parsed but not applied. Abort doesn't work. Model changes aren't persisted.
 
-## Task
+## Tasks
 
-### 1. Add auto-compaction to the agent loop
+### 1. Apply `--thinking` to provider requests
 
-In `crates/cli/src/agent_loop.rs` (or `session.rs` if that's where the loop lives), after each turn:
+In `crates/cli/src/run.rs` and wherever CompletionRequest is built:
+- Parse thinking level from CLI
+- For Anthropic: add `thinking` parameter to request body in `crates/provider/src/anthropic.rs`
+  ```rust
+  // In the request body building:
+  if let Some(thinking) = &request.thinking {
+      body["thinking"] = json!({
+          "type": "enabled",
+          "budget_tokens": match thinking.as_str() {
+              "low" => 2048,
+              "medium" => 8192,
+              "high" => 16384,
+              _ => 8192,
+          }
+      });
+  }
+  ```
+- For OpenAI: set `reasoning_effort` parameter
+
+Add `thinking: Option<String>` to `CompletionRequest` in `crates/provider/src/lib.rs`.
+
+### 2. Apply `--tools` filtering
+
+In `crates/cli/src/run.rs`:
+```rust
+let tool_names: Vec<&str> = if cli.no_tools {
+    vec![]
+} else if let Some(tools_str) = &cli.tools {
+    tools_str.split(',').map(|s| s.trim()).collect()
+} else {
+    vec!["read", "bash", "edit", "write"]
+};
+
+let tools: Vec<Box<dyn Tool>> = builtin_tools()
+    .into_iter()
+    .filter(|t| tool_names.contains(&t.name()))
+    .collect();
+```
+
+### 3. Implement abort with CancellationToken
+
+In the agent loop:
+- Create a `CancellationToken` shared between the agent task and input handler
+- When Escape or Ctrl+C is pressed during agent execution:
+  ```rust
+  cancel_token.cancel();
+  ```
+- The provider's streaming loop checks `cancel.is_cancelled()` and stops
+- Tool execution checks the cancel token too
+- Display "[Aborted]" when cancelled
+- Re-enable the editor
+
+### 4. Write model_change entry on `/model` switch
+
+When the user switches models (via `/model` or Ctrl+P):
+```rust
+let entry = SessionEntry::ModelChange {
+    base: EntryBase {
+        id: EntryId::generate(),
+        parent_id: get_leaf(&conn, &session_id),
+        timestamp: Utc::now(),
+    },
+    provider: new_model.provider.clone(),
+    model_id: new_model.id.clone(),
+};
+store::append_entry(&conn, &session_id, &entry)?;
+```
+
+### 5. Implement `--session <id>` resolution
+
+When `--session` is provided:
+- If it looks like a file path → use directly
+- Otherwise → search session IDs in the database that start with the given prefix
+- Open that session instead of creating a new one
 
 ```rust
-// After appending assistant message and tool results to session
-let ctx = context::build_context(&conn, &session_id)?;
-let total_tokens: u64 = ctx.messages.iter()
-    .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-    .sum();
-
-if compaction::should_compact(total_tokens, model.context_window, &compaction_settings) {
-    // Prepare compaction
-    let path = tree::active_path(&conn, &session_id)?;
-    if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
-        // Execute compaction (call LLM for summary)
-        let result = compaction::compact(
-            &prep, provider, &model.id, &api_key, &base_url, None, cancel.clone()
-        ).await?;
-
-        // Append compaction entry to session
-        let comp_entry = SessionEntry::Compaction {
-            base: EntryBase {
-                id: EntryId::generate(),
-                parent_id: get_leaf(&conn, &session_id),
-                timestamp: Utc::now(),
-            },
-            summary: result.summary,
-            first_kept_entry_id: EntryId(result.first_kept_entry_id),
-            tokens_before: result.tokens_before,
-            details: Some(serde_json::json!({
-                "readFiles": result.read_files,
-                "modifiedFiles": result.modified_files,
-            })),
-            from_plugin: false,
-        };
-        store::append_entry(&conn, &session_id, &comp_entry)?;
-
-        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
+if let Some(session_arg) = &cli.session {
+    // Try to find by prefix
+    let all_sessions = store::list_sessions(&conn, cwd_str)?;
+    let matches: Vec<_> = all_sessions.iter()
+        .filter(|s| s.session_id.starts_with(session_arg))
+        .collect();
+    match matches.len() {
+        1 => session_id = matches[0].session_id.clone(),
+        0 => anyhow::bail!("No session matching '{session_arg}'"),
+        n => anyhow::bail!("{n} sessions match '{session_arg}', be more specific"),
     }
 }
 ```
 
-### 2. Wire `/compact` slash command
+### 6. Implement piped stdin
 
-In the slash command handler, when user types `/compact`:
-- Get active path from session
-- Call `prepare_compaction()` + `compact()`
-- Append compaction entry
-- Display confirmation
-
-When `/compact some instructions`:
-- Pass `Some("some instructions")` as custom_instructions
-
-### 3. Handle the compaction provider dependency
-
-The `compact()` function in `crates/session/src/compaction.rs` needs to call a provider. It currently takes provider params. Make sure it works with the actual providers (OpenAI and Anthropic).
-
-The compaction should use a simple non-streaming request:
 ```rust
-let events = provider.complete(request, options).await?;
-let collected = CollectedResponse::from_events(&events);
-let summary = collected.text;
-```
+// In main.rs, before routing to mode:
+let stdin_content = if !std::io::stdin().is_terminal() {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    if buf.trim().is_empty() { None } else { Some(buf) }
+} else {
+    None
+};
 
-### 4. Tests
-
-Add a test that verifies auto-compaction triggers:
-```rust
-#[test]
-fn test_should_compact_triggers() {
-    let settings = CompactionSettings::default(); // reserve=16384
-    assert!(should_compact(120_000, 128_000, &settings)); // over threshold
-    assert!(!should_compact(100_000, 128_000, &settings)); // under threshold
+// Prepend to prompt if available
+if let Some(stdin) = stdin_content {
+    prompt = format!("{}\n\n{}", stdin, prompt);
 }
 ```
 
+Add `use std::io::{IsTerminal, Read};` at top.
+
 ### Build and test
 ```bash
-cd /tmp/bb-w/w2-compaction-wire
+cd /tmp/bb-w/w3-apply-flags
 cargo build && cargo test
-git add -A && git commit -m "W2: wire compaction into agent loop + /compact"
+git add -A && git commit -m "W3: apply --thinking, --tools, abort, model switch, piped stdin"
 ```

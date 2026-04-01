@@ -1,12 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::io::{IsTerminal, Read};
+use std::path::PathBuf;
 
-mod agent_loop;
 mod interactive;
 mod login;
 mod models;
 mod run;
-mod session;
 mod slash;
 
 #[derive(Parser)]
@@ -124,7 +124,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -162,6 +162,25 @@ async fn main() -> Result<()> {
         };
         models::list_models(search_term);
         return Ok(());
+    }
+
+    // Read piped stdin if available
+    let stdin_content = if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        if buf.trim().is_empty() { None } else { Some(buf) }
+    } else {
+        None
+    };
+
+    // Prepend stdin to prompt if available
+    if let Some(stdin) = stdin_content {
+        if cli.messages.is_empty() {
+            cli.messages.push(stdin);
+        } else {
+            let prompt = cli.messages.join(" ");
+            cli.messages = vec![format!("{stdin}\n\n{prompt}")];
+        }
     }
 
     // Run the agent
