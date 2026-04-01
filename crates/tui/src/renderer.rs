@@ -34,6 +34,10 @@ pub struct Renderer {
     max_lines_rendered: usize,
     /// Show hardware cursor for IME.
     show_hw_cursor: bool,
+    /// Force a full clear + re-render on next render call.
+    force_clear: bool,
+    /// Previous viewport top (for scrollback tracking).
+    prev_viewport_top: usize,
 }
 
 impl Renderer {
@@ -47,6 +51,8 @@ impl Renderer {
             first_render: true,
             max_lines_rendered: 0,
             show_hw_cursor: true,
+            force_clear: false,
+            prev_viewport_top: 0,
         }
     }
 
@@ -67,7 +73,7 @@ impl Renderer {
             .map(|l| format!("{l}{SEGMENT_RESET}"))
             .collect();
 
-        // Extract cursor position before rendering
+        // Extract cursor position before rendering (scan all lines)
         let cursor_pos = self.extract_cursor_position(&new_lines, height);
 
         // Strip CURSOR_MARKER from lines
@@ -75,6 +81,17 @@ impl Renderer {
             .iter()
             .map(|l| l.replace(CURSOR_MARKER, ""))
             .collect();
+
+        // Forced full clear (from invalidate)
+        if self.force_clear {
+            self.force_clear = false;
+            self.full_render(&new_lines, terminal, true);
+            self.position_hw_cursor(cursor_pos, new_lines.len(), terminal);
+            self.prev_lines = new_lines;
+            self.prev_width = width;
+            self.prev_height = height;
+            return;
+        }
 
         // First render — output everything without clearing
         if self.first_render && !width_changed && !height_changed {
@@ -104,19 +121,22 @@ impl Renderer {
         self.prev_height = height;
     }
 
-    /// Force full re-render on next call.
+    /// Force full clear + re-render on next call.
+    ///
+    /// Matches pi's `requestRender(force=true)`: resets all tracking state
+    /// and sets a flag so the next render clears the screen before drawing.
     pub fn invalidate(&mut self) {
         self.prev_lines.clear();
-        self.prev_width = 0;
-        self.prev_height = 0;
-        self.first_render = true;
+        self.force_clear = true;
         self.cursor_row = 0;
         self.hw_cursor_row = 0;
         self.max_lines_rendered = 0;
+        self.prev_viewport_top = 0;
     }
 
     /// Full render: output all lines, optionally clearing first.
     fn full_render(&mut self, lines: &[String], terminal: &mut dyn Terminal, clear: bool) {
+        let height = terminal.rows() as usize;
         let mut buf = String::new();
         buf.push_str(SYNC_BEGIN);
         if clear {
@@ -139,32 +159,88 @@ impl Renderer {
         } else {
             self.max_lines_rendered = self.max_lines_rendered.max(lines.len());
         }
+        // Track viewport position for scrollback-based rendering
+        let buffer_length = height.max(lines.len());
+        self.prev_viewport_top = buffer_length.saturating_sub(height);
     }
 
     /// Differential render: find first changed line, re-render from there.
+    ///
+    /// Matches pi's doRender differential path:
+    /// - Only renders firstChanged..lastChanged (not all lines to end)
+    /// - Handles appended lines via scrolling
+    /// - Properly tracks viewport and hardware cursor through the update
     fn diff_render(&mut self, new_lines: &[String], terminal: &mut dyn Terminal) {
+        let height = terminal.rows() as usize;
         let (first_changed, last_changed) = self.find_changed_range(new_lines);
 
-        // No changes
+        // No changes — still update viewport tracking
         if first_changed.is_none() {
+            self.prev_viewport_top = new_lines.len().saturating_sub(height).max(self.prev_viewport_top);
             return;
         }
         let first = first_changed.unwrap();
         let last = last_changed.unwrap();
 
+        // Detect if all changes are only appended lines
+        let append_start =
+            new_lines.len() > self.prev_lines.len() && first == self.prev_lines.len() && first > 0;
+
+        // If first changed line is above the previous viewport, we can't diff — full redraw
+        if first < self.prev_viewport_top {
+            self.full_render(new_lines, terminal, true);
+            return;
+        }
+
         let mut buf = String::new();
         buf.push_str(SYNC_BEGIN);
 
-        // Move cursor to first changed line
-        let diff = self.hw_cursor_row as isize - first as isize;
-        if diff > 0 {
-            buf.push_str(&format!("\x1b[{}A", diff));
-        } else if diff < 0 {
-            buf.push_str(&format!("\x1b[{}B", -diff));
-        }
-        buf.push('\r');
+        let mut hw_row = self.hw_cursor_row;
+        let mut viewport_top = self.prev_viewport_top;
 
-        // Render changed lines
+        // Compute screen-relative line diff (matches pi's computeLineDiff)
+        let compute_line_diff = |target_row: usize, cur_hw: usize, prev_vt: usize, cur_vt: usize| -> isize {
+            let current_screen = cur_hw as isize - prev_vt as isize;
+            let target_screen = target_row as isize - cur_vt as isize;
+            target_screen - current_screen
+        };
+
+        // For append-start, target the line before first; otherwise target first
+        let move_target = if append_start { first - 1 } else { first };
+
+        // If move_target is below the visible viewport bottom, scroll down
+        let prev_viewport_bottom = self.prev_viewport_top + height.saturating_sub(1);
+        if move_target > prev_viewport_bottom {
+            // Move cursor to bottom of screen first
+            let current_screen_row = hw_row.saturating_sub(self.prev_viewport_top);
+            let move_to_bottom = (height - 1).saturating_sub(current_screen_row);
+            if move_to_bottom > 0 {
+                buf.push_str(&format!("\x1b[{}B", move_to_bottom));
+            }
+            let scroll = move_target - prev_viewport_bottom;
+            for _ in 0..scroll {
+                buf.push_str("\r\n");
+            }
+            viewport_top += scroll;
+            hw_row = move_target;
+        }
+
+        // Move cursor to the target line
+        let line_diff = compute_line_diff(move_target, hw_row, self.prev_viewport_top, viewport_top);
+        if line_diff > 0 {
+            buf.push_str(&format!("\x1b[{}B", line_diff));
+        } else if line_diff < 0 {
+            buf.push_str(&format!("\x1b[{}A", -line_diff));
+        }
+
+        // For appends, emit \r\n to advance; otherwise just \r to column 0
+        if append_start {
+            buf.push_str("\r\n");
+        } else {
+            buf.push('\r');
+        }
+
+        // Render only changed lines (firstChanged..lastChanged), not all to end
         let render_end = last.min(new_lines.len().saturating_sub(1));
         for i in first..=render_end {
             if i > first {
@@ -188,7 +264,7 @@ impl Renderer {
             for _ in 0..extra {
                 buf.push_str("\r\n\x1b[2K");
             }
-            // Move back up
+            // Move cursor back up to end of new content
             if extra > 0 {
                 buf.push_str(&format!("\x1b[{}A", extra));
             }
@@ -200,6 +276,7 @@ impl Renderer {
         self.cursor_row = new_lines.len().saturating_sub(1);
         self.hw_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_lines.len());
+        self.prev_viewport_top = viewport_top.max(final_cursor_row.saturating_sub(height.saturating_sub(1)));
     }
 
     /// Find first and last changed line indices.
@@ -231,11 +308,18 @@ impl Renderer {
     }
 
     /// Extract cursor position from rendered lines by searching for CURSOR_MARKER.
+    ///
+    /// Scans the visible viewport (bottom `height` lines) in reverse order,
+    /// matching pi's extractCursorPosition. Handles multi-line content by
+    /// checking every line in the viewport.
     fn extract_cursor_position(
         &self,
         lines: &[String],
         height: u16,
     ) -> Option<(usize, usize)> {
+        if lines.is_empty() {
+            return None;
+        }
         let viewport_top = lines.len().saturating_sub(height as usize);
         for row in (viewport_top..lines.len()).rev() {
             if let Some(idx) = lines[row].find(CURSOR_MARKER) {
