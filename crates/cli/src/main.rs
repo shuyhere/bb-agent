@@ -2,9 +2,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod agent_loop;
 mod login;
 mod models;
 mod run;
+mod session;
 mod slash;
 
 #[derive(Parser)]
