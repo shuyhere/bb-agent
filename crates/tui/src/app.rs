@@ -1,11 +1,12 @@
+//! Legacy app wrapper — kept for backward compatibility.
+//! The new TUI uses tui_core::TUI directly.
+
 use bb_core::types::AgentMessage;
-use std::io::Write;
 
 use crate::chat;
-use crate::editor::Editor;
 use crate::status;
 
-/// The main TUI application.
+/// The main TUI application (legacy wrapper).
 pub struct App {
     model_name: Option<String>,
 }
@@ -46,12 +47,6 @@ impl App {
         }
     }
 
-    /// Read user input. Returns None on exit (Ctrl+C/D).
-    pub fn read_input(&self) -> Option<String> {
-        let mut editor = Editor::new("> ");
-        editor.read_line()
-    }
-
     /// Print the welcome banner.
     pub fn print_banner(&self) {
         println!("bb-agent v{}", env!("CARGO_PKG_VERSION"));
@@ -61,5 +56,23 @@ impl App {
     /// Print a separator line.
     pub fn separator(&self) {
         println!();
+    }
+
+    /// Read user input (simple stdin readline, not the TUI editor).
+    /// Returns None on EOF/error.
+    pub fn read_input(&self) -> Option<String> {
+        use std::io::BufRead;
+        print!("> ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => None, // EOF
+            Ok(_) => {
+                let trimmed = line.trim().to_string();
+                if trimmed.is_empty() { None } else { Some(trimmed) }
+            }
+            Err(_) => None,
+        }
     }
 }

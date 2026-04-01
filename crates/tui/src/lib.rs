@@ -1,10 +1,12 @@
 pub mod terminal;
 pub mod component;
 pub mod renderer;
+pub mod tui_core;
 pub mod utils;
 pub mod markdown;
 pub mod chat;
 pub mod editor;
+pub mod footer;
 pub mod status;
 pub mod app;
 pub mod select_list;
