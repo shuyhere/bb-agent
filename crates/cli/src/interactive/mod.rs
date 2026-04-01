@@ -24,6 +24,7 @@ use bb_tui::editor::Editor;
 use bb_tui::model_selector::{ModelSelection, ModelSelector};
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
+use bb_tui::utils::word_wrap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rusqlite::params;
 use std::any::Any;
@@ -445,50 +446,67 @@ impl InteractiveMode {
             .update_pending_messages_display(&pending);
     }
 
-    fn render_items_to_lines(items: &[ChatItem]) -> Vec<String> {
+    fn render_items_to_lines(items: &[ChatItem], width: u16) -> Vec<String> {
         let dim = "\x1b[90m";
         let reset = "\x1b[0m";
+        let content_width = width.saturating_sub(1).max(1) as usize;
+        let wrap_prefixed = |line: &str| -> Vec<String> {
+            if line.is_empty() {
+                vec![String::new()]
+            } else {
+                word_wrap(line, content_width)
+                    .into_iter()
+                    .map(|l| format!(" {l}"))
+                    .collect()
+            }
+        };
+
         items
             .iter()
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
                 ChatItem::UserMessage(text) => {
-                    // Pi format: blank line, full-width background-colored line, blank line
                     let user_bg = "\x1b[48;2;52;53;65m";
-                    // Pad to full terminal width with background color
-                    let content = format!(" {text}");
-                    // Use ANSI clear-to-end-of-line to fill background to edge
-                    vec![String::new(), format!("{user_bg}{content}\x1b[K{reset}"), String::new()]
+                    vec![String::new(), format!("{user_bg} {text}\x1b[K{reset}"), String::new()]
                 }
-                ChatItem::AssistantMessage(component) => {
-                    // Pi format: indented assistant text
-                    component.render_lines().iter().map(|l| {
-                        if l.is_empty() { String::new() } else { format!(" {l}") }
-                    }).collect()
-                }
-                ChatItem::ToolExecution(component) => {
-                    component.render_lines().iter().map(|l| format!(" {l}")).collect()
-                }
-                ChatItem::BashExecution(component) => {
-                    component.render_lines().iter().map(|l| format!(" {l}")).collect()
-                }
-                ChatItem::CustomMessage { text, .. } => vec![format!("{dim} {text}{reset}")],
-                ChatItem::CompactionSummary(summary) => vec![format!("{dim} [c] {summary}{reset}")],
-                ChatItem::BranchSummary(summary) => vec![format!("{dim} [b] {summary}{reset}")],
-                ChatItem::PendingMessageLine(line) => vec![format!(" {line}")],
+                ChatItem::AssistantMessage(component) => component
+                    .render_lines()
+                    .iter()
+                    .flat_map(|l| wrap_prefixed(l))
+                    .collect(),
+                ChatItem::ToolExecution(component) => component
+                    .render_lines()
+                    .iter()
+                    .flat_map(|l| wrap_prefixed(l))
+                    .collect(),
+                ChatItem::BashExecution(component) => component
+                    .render_lines()
+                    .iter()
+                    .flat_map(|l| wrap_prefixed(l))
+                    .collect(),
+                ChatItem::CustomMessage { text, .. } => word_wrap(&format!("{dim} {text}{reset}"), width.max(1) as usize),
+                ChatItem::CompactionSummary(summary) => word_wrap(&format!("{dim} [c] {summary}{reset}"), width.max(1) as usize),
+                ChatItem::BranchSummary(summary) => word_wrap(&format!("{dim} [b] {summary}{reset}"), width.max(1) as usize),
+                ChatItem::PendingMessageLine(line) => wrap_prefixed(line),
             })
             .collect()
     }
 
     fn chat_render_lines(&self) -> Vec<String> {
-        let mut lines = Self::render_items_to_lines(&self.render_state().chat_items);
-        lines.extend(self.chat_lines.iter().cloned());
+        let width = self.ui.columns();
+        let mut lines = Self::render_items_to_lines(&self.render_state().chat_items, width);
+        for line in &self.chat_lines {
+            lines.extend(word_wrap(line, width.max(1) as usize));
+        }
         lines
     }
 
     fn pending_render_lines(&self) -> Vec<String> {
-        let mut lines = Self::render_items_to_lines(&self.render_state().pending_items);
-        lines.extend(self.pending_lines.iter().cloned());
+        let width = self.ui.columns();
+        let mut lines = Self::render_items_to_lines(&self.render_state().pending_items, width);
+        for line in &self.pending_lines {
+            lines.extend(word_wrap(line, width.max(1) as usize));
+        }
         lines
     }
 
