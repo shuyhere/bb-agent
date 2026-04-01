@@ -1158,8 +1158,10 @@ impl InteractiveMode {
                 break;
             }
 
-            // Forward stream events as agent loop events
+            // Forward stream events as agent loop events, throttle UI updates
             let mut all_events = Vec::new();
+            let mut last_render = Instant::now();
+            let render_interval = Duration::from_millis(80);
             while let Some(event) = stream_rx.recv().await {
                 match &event {
                     bb_provider::StreamEvent::TextDelta { text } => {
@@ -1180,10 +1182,16 @@ impl InteractiveMode {
                     _ => {}
                 }
                 all_events.push(event);
-                // Drain agent events to update UI during streaming
-                self.drain_pending_agent_events();
-                self.refresh_ui();
+                // Throttle UI updates during streaming
+                if last_render.elapsed() >= render_interval {
+                    self.drain_pending_agent_events();
+                    self.refresh_ui();
+                    last_render = Instant::now();
+                }
             }
+            // Final drain + render after stream ends
+            self.drain_pending_agent_events();
+            self.refresh_ui();
 
             let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
 
@@ -1417,7 +1425,12 @@ impl InteractiveMode {
         self.rebuild_pending_container();
         self.rebuild_status_container();
         self.rebuild_footer();
-        self.ui.render();
+        if self.is_streaming {
+            // During streaming, force full re-render to avoid diff artifacts
+            self.ui.force_render();
+        } else {
+            self.ui.render();
+        }
     }
 
     fn rebuild_header(&mut self) {
