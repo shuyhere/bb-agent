@@ -145,7 +145,29 @@ impl ModelRegistry {
 
 fn builtin_models() -> Vec<Model> {
     vec![
-        // Anthropic
+        // Anthropic (current aliases first, then dated fallbacks)
+        Model {
+            id: "claude-sonnet-4-6".into(),
+            name: "Claude Sonnet 4.6".into(),
+            provider: "anthropic".into(),
+            api: ApiType::AnthropicMessages,
+            context_window: 200_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://api.anthropic.com".into()),
+            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+        },
+        Model {
+            id: "claude-opus-4-6".into(),
+            name: "Claude Opus 4.6".into(),
+            provider: "anthropic".into(),
+            api: ApiType::AnthropicMessages,
+            context_window: 200_000,
+            max_tokens: 32_000,
+            reasoning: true,
+            base_url: Some("https://api.anthropic.com".into()),
+            cost: CostConfig { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+        },
         Model {
             id: "claude-sonnet-4-20250514".into(),
             name: "Claude Sonnet 4".into(),
@@ -202,6 +224,39 @@ fn builtin_models() -> Vec<Model> {
             cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
         },
         // OpenAI
+        Model {
+            id: "gpt-5.4".into(),
+            name: "GPT-5.4".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 400_000,
+            max_tokens: 128_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 2.5, output: 10.0, ..Default::default() },
+        },
+        Model {
+            id: "gpt-5.2".into(),
+            name: "GPT-5.2".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 400_000,
+            max_tokens: 128_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
+        },
+        Model {
+            id: "gpt-5.1-codex".into(),
+            name: "GPT-5.1 Codex".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 400_000,
+            max_tokens: 128_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
+        },
         Model {
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),

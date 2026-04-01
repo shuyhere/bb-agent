@@ -21,7 +21,10 @@ pub struct ModelSelector {
 impl ModelSelector {
     /// Create a new model selector from the registry.
     pub fn new(registry: &ModelRegistry, max_visible: usize) -> Self {
-        let models: Vec<Model> = registry.list().to_vec();
+        Self::from_models(registry.list().to_vec(), max_visible)
+    }
+
+    pub fn from_models(models: Vec<Model>, max_visible: usize) -> Self {
         let items: Vec<SelectItem> = models
             .iter()
             .map(|m| {

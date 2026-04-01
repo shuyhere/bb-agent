@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
+use bb_core::settings::Settings;
 use bb_core::types::*;
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
@@ -149,9 +150,12 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         store::create_session(&conn, &cwd_str)?
     };
 
+    let settings = Settings::load_merged(&cwd);
+    let model_input = cli.model.as_deref().or(settings.default_model.as_deref());
+    let provider_input = cli.provider.as_deref().or(settings.default_provider.as_deref());
     let (mut provider_name, model_id, _) = crate::run::parse_model_arg(
-        cli.provider.as_deref(),
-        cli.model.as_deref(),
+        provider_input,
+        model_input,
     );
 
     let agents_md = crate::run::load_agents_md(&cwd);
@@ -160,13 +164,32 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         agents_md.as_deref(),
     );
 
-    let registry = ModelRegistry::new();
+    let mut registry = ModelRegistry::new();
+    registry.load_custom_models(&settings);
+
+    let session_ctx = context::build_context(&conn, &session_id).ok();
+    if cli.r#continue {
+        if let Some(ctx) = &session_ctx {
+            if let Some(saved) = &ctx.model {
+                provider_name = saved.provider.clone();
+            }
+        }
+    }
+
+    let effective_model_id = if cli.r#continue {
+        session_ctx.as_ref().and_then(|c| c.model.as_ref().map(|m| m.model_id.clone())).unwrap_or(model_id)
+    } else {
+        model_id
+    };
+
     let mut model = registry
-        .find(&provider_name, &model_id)
+        .find(&provider_name, &effective_model_id)
         .cloned()
+        .or_else(|| registry.find_fuzzy(&effective_model_id, Some(&provider_name)).cloned())
+        .or_else(|| registry.find_fuzzy(&effective_model_id, None).cloned())
         .unwrap_or_else(|| bb_provider::registry::Model {
-            id: model_id.clone(),
-            name: model_id.clone(),
+            id: effective_model_id.clone(),
+            name: effective_model_id.clone(),
             provider: provider_name.clone(),
             api: ApiType::OpenaiCompletions,
             context_window: 128_000,
@@ -337,6 +360,18 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                         }
                                         api_key = cli.api_key.clone().unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
                                         base_url = model.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into());
+
+                                        let model_change = SessionEntry::ModelChange {
+                                            base: EntryBase {
+                                                id: EntryId::generate(),
+                                                parent_id: get_leaf(&conn, &session_id),
+                                                timestamp: Utc::now(),
+                                            },
+                                            provider: model.provider.clone(),
+                                            model_id: model.id.clone(),
+                                        };
+                                        let _ = store::append_entry(&conn, &session_id, &model_change);
+
                                         update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
                                         add_status_to_chat(&mut tui, &format!("  Switched to model: {} ({})", model.name, model.provider));
                                     }
@@ -419,7 +454,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     }
                                 };
                                 if accepted_text == "/model" {
-                                    let selector = ModelSelector::new(&registry, 8);
+                                    let selector = model_selector_from_registry(&registry, &provider_name, &model);
                                     let cols = tui.columns();
                                     let lines = selector.render(cols);
                                     set_overlay_lines(&mut tui, lines);
@@ -449,7 +484,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                 // Slash commands
                                 if text.starts_with('/') {
                                     if text == "/model" || text.starts_with("/model ") {
-                                        let mut selector = ModelSelector::new(&registry, 8);
+                                        let mut selector = model_selector_from_registry(&registry, &provider_name, &model);
                                         if let Some(query) = text.strip_prefix("/model ") {
                                             selector.set_search(query.trim());
                                         }
@@ -726,6 +761,33 @@ impl StreamingState {
 }
 
 // ── Footer update ──────────────────────────────────────────────────
+
+fn model_selector_from_registry(
+    registry: &ModelRegistry,
+    current_provider: &str,
+    current_model: &bb_provider::registry::Model,
+) -> ModelSelector {
+    let mut models: Vec<bb_provider::registry::Model> = registry
+        .list()
+        .iter()
+        .filter(|m| login::resolve_api_key(&m.provider).map(|k| !k.is_empty()).unwrap_or(false))
+        .cloned()
+        .collect();
+
+    if models.is_empty() {
+        models = registry.list().to_vec();
+    }
+
+    models.sort_by(|a, b| {
+        let a_current = a.provider == current_provider && a.id == current_model.id;
+        let b_current = b.provider == current_provider && b.id == current_model.id;
+        b_current.cmp(&a_current)
+            .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    ModelSelector::from_models(models, 8)
+}
 
 fn update_footer(
     tui: &mut TUI,

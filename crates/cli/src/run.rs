@@ -651,10 +651,15 @@ pub(crate) fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<
 ///   "anthropic/sonnet:high"    -> ("anthropic", fuzzy "sonnet", Some("high"))
 pub(crate) fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, String, Option<String>) {
     let default_provider = provider.unwrap_or("openai").to_string();
+    let default_model = match default_provider.as_str() {
+        "anthropic" => "claude-opus-4-6",
+        "google" => "gemini-2.5-pro",
+        _ => "gpt-5.4",
+    };
 
     let model_str = match model {
         Some(m) => m,
-        None => return (default_provider, "gpt-4o".to_string(), None),
+        None => return (default_provider, default_model.to_string(), None),
     };
 
     // Split thinking level
