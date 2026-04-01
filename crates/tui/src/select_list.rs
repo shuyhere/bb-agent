@@ -193,7 +193,7 @@ impl SelectList {
 
             // Backspace in search
             (KeyCode::Backspace, _) => {
-                if !self.search.is_empty() {
+                if self.show_search && !self.search.is_empty() {
                     self.search.pop();
                     self.refilter();
                 }
@@ -202,8 +202,10 @@ impl SelectList {
 
             // Type characters → filter
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-                self.search.push(c);
-                self.refilter();
+                if self.show_search {
+                    self.search.push(c);
+                    self.refilter();
+                }
                 SelectAction::None
             }
 
