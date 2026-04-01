@@ -13,6 +13,8 @@ use self::events::{
 use self::interactive_commands::InteractiveCommands;
 use bb_core::agent_session::PromptOptions;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
+use bb_provider::Provider;
+use bb_tools::{Tool, ToolContext};
 use bb_tui::component::{CURSOR_MARKER, Component, Container, Spacer, Text};
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
@@ -38,6 +40,20 @@ pub struct InteractiveModeOptions {
     pub session_id: Option<String>,
     pub model_display: Option<String>,
     pub agents_md: Option<String>,
+}
+
+/// Non-Clone runtime state needed for actual LLM calls.
+pub struct InteractiveSessionSetup {
+    pub conn: rusqlite::Connection,
+    pub session_id: String,
+    pub provider: Box<dyn Provider>,
+    pub model: bb_provider::registry::Model,
+    pub api_key: String,
+    pub base_url: String,
+    pub tools: Vec<Box<dyn Tool>>,
+    pub tool_defs: Vec<serde_json::Value>,
+    pub tool_ctx: ToolContext,
+    pub system_prompt: String,
 }
 
 #[derive(Debug, Default)]
@@ -338,6 +354,7 @@ impl Component for EditorComponent {
 
 pub struct InteractiveMode {
     controller: InteractiveController,
+    session_setup: InteractiveSessionSetup,
     ui: TUI,
     header_container: Arc<Mutex<Container>>,
     chat_container: Arc<Mutex<Container>>,
@@ -382,7 +399,7 @@ pub struct InteractiveMode {
 }
 
 impl InteractiveMode {
-    pub fn new(runtime_host: AgentSessionRuntimeHost, options: InteractiveModeOptions) -> Self {
+    pub fn new(runtime_host: AgentSessionRuntimeHost, options: InteractiveModeOptions, session_setup: InteractiveSessionSetup) -> Self {
         let editor_state = Arc::new(Mutex::new(EditorState {
             focused: true,
             ..EditorState::default()
@@ -395,6 +412,7 @@ impl InteractiveMode {
 
         let mut this = Self {
             controller: InteractiveController::new(runtime_host),
+            session_setup,
             ui: TUI::new(),
             header_container: Arc::new(Mutex::new(Container::new())),
             chat_container: Arc::new(Mutex::new(Container::new())),
@@ -1574,8 +1592,9 @@ impl InteractiveMode {
 pub async fn run_interactive(
     runtime_host: AgentSessionRuntimeHost,
     options: InteractiveModeOptions,
+    session_setup: InteractiveSessionSetup,
 ) -> InteractiveResult<()> {
-    let mut mode = InteractiveMode::new(runtime_host, options);
+    let mut mode = InteractiveMode::new(runtime_host, options, session_setup);
     mode.run().await
 }
 

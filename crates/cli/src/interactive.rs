@@ -2,6 +2,7 @@
 mod controller;
 
 use anyhow::Result;
+use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{ModelRef, ThinkingLevel, load_agents_md, parse_model_arg};
 use bb_core::agent_session_runtime::{
     AgentSessionRuntimeBootstrap, AgentSessionRuntimeHost, CreateAgentSessionRuntimeOptions,
@@ -9,9 +10,17 @@ use bb_core::agent_session_runtime::{
 };
 use bb_core::config;
 use bb_core::settings::Settings;
+use bb_provider::anthropic::AnthropicProvider;
+use bb_provider::google::GoogleProvider;
+use bb_provider::openai::OpenAiProvider;
+use bb_provider::registry::{ApiType, ModelRegistry};
+use bb_provider::Provider;
 use bb_session::store;
+use bb_tools::{builtin_tools, Tool, ToolContext};
 
-pub use controller::{InteractiveMode, InteractiveModeOptions, InteractiveResult};
+use crate::login;
+
+pub use controller::{InteractiveMode, InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
 
 #[derive(Clone, Debug, Default)]
 pub struct InteractiveEntryOptions {
@@ -72,6 +81,64 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
     // Load AGENTS.md via core helper
     let agents_md = load_agents_md(&cwd);
 
+    // Build system prompt (same as run.rs)
+    let base_prompt = entry
+        .system_prompt
+        .as_deref()
+        .unwrap_or(DEFAULT_SYSTEM_PROMPT);
+    let system_prompt = match &entry.append_system_prompt {
+        Some(append) => agent::build_system_prompt(base_prompt, Some(append)),
+        None => agent::build_system_prompt(base_prompt, agents_md.as_deref()),
+    };
+
+    // Resolve full model via registry (same as run.rs)
+    let mut registry = ModelRegistry::new();
+    registry.load_custom_models(&settings);
+    let model = registry
+        .find(&provider_name, &model_id)
+        .cloned()
+        .or_else(|| registry.find_fuzzy(&model_id, Some(&provider_name)).cloned())
+        .or_else(|| registry.find_fuzzy(&model_id, None).cloned())
+        .unwrap_or_else(|| bb_provider::registry::Model {
+            id: model_id.clone(),
+            name: model_id.clone(),
+            provider: provider_name.clone(),
+            api: bb_provider::registry::ApiType::OpenaiCompletions,
+            context_window: 128_000,
+            max_tokens: 16_384,
+            reasoning: false,
+            base_url: None,
+            cost: Default::default(),
+        });
+
+    // Resolve API key
+    let api_key = login::resolve_api_key(&provider_name).unwrap_or_default();
+
+    let base_url = model
+        .base_url
+        .clone()
+        .unwrap_or_else(|| "https://api.openai.com/v1".into());
+
+    // Create provider
+    let provider: Box<dyn Provider> = match model.api {
+        ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
+        ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
+        _ => Box::new(OpenAiProvider::new()),
+    };
+
+    // Select tools and build definitions
+    let tools = select_tools_default();
+    let tool_defs = build_tool_defs(&tools);
+
+    // Build tool context
+    let artifacts_dir = global_dir.join("artifacts");
+    std::fs::create_dir_all(&artifacts_dir)?;
+    let tool_ctx = ToolContext {
+        cwd: cwd.clone(),
+        artifacts_dir,
+        on_output: None,
+    };
+
     let model_ref = ModelRef {
         provider: provider_name.clone(),
         id: model_id.clone(),
@@ -88,9 +155,22 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         initial_message: entry.messages.first().cloned(),
         initial_images: Vec::new(),
         initial_messages: entry.messages.iter().skip(1).cloned().collect(),
-        session_id: Some(session_id),
+        session_id: Some(session_id.clone()),
         model_display: Some(model_display),
         agents_md,
+    };
+
+    let setup = InteractiveSessionSetup {
+        conn,
+        session_id,
+        provider,
+        model,
+        api_key,
+        base_url,
+        tools,
+        tool_defs,
+        tool_ctx,
+        system_prompt,
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {
@@ -103,7 +183,28 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         create_agent_session_runtime(&bootstrap, CreateAgentSessionRuntimeOptions::new(cwd));
     let runtime_host = AgentSessionRuntimeHost::new(bootstrap, runtime);
 
-    controller::run_interactive(runtime_host, options)
+    controller::run_interactive(runtime_host, options, setup)
         .await
         .map_err(|err| anyhow::Error::msg(err.to_string()))
+}
+
+/// Select all built-in tools (interactive mode always enables all tools).
+fn select_tools_default() -> Vec<Box<dyn Tool>> {
+    builtin_tools()
+}
+
+fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name(),
+                    "description": t.description(),
+                    "parameters": t.parameters_schema(),
+                }
+            })
+        })
+        .collect()
 }
