@@ -224,6 +224,8 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
                 let _ = tx.send(StreamEvent::Usage(UsageInfo {
                     input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
+                    cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                    cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
                 }));
             }
         }
@@ -293,6 +295,8 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
                 let _ = tx.send(StreamEvent::Usage(UsageInfo {
                     input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
+                    cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                    cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
                 }));
             }
         }

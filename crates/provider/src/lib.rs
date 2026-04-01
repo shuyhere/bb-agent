@@ -52,6 +52,8 @@ pub enum StreamEvent {
 pub struct UsageInfo {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 /// Provider trait — implemented by each API backend.

@@ -348,6 +348,8 @@ impl OpenAiProvider {
                             let _ = tx.send(StreamEvent::Usage(UsageInfo {
                                 input_tokens: input.saturating_sub(cached),
                                 output_tokens: output,
+                                cache_read_tokens: cached,
+                                cache_write_tokens: 0,
                             }));
                         }
                         let _ = tx.send(StreamEvent::Done);
@@ -407,9 +409,17 @@ fn process_openai_sse(
 
     // Usage info
     if let Some(usage) = event.get("usage") {
+        let cached = usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let prompt = usage["prompt_tokens"].as_u64().unwrap_or(0);
         let _ = tx.send(StreamEvent::Usage(UsageInfo {
-            input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
+            input_tokens: prompt.saturating_sub(cached),
             output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+            cache_read_tokens: cached,
+            cache_write_tokens: 0,
         }));
     }
 }

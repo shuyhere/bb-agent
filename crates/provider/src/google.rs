@@ -138,9 +138,12 @@ fn process_google_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) 
     if let Some(usage) = event.get("usageMetadata") {
         let input = usage["promptTokenCount"].as_u64().unwrap_or(0);
         let output = usage["candidatesTokenCount"].as_u64().unwrap_or(0);
+        let cache_read = usage["cachedContentTokenCount"].as_u64().unwrap_or(0);
         let _ = tx.send(StreamEvent::Usage(UsageInfo {
-            input_tokens: input,
+            input_tokens: input.saturating_sub(cache_read),
             output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: 0,
         }));
     }
 

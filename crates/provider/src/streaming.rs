@@ -7,6 +7,8 @@ pub struct CollectedResponse {
     pub tool_calls: Vec<CollectedToolCall>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 pub struct CollectedToolCall {
@@ -22,6 +24,8 @@ impl CollectedResponse {
         let mut tool_calls: Vec<CollectedToolCall> = Vec::new();
         let mut input_tokens = 0u64;
         let mut output_tokens = 0u64;
+        let mut cache_read_tokens = 0u64;
+        let mut cache_write_tokens = 0u64;
 
         for event in events {
             match event {
@@ -42,6 +46,8 @@ impl CollectedResponse {
                 StreamEvent::Usage(u) => {
                     input_tokens = u.input_tokens;
                     output_tokens = u.output_tokens;
+                    cache_read_tokens = u.cache_read_tokens;
+                    cache_write_tokens = u.cache_write_tokens;
                 }
                 _ => {}
             }
@@ -53,6 +59,8 @@ impl CollectedResponse {
             tool_calls,
             input_tokens,
             output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
         }
     }
 }

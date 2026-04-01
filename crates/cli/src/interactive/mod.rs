@@ -1343,6 +1343,12 @@ impl InteractiveMode {
                 usage: bb_core::types::Usage {
                     input: collected.input_tokens,
                     output: collected.output_tokens,
+                    cache_read: collected.cache_read_tokens,
+                    cache_write: collected.cache_write_tokens,
+                    total_tokens: collected.input_tokens
+                        + collected.output_tokens
+                        + collected.cache_read_tokens
+                        + collected.cache_write_tokens,
                     ..Default::default()
                 },
                 stop_reason: if collected.tool_calls.is_empty() { bb_core::types::StopReason::Stop } else { bb_core::types::StopReason::ToolUse },
@@ -2536,6 +2542,17 @@ impl InteractiveMode {
         self.show_status(format!("TODO: {label}"));
     }
 
+    fn merge_tool_args_delta(current: &serde_json::Value, args_delta: &str) -> serde_json::Value {
+        let raw = match current {
+            serde_json::Value::String(existing) => format!("{existing}{args_delta}"),
+            serde_json::Value::Null => args_delta.to_string(),
+            other => return other.clone(),
+        };
+
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw))
+    }
+
     fn handle_agent_event(&mut self, event: AgentLoopEvent) {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
@@ -2583,19 +2600,11 @@ impl InteractiveMode {
             }
             AgentLoopEvent::ToolCallDelta { id, args_delta } => {
                 if let Some(call) = self.streaming_tool_calls.iter_mut().find(|call| call.id == id) {
-                    call.arguments = match &call.arguments {
-                        serde_json::Value::String(s) => serde_json::Value::String(format!("{s}{args_delta}")),
-                        serde_json::Value::Null => serde_json::Value::String(args_delta.clone()),
-                        other => other.clone(),
-                    };
+                    call.arguments = Self::merge_tool_args_delta(&call.arguments, &args_delta);
                 }
                 if let Some(component) = self.render_state_mut().pending_tools.get_mut(&id) {
                     let current = component.args().clone();
-                    let new_args = match current {
-                        serde_json::Value::String(s) => serde_json::Value::String(format!("{s}{args_delta}")),
-                        serde_json::Value::Null => serde_json::Value::String(args_delta),
-                        other => other,
-                    };
+                    let new_args = Self::merge_tool_args_delta(&current, &args_delta);
                     component.update_args(new_args);
                 }
                 let updated = self.render_state().pending_tools.get(&id).cloned();

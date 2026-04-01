@@ -133,6 +133,7 @@ impl Tool for EditTool {
                 "applied": applied,
                 "total": edits.len(),
                 "errors": errors,
+                "diff": if applied > 0 { Some(diff::render_diff(&diff::generate_diff(&old_content, &content, 3)).join("\n")) } else { None },
             })),
             is_error: !errors.is_empty(),
             artifact_path: None,

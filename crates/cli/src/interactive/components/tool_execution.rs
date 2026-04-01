@@ -1,5 +1,15 @@
 use serde_json::Value;
 
+use super::diff_display::render_diff_lines;
+
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[90m";
+const BOLD: &str = "\x1b[1m";
+const ACCENT: &str = "\x1b[38;2;178;148;187m";
+const SUCCESS: &str = "\x1b[32m";
+const ERROR: &str = "\x1b[31m";
+const MUTED: &str = "\x1b[38;2;148;163;184m";
+
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionOptions {
     pub show_images: bool,
@@ -111,211 +121,121 @@ impl ToolExecutionComponent {
     }
 
     pub fn render_lines(&self) -> Vec<String> {
-        let reset = "\x1b[0m";
-        let dim = "\x1b[90m";
-        let bold = "\x1b[1m";
-        let accent = "\x1b[38;2;178;148;187m";
-        let success = "\x1b[32m";
-        let error = "\x1b[31m";
-
         let (status_mark, border_color) = if let Some(result) = &self.result {
             if result.is_error {
-                (format!("{error}x{reset}"), error)
+                (format!("{ERROR}x{RESET}"), ERROR)
             } else {
-                (format!("{success}*{reset}"), success)
+                (format!("{SUCCESS}*{RESET}"), SUCCESS)
             }
         } else if self.execution_started {
-            (format!("{dim}..{reset}"), accent)
+            (format!("{DIM}..{RESET}"), ACCENT)
         } else {
-            (format!("{dim}>{reset}"), accent)
+            (format!("{DIM}>{RESET}"), ACCENT)
         };
 
         let title = self.render_call_title();
         if !self.expanded {
-            return vec![format!("{status_mark} {bold}{title}{reset}")];
+            return vec![format!("{status_mark} {BOLD}{title}{RESET}")];
         }
 
         let mut lines = vec![String::new()];
-        lines.push(format!("{border_color}╭─ {status_mark} {bold}{title}{reset}"));
+        lines.push(format!("{border_color}╭─ {status_mark} {BOLD}{title}{RESET}"));
 
         for line in self.render_call_body() {
-            lines.push(format!("{border_color}│{reset} {line}"));
+            lines.push(format!("{border_color}│{RESET} {line}"));
         }
 
         let result_lines = self.render_result_body();
         if !result_lines.is_empty() {
-            lines.push(format!("{border_color}├{reset}"));
+            lines.push(format!("{border_color}├{RESET}"));
             for line in result_lines {
-                lines.push(format!("{border_color}│{reset} {line}"));
+                lines.push(format!("{border_color}│{RESET} {line}"));
             }
         }
 
-        lines.push(format!("{border_color}╰{reset}"));
+        lines.push(format!("{border_color}╰{RESET}"));
         lines
     }
 
     fn render_call_title(&self) -> String {
         match self.tool_name.as_str() {
-            "read" => format!("Read {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
-            "write" => format!("Write {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
-            "edit" => format!("Edit {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
-            "bash" => "Bash".to_string(),
-            "ls" => format!("Ls {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or("."))),
-            "grep" => format!(
-                "Grep {}",
-                arg_str(&self.args, "pattern").unwrap_or_default()
-            ),
-            "find" => format!(
-                "Find {}",
-                arg_str(&self.args, "pattern").unwrap_or_default()
-            ),
+            "read" => format_read_call(&self.args),
+            "write" => format_write_call_title(&self.args),
+            "edit" => format_edit_call_title(&self.args),
+            "bash" => format_bash_call_title(&self.args),
+            "ls" => format_ls_call(&self.args),
+            "grep" => format_grep_call(&self.args),
+            "find" => format_find_call(&self.args),
             other => other.to_string(),
         }
     }
 
     fn render_call_body(&self) -> Vec<String> {
-        let dim = "\x1b[90m";
-        let reset = "\x1b[0m";
-        let mut lines = Vec::new();
-
         match self.tool_name.as_str() {
-            "bash" => {
-                if let Some(command) = arg_str(&self.args, "command") {
-                    lines.push(format!("{dim}$ {command}{reset}"));
-                }
-                if let Some(timeout) = self.args.get("timeout").and_then(|v| v.as_f64()) {
-                    lines.push(format!("{dim}timeout: {timeout}s{reset}"));
-                }
-            }
-            "read" => {
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-                if let Some(offset) = self.args.get("offset").and_then(|v| v.as_u64()) {
-                    lines.push(format!("{dim}offset: {offset}{reset}"));
-                }
-                if let Some(limit) = self.args.get("limit").and_then(|v| v.as_u64()) {
-                    lines.push(format!("{dim}limit: {limit}{reset}"));
-                }
-            }
-            "write" => {
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-                if let Some(content) = arg_str(&self.args, "content") {
-                    lines.push(format!("{dim}bytes: {}{reset}", content.len()));
-                }
-            }
-            "edit" => {
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-                if let Some(edits) = self.args.get("edits").and_then(|v| v.as_array()) {
-                    lines.push(format!("{dim}edits: {}{reset}", edits.len()));
-                }
-            }
-            "ls" => {
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-                if let Some(limit) = self.args.get("limit").and_then(|v| v.as_u64()) {
-                    lines.push(format!("{dim}limit: {limit}{reset}"));
-                }
-            }
-            "grep" => {
-                if let Some(pattern) = arg_str(&self.args, "pattern") {
-                    lines.push(format!("{dim}pattern: {pattern}{reset}"));
-                }
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-                if let Some(glob) = arg_str(&self.args, "glob") {
-                    lines.push(format!("{dim}glob: {glob}{reset}"));
-                }
-            }
-            "find" => {
-                if let Some(pattern) = arg_str(&self.args, "pattern") {
-                    lines.push(format!("{dim}pattern: {pattern}{reset}"));
-                }
-                if let Some(path) = arg_str(&self.args, "path") {
-                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
-                }
-            }
-            _ => {
-                if !self.args.is_null() {
-                    let rendered = serde_json::to_string_pretty(&self.args)
-                        .unwrap_or_else(|_| self.args.to_string());
-                    lines.extend(rendered.lines().map(|l| format!("{dim}{l}{reset}")));
-                }
-            }
+            "write" => render_write_call_body(&self.args, self.expanded),
+            "edit" => render_edit_call_body(&self.args),
+            "bash" => render_bash_call_body(&self.args),
+            _ => render_generic_call_body(&self.tool_name, &self.args, self.execution_started),
         }
-
-        if lines.is_empty() {
-            if self.execution_started {
-                lines.push(format!("{dim}running...{reset}"));
-            }
-        }
-        lines
     }
 
     fn render_result_body(&self) -> Vec<String> {
         let Some(result) = &self.result else {
             return if self.execution_started {
-                vec!["\x1b[90mexecuting...\x1b[0m".to_string()]
+                vec![format!("{DIM}executing...{RESET}")]
             } else {
                 Vec::new()
             };
         };
 
-        let dim = "\x1b[90m";
-        let reset = "\x1b[0m";
-        let mut lines = Vec::new();
-
-        if let Some(details) = &result.details {
-            lines.extend(render_detail_summary(&self.tool_name, details));
-        }
-
-        let output = self.get_text_output();
-        if !output.is_empty() {
-            let max_lines = 80;
-            let output_lines: Vec<&str> = output.lines().collect();
-            for line in output_lines.iter().take(max_lines) {
-                lines.push((*line).to_string());
-            }
-            if output_lines.len() > max_lines {
-                lines.push(format!("{dim}... ({} more lines){reset}", output_lines.len() - max_lines));
+        if result.is_error {
+            let output = self.get_text_output();
+            if !output.trim().is_empty() {
+                return output
+                    .lines()
+                    .map(|line| format!("{ERROR}{line}{RESET}"))
+                    .collect();
             }
         }
 
-        if lines.is_empty() && result.is_error {
-            lines.push("error".to_string());
+        match self.tool_name.as_str() {
+            "read" => render_read_result(&self.args, result, self.show_images, self.expanded),
+            "write" => render_write_result(result),
+            "edit" => render_edit_result(result),
+            "bash" => render_bash_result(result, self.show_images, self.expanded),
+            "ls" => render_list_result(result, self.show_images, self.expanded),
+            "grep" => render_grep_result(result, self.show_images, self.expanded),
+            "find" => render_find_result(result, self.show_images, self.expanded),
+            _ => render_default_result(result, self.show_images, self.expanded),
         }
-        lines
     }
 
     fn get_text_output(&self) -> String {
         let Some(result) = &self.result else {
             return String::new();
         };
-
-        let mut parts = Vec::new();
-        for block in &result.content {
-            match block.r#type.as_str() {
-                "text" => {
-                    if let Some(text) = &block.text {
-                        parts.push(text.clone());
-                    }
-                }
-                "image" if self.show_images => {
-                    let mime = block.mime_type.as_deref().unwrap_or("image");
-                    let size = block.data.as_ref().map(|data| data.len()).unwrap_or(0);
-                    parts.push(format!("[image: {mime}, {size} bytes]"));
-                }
-                _ => {}
-            }
-        }
-        parts.join("\n")
+        text_output(result, self.show_images)
     }
+}
+
+fn text_output(result: &ToolExecutionResult, show_images: bool) -> String {
+    let mut parts = Vec::new();
+    for block in &result.content {
+        match block.r#type.as_str() {
+            "text" => {
+                if let Some(text) = &block.text {
+                    parts.push(text.clone());
+                }
+            }
+            "image" if show_images => {
+                let mime = block.mime_type.as_deref().unwrap_or("image");
+                let size = block.data.as_ref().map(|data| data.len()).unwrap_or(0);
+                parts.push(format!("[image: {mime}, {size} bytes]"));
+            }
+            _ => {}
+        }
+    }
+    parts.join("\n")
 }
 
 fn arg_str(args: &Value, key: &str) -> Option<String> {
@@ -334,68 +254,266 @@ fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-fn render_detail_summary(tool_name: &str, details: &Value) -> Vec<String> {
-    let dim = "\x1b[90m";
-    let reset = "\x1b[0m";
+fn format_read_call(args: &Value) -> String {
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
+    let offset = args.get("offset").and_then(|v| v.as_u64());
+    let limit = args.get("limit").and_then(|v| v.as_u64());
+    let mut line_suffix = String::new();
+    if offset.is_some() || limit.is_some() {
+        let start = offset.unwrap_or(1);
+        if let Some(limit) = limit {
+            let end = start.saturating_add(limit).saturating_sub(1);
+            line_suffix = format!(":{start}-{end}");
+        } else {
+            line_suffix = format!(":{start}");
+        }
+    }
+    format!("read {ACCENT}{path}{RESET}{MUTED}{line_suffix}{RESET}")
+}
+
+fn format_write_call_title(args: &Value) -> String {
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
+    format!("write {ACCENT}{path}{RESET}")
+}
+
+fn format_edit_call_title(args: &Value) -> String {
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
+    format!("edit {ACCENT}{path}{RESET}")
+}
+
+fn format_bash_call_title(args: &Value) -> String {
+    let command = arg_str(args, "command").unwrap_or_default();
+    if command.trim().is_empty() {
+        "bash".to_string()
+    } else {
+        format!("$ {command}")
+    }
+}
+
+fn format_ls_call(args: &Value) -> String {
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
+    if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+        format!("ls {ACCENT}{path}{RESET}{DIM} (limit {limit}){RESET}")
+    } else {
+        format!("ls {ACCENT}{path}{RESET}")
+    }
+}
+
+fn format_grep_call(args: &Value) -> String {
+    let pattern = arg_str(args, "pattern").unwrap_or_default();
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
+    let mut text = format!("grep {ACCENT}/{pattern}/{RESET}{DIM} in {path}{RESET}");
+    if let Some(glob) = arg_str(args, "glob") {
+        text.push_str(&format!("{DIM} ({glob}){RESET}"));
+    }
+    text
+}
+
+fn format_find_call(args: &Value) -> String {
+    let pattern = arg_str(args, "pattern").unwrap_or_default();
+    let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
+    format!("find {ACCENT}{pattern}{RESET}{DIM} in {path}{RESET}")
+}
+
+fn render_generic_call_body(tool_name: &str, args: &Value, execution_started: bool) -> Vec<String> {
     let mut lines = Vec::new();
     match tool_name {
-        "read" => {
-            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let start = details.get("startLine").and_then(|v| v.as_u64()).unwrap_or(0);
-            let end = details.get("endLine").and_then(|v| v.as_u64()).unwrap_or(0);
-            let total = details.get("totalLines").and_then(|v| v.as_u64()).unwrap_or(0);
-            if !path.is_empty() {
-                lines.push(format!("{dim}read {} lines {start}-{end} / {total}{reset}", shorten_path(path)));
+        "read" | "ls" | "grep" | "find" => {
+            let rendered = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
+            if rendered != "null" && rendered != "{}" {
+                lines.extend(rendered.lines().map(|line| format!("{DIM}{line}{RESET}")));
             }
         }
-        "write" => {
-            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let bytes = details.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-            lines.push(format!("{dim}wrote {bytes} bytes to {}{reset}", shorten_path(path)));
-        }
-        "edit" => {
-            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let applied = details.get("applied").and_then(|v| v.as_u64()).unwrap_or(0);
-            let total = details.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-            lines.push(format!("{dim}applied {applied}/{total} edit(s) to {}{reset}", shorten_path(path)));
-        }
-        "bash" => {
-            let exit = details.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
-            let cancelled = details.get("cancelled").and_then(|v| v.as_bool()).unwrap_or(false);
-            let mut extra = Vec::new();
-            if truncated {
-                extra.push("truncated");
+        _ => {
+            let rendered = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
+            if rendered != "null" && rendered != "{}" {
+                lines.extend(rendered.lines().map(|line| format!("{DIM}{line}{RESET}")));
             }
-            if cancelled {
-                extra.push("cancelled");
-            }
-            let suffix = if extra.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", extra.join(", "))
-            };
-            lines.push(format!("{dim}exit code: {exit}{suffix}{reset}"));
         }
-        "grep" => {
-            let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
-            let suffix = if truncated { " (truncated)" } else { "" };
-            lines.push(format!("{dim}{count} match(es){suffix}{reset}"));
-        }
-        "find" => {
-            let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
-            let suffix = if truncated { " (truncated)" } else { "" };
-            lines.push(format!("{dim}{count} file(s){suffix}{reset}"));
-        }
-        "ls" => {
-            let count = details.get("entryCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
-            let suffix = if truncated { " (truncated)" } else { "" };
-            lines.push(format!("{dim}{count} entr{} shown{suffix}{reset}", if count == 1 { "y" } else { "ies" }));
-        }
-        _ => {}
+    }
+    if lines.is_empty() && execution_started {
+        lines.push(format!("{DIM}running...{RESET}"));
     }
     lines
+}
+
+fn render_bash_call_body(args: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(timeout) = args.get("timeout").and_then(|v| v.as_f64()) {
+        lines.push(format!("{DIM}timeout {timeout}s{RESET}"));
+    }
+    lines
+}
+
+fn render_edit_call_body(args: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
+        lines.push(format!("{DIM}{} edit block(s){RESET}", edits.len()));
+        for (index, edit) in edits.iter().take(3).enumerate() {
+            let old_text = edit.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
+            let new_text = edit.get("newText").and_then(|v| v.as_str()).unwrap_or("");
+            let old_preview = summarize_inline(old_text, 60);
+            let new_preview = summarize_inline(new_text, 60);
+            lines.push(format!("{DIM}{}.{RESET} - {old_preview}", index + 1));
+            lines.push(format!("{DIM}   +{RESET} {new_preview}"));
+        }
+        if edits.len() > 3 {
+            lines.push(format!("{DIM}... ({} more edit block(s)){RESET}", edits.len() - 3));
+        }
+    }
+    lines
+}
+
+fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(content) = arg_str(args, "content") {
+        let preview_lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+        let max_lines = if expanded { 10 } else { 5 };
+        lines.extend(
+            preview_lines
+                .iter()
+                .take(max_lines)
+                .map(|line| format!("{DIM}{}{RESET}", replace_tabs(line))),
+        );
+        if preview_lines.len() > max_lines {
+            lines.push(format!("{DIM}... ({} more lines){RESET}", preview_lines.len() - max_lines));
+        }
+    }
+    lines
+}
+
+fn render_read_result(args: &Value, result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let path = details
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| arg_str(args, "path"))
+            .unwrap_or_default();
+        let start = details.get("startLine").and_then(|v| v.as_u64()).unwrap_or(1);
+        let end = details.get("endLine").and_then(|v| v.as_u64()).unwrap_or(start);
+        let total = details.get("totalLines").and_then(|v| v.as_u64()).unwrap_or(end);
+        if !path.is_empty() {
+            lines.push(format!("{DIM}read {} lines {start}-{end} / {total}{RESET}", shorten_path(&path)));
+        }
+    }
+    lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 10 }));
+    lines
+}
+
+fn render_write_result(result: &ToolExecutionResult) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let bytes = details.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{DIM}wrote {bytes} bytes to {}{RESET}", shorten_path(path)));
+    }
+    lines
+}
+
+fn render_edit_result(result: &ToolExecutionResult) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let applied = details.get("applied").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = details.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{DIM}applied {applied}/{total} edit(s) to {}{RESET}", shorten_path(path)));
+        if let Some(diff) = details.get("diff").and_then(|v| v.as_str()) {
+            lines.extend(render_diff_lines(diff));
+            return lines;
+        }
+    }
+    lines.extend(preview_text_lines(&text_output(result, false), 80));
+    lines
+}
+
+fn render_bash_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let exit = details.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+        let cancelled = details.get("cancelled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let mut flags = Vec::new();
+        if truncated {
+            flags.push("truncated");
+        }
+        if cancelled {
+            flags.push("cancelled");
+        }
+        let suffix = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", flags.join(", "))
+        };
+        lines.push(format!("{DIM}exit code: {exit}{suffix}{RESET}"));
+    }
+    lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 12 }));
+    lines
+}
+
+fn render_list_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let count = details.get("entryCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+        let suffix = if truncated { " (truncated)" } else { "" };
+        lines.push(format!("{DIM}{count} entr{} shown{suffix}{RESET}", if count == 1 { "y" } else { "ies" }));
+    }
+    lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 20 }));
+    lines
+}
+
+fn render_grep_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{DIM}{count} match(es){RESET}"));
+    }
+    lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 15 }));
+    lines
+}
+
+fn render_find_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = &result.details {
+        let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        lines.push(format!("{DIM}{count} file(s){RESET}"));
+    }
+    lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 20 }));
+    lines
+}
+
+fn render_default_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 20 })
+}
+
+fn preview_text_lines(text: &str, max_lines: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for line in lines.iter().take(max_lines) {
+        out.push(replace_tabs(line));
+    }
+    if lines.len() > max_lines {
+        out.push(format!("{DIM}... ({} more lines){RESET}", lines.len() - max_lines));
+    }
+    out
+}
+
+fn summarize_inline(text: &str, max_chars: usize) -> String {
+    let text = text.replace('\n', "\\n");
+    if text.chars().count() <= max_chars {
+        text
+    } else {
+        let prefix: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{prefix}...")
+    }
+}
+
+fn replace_tabs(text: &str) -> String {
+    text.replace('\t', "   ")
 }
