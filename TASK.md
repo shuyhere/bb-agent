@@ -1,202 +1,192 @@
-# Sprint 4: Wire TUI Components into Agent Loop
+# W5: Wire slash commands + hierarchical context loading + @file args
 
-You are working in a git worktree at `/tmp/bb-worktrees/s4-wire-tui/`.
-This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md`, `PLAN.md`, and `TUI-PLAN.md` for context.
+Working dir: `/tmp/bb-w/w5-commands-context/`
 
-## Your task
+## Problem
+Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
 
-Create an interactive mode controller that uses the TUI components (already built in
-`crates/tui/src/`) to provide a proper terminal UI. The TUI components exist but are
-NOT wired into the CLI's main loop — the CLI currently uses inline `print!()` statements.
+## Tasks
 
-### 1. Create `crates/cli/src/interactive.rs` (~800 lines)
+### 1. Wire `/model` to ModelSelector
 
-This is the interactive mode controller — the equivalent of pi's `interactive-mode.ts`.
+In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
 
 ```rust
-use bb_tui::terminal::{ProcessTerminal, Terminal};
-use bb_tui::renderer::DiffRenderer;
-use bb_tui::component::Container;
-use bb_tui::editor::Editor;
-use bb_tui::chat;
-use bb_tui::markdown::MarkdownRenderer;
-use bb_tui::status;
-use bb_tui::select_list::SelectList;
-use bb_tui::model_selector::ModelSelector;
-use bb_tui::session_selector::SessionSelector;
+SlashResult::ModelSelect(search) => {
+    // Use the ModelSelector from tui
+    let registry = bb_provider::registry::ModelRegistry::new();
+    let models: Vec<_> = registry.list().to_vec();
 
-pub struct InteractiveMode {
-    terminal: ProcessTerminal,
-    renderer: DiffRenderer,
-    editor: Editor,
-    messages: Vec<RenderedMessage>,
-    model_name: String,
-    total_tokens: u64,
-    context_window: u64,
-    total_cost: f64,
-}
-
-enum RenderedMessage {
-    User(Vec<String>),
-    Assistant(Vec<String>),   // pre-rendered markdown lines
-    ToolResult(Vec<String>),
-    Compaction(Vec<String>),
-    Streaming(Vec<String>),   // currently-streaming assistant message
+    // Simple text-based selector for now
+    println!("Available models:");
+    for (i, m) in models.iter().enumerate() {
+        let marker = if m.id == current_model_id { ">" } else { " " };
+        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
+    }
+    print!("Select (number): ");
+    // Read selection and switch model
+    // Write ModelChange entry to session
 }
 ```
 
-#### Startup flow
-1. Create `ProcessTerminal` and enable raw mode
-2. Create `DiffRenderer`
-3. Print welcome banner
-4. Print status bar (model, context window)
-5. Show editor prompt at bottom
-6. Enter main event loop
+### 2. Wire `/resume` to session listing + selection
 
-#### Main event loop
 ```rust
-loop {
-    // Render: collect all message lines + status + editor → send to DiffRenderer
-    self.render();
-
-    // Wait for input event (key press or agent event)
-    match event {
-        EditorSubmit(text) => {
-            if text.starts_with('/') → handle slash command
-            if text.starts_with('!') → run bash directly
-            else → send prompt to agent session
+SlashResult::Resume => {
+    let sessions = store::list_sessions(&conn, cwd_str)?;
+    if sessions.is_empty() {
+        println!("No sessions found.");
+    } else {
+        println!("Sessions:");
+        for (i, s) in sessions.iter().take(20).enumerate() {
+            let name = s.name.as_deref().unwrap_or("(unnamed)");
+            println!("  {}. {} {} ({} entries, {})",
+                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
         }
-        AgentEvent(event) => {
-            match event {
-                TextDelta { text } → append to streaming markdown
-                ThinkingDelta { text } → show thinking indicator
-                ToolCallStart { name, .. } → show tool name
-                ToolExecuting { name, .. } → show spinner
-                ToolResult { .. } → show result preview
-                AssistantDone → finalize message, re-enable editor
-                Error { .. } → show error
+        print!("Select (number): ");
+        // Read selection, switch to that session
+        // Rebuild context and re-render messages
+    }
+}
+```
+
+### 3. Wire `/new` to create fresh session
+
+```rust
+SlashResult::NewSession => {
+    session_id = store::create_session(&conn, cwd_str)?;
+    println!("New session: {}", &session_id[..8]);
+    // Clear displayed messages
+}
+```
+
+### 4. Wire `/name` to persist
+
+```rust
+SlashResult::SetName(name) => {
+    let entry = SessionEntry::SessionInfo {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: get_leaf(&conn, &session_id),
+            timestamp: Utc::now(),
+        },
+        name: Some(name.clone()),
+    };
+    store::append_entry(&conn, &session_id, &entry)?;
+    println!("Session named: {name}");
+}
+```
+
+### 5. Hierarchical AGENTS.md loading
+
+Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
+
+```rust
+fn load_agents_md(cwd: &Path) -> Option<String> {
+    let mut contents = Vec::new();
+
+    // 1. Global
+    let global = bb_core::config::global_dir().join("AGENTS.md");
+    if global.exists() {
+        if let Ok(c) = std::fs::read_to_string(&global) {
+            contents.push(c);
+        }
+    }
+
+    // 2. Walk parent directories up to git root (or filesystem root)
+    let mut dir = cwd.to_path_buf();
+    let mut scanned = Vec::new();
+    loop {
+        let agents = dir.join("AGENTS.md");
+        if agents.exists() {
+            scanned.push(agents);
+        }
+        // Also check CLAUDE.md alias
+        let claude = dir.join("CLAUDE.md");
+        if claude.exists() && !agents.exists() {
+            scanned.push(claude);
+        }
+        // Stop at git root
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    // Reverse so we go from root → cwd (outermost first)
+    scanned.reverse();
+    for path in scanned {
+        if let Ok(c) = std::fs::read_to_string(&path) {
+            contents.push(c);
+        }
+    }
+
+    if contents.is_empty() {
+        None
+    } else {
+        Some(contents.join("\n\n---\n\n"))
+    }
+}
+```
+
+### 6. Implement `@file` arguments
+
+In `crates/cli/src/main.rs`, before routing to mode:
+
+```rust
+// Process @file arguments from messages
+let mut prompt_parts = Vec::new();
+let mut regular_messages = Vec::new();
+
+for msg in &cli.messages {
+    if msg.starts_with('@') {
+        let path = &msg[1..];
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
             }
-            self.render();  // re-render after each event
+            Err(e) => {
+                eprintln!("Warning: Could not read {}: {}", path, e);
+            }
         }
-        Resize → self.render()
-        Ctrl+C → abort current operation
-        Ctrl+D → exit
-        Ctrl+P → show model selector overlay
+    } else {
+        regular_messages.push(msg.clone());
     }
 }
-```
 
-#### Render function
-```rust
-fn render(&mut self) {
-    let width = self.terminal.columns();
-    let mut lines: Vec<String> = Vec::new();
-
-    // 1. All chat messages
-    for msg in &self.messages {
-        lines.extend(msg.lines());
-    }
-
-    // 2. Status bar
-    lines.push(status::render_status(...));
-
-    // 3. Editor
-    lines.extend(self.editor.render(width));
-
-    // 4. Send to differential renderer
-    self.renderer.render(&lines, &mut self.terminal);
-}
-```
-
-#### Slash command handling
-Route to appropriate handler:
-- `/model` → show `ModelSelector` (use `select_list`)
-- `/resume` → show `SessionSelector`
-- `/compact` → call agent session compact
-- `/tree` → show tree (text for now)
-- `/login` / `/logout` → call login module
-- `/new` → create new session
-- `/help` → display help
-- `/quit` → exit
-
-#### Agent event display
-When the agent is running:
-- Add a `RenderedMessage::Streaming` entry
-- On each `TextDelta`, append text to the streaming buffer
-- Re-render the markdown for the streaming content
-- On `ToolCallStart`, show `⚡ tool_name` line
-- On `ToolResult`, show brief result preview (5 lines)
-- On `AssistantDone`, convert streaming to final `Assistant` message
-
-#### Session restore
-When `--continue` is used:
-- Load messages from session context
-- Render each message into `RenderedMessage` entries
-- Display them before showing editor
-
-### 2. Modify `crates/cli/src/main.rs`
-
-Add interactive mode routing:
-```rust
-if cli.print {
-    run::run_print_mode(cli).await
+// Combine file contents with messages
+let final_prompt = if prompt_parts.is_empty() {
+    regular_messages.join(" ")
 } else {
-    interactive::run_interactive(cli).await
-}
+    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
+};
 ```
 
-### 3. Modify `crates/cli/src/run.rs`
+### 7. Implement `/session` info
 
-Rename/refactor the existing `run_agent` to `run_print_mode` for print mode only.
-The interactive path should go through `interactive.rs`.
-
-### 4. Handle keyboard input properly
-
-Use crossterm's event polling in the main loop:
 ```rust
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
-use std::time::Duration;
-
-// Poll for input events with timeout
-if poll(Duration::from_millis(50))? {
-    if let Event::Key(key) = event::read()? {
-        // Handle key
-    }
-}
-
-// Also check for agent events from channel
-if let Ok(agent_event) = rx.try_recv() {
-    // Handle agent event
+"/session" => {
+    let session = store::get_session(&conn, &session_id)?.unwrap();
+    let entries = store::get_entries(&conn, &session_id)?;
+    let ctx = context::build_context(&conn, &session_id)?;
+    let tokens: u64 = ctx.messages.iter()
+        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+        .sum();
+    println!("Session: {}", session.session_id);
+    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
+    println!("  CWD: {}", session.cwd);
+    println!("  Entries: {}", entries.len());
+    println!("  Context tokens: ~{}", tokens);
+    println!("  Created: {}", session.created_at);
+    println!("  Updated: {}", session.updated_at);
 }
 ```
 
-### 5. Model selector integration
-
-When user types `/model`:
-1. Build list of models from registry
-2. Create `ModelSelector` 
-3. Enter selection loop (the selector handles its own key events)
-4. On selection: update agent session model
-5. Re-render status bar
-
-### Important notes
-
-- Do NOT use `ratatui`. Use crossterm directly + the existing TUI components.
-- The `DiffRenderer` in `tui/renderer.rs` handles differential rendering.
-- The `Editor` in `tui/editor.rs` handles user input.
-- Wrap all terminal output in synchronized output (`\x1b[?2026h` / `\x1b[?2026l`).
-- Clean up terminal on exit (disable raw mode, show cursor).
-- Handle Ctrl+C gracefully (abort current operation, don't crash).
-
-## Build and test
-
+### Build and test
 ```bash
-cd /tmp/bb-worktrees/s4-wire-tui
-cargo build
-cargo test
-```
-
-Make sure ALL existing tests still pass. Then commit:
-```bash
-git add -A && git commit -m "S4: wire TUI components into interactive mode"
+cd /tmp/bb-w/w5-commands-context
+cargo build && cargo test
+git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
 ```

@@ -457,7 +457,46 @@ impl InteractiveMode {
                 println!("Run `bb logout` from a separate terminal.");
             }
             SlashResult::SetName(name) => {
-                println!("Session named: {name}");
+                let entry = SessionEntry::SessionInfo {
+                    base: EntryBase {
+                        id: EntryId::generate(),
+                        parent_id: get_leaf(&self.conn, &self.session_id),
+                        timestamp: Utc::now(),
+                    },
+                    name: Some(name.clone()),
+                };
+                if let Err(e) = store::append_entry(&self.conn, &self.session_id, &entry) {
+                    println!("Error saving name: {e}");
+                } else {
+                    println!("Session named: {name}");
+                }
+            }
+            SlashResult::SessionInfo => {
+                match store::get_session(&self.conn, &self.session_id) {
+                    Ok(Some(session)) => {
+                        let entry_count = store::get_entries(&self.conn, &self.session_id)
+                            .map(|e| e.len())
+                            .unwrap_or(0);
+                        let ctx_tokens = context::build_context(&self.conn, &self.session_id)
+                            .map(|ctx| {
+                                ctx.messages.iter()
+                                    .map(|m| bb_session::compaction::estimate_tokens_text(
+                                        &serde_json::to_string(m).unwrap_or_default()
+                                    ))
+                                    .sum::<u64>()
+                            })
+                            .unwrap_or(0);
+                        println!("Session: {}", &self.session_id[..8.min(self.session_id.len())]);
+                        println!("  Name: {}", session.name.as_deref().unwrap_or("(unnamed)"));
+                        println!("  CWD: {}", session.cwd);
+                        println!("  Entries: {}", entry_count);
+                        println!("  Context tokens: ~{}", ctx_tokens);
+                        println!("  Created: {}", session.created_at);
+                        println!("  Updated: {}", session.updated_at);
+                    }
+                    Ok(None) => println!("Session not found."),
+                    Err(e) => println!("Error: {e}"),
+                }
             }
             SlashResult::NotCommand => {
                 // Not a slash command, treat as regular input

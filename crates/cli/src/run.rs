@@ -261,8 +261,47 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
                     continue;
                 }
                 SlashResult::SetName(name) => {
-                    println!("Session named: {name}");
-                    // TODO: persist via session_info entry
+                    let entry = SessionEntry::SessionInfo {
+                        base: EntryBase {
+                            id: EntryId::generate(),
+                            parent_id: get_leaf(&conn, &session_id),
+                            timestamp: Utc::now(),
+                        },
+                        name: Some(name.clone()),
+                    };
+                    if let Err(e) = store::append_entry(&conn, &session_id, &entry) {
+                        println!("Error saving name: {e}");
+                    } else {
+                        println!("Session named: {name}");
+                    }
+                    continue;
+                }
+                SlashResult::SessionInfo => {
+                    match store::get_session(&conn, &session_id) {
+                        Ok(Some(session)) => {
+                            let entry_count = store::get_entries(&conn, &session_id)
+                                .map(|e| e.len())
+                                .unwrap_or(0);
+                            let ctx_tokens = context::build_context(&conn, &session_id)
+                                .map(|ctx| {
+                                    ctx.messages.iter()
+                                        .map(|m| bb_session::compaction::estimate_tokens_text(
+                                            &serde_json::to_string(m).unwrap_or_default()
+                                        ))
+                                        .sum::<u64>()
+                                })
+                                .unwrap_or(0);
+                            println!("Session: {}", &session_id[..8.min(session_id.len())]);
+                            println!("  Name: {}", session.name.as_deref().unwrap_or("(unnamed)"));
+                            println!("  CWD: {}", session.cwd);
+                            println!("  Entries: {}", entry_count);
+                            println!("  Context tokens: ~{}", ctx_tokens);
+                            println!("  Created: {}", session.created_at);
+                            println!("  Updated: {}", session.updated_at);
+                        }
+                        Ok(None) => println!("Session not found."),
+                        Err(e) => println!("Error: {e}"),
+                    }
                     continue;
                 }
                 SlashResult::NotCommand => {} // fall through to LLM
@@ -633,13 +672,50 @@ pub(crate) fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json:
 // parse_response_events replaced by CollectedResponse::from_events
 
 pub(crate) fn load_agents_md(cwd: &std::path::Path) -> Option<String> {
-    let project = cwd.join("AGENTS.md");
-    if project.exists() {
-        return std::fs::read_to_string(&project).ok();
-    }
+    let mut contents = Vec::new();
+
+    // 1. Global AGENTS.md
     let global = config::global_dir().join("AGENTS.md");
     if global.exists() {
-        return std::fs::read_to_string(&global).ok();
+        if let Ok(c) = std::fs::read_to_string(&global) {
+            contents.push(c);
+        }
     }
-    None
+
+    // 2. Walk parent directories up to git root (or filesystem root)
+    let mut dir = cwd.to_path_buf();
+    let mut scanned = Vec::new();
+    loop {
+        let agents = dir.join("AGENTS.md");
+        if agents.exists() {
+            scanned.push(agents);
+        } else {
+            // Also check CLAUDE.md alias
+            let claude = dir.join("CLAUDE.md");
+            if claude.exists() {
+                scanned.push(claude);
+            }
+        }
+        // Stop at git root
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    // Reverse so we go from root → cwd (outermost first)
+    scanned.reverse();
+    for path in scanned {
+        if let Ok(c) = std::fs::read_to_string(&path) {
+            contents.push(c);
+        }
+    }
+
+    if contents.is_empty() {
+        None
+    } else {
+        Some(contents.join("\n\n---\n\n"))
+    }
 }

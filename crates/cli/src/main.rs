@@ -163,6 +163,38 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Process @file arguments from messages
+    let mut cli = cli;
+    let mut prompt_parts = Vec::new();
+    let mut regular_messages = Vec::new();
+
+    for msg in &cli.messages {
+        if msg.starts_with('@') {
+            let path = &msg[1..];
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
+                }
+                Err(e) => {
+                    eprintln!("Warning: Could not read {}: {}", path, e);
+                }
+            }
+        } else {
+            regular_messages.push(msg.clone());
+        }
+    }
+
+    // Combine file contents with messages
+    if !prompt_parts.is_empty() {
+        let file_context = prompt_parts.join("\n\n");
+        let user_text = regular_messages.join(" ");
+        cli.messages = if user_text.is_empty() {
+            vec![file_context]
+        } else {
+            vec![format!("{}\n\n{}", file_context, user_text)]
+        };
+    }
+
     // Run the agent
     if cli.print {
         run::run_print_mode(cli).await

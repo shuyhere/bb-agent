@@ -27,6 +27,7 @@ pub fn handle_slash_command(text: &str) -> SlashResult {
         "/fork" => SlashResult::Fork,
         "/login" => SlashResult::Login,
         "/logout" => SlashResult::Logout,
+        "/session" => SlashResult::SessionInfo,
         "/settings" => {
             println!("Settings: ~/.bb-agent/settings.json");
             SlashResult::Handled
@@ -70,6 +71,8 @@ pub enum SlashResult {
     Logout,
     /// Set session name
     SetName(String),
+    /// Show session info
+    SessionInfo,
     /// Not a slash command — send to LLM
     NotCommand,
 }
@@ -84,6 +87,7 @@ fn print_help() {
     println!("  /tree          Navigate session tree");
     println!("  /fork          Fork current session");
     println!("  /name <name>   Set session display name");
+    println!("  /session       Show current session info");
     println!("  /login         Login to a provider");
     println!("  /logout        Logout from a provider");
     println!("  /settings      Show settings info");
