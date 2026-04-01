@@ -111,53 +111,184 @@ impl ToolExecutionComponent {
     }
 
     pub fn render_lines(&self) -> Vec<String> {
-        let dim = "\x1b[90m";
-        let green = "\x1b[32m";
-        let red = "\x1b[31m";
         let reset = "\x1b[0m";
+        let dim = "\x1b[90m";
         let bold = "\x1b[1m";
+        let accent = "\x1b[38;2;178;148;187m";
+        let success = "\x1b[32m";
+        let error = "\x1b[31m";
 
-        // Status indicator
-        let status = if self.result.is_some() {
-            if self.result.as_ref().map(|r| r.is_error).unwrap_or(false) {
-                format!("{red}x{reset}")
+        let (status_mark, border_color) = if let Some(result) = &self.result {
+            if result.is_error {
+                (format!("{error}x{reset}"), error)
             } else {
-                format!("{green}*{reset}")
+                (format!("{success}*{reset}"), success)
             }
         } else if self.execution_started {
-            format!("{dim}..{reset}")
+            (format!("{dim}..{reset}"), accent)
         } else {
-            format!("{dim}>{reset}")
+            (format!("{dim}>{reset}"), accent)
         };
 
-        // One-line summary: status tool_name(args_preview)
-        let args_preview = if self.args.is_null() || self.args.is_object() && self.args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-            String::new()
-        } else {
-            let s = self.args.to_string();
-            if s.len() > 80 { format!("({}...)", &s[..77]) } else { format!("({s})") }
-        };
-
-        let header = format!("{status} {bold}{}{reset}{dim}{args_preview}{reset}", self.tool_name);
-
+        let title = self.render_call_title();
         if !self.expanded {
-            // Collapsed: just the header line
-            return vec![header];
+            return vec![format!("{status_mark} {bold}{title}{reset}")];
         }
 
-        // Expanded: header + output
-        let mut lines = vec![header];
+        let mut lines = vec![String::new()];
+        lines.push(format!("{border_color}╭─ {status_mark} {bold}{title}{reset}"));
+
+        for line in self.render_call_body() {
+            lines.push(format!("{border_color}│{reset} {line}"));
+        }
+
+        let result_lines = self.render_result_body();
+        if !result_lines.is_empty() {
+            lines.push(format!("{border_color}├{reset}"));
+            for line in result_lines {
+                lines.push(format!("{border_color}│{reset} {line}"));
+            }
+        }
+
+        lines.push(format!("{border_color}╰{reset}"));
+        lines
+    }
+
+    fn render_call_title(&self) -> String {
+        match self.tool_name.as_str() {
+            "read" => format!("Read {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
+            "write" => format!("Write {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
+            "edit" => format!("Edit {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or(""))),
+            "bash" => "Bash".to_string(),
+            "ls" => format!("Ls {}", shorten_path(arg_str(&self.args, "path").as_deref().unwrap_or("."))),
+            "grep" => format!(
+                "Grep {}",
+                arg_str(&self.args, "pattern").unwrap_or_default()
+            ),
+            "find" => format!(
+                "Find {}",
+                arg_str(&self.args, "pattern").unwrap_or_default()
+            ),
+            other => other.to_string(),
+        }
+    }
+
+    fn render_call_body(&self) -> Vec<String> {
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
+        let mut lines = Vec::new();
+
+        match self.tool_name.as_str() {
+            "bash" => {
+                if let Some(command) = arg_str(&self.args, "command") {
+                    lines.push(format!("{dim}$ {command}{reset}"));
+                }
+                if let Some(timeout) = self.args.get("timeout").and_then(|v| v.as_f64()) {
+                    lines.push(format!("{dim}timeout: {timeout}s{reset}"));
+                }
+            }
+            "read" => {
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+                if let Some(offset) = self.args.get("offset").and_then(|v| v.as_u64()) {
+                    lines.push(format!("{dim}offset: {offset}{reset}"));
+                }
+                if let Some(limit) = self.args.get("limit").and_then(|v| v.as_u64()) {
+                    lines.push(format!("{dim}limit: {limit}{reset}"));
+                }
+            }
+            "write" => {
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+                if let Some(content) = arg_str(&self.args, "content") {
+                    lines.push(format!("{dim}bytes: {}{reset}", content.len()));
+                }
+            }
+            "edit" => {
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+                if let Some(edits) = self.args.get("edits").and_then(|v| v.as_array()) {
+                    lines.push(format!("{dim}edits: {}{reset}", edits.len()));
+                }
+            }
+            "ls" => {
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+                if let Some(limit) = self.args.get("limit").and_then(|v| v.as_u64()) {
+                    lines.push(format!("{dim}limit: {limit}{reset}"));
+                }
+            }
+            "grep" => {
+                if let Some(pattern) = arg_str(&self.args, "pattern") {
+                    lines.push(format!("{dim}pattern: {pattern}{reset}"));
+                }
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+                if let Some(glob) = arg_str(&self.args, "glob") {
+                    lines.push(format!("{dim}glob: {glob}{reset}"));
+                }
+            }
+            "find" => {
+                if let Some(pattern) = arg_str(&self.args, "pattern") {
+                    lines.push(format!("{dim}pattern: {pattern}{reset}"));
+                }
+                if let Some(path) = arg_str(&self.args, "path") {
+                    lines.push(format!("{dim}path: {}{reset}", shorten_path(&path)));
+                }
+            }
+            _ => {
+                if !self.args.is_null() {
+                    let rendered = serde_json::to_string_pretty(&self.args)
+                        .unwrap_or_else(|_| self.args.to_string());
+                    lines.extend(rendered.lines().map(|l| format!("{dim}{l}{reset}")));
+                }
+            }
+        }
+
+        if lines.is_empty() {
+            if self.execution_started {
+                lines.push(format!("{dim}running...{reset}"));
+            }
+        }
+        lines
+    }
+
+    fn render_result_body(&self) -> Vec<String> {
+        let Some(result) = &self.result else {
+            return if self.execution_started {
+                vec!["\x1b[90mexecuting...\x1b[0m".to_string()]
+            } else {
+                Vec::new()
+            };
+        };
+
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
+        let mut lines = Vec::new();
+
+        if let Some(details) = &result.details {
+            lines.extend(render_detail_summary(&self.tool_name, details));
+        }
+
         let output = self.get_text_output();
         if !output.is_empty() {
-            // Truncate very long output
+            let max_lines = 80;
             let output_lines: Vec<&str> = output.lines().collect();
-            let max_lines = 30;
             for line in output_lines.iter().take(max_lines) {
-                lines.push(format!("{dim}  {line}{reset}"));
+                lines.push((*line).to_string());
             }
             if output_lines.len() > max_lines {
-                lines.push(format!("{dim}  ... ({} more lines){reset}", output_lines.len() - max_lines));
+                lines.push(format!("{dim}... ({} more lines){reset}", output_lines.len() - max_lines));
             }
+        }
+
+        if lines.is_empty() && result.is_error {
+            lines.push("error".to_string());
         }
         lines
     }
@@ -183,23 +314,88 @@ impl ToolExecutionComponent {
                 _ => {}
             }
         }
-
-        if self.expanded {
-            parts.join("\n")
-        } else {
-            truncate_preview(&parts.join("\n"), 20)
-        }
+        parts.join("\n")
     }
 }
 
-fn truncate_preview(text: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= max_lines {
-        return text.to_string();
-    }
+fn arg_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
 
-    let start = lines.len().saturating_sub(max_lines);
-    let mut preview = String::from("...\n");
-    preview.push_str(&lines[start..].join("\n"));
-    preview
+fn shorten_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if path.starts_with(&home) {
+            return format!("~{}", &path[home.len()..]);
+        }
+    }
+    path.to_string()
+}
+
+fn render_detail_summary(tool_name: &str, details: &Value) -> Vec<String> {
+    let dim = "\x1b[90m";
+    let reset = "\x1b[0m";
+    let mut lines = Vec::new();
+    match tool_name {
+        "read" => {
+            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let start = details.get("startLine").and_then(|v| v.as_u64()).unwrap_or(0);
+            let end = details.get("endLine").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = details.get("totalLines").and_then(|v| v.as_u64()).unwrap_or(0);
+            if !path.is_empty() {
+                lines.push(format!("{dim}read {} lines {start}-{end} / {total}{reset}", shorten_path(path)));
+            }
+        }
+        "write" => {
+            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let bytes = details.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            lines.push(format!("{dim}wrote {bytes} bytes to {}{reset}", shorten_path(path)));
+        }
+        "edit" => {
+            let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let applied = details.get("applied").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = details.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+            lines.push(format!("{dim}applied {applied}/{total} edit(s) to {}{reset}", shorten_path(path)));
+        }
+        "bash" => {
+            let exit = details.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+            let cancelled = details.get("cancelled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut extra = Vec::new();
+            if truncated {
+                extra.push("truncated");
+            }
+            if cancelled {
+                extra.push("cancelled");
+            }
+            let suffix = if extra.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", extra.join(", "))
+            };
+            lines.push(format!("{dim}exit code: {exit}{suffix}{reset}"));
+        }
+        "grep" => {
+            let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+            let suffix = if truncated { " (truncated)" } else { "" };
+            lines.push(format!("{dim}{count} match(es){suffix}{reset}"));
+        }
+        "find" => {
+            let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+            let suffix = if truncated { " (truncated)" } else { "" };
+            lines.push(format!("{dim}{count} file(s){suffix}{reset}"));
+        }
+        "ls" => {
+            let count = details.get("entryCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+            let suffix = if truncated { " (truncated)" } else { "" };
+            lines.push(format!("{dim}{count} entr{} shown{suffix}{reset}", if count == 1 { "y" } else { "ies" }));
+        }
+        _ => {}
+    }
+    lines
 }

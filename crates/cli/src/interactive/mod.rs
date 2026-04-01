@@ -1362,49 +1362,76 @@ impl InteractiveMode {
             // Execute tool calls
             let cancel = tokio_util::sync::CancellationToken::new();
             for tc in &collected.tool_calls {
-                let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                let _ = tx.send(AgentLoopEvent::ToolExecuting { id: tc.id.clone(), name: tc.name.clone() });
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                let _ = tx.send(AgentLoopEvent::ToolExecuting {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                });
                 self.drain_pending_agent_events();
                 self.refresh_ui();
 
                 let tool = self.session_setup.tools.iter().find(|t| t.name() == tc.name);
                 let result = match tool {
                     Some(t) => t.execute(args, &self.session_setup.tool_ctx, cancel.clone()).await,
-                    None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
+                    None => Err(bb_core::error::BbError::Tool(format!(
+                        "Unknown tool: {}",
+                        tc.name
+                    ))),
                 };
-                let (content, is_error) = match result {
-                    Ok(r) => (r.content, r.is_error),
-                    Err(e) => (vec![bb_core::types::ContentBlock::Text { text: format!("Error: {e}") }], true),
+                let (content, details, artifact_path, is_error) = match result {
+                    Ok(r) => (
+                        r.content,
+                        r.details,
+                        r.artifact_path.map(|p| p.display().to_string()),
+                        r.is_error,
+                    ),
+                    Err(e) => (
+                        vec![bb_core::types::ContentBlock::Text {
+                            text: format!("Error: {e}"),
+                        }],
+                        None,
+                        None,
+                        true,
+                    ),
                 };
-                let content_text = content.iter().filter_map(|c| match c {
-                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
 
                 let _ = tx.send(AgentLoopEvent::ToolResult {
-                    id: tc.id.clone(), name: tc.name.clone(), content: content_text, is_error,
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    content: content.clone(),
+                    details: details.clone(),
+                    artifact_path: artifact_path.clone(),
+                    is_error,
                 });
                 self.drain_pending_agent_events();
                 self.refresh_ui();
 
-                // Append tool result to session
                 let tool_result_entry = bb_core::types::SessionEntry::Message {
                     base: bb_core::types::EntryBase {
                         id: bb_core::types::EntryId::generate(),
                         parent_id: self.get_session_leaf(),
                         timestamp: chrono::Utc::now(),
                     },
-                    message: bb_core::types::AgentMessage::ToolResult(bb_core::types::ToolResultMessage {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        content,
-                        details: None,
-                        is_error,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    }),
+                    message: bb_core::types::AgentMessage::ToolResult(
+                        bb_core::types::ToolResultMessage {
+                            tool_call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            content,
+                            details,
+                            is_error,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        },
+                    ),
                 };
-                store::append_entry(&self.session_setup.conn, &self.session_setup.session_id, &tool_result_entry)
-                    .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+                store::append_entry(
+                    &self.session_setup.conn,
+                    &self.session_setup.session_id,
+                    &tool_result_entry,
+                )
+                .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                    Box::<dyn Error + Send + Sync>::from(e.to_string())
+                })?;
             }
 
             let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
@@ -2531,18 +2558,49 @@ impl InteractiveMode {
                 }
                 self.refresh_ui();
             }
-            AgentLoopEvent::ToolResult { id, name: _, content, is_error } => {
+            AgentLoopEvent::ToolResult {
+                id,
+                name: _,
+                content,
+                details,
+                artifact_path,
+                is_error,
+            } => {
                 let updated = {
                     if let Some(component) = self.render_state_mut().pending_tools.get_mut(&id) {
-                        let result = components::tool_execution::ToolExecutionResult {
-                            content: vec![components::tool_execution::ToolResultBlock {
+                        let mut blocks: Vec<components::tool_execution::ToolResultBlock> = content
+                            .into_iter()
+                            .map(|block| match block {
+                                bb_core::types::ContentBlock::Text { text } => {
+                                    components::tool_execution::ToolResultBlock {
+                                        r#type: "text".to_string(),
+                                        text: Some(text),
+                                        data: None,
+                                        mime_type: None,
+                                    }
+                                }
+                                bb_core::types::ContentBlock::Image { data, mime_type } => {
+                                    components::tool_execution::ToolResultBlock {
+                                        r#type: "image".to_string(),
+                                        text: None,
+                                        data: Some(data),
+                                        mime_type: Some(mime_type),
+                                    }
+                                }
+                            })
+                            .collect();
+                        if let Some(path) = artifact_path {
+                            blocks.push(components::tool_execution::ToolResultBlock {
                                 r#type: "text".to_string(),
-                                text: Some(content),
+                                text: Some(format!("Full output: {path}")),
                                 data: None,
                                 mime_type: None,
-                            }],
+                            });
+                        }
+                        let result = components::tool_execution::ToolExecutionResult {
+                            content: blocks,
                             is_error,
-                            details: None,
+                            details,
                         };
                         component.update_result(result, false);
                         Some(component.clone())
