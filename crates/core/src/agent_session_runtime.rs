@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::agent_session::{
+    AgentSession, AgentSessionConfig, ModelRef, ScopedModel, SessionStartEvent, ThinkingLevel,
+};
 
 #[derive(Debug, Error)]
 pub enum AgentSessionRuntimeError {
@@ -115,7 +120,9 @@ pub struct BranchSummarySettings {
 
 impl Default for BranchSummarySettings {
     fn default() -> Self {
-        Self { reserve_tokens: 1_024 }
+        Self {
+            reserve_tokens: 1_024,
+        }
     }
 }
 
@@ -148,7 +155,9 @@ impl RuntimeUsage {
 
 impl Default for RuntimeCost {
     fn default() -> Self {
-        Self { total_microunits: 0 }
+        Self {
+            total_microunits: 0,
+        }
     }
 }
 
@@ -319,15 +328,9 @@ pub struct ContextUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CompactionAction {
     None,
-    RecoverOverflow {
-        preparation: CompactionPreparation,
-    },
-    CompactForThreshold {
-        preparation: CompactionPreparation,
-    },
-    OverflowRecoveryFailed {
-        message: String,
-    },
+    RecoverOverflow { preparation: CompactionPreparation },
+    CompactForThreshold { preparation: CompactionPreparation },
+    OverflowRecoveryFailed { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -390,6 +393,120 @@ pub struct TreeNavigationState {
     pub abort_requested: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AgentSessionRuntimeBootstrap {
+    pub cwd: Option<PathBuf>,
+    pub model: Option<ModelRef>,
+    pub thinking_level: Option<ThinkingLevel>,
+    pub scoped_models: Vec<ScopedModel>,
+    pub initial_active_tool_names: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateAgentSessionRuntimeOptions {
+    pub cwd: PathBuf,
+    pub session_start_event: Option<SessionStartEvent>,
+}
+
+impl CreateAgentSessionRuntimeOptions {
+    pub fn new(cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            session_start_event: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AgentSessionRuntimeHandle {
+    pub cwd: PathBuf,
+    pub session: AgentSession,
+    pub runtime: AgentSessionRuntime,
+}
+
+pub fn create_agent_session_runtime(
+    bootstrap: &AgentSessionRuntimeBootstrap,
+    options: CreateAgentSessionRuntimeOptions,
+) -> AgentSessionRuntimeHandle {
+    let session = AgentSession::new(AgentSessionConfig {
+        cwd: options.cwd.clone(),
+        scoped_models: bootstrap.scoped_models.clone(),
+        initial_active_tool_names: bootstrap.initial_active_tool_names.clone(),
+        session_start_event: options.session_start_event,
+        model: bootstrap.model.clone(),
+        thinking_level: bootstrap.thinking_level.unwrap_or_default(),
+        ..AgentSessionConfig::default()
+    });
+
+    let mut runtime = AgentSessionRuntime::default();
+    runtime.model = session
+        .model()
+        .map(|model| runtime_model_from_session_model(model));
+
+    AgentSessionRuntimeHandle {
+        cwd: options.cwd,
+        session,
+        runtime,
+    }
+}
+
+pub struct AgentSessionRuntimeHost {
+    bootstrap: AgentSessionRuntimeBootstrap,
+    current: AgentSessionRuntimeHandle,
+}
+
+impl AgentSessionRuntimeHost {
+    pub fn new(
+        bootstrap: AgentSessionRuntimeBootstrap,
+        current: AgentSessionRuntimeHandle,
+    ) -> Self {
+        Self { bootstrap, current }
+    }
+
+    pub fn from_bootstrap(bootstrap: AgentSessionRuntimeBootstrap) -> Self {
+        let cwd = bootstrap
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let current =
+            create_agent_session_runtime(&bootstrap, CreateAgentSessionRuntimeOptions::new(cwd));
+        Self { bootstrap, current }
+    }
+
+    pub fn bootstrap(&self) -> &AgentSessionRuntimeBootstrap {
+        &self.bootstrap
+    }
+
+    pub fn session(&self) -> &AgentSession {
+        &self.current.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut AgentSession {
+        &mut self.current.session
+    }
+
+    pub fn runtime(&self) -> &AgentSessionRuntime {
+        &self.current.runtime
+    }
+
+    pub fn runtime_mut(&mut self) -> &mut AgentSessionRuntime {
+        &mut self.current.runtime
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.current.cwd
+    }
+}
+
+fn runtime_model_from_session_model(model: &ModelRef) -> RuntimeModelRef {
+    RuntimeModelRef {
+        provider: model.provider.clone(),
+        id: model.id.clone(),
+        context_window: 0,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionTreeState {
     entries: Vec<SessionTreeEntry>,
@@ -422,7 +539,11 @@ impl SessionTreeState {
         self.entries.iter_mut().find(|entry| entry.id == id)
     }
 
-    pub fn append_entry(&mut self, parent_id: Option<String>, kind: SessionTreeEntryKind) -> String {
+    pub fn append_entry(
+        &mut self,
+        parent_id: Option<String>,
+        kind: SessionTreeEntryKind,
+    ) -> String {
         let id = Uuid::new_v4().to_string();
         self.entries.push(SessionTreeEntry {
             id: id.clone(),
@@ -575,7 +696,10 @@ impl AgentSessionRuntime {
 
         let branch = self.session_tree.get_branch();
         let preparation = prepare_compaction(&branch, settings).ok_or_else(|| {
-            if matches!(branch.last().map(|entry| &entry.kind), Some(SessionTreeEntryKind::Compaction(_))) {
+            if matches!(
+                branch.last().map(|entry| &entry.kind),
+                Some(SessionTreeEntryKind::Compaction(_))
+            ) {
                 AgentSessionRuntimeError::AlreadyCompacted
             } else {
                 AgentSessionRuntimeError::NothingToCompact
@@ -614,7 +738,12 @@ impl AgentSessionRuntime {
         }
     }
 
-    pub fn fail_compaction(&mut self, reason: CompactionReason, error_message: String, aborted: bool) {
+    pub fn fail_compaction(
+        &mut self,
+        reason: CompactionReason,
+        error_message: String,
+        aborted: bool,
+    ) {
         self.compaction_state.manual_in_progress = false;
         self.compaction_state.auto_in_progress = false;
         self.compaction_state.abort_requested = false;
@@ -623,11 +752,7 @@ impl AgentSessionRuntime {
             result: None,
             aborted,
             will_retry: false,
-            error_message: if aborted {
-                None
-            } else {
-                Some(error_message)
-            },
+            error_message: if aborted { None } else { Some(error_message) },
         });
     }
 
@@ -649,7 +774,11 @@ impl AgentSessionRuntime {
             return CompactionAction::None;
         }
 
-        let context_window = self.model.as_ref().map(|model| model.context_window).unwrap_or_default();
+        let context_window = self
+            .model
+            .as_ref()
+            .map(|model| model.context_window)
+            .unwrap_or_default();
         let same_model = self
             .model
             .as_ref()
@@ -700,7 +829,9 @@ impl AgentSessionRuntime {
                 return CompactionAction::None;
             };
             if let Some(compaction_entry) = latest_compaction {
-                if let Some(RuntimeMessage::Assistant(usage_message)) = self.messages.get(last_usage_index) {
+                if let Some(RuntimeMessage::Assistant(usage_message)) =
+                    self.messages.get(last_usage_index)
+                {
                     if usage_message.timestamp <= compaction_entry.timestamp {
                         return CompactionAction::None;
                     }
@@ -737,7 +868,11 @@ impl AgentSessionRuntime {
             return false;
         };
 
-        let context_window = self.model.as_ref().map(|model| model.context_window).unwrap_or_default();
+        let context_window = self
+            .model
+            .as_ref()
+            .map(|model| model.context_window)
+            .unwrap_or_default();
         if is_context_overflow(message, context_window) {
             return false;
         }
@@ -804,7 +939,9 @@ impl AgentSessionRuntime {
             };
         }
 
-        let delay_ms = settings.base_delay_ms.saturating_mul(2u64.saturating_pow(self.retry_state.attempt - 1));
+        let delay_ms = settings
+            .base_delay_ms
+            .saturating_mul(2u64.saturating_pow(self.retry_state.attempt - 1));
         self.emit(RuntimeEvent::AutoRetryStart {
             attempt: self.retry_state.attempt,
             max_attempts: settings.max_retries,
@@ -891,7 +1028,8 @@ impl AgentSessionRuntime {
         if streaming {
             self.bash_state.pending_messages.push(bash_message);
         } else {
-            self.messages.push(RuntimeMessage::BashExecution(bash_message));
+            self.messages
+                .push(RuntimeMessage::BashExecution(bash_message));
         }
         self.bash_state.running_command = None;
         self.bash_state.abort_requested = false;
@@ -944,12 +1082,20 @@ impl AgentSessionRuntime {
             .cloned()
             .ok_or_else(|| AgentSessionRuntimeError::EntryNotFound(target_id.to_string()))?;
 
-        let collected = collect_entries_for_branch_summary(&self.session_tree, old_leaf_id.as_deref(), target_id);
+        let collected = collect_entries_for_branch_summary(
+            &self.session_tree,
+            old_leaf_id.as_deref(),
+            target_id,
+        );
         let _preparation = TreePreparation {
             target_id: target_id.to_string(),
             old_leaf_id: old_leaf_id.clone(),
             common_ancestor_id: collected.common_ancestor_id.clone(),
-            entries_to_summarize: collected.entries.iter().map(|entry| entry.id.clone()).collect(),
+            entries_to_summarize: collected
+                .entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect(),
             user_wants_summary: options.summarize,
             custom_instructions: options.custom_instructions.clone(),
             replace_instructions: options.replace_instructions,
@@ -977,7 +1123,8 @@ impl AgentSessionRuntime {
                 from_extension,
             );
             if let Some(label) = options.label {
-                self.session_tree.append_label_change(summary_id.clone(), label);
+                self.session_tree
+                    .append_label_change(summary_id.clone(), label);
             }
             self.session_tree.get_entry(&summary_id).cloned()
         } else {
@@ -986,7 +1133,8 @@ impl AgentSessionRuntime {
                 Some(id) => self.session_tree.branch(id),
             }
             if let Some(label) = options.label {
-                self.session_tree.append_label_change(target_id.to_string(), label);
+                self.session_tree
+                    .append_label_change(target_id.to_string(), label);
             }
             None
         };
@@ -1037,10 +1185,14 @@ impl AgentSessionRuntime {
         let latest_compaction = get_latest_compaction_entry(&branch);
         if let Some(compaction_entry) = latest_compaction {
             let branch_ids: Vec<&str> = branch.iter().map(|entry| entry.id.as_str()).collect();
-            let compaction_index = branch_ids.iter().rposition(|id| *id == compaction_entry.id)?;
+            let compaction_index = branch_ids
+                .iter()
+                .rposition(|id| *id == compaction_entry.id)?;
             let mut has_post_compaction_usage = false;
             for entry in branch.iter().skip(compaction_index + 1).rev() {
-                if let SessionTreeEntryKind::Message(RuntimeMessage::Assistant(message)) = &entry.kind {
+                if let SessionTreeEntryKind::Message(RuntimeMessage::Assistant(message)) =
+                    &entry.kind
+                {
                     if message.stop_reason != AssistantStopReason::Aborted
                         && message.stop_reason != AssistantStopReason::Error
                         && message.usage.total_context_tokens() > 0
@@ -1060,7 +1212,8 @@ impl AgentSessionRuntime {
         }
 
         let estimate = estimate_context_tokens(&self.messages);
-        let percent = ((estimate.tokens as f64 / model.context_window as f64) * 100.0).round() as u8;
+        let percent =
+            ((estimate.tokens as f64 / model.context_window as f64) * 100.0).round() as u8;
         Some(ContextUsage {
             tokens: Some(estimate.tokens),
             context_window: model.context_window,
@@ -1147,8 +1300,14 @@ pub fn prepare_compaction(
     })
 }
 
-pub fn get_latest_compaction_entry<'a>(branch: &'a [&'a SessionTreeEntry]) -> Option<&'a SessionTreeEntry> {
-    branch.iter().rev().find(|entry| matches!(entry.kind, SessionTreeEntryKind::Compaction(_))).copied()
+pub fn get_latest_compaction_entry<'a>(
+    branch: &'a [&'a SessionTreeEntry],
+) -> Option<&'a SessionTreeEntry> {
+    branch
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.kind, SessionTreeEntryKind::Compaction(_)))
+        .copied()
 }
 
 pub fn is_context_overflow(message: &AssistantMessage, context_window: usize) -> bool {
@@ -1156,7 +1315,11 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: usize) ->
         return false;
     }
 
-    let err = message.error_message.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let err = message
+        .error_message
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let mentions_overflow = [
         "context overflow",
         "context length",
@@ -1168,16 +1331,22 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: usize) ->
     .iter()
     .any(|needle| err.contains(needle));
 
-    mentions_overflow || (context_window > 0 && message.usage.total_context_tokens() >= context_window)
+    mentions_overflow
+        || (context_window > 0 && message.usage.total_context_tokens() >= context_window)
 }
 
-pub fn should_compact(context_tokens: usize, context_window: usize, settings: &CompactionSettings) -> bool {
+pub fn should_compact(
+    context_tokens: usize,
+    context_window: usize,
+    settings: &CompactionSettings,
+) -> bool {
     if context_window == 0 {
         return false;
     }
 
     let threshold_tokens = context_window.saturating_mul(settings.threshold_percent as usize) / 100;
-    context_tokens >= threshold_tokens || context_window.saturating_sub(context_tokens) <= settings.reserve_tokens
+    context_tokens >= threshold_tokens
+        || context_window.saturating_sub(context_tokens) <= settings.reserve_tokens
 }
 
 pub fn estimate_context_tokens(messages: &[RuntimeMessage]) -> ContextEstimate {

@@ -80,7 +80,10 @@ impl fmt::Debug for AgentSession {
             .field("agent_event_queue_depth", &self.agent_event_queue_depth)
             .field("steering_messages", &self.steering_messages)
             .field("follow_up_messages", &self.follow_up_messages)
-            .field("pending_next_turn_messages", &self.pending_next_turn_messages)
+            .field(
+                "pending_next_turn_messages",
+                &self.pending_next_turn_messages,
+            )
             .field("turn_index", &self.turn_index)
             .field("cwd", &self.cwd)
             .field("session_start_event", &self.session_start_event)
@@ -169,7 +172,10 @@ impl<F> ThinPrintSession<F> {
     }
 }
 
-pub fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, String, Option<String>) {
+pub fn parse_model_arg(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> (String, String, Option<String>) {
     let default_provider = provider.unwrap_or("openai").to_string();
     let default_model = match default_provider.as_str() {
         "anthropic" => "claude-opus-4-6",
@@ -389,6 +395,14 @@ impl AgentSession {
         self.is_streaming
     }
 
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn session_start_event(&self) -> &SessionStartEvent {
+        &self.session_start_event
+    }
+
     pub fn pending_message_count(&self) -> usize {
         self.steering_messages.len() + self.follow_up_messages.len()
     }
@@ -428,7 +442,11 @@ impl AgentSession {
         self.emit_ref(&event);
     }
 
-    pub fn prompt(&mut self, text: impl Into<String>, options: PromptOptions) -> Result<(), AgentSessionError> {
+    pub fn prompt(
+        &mut self,
+        text: impl Into<String>,
+        options: PromptOptions,
+    ) -> Result<(), AgentSessionError> {
         let text = text.into();
         let expand_prompt_templates = options.expand_prompt_templates;
 
@@ -483,9 +501,7 @@ impl AgentSession {
         );
 
         self.is_streaming = true;
-        self.emit_ref(&AgentSessionEvent::PromptDispatched {
-            messages: outgoing,
-        });
+        self.emit_ref(&AgentSessionEvent::PromptDispatched { messages: outgoing });
         self.wait_for_retry();
         self.is_streaming = false;
         Ok(())
@@ -1050,7 +1066,10 @@ impl fmt::Display for AgentSessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AgentSessionError::AlreadyProcessing => {
-                write!(f, "agent is already processing; choose steer or follow-up delivery")
+                write!(
+                    f,
+                    "agent is already processing; choose steer or follow-up delivery"
+                )
             }
             AgentSessionError::NoModelSelected => write!(f, "no model selected"),
             AgentSessionError::ExtensionCommandCannotBeQueued => {

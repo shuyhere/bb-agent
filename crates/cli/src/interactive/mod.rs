@@ -1,16 +1,21 @@
 #![allow(dead_code)]
 
 pub mod components;
-#[path = "../interactive_commands.rs"]
-pub mod interactive_commands;
 #[path = "../interactive_events.rs"]
 pub mod events;
+#[path = "../interactive_commands.rs"]
+pub mod interactive_commands;
 
-use self::events::{assistant_message_from_parts, ChatItem, InteractiveMessage, InteractiveRenderState, PendingMessages, QueuedMessage as RenderQueuedMessage, QueuedMessageMode};
+use self::events::{
+    ChatItem, InteractiveMessage, InteractiveRenderState, PendingMessages,
+    QueuedMessage as RenderQueuedMessage, QueuedMessageMode, assistant_message_from_parts,
+};
 use self::interactive_commands::InteractiveCommands;
-use bb_tui::component::{Component, Container, Spacer, Text, CURSOR_MARKER};
-use bb_tui::tui_core::TUI;
+use bb_core::agent_session::PromptOptions;
+use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
+use bb_tui::component::{CURSOR_MARKER, Component, Container, Spacer, Text};
 use bb_tui::terminal::{Terminal, TerminalEvent};
+use bb_tui::tui_core::TUI;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::any::Any;
 use std::collections::VecDeque;
@@ -38,29 +43,17 @@ struct InteractiveSessionState {
     pending_messages: PendingMessages,
 }
 
-struct InteractiveRuntime<H = ()> {
-    host: H,
+struct InteractiveController {
+    runtime_host: AgentSessionRuntimeHost,
     session: InteractiveSessionState,
-}
-
-impl<H> InteractiveRuntime<H> {
-    fn new(host: H) -> Self {
-        Self {
-            host,
-            session: InteractiveSessionState::default(),
-        }
-    }
-}
-
-struct InteractiveController<H = ()> {
-    runtime: InteractiveRuntime<H>,
     commands: InteractiveCommands,
 }
 
-impl<H> InteractiveController<H> {
-    fn new(host: H) -> Self {
+impl InteractiveController {
+    fn new(runtime_host: AgentSessionRuntimeHost) -> Self {
         Self {
-            runtime: InteractiveRuntime::new(host),
+            runtime_host,
+            session: InteractiveSessionState::default(),
             commands: InteractiveCommands::new(),
         }
     }
@@ -312,7 +305,9 @@ impl Component for EditorComponent {
     fn handle_input(&mut self, key: &KeyEvent) {
         if let Ok(mut state) = self.state.lock() {
             match key.code {
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => state.insert_char(ch),
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.insert_char(ch)
+                }
                 KeyCode::Backspace => state.backspace(),
                 KeyCode::Left => state.move_left(),
                 KeyCode::Right => state.move_right(),
@@ -338,8 +333,8 @@ impl Component for EditorComponent {
     }
 }
 
-pub struct InteractiveMode<H = ()> {
-    controller: InteractiveController<H>,
+pub struct InteractiveMode {
+    controller: InteractiveController,
     ui: TUI,
     header_container: Arc<Mutex<Container>>,
     chat_container: Arc<Mutex<Container>>,
@@ -383,8 +378,8 @@ pub struct InteractiveMode<H = ()> {
     widgets_below_lines: Vec<String>,
 }
 
-impl<H> InteractiveMode<H> {
-    pub fn new(runtime_host: H, options: InteractiveModeOptions) -> Self {
+impl InteractiveMode {
+    pub fn new(runtime_host: AgentSessionRuntimeHost, options: InteractiveModeOptions) -> Self {
         let editor_state = Arc::new(Mutex::new(EditorState {
             focused: true,
             ..EditorState::default()
@@ -445,11 +440,11 @@ impl<H> InteractiveMode<H> {
     }
 
     fn render_state(&self) -> &InteractiveRenderState {
-        &self.controller.runtime.session.render_state
+        &self.controller.session.render_state
     }
 
     fn render_state_mut(&mut self) -> &mut InteractiveRenderState {
-        &mut self.controller.runtime.session.render_state
+        &mut self.controller.session.render_state
     }
 
     fn sync_pending_render_state(&mut self) {
@@ -464,8 +459,9 @@ impl<H> InteractiveMode<H> {
             })
             .collect::<Vec<_>>();
         let pending = InteractiveRenderState::collect_pending_messages(&[], &[], &queued);
-        self.controller.runtime.session.pending_messages = pending.clone();
-        self.render_state_mut().update_pending_messages_display(&pending);
+        self.controller.session.pending_messages = pending.clone();
+        self.render_state_mut()
+            .update_pending_messages_display(&pending);
     }
 
     fn render_items_to_lines(items: &[ChatItem]) -> Vec<String> {
@@ -511,30 +507,30 @@ impl<H> InteractiveMode<H> {
 
         self.changelog_markdown = self.get_changelog_for_display();
 
-        self.ui
-            .root
-            .add(Box::new(SharedContainer::new(self.header_container.clone())));
+        self.ui.root.add(Box::new(SharedContainer::new(
+            self.header_container.clone(),
+        )));
         self.ui
             .root
             .add(Box::new(SharedContainer::new(self.chat_container.clone())));
         self.ui.root.add(Box::new(SharedContainer::new(
             self.pending_messages_container.clone(),
         )));
-        self.ui
-            .root
-            .add(Box::new(SharedContainer::new(self.status_container.clone())));
+        self.ui.root.add(Box::new(SharedContainer::new(
+            self.status_container.clone(),
+        )));
         self.ui.root.add(Box::new(SharedContainer::new(
             self.widget_container_above.clone(),
         )));
-        self.ui.root.add(Box::new(SharedEditor::new(
-            self.editor_component.clone(),
-        )));
+        self.ui
+            .root
+            .add(Box::new(SharedEditor::new(self.editor_component.clone())));
         self.ui.root.add(Box::new(SharedContainer::new(
             self.widget_container_below.clone(),
         )));
-        self.ui
-            .root
-            .add(Box::new(SharedContainer::new(self.footer_container.clone())));
+        self.ui.root.add(Box::new(SharedContainer::new(
+            self.footer_container.clone(),
+        )));
         self.ui.set_focus(Some(5));
 
         self.rebuild_header();
@@ -919,7 +915,10 @@ impl<H> InteractiveMode<H> {
                     self.show_placeholder("scoped models selector");
                 }
                 SubmitAction::Model => {
-                    let search = text.strip_prefix("/model").map(str::trim).filter(|s| !s.is_empty());
+                    let search = text
+                        .strip_prefix("/model")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
                     self.clear_editor();
                     self.handle_model_command(search);
                 }
@@ -976,7 +975,10 @@ impl<H> InteractiveMode<H> {
                     self.handle_clear_command();
                 }
                 SubmitAction::Compact => {
-                    let instructions = text.strip_prefix("/compact").map(str::trim).filter(|s| !s.is_empty());
+                    let instructions = text
+                        .strip_prefix("/compact")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
                     self.clear_editor();
                     self.handle_compact_command(instructions);
                 }
@@ -1014,7 +1016,9 @@ impl<H> InteractiveMode<H> {
             };
             if !command.is_empty() {
                 if self.is_bash_running {
-                    self.show_warning("A bash command is already running. Press Esc to cancel it first.");
+                    self.show_warning(
+                        "A bash command is already running. Press Esc to cancel it first.",
+                    );
                     self.set_editor_text(&text);
                     return Ok(SubmitOutcome::Ignored);
                 }
@@ -1055,11 +1059,19 @@ impl<H> InteractiveMode<H> {
     }
 
     async fn dispatch_prompt(&mut self, user_input: String) -> InteractiveResult<()> {
+        self.controller
+            .runtime_host
+            .session_mut()
+            .prompt(user_input.clone(), PromptOptions::default())
+            .map_err(|err| -> Box<dyn Error + Send + Sync> { Box::new(err) })?;
+
         self.render_state_mut()
-            .add_message_to_chat(InteractiveMessage::User { text: user_input.clone() });
+            .add_message_to_chat(InteractiveMessage::User {
+                text: user_input.clone(),
+            });
         self.render_state_mut().add_message_to_chat(InteractiveMessage::Assistant {
             message: assistant_message_from_parts(
-                "TODO: runtime host prompt dispatch not wired yet",
+                "TODO: core session prompt dispatch is bootstrapped; event wiring still pending",
                 None,
                 false,
             ),
@@ -1095,15 +1107,19 @@ impl<H> InteractiveMode<H> {
     fn rebuild_header(&mut self) {
         self.header_lines.clear();
         if self.options.verbose || !self.options.quiet_startup {
-            self.header_lines.push(format!("BB-Agent v{}", self.version));
-            self.header_lines.push("Ctrl-C interrupt/exit • Ctrl-D exit(empty) • Esc clears bash mode".to_string());
+            self.header_lines
+                .push(format!("BB-Agent v{}", self.version));
+            self.header_lines.push(
+                "Ctrl-C interrupt/exit • Ctrl-D exit(empty) • Esc clears bash mode".to_string(),
+            );
             self.header_lines.push("F2 thinking • F3/F4 model • F6 tools • F7 thinking block • / for commands • ! for bash".to_string());
             self.header_lines
                 .push("BB-Agent can explain its own interactive setup while the full runtime wiring is ported.".to_string());
             if let Some(changelog) = self.changelog_markdown.clone() {
                 self.header_lines.push(String::new());
                 self.header_lines.push("What’s New".to_string());
-                self.header_lines.extend(changelog.lines().map(ToOwned::to_owned));
+                self.header_lines
+                    .extend(changelog.lines().map(ToOwned::to_owned));
             }
         } else if let Some(changelog) = self.changelog_markdown.clone() {
             self.header_lines.push(format!(
@@ -1134,21 +1150,49 @@ impl<H> InteractiveMode<H> {
     }
 
     fn rebuild_status_container(&mut self) {
-        let recent = self.status_lines.iter().rev().take(3).cloned().collect::<Vec<_>>();
+        let recent = self
+            .status_lines
+            .iter()
+            .rev()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut recent = recent;
         recent.reverse();
         Self::replace_container_lines(&self.status_container, &recent);
     }
 
     fn rebuild_footer(&mut self) {
+        let core_model = self
+            .controller
+            .runtime_host
+            .runtime()
+            .model
+            .as_ref()
+            .map(|model| format!("{}/{}", model.provider, model.id))
+            .unwrap_or_else(|| "none".to_string());
+        let cwd = self
+            .controller
+            .runtime_host
+            .cwd()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(".");
+
         self.footer_lines = vec![format!(
-            "state: init={} stream={} compact={} bash={} queued={} chat={} ",
+            "state: init={} stream={} compact={} bash={} queued(ui/core)={}/{} chat={} model={} cwd={}",
             self.is_initialized,
             self.is_streaming,
             self.is_compacting,
             self.is_bash_mode.lock().map(|v| *v).unwrap_or(false),
-            self.controller.runtime.session.pending_messages.combined().len(),
-            self.render_state().chat_items.len() + self.chat_lines.len()
+            self.controller.session.pending_messages.combined().len(),
+            self.controller
+                .runtime_host
+                .session()
+                .pending_message_count(),
+            self.render_state().chat_items.len() + self.chat_lines.len(),
+            core_model,
+            cwd,
         )];
         Self::replace_container_lines(&self.footer_container, &self.footer_lines);
     }
@@ -1219,17 +1263,37 @@ impl<H> InteractiveMode<H> {
     }
 
     async fn bind_current_session_extensions(&mut self) -> InteractiveResult<()> {
-        self.show_status("TODO: bind session extensions into header/footer/widget containers");
+        let cwd = self.controller.runtime_host.cwd().display().to_string();
+        self.show_status(format!(
+            "TODO: bind session extensions into header/footer/widget containers ({cwd})"
+        ));
         Ok(())
     }
 
     fn render_initial_messages(&mut self) {
-        self.render_state_mut().last_status = Some("interactive controller initialized".to_string());
-        self.show_status("interactive controller initialized");
+        let reason = self
+            .controller
+            .runtime_host
+            .session()
+            .session_start_event()
+            .reason
+            .clone();
+        let status = format!("interactive controller initialized ({reason})");
+        self.render_state_mut().last_status = Some(status.clone());
+        self.show_status(status);
     }
 
     fn update_terminal_title(&mut self) {
-        self.ui.terminal.write("\x1b]0;BB-Agent interactive\x07");
+        let cwd = self
+            .controller
+            .runtime_host
+            .cwd()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("BB-Agent");
+        self.ui
+            .terminal
+            .write(&format!("\x1b]0;BB-Agent interactive - {cwd}\x07"));
     }
 
     fn stop_ui(&mut self) {
@@ -1242,7 +1306,12 @@ impl<H> InteractiveMode<H> {
         } else if self.is_bash_running {
             self.is_bash_running = false;
             self.show_warning("Canceled bash placeholder run");
-        } else if self.is_bash_mode.lock().map(|value| *value).unwrap_or(false) {
+        } else if self
+            .is_bash_mode
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(false)
+        {
             self.clear_editor();
             self.set_bash_mode(false);
             self.show_status("Exited bash mode");
@@ -1305,7 +1374,11 @@ impl<H> InteractiveMode<H> {
         self.tool_output_expanded = !self.tool_output_expanded;
         self.show_status(format!(
             "tool output expansion {}",
-            if self.tool_output_expanded { "enabled" } else { "collapsed" }
+            if self.tool_output_expanded {
+                "enabled"
+            } else {
+                "collapsed"
+            }
         ));
     }
 
@@ -1313,7 +1386,11 @@ impl<H> InteractiveMode<H> {
         self.hide_thinking_block = !self.hide_thinking_block;
         self.show_status(format!(
             "thinking block {}",
-            if self.hide_thinking_block { "hidden" } else { "expanded" }
+            if self.hide_thinking_block {
+                "hidden"
+            } else {
+                "expanded"
+            }
         ));
     }
 
@@ -1336,7 +1413,9 @@ impl<H> InteractiveMode<H> {
 
     fn handle_model_command(&mut self, search_term: Option<&str>) {
         match search_term {
-            Some(search_term) => self.show_status(format!("TODO: model command search '{search_term}'")),
+            Some(search_term) => {
+                self.show_status(format!("TODO: model command search '{search_term}'"))
+            }
             None => self.show_status("TODO: model command"),
         }
     }
@@ -1387,12 +1466,13 @@ impl<H> InteractiveMode<H> {
     }
 
     fn handle_clear_command(&mut self) {
+        let _ = self.controller.runtime_host.session_mut().clear_queue();
         self.chat_lines.clear();
         self.pending_lines.clear();
         self.compaction_queued_messages.clear();
         self.render_state_mut().chat_items.clear();
         self.render_state_mut().pending_items.clear();
-        self.show_status("Started a fresh interactive session shell");
+        self.show_status("Started a fresh interactive session shell around the core session");
     }
 
     fn handle_compact_command(&mut self, instructions: Option<&str>) {
@@ -1412,10 +1492,11 @@ impl<H> InteractiveMode<H> {
     }
 
     fn handle_armin_says_hi(&mut self) {
-        self.render_state_mut().add_message_to_chat(InteractiveMessage::Assistant {
-            message: assistant_message_from_parts("hi armin 👋", None, false),
-            tool_calls: Vec::new(),
-        });
+        self.render_state_mut()
+            .add_message_to_chat(InteractiveMessage::Assistant {
+                message: assistant_message_from_parts("hi armin 👋", None, false),
+                tool_calls: Vec::new(),
+            });
     }
 
     fn show_session_selector(&mut self) {
@@ -1434,7 +1515,11 @@ impl<H> InteractiveMode<H> {
     fn handle_bash_command(&mut self, command: &str, excluded_from_context: bool) {
         self.pending_bash_components.push_back(format!(
             "bash{}> {}",
-            if excluded_from_context { "(excluded)" } else { "" },
+            if excluded_from_context {
+                "(excluded)"
+            } else {
+                ""
+            },
             command
         ));
         self.show_status("TODO: execute bash command through runtime host");
@@ -1451,7 +1536,8 @@ impl<H> InteractiveMode<H> {
     }
 
     fn queue_compaction_message(&mut self, text: String, kind: QueuedMessageKind) {
-        self.compaction_queued_messages.push_back(QueuedMessage { text, kind });
+        self.compaction_queued_messages
+            .push_back(QueuedMessage { text, kind });
         self.show_status("Queued message while compaction is active");
     }
 
@@ -1472,7 +1558,10 @@ impl<H> InteractiveMode<H> {
     }
 }
 
-pub async fn run_interactive<H>(runtime_host: H, options: InteractiveModeOptions) -> InteractiveResult<()> {
+pub async fn run_interactive(
+    runtime_host: AgentSessionRuntimeHost,
+    options: InteractiveModeOptions,
+) -> InteractiveResult<()> {
     let mut mode = InteractiveMode::new(runtime_host, options);
     mode.run().await
 }
