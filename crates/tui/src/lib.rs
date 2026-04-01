@@ -7,6 +7,7 @@ pub mod markdown;
 pub mod chat;
 pub mod editor;
 pub mod footer;
+pub mod footer_data;
 pub mod status;
 pub mod app;
 pub mod select_list;

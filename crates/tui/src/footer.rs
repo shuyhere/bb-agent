@@ -1,24 +1,34 @@
-//! Footer component — matches pi's footer layout.
+//! Footer component — ported from pi's interactive footer.
 //!
 //! Shows:
 //!   Line 1: cwd (branch) • session-name
 //!   Line 2: ↑input ↓output $cost  context%/window (auto)    (provider) model • thinking
 
+use std::process::{Command, Stdio};
+
 use crate::component::Component;
 use crate::utils::{truncate_to_width, visible_width};
 
+pub use crate::footer_data::{FooterDataProvider, ReadonlyFooterDataProvider};
+
 /// Detect git branch for the given cwd.
 pub fn detect_git_branch(cwd: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+    let output = Command::new("git")
+        .args(["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"])
         .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .output()
         .ok()?;
+
     if output.status.success() {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if branch.is_empty() { None } else { Some(branch) }
+        if branch.is_empty() {
+            Some("detached".to_string())
+        } else {
+            Some(branch)
+        }
     } else {
         None
     }
@@ -48,7 +58,7 @@ pub struct FooterData {
 impl Default for FooterData {
     fn default() -> Self {
         Self {
-            model_name: "unknown".into(),
+            model_name: "no-model".into(),
             provider: "unknown".into(),
             cwd: ".".into(),
             git_branch: None,
@@ -79,16 +89,16 @@ impl Footer {
 }
 
 fn format_tokens(count: u64) -> String {
-    if count < 1000 {
+    if count < 1_000 {
         count.to_string()
     } else if count < 10_000 {
-        format!("{:.1}k", count as f64 / 1000.0)
+        format!("{:.1}k", count as f64 / 1_000.0)
     } else if count < 1_000_000 {
-        format!("{}k", count / 1000)
+        format!("{}k", (count as f64 / 1_000.0).round() as u64)
     } else if count < 10_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else {
-        format!("{}M", count / 1_000_000)
+        format!("{}M", (count as f64 / 1_000_000.0).round() as u64)
     }
 }
 
@@ -101,113 +111,108 @@ impl Component for Footer {
     crate::impl_as_any!();
 
     fn render(&self, width: u16) -> Vec<String> {
-        let w = width as usize;
-        let d = &self.data;
+        let width = width as usize;
+        let data = &self.data;
 
-        // ── Line 1: cwd (branch) • session ──
-        let mut pwd = d.cwd.clone();
+        let mut pwd = data.cwd.clone();
         if let Ok(home) = std::env::var("HOME") {
             if pwd.starts_with(&home) {
                 pwd = format!("~{}", &pwd[home.len()..]);
             }
         }
-        if let Some(ref branch) = d.git_branch {
-            pwd = format!("{} ({})", pwd, branch);
+        if let Some(branch) = &data.git_branch {
+            pwd = format!("{pwd} ({branch})");
         }
-        if let Some(ref name) = d.session_name {
-            pwd = format!("{} • {}", pwd, name);
-        }
-        let pwd_line = truncate_to_width(&format!("{DIM}{pwd}{RESET}"), w);
-
-        // ── Line 2: stats left ... model right ──
-        let mut parts = Vec::new();
-        if d.input_tokens > 0 {
-            parts.push(format!("↑{}", format_tokens(d.input_tokens)));
-        }
-        if d.output_tokens > 0 {
-            parts.push(format!("↓{}", format_tokens(d.output_tokens)));
-        }
-        if d.cache_read > 0 {
-            parts.push(format!("R{}", format_tokens(d.cache_read)));
-        }
-        if d.cache_write > 0 {
-            parts.push(format!("W{}", format_tokens(d.cache_write)));
-        }
-        if d.cost > 0.0 {
-            parts.push(format!("${:.3}", d.cost));
+        if let Some(session_name) = &data.session_name {
+            pwd = format!("{pwd} • {session_name}");
         }
 
-        // Context percentage
-        let auto_indicator = if d.auto_compact { " (auto)" } else { "" };
-        let context_display = match d.context_percent {
-            Some(pct) => format!(
-                "{:.1}%/{}{}",
-                pct,
-                format_tokens(d.context_window),
-                auto_indicator,
+        let pwd_line = truncate_to_width(&format!("{DIM}{pwd}{RESET}"), width);
+
+        let mut stats_parts = Vec::new();
+        if data.input_tokens > 0 {
+            stats_parts.push(format!("↑{}", format_tokens(data.input_tokens)));
+        }
+        if data.output_tokens > 0 {
+            stats_parts.push(format!("↓{}", format_tokens(data.output_tokens)));
+        }
+        if data.cache_read > 0 {
+            stats_parts.push(format!("R{}", format_tokens(data.cache_read)));
+        }
+        if data.cache_write > 0 {
+            stats_parts.push(format!("W{}", format_tokens(data.cache_write)));
+        }
+        if data.cost > 0.0 {
+            stats_parts.push(format!("${:.3}", data.cost));
+        }
+
+        let context_percent_value = data.context_percent.unwrap_or(0.0);
+        let auto_indicator = if data.auto_compact { " (auto)" } else { "" };
+        let context_display = match data.context_percent {
+            Some(percent) => format!(
+                "{percent:.1}%/{}{}",
+                format_tokens(data.context_window),
+                auto_indicator
             ),
-            None => format!(
-                "?/{}{}",
-                format_tokens(d.context_window),
-                auto_indicator,
-            ),
+            None => format!("?/{}{}", format_tokens(data.context_window), auto_indicator),
         };
-
-        // Colorize context by usage
-        let pct_val = d.context_percent.unwrap_or(0.0);
-        let context_str = if pct_val > 90.0 {
+        let context_percent_str = if context_percent_value > 90.0 {
             format!("{RED}{context_display}{RESET}")
-        } else if pct_val > 70.0 {
+        } else if context_percent_value > 70.0 {
             format!("{YELLOW}{context_display}{RESET}")
         } else {
             context_display
         };
-        parts.push(context_str);
+        stats_parts.push(context_percent_str);
 
-        let stats_left = parts.join(" ");
-        let stats_left_width = visible_width(&stats_left);
+        let mut stats_left = stats_parts.join(" ");
+        let mut stats_left_width = visible_width(&stats_left);
+        if stats_left_width > width {
+            stats_left = truncate_to_width(&stats_left, width);
+            stats_left_width = visible_width(&stats_left);
+        }
 
-        // Right side: pi uses model id, plus thinking status when reasoning is supported
-        let mut right = d.model_name.clone();
-        if let Some(ref level) = d.thinking_level {
-            right = if level == "off" {
-                format!("{} • thinking off", right)
+        let mut right_side_without_provider = data.model_name.clone();
+        if let Some(thinking_level) = &data.thinking_level {
+            right_side_without_provider = if thinking_level == "off" {
+                format!("{} • thinking off", data.model_name)
             } else {
-                format!("{} • {}", right, level)
+                format!("{} • {}", data.model_name, thinking_level)
             };
         }
-        // Match pi: only prepend provider when multiple providers are available.
-        if d.available_provider_count > 1 {
-            let right_with_provider = format!("({}) {}", d.provider, right);
-            let right_with_provider_width = visible_width(&right_with_provider);
-            if stats_left_width + 2 + right_with_provider_width <= w {
-                right = right_with_provider;
-            }
-        }
-        let right_width = visible_width(&right);
 
         let min_padding = 2;
-        let total_needed = stats_left_width + min_padding + right_width;
+        let mut right_side = right_side_without_provider.clone();
+        if data.available_provider_count > 1 && !data.provider.is_empty() {
+            let with_provider = format!("({}) {}", data.provider, right_side_without_provider);
+            if stats_left_width + min_padding + visible_width(&with_provider) <= width {
+                right_side = with_provider;
+            }
+        }
 
-        let stats_line = if total_needed <= w {
-            let padding = " ".repeat(w - stats_left_width - right_width);
-            format!("{stats_left}{padding}{right}")
+        let right_side_width = visible_width(&right_side);
+        let total_needed = stats_left_width + min_padding + right_side_width;
+
+        let stats_line = if total_needed <= width {
+            let padding = " ".repeat(width.saturating_sub(stats_left_width + right_side_width));
+            format!("{stats_left}{padding}{right_side}")
         } else {
-            // Truncate right
-            let avail = w.saturating_sub(stats_left_width + min_padding);
-            if avail > 0 {
-                let truncated = truncate_to_width(&right, avail);
-                let tw = visible_width(&truncated);
-                let padding = " ".repeat(w.saturating_sub(stats_left_width + tw));
-                format!("{stats_left}{padding}{truncated}")
+            let available_for_right = width.saturating_sub(stats_left_width + min_padding);
+            if available_for_right > 0 {
+                let truncated_right = truncate_to_width(&right_side, available_for_right);
+                let truncated_right_width = visible_width(&truncated_right);
+                let padding = " ".repeat(width.saturating_sub(stats_left_width + truncated_right_width));
+                format!("{stats_left}{padding}{truncated_right}")
             } else {
-                stats_left
+                stats_left.clone()
             }
         };
 
-        let dim_stats = format!("{DIM}{stats_line}{RESET}");
+        let remainder = &stats_line[stats_left.len()..];
+        let dim_stats_left = format!("{DIM}{stats_left}{RESET}");
+        let dim_remainder = format!("{DIM}{remainder}{RESET}");
 
-        vec![pwd_line, dim_stats]
+        vec![pwd_line, format!("{dim_stats_left}{dim_remainder}")]
     }
 
     fn invalidate(&mut self) {}
