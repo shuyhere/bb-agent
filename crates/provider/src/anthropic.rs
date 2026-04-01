@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
+use crate::retry::with_retry;
 
 /// Anthropic Messages API provider.
 pub struct AnthropicProvider {
@@ -79,39 +80,49 @@ impl Provider for AnthropicProvider {
             body["tools"] = json!(tools);
         }
 
-        if let Some(thinking) = &request.thinking {
+        if let Some(ref thinking) = request.thinking {
+            let budget = match thinking.as_str() {
+                "minimal" => 1024,
+                "low" => 2048,
+                "medium" => 8192,
+                "high" => 16384,
+                "xhigh" => 32768,
+                _ => 8192,
+            };
             body["thinking"] = json!({
                 "type": "enabled",
-                "budget_tokens": match thinking.as_str() {
-                    "low" => 2048,
-                    "medium" => 8192,
-                    "high" => 16384,
-                    _ => 8192,
-                }
+                "budget_tokens": budget,
             });
+            // When thinking is enabled, Anthropic requires max_tokens to be higher
+            if request.max_tokens.unwrap_or(0) < (budget as u32 + 4096) {
+                body["max_tokens"] = json!(budget + 4096);
+            }
         }
 
-        let mut req = self.client
-            .post(&url)
-            .header("x-api-key", &options.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json");
-
-        for (k, v) in &options.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(BbError::Provider(format!("HTTP {status}: {body}")));
-        }
+        let response = with_retry(3, || {
+            let mut r = self.client
+                .post(&url)
+                .header("x-api-key", &options.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json");
+            for (k, v) in &options.headers {
+                r = r.header(k.as_str(), v.as_str());
+            }
+            let body_clone = body.clone();
+            async move {
+                let resp = r
+                    .json(&body_clone)
+                    .send()
+                    .await
+                    .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(BbError::Provider(format!("HTTP {status}: {body}")));
+                }
+                Ok(resp)
+            }
+        }).await?;
 
         // Parse SSE stream
         let bytes_stream = response.bytes_stream();

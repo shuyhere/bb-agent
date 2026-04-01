@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
+use crate::retry::with_retry;
 
 /// OpenAI-compatible provider (works with OpenAI, Groq, Ollama, etc.)
 pub struct OpenAiProvider {
@@ -63,37 +64,55 @@ impl Provider for OpenAiProvider {
             "stream": true,
         });
 
+        // Some providers don't support max_completion_tokens, use max_tokens instead
+        let is_groq = options.base_url.contains("groq.com");
+        let is_ollama = options.base_url.contains("localhost") || options.base_url.contains("127.0.0.1");
+
         if let Some(max_tokens) = request.max_tokens {
-            body["max_completion_tokens"] = json!(max_tokens);
+            if is_groq || is_ollama {
+                body["max_tokens"] = json!(max_tokens);
+            } else {
+                body["max_completion_tokens"] = json!(max_tokens);
+            }
         }
         if !request.tools.is_empty() {
             body["tools"] = json!(request.tools);
         }
 
-        if let Some(thinking) = &request.thinking {
-            body["reasoning_effort"] = json!(thinking);
+        // Add reasoning_effort for OpenAI models that support it
+        if let Some(ref thinking) = request.thinking {
+            let effort = match thinking.as_str() {
+                "low" | "minimal" => "low",
+                "medium" => "medium",
+                "high" | "xhigh" => "high",
+                _ => "medium",
+            };
+            body["reasoning_effort"] = json!(effort);
         }
 
-        let mut req = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", options.api_key))
-            .header("Content-Type", "application/json");
-
-        for (k, v) in &options.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(BbError::Provider(format!("HTTP {status}: {body}")));
-        }
+        let response = with_retry(3, || {
+            let mut r = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", options.api_key))
+                .header("Content-Type", "application/json");
+            for (k, v) in &options.headers {
+                r = r.header(k.as_str(), v.as_str());
+            }
+            let body_clone = body.clone();
+            async move {
+                let resp = r
+                    .json(&body_clone)
+                    .send()
+                    .await
+                    .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(BbError::Provider(format!("HTTP {status}: {body}")));
+                }
+                Ok(resp)
+            }
+        }).await?;
 
         // Parse SSE stream
         use futures::StreamExt;
