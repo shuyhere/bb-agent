@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod interactive;
 mod login;
 mod models;
 mod run;
@@ -163,7 +164,11 @@ async fn main() -> Result<()> {
     }
 
     // Run the agent
-    run::run_agent(cli).await
+    if cli.print {
+        run::run_print_mode(cli).await
+    } else {
+        interactive::run_interactive(cli).await
+    }
 }
 
 // Cli is already visible to submodules via crate::Cli

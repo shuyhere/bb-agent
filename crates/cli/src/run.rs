@@ -19,7 +19,7 @@ use crate::login;
 use crate::slash::{self, SlashResult};
 use crate::Cli;
 
-pub async fn run_agent(cli: Cli) -> Result<()> {
+pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
 
     // Setup directories
@@ -527,7 +527,7 @@ async fn run_turn(
     Ok(())
 }
 
-fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
+pub(crate) fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
     store::get_session(conn, session_id)
         .ok()
         .flatten()
@@ -539,7 +539,7 @@ fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
 ///   "openai/gpt-4o"            -> ("openai", "gpt-4o", None)
 ///   "sonnet:high"              -> (default, fuzzy "sonnet", Some("high"))
 ///   "anthropic/sonnet:high"    -> ("anthropic", fuzzy "sonnet", Some("high"))
-fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, String, Option<String>) {
+pub(crate) fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, String, Option<String>) {
     let default_provider = provider.unwrap_or("openai").to_string();
 
     let model_str = match model {
@@ -570,7 +570,7 @@ fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, Stri
     }
 }
 
-fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value> {
+pub(crate) fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value> {
     messages
         .iter()
         .filter_map(|msg| match msg {
@@ -617,7 +617,7 @@ fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value> {
 
 // parse_response_events replaced by CollectedResponse::from_events
 
-fn load_agents_md(cwd: &std::path::Path) -> Option<String> {
+pub(crate) fn load_agents_md(cwd: &std::path::Path) -> Option<String> {
     let project = cwd.join("AGENTS.md");
     if project.exists() {
         return std::fs::read_to_string(&project).ok();
