@@ -35,6 +35,9 @@ pub struct InteractiveModeOptions {
     pub initial_message: Option<String>,
     pub initial_images: Vec<String>,
     pub initial_messages: Vec<String>,
+    pub session_id: Option<String>,
+    pub model_display: Option<String>,
+    pub agents_md: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -1109,12 +1112,22 @@ impl InteractiveMode {
         if self.options.verbose || !self.options.quiet_startup {
             self.header_lines
                 .push(format!("BB-Agent v{}", self.version));
+            if let Some(model_display) = &self.options.model_display {
+                self.header_lines
+                    .push(format!("Model: {}", model_display));
+            }
+            if let Some(session_id) = &self.options.session_id {
+                self.header_lines
+                    .push(format!("Session: {}", &session_id[..8.min(session_id.len())]));
+            }
+            if self.options.agents_md.is_some() {
+                self.header_lines
+                    .push("AGENTS.md loaded".to_string());
+            }
             self.header_lines.push(
                 "Ctrl-C interrupt/exit • Ctrl-D exit(empty) • Esc clears bash mode".to_string(),
             );
             self.header_lines.push("F2 thinking • F3/F4 model • F6 tools • F7 thinking block • / for commands • ! for bash".to_string());
-            self.header_lines
-                .push("BB-Agent can explain its own interactive setup while the full runtime wiring is ported.".to_string());
             if let Some(changelog) = self.changelog_markdown.clone() {
                 self.header_lines.push(String::new());
                 self.header_lines.push("What’s New".to_string());
