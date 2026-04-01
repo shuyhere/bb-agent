@@ -470,9 +470,9 @@ impl InteractiveMode {
                     vec![String::new(), format!("{user_bg} {text}\x1b[K{reset}"), String::new()]
                 }
                 ChatItem::AssistantMessage(component) => component
-                    .render_lines()
-                    .iter()
-                    .flat_map(|l| wrap_prefixed(l))
+                    .render_lines(content_width as u16)
+                    .into_iter()
+                    .map(|line| if line.is_empty() { String::new() } else { format!(" {line}") })
                     .collect(),
                 ChatItem::ToolExecution(component) => component
                     .render_lines()
@@ -1235,6 +1235,8 @@ impl InteractiveMode {
 
         loop {
             let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
+            self.drain_pending_agent_events();
+            self.refresh_ui();
 
             // Build context from session
             let ctx = bb_session::context::build_context(
@@ -1283,13 +1285,14 @@ impl InteractiveMode {
             while let Some(event) = stream_rx.recv().await {
                 match &event {
                     bb_provider::StreamEvent::TextDelta { text } => {
-                        // Update streaming text directly for immediate rendering
-                        self.streaming_text.push_str(text);
-                        self.update_streaming_display();
+                        let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
                     }
                     bb_provider::StreamEvent::ThinkingDelta { text } => {
-                        self.streaming_thinking.push_str(text);
-                        self.update_streaming_display();
+                        let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
                     }
                     bb_provider::StreamEvent::ToolCallStart { id, name } => {
                         let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
@@ -1298,6 +1301,8 @@ impl InteractiveMode {
                     }
                     bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
                         let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
                     }
                     bb_provider::StreamEvent::Error { message } => {
                         let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
@@ -1351,9 +1356,12 @@ impl InteractiveMode {
             store::append_entry(&self.session_setup.conn, &self.session_setup.session_id, &asst_entry)
                 .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
 
+            let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
+            self.drain_pending_agent_events();
+            self.refresh_ui();
+
             // If no tool calls, we're done
             if collected.tool_calls.is_empty() {
-                let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
                 self.drain_pending_agent_events();
                 break;
@@ -1434,8 +1442,6 @@ impl InteractiveMode {
                 })?;
             }
 
-            let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
-            self.drain_pending_agent_events();
             turn_index += 1;
         }
 
@@ -1443,41 +1449,75 @@ impl InteractiveMode {
         Ok(())
     }
 
-    /// Update the streaming assistant display directly (bypasses event channel for lower latency)
-    fn update_streaming_display(&mut self) {
-        let message = assistant_message_from_parts(
+    fn make_streaming_assistant_message(
+        &self,
+        stop_reason: Option<components::assistant_message::AssistantStopReason>,
+        error_message: Option<String>,
+    ) -> components::assistant_message::AssistantMessage {
+        let mut message = assistant_message_from_parts(
             &self.streaming_text,
-            if self.streaming_thinking.is_empty() { None } else { Some(self.streaming_thinking.clone()) },
-            false,
+            if self.streaming_thinking.is_empty() {
+                None
+            } else {
+                Some(self.streaming_thinking.clone())
+            },
+            !self.streaming_tool_calls.is_empty(),
         );
+        message.stop_reason = stop_reason.or(Some(components::assistant_message::AssistantStopReason::Other));
+        message.error_message = error_message;
+        message
+    }
+
+    fn sync_streaming_assistant_component(
+        &mut self,
+        stop_reason: Option<components::assistant_message::AssistantStopReason>,
+        error_message: Option<String>,
+    ) {
+        let message = self.make_streaming_assistant_message(stop_reason, error_message);
         if self.render_state().streaming_component.is_none() {
-            // First text — create the streaming component
             let hide = self.hide_thinking_block;
             let label = self.hidden_thinking_label.clone();
             let mut comp = components::assistant_message::AssistantMessageComponent::new(
-                Some(message.clone()), hide,
+                Some(message.clone()),
+                hide,
             );
             comp.set_hidden_thinking_label(label);
             self.render_state_mut().streaming_component = Some(comp.clone());
             self.render_state_mut().streaming_message = Some(message);
             self.render_state_mut().chat_items.push(ChatItem::AssistantMessage(comp));
         } else {
-            // Update existing streaming component
             if let Some(comp) = self.render_state_mut().streaming_component.as_mut() {
                 comp.update_content(message.clone());
             }
             self.render_state_mut().streaming_message = Some(message);
-            // Update the last AssistantMessage in chat_items
             let updated = self.render_state().streaming_component.clone();
             if let Some(updated) = updated {
-                if let Some(item) = self.render_state_mut().chat_items.iter_mut().rev()
+                if let Some(item) = self
+                    .render_state_mut()
+                    .chat_items
+                    .iter_mut()
+                    .rev()
                     .find(|i| matches!(i, ChatItem::AssistantMessage(_)))
                 {
                     *item = ChatItem::AssistantMessage(updated);
                 }
             }
         }
+    }
+
+    fn update_streaming_display(&mut self) {
+        self.sync_streaming_assistant_component(None, None);
         self.refresh_ui();
+    }
+
+    fn finalize_streaming_assistant_message(
+        &mut self,
+        stop_reason: Option<components::assistant_message::AssistantStopReason>,
+        error_message: Option<String>,
+    ) {
+        self.sync_streaming_assistant_component(stop_reason, error_message);
+        self.render_state_mut().streaming_component = None;
+        self.render_state_mut().streaming_message = None;
     }
 
     /// Drain any pending agent events from the channel and handle them.
@@ -1977,7 +2017,20 @@ impl InteractiveMode {
             "expanded"
         };
         self.show_status(format!("thinking block {state_label}"));
-        // Re-render chat to reflect new thinking visibility
+
+        let hide_thinking_block = self.hide_thinking_block;
+        let hidden_thinking_label = self.hidden_thinking_label.clone();
+        for item in &mut self.render_state_mut().chat_items {
+            if let ChatItem::AssistantMessage(component) = item {
+                component.set_hide_thinking_block(hide_thinking_block);
+                component.set_hidden_thinking_label(hidden_thinking_label.clone());
+            }
+        }
+        if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
+            component.set_hide_thinking_block(hide_thinking_block);
+            component.set_hidden_thinking_label(hidden_thinking_label);
+        }
+
         self.rebuild_chat_container();
         self.rebuild_pending_container();
     }
@@ -2435,61 +2488,17 @@ impl InteractiveMode {
     fn handle_agent_event(&mut self, event: AgentLoopEvent) {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
-                // Reset streaming state for a new turn
+                self.is_streaming = true;
+                self.pending_working_message = None;
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
+                self.streaming_tool_calls.clear();
+                self.sync_streaming_assistant_component(None, None);
+                self.refresh_ui();
             }
             AgentLoopEvent::TextDelta { text } => {
                 self.streaming_text.push_str(&text);
-                if self.render_state().streaming_component.is_none() {
-                    // Create a new streaming assistant message
-                    self.is_streaming = true;
-                    self.pending_working_message = None;
-                    let message = assistant_message_from_parts(
-                        &self.streaming_text,
-                        if self.streaming_thinking.is_empty() {
-                            None
-                        } else {
-                            Some(self.streaming_thinking.clone())
-                        },
-                        false,
-                    );
-                    let hide_thinking = self.hide_thinking_block;
-                    let label = self.hidden_thinking_label.clone();
-                    let mut component = components::assistant_message::AssistantMessageComponent::new(
-                        Some(message.clone()),
-                        hide_thinking,
-                    );
-                    component.set_hidden_thinking_label(label);
-                    self.render_state_mut().streaming_component = Some(component.clone());
-                    self.render_state_mut().streaming_message = Some(message);
-                    self.render_state_mut().chat_items.push(ChatItem::AssistantMessage(component));
-                } else {
-                    // Update the existing streaming assistant message
-                    let message = assistant_message_from_parts(
-                        &self.streaming_text,
-                        if self.streaming_thinking.is_empty() {
-                            None
-                        } else {
-                            Some(self.streaming_thinking.clone())
-                        },
-                        false,
-                    );
-                    if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
-                        component.update_content(message.clone());
-                    }
-                    self.render_state_mut().streaming_message = Some(message.clone());
-                    // Update the last AssistantMessage chat item
-                    let updated_component = self.render_state().streaming_component.clone();
-                    if let Some(updated_component) = updated_component {
-                        if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                            .find(|item| matches!(item, ChatItem::AssistantMessage(_)))
-                        {
-                            *chat_item = ChatItem::AssistantMessage(updated_component);
-                        }
-                    }
-                }
-                self.refresh_ui();
+                self.update_streaming_display();
             }
             AgentLoopEvent::ThinkingDelta { text } => {
                 self.streaming_thinking.push_str(&text);
@@ -2498,6 +2507,15 @@ impl InteractiveMode {
                 self.update_streaming_display();
             }
             AgentLoopEvent::ToolCallStart { id, name } => {
+                if !self.streaming_tool_calls.iter().any(|call| call.id == id) {
+                    self.streaming_tool_calls.push(ToolCallContent {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: serde_json::Value::Null,
+                    });
+                }
+                self.sync_streaming_assistant_component(None, None);
+
                 let args = serde_json::Value::Null;
                 let mut component = components::tool_execution::ToolExecutionComponent::new(
                     name,
@@ -2513,21 +2531,22 @@ impl InteractiveMode {
                 self.refresh_ui();
             }
             AgentLoopEvent::ToolCallDelta { id, args_delta } => {
+                if let Some(call) = self.streaming_tool_calls.iter_mut().find(|call| call.id == id) {
+                    call.arguments = match &call.arguments {
+                        serde_json::Value::String(s) => serde_json::Value::String(format!("{s}{args_delta}")),
+                        serde_json::Value::Null => serde_json::Value::String(args_delta.clone()),
+                        other => other.clone(),
+                    };
+                }
                 if let Some(component) = self.render_state_mut().pending_tools.get_mut(&id) {
-                    // Append delta to existing args. For simplicity, merge as string into args.
                     let current = component.args().clone();
                     let new_args = match current {
-                        serde_json::Value::String(s) => {
-                            serde_json::Value::String(format!("{s}{args_delta}"))
-                        }
-                        serde_json::Value::Null => {
-                            serde_json::Value::String(args_delta)
-                        }
+                        serde_json::Value::String(s) => serde_json::Value::String(format!("{s}{args_delta}")),
+                        serde_json::Value::Null => serde_json::Value::String(args_delta),
                         other => other,
                     };
                     component.update_args(new_args);
                 }
-                // Update the corresponding chat item
                 let updated = self.render_state().pending_tools.get(&id).cloned();
                 if let Some(updated) = updated {
                     let id_clone = id.clone();
@@ -2537,6 +2556,7 @@ impl InteractiveMode {
                         *chat_item = ChatItem::ToolExecution(updated);
                     }
                 }
+                self.sync_streaming_assistant_component(None, None);
                 self.refresh_ui();
             }
             AgentLoopEvent::ToolExecuting { id, .. } => {
@@ -2620,19 +2640,35 @@ impl InteractiveMode {
                 self.refresh_ui();
             }
             AgentLoopEvent::TurnEnd { .. } => {
-                // no-op
+                for component in self.render_state_mut().pending_tools.values_mut() {
+                    component.set_args_complete();
+                }
+                let updated_pending = self
+                    .render_state()
+                    .pending_tools
+                    .iter()
+                    .map(|(id, component)| (id.clone(), component.clone()))
+                    .collect::<Vec<_>>();
+                for (id, updated) in updated_pending {
+                    if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
+                        .find(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id))
+                    {
+                        *chat_item = ChatItem::ToolExecution(updated);
+                    }
+                }
+                self.finalize_streaming_assistant_message(None, None);
+                self.refresh_ui();
             }
             AgentLoopEvent::AssistantDone => {
                 self.is_streaming = false;
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
+                self.streaming_tool_calls.clear();
                 self.pending_working_message = None;
                 self.render_state_mut().streaming_component = None;
                 self.render_state_mut().streaming_message = None;
                 self.render_state_mut().pending_tools.clear();
-                // Auto-compaction check
                 self.check_auto_compaction();
-                // Dispatch queued steering messages
                 if let Some(queued) = self.steering_queue.pop_front() {
                     self.chat_lines.push(format!("queued(steer)> {queued}"));
                     self.pending_working_message = Some(queued);
@@ -2642,16 +2678,29 @@ impl InteractiveMode {
             }
             AgentLoopEvent::Error { message } => {
                 self.is_streaming = false;
+                self.finalize_streaming_assistant_message(
+                    Some(components::assistant_message::AssistantStopReason::Error),
+                    Some(message.clone()),
+                );
+                for component in self.render_state_mut().pending_tools.values_mut() {
+                    component.update_result(
+                        components::tool_execution::ToolExecutionResult {
+                            content: vec![components::tool_execution::ToolResultBlock {
+                                r#type: "text".to_string(),
+                                text: Some(message.clone()),
+                                data: None,
+                                mime_type: None,
+                            }],
+                            is_error: true,
+                            details: None,
+                        },
+                        false,
+                    );
+                }
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
-                self.render_state_mut().streaming_component = None;
-                self.render_state_mut().streaming_message = None;
+                self.streaming_tool_calls.clear();
                 self.render_state_mut().pending_tools.clear();
-                self.render_state_mut().add_message_to_chat(InteractiveMessage::Custom {
-                    custom_type: "error".to_string(),
-                    text: format!("Error: {message}"),
-                    display: true,
-                });
                 self.rebuild_footer();
                 self.refresh_ui();
             }

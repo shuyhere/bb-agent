@@ -1,3 +1,10 @@
+use bb_tui::markdown::MarkdownRenderer;
+
+const RESET: &str = "\x1b[0m";
+const ITALIC: &str = "\x1b[3m";
+const THINKING_COLOR: &str = "\x1b[38;2;148;163;184m";
+const ERROR_COLOR: &str = "\x1b[31m";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantMessageContent {
     Text(String),
@@ -65,11 +72,12 @@ impl AssistantMessageComponent {
         self.last_message = Some(message);
     }
 
-    pub fn render_lines(&self) -> Vec<String> {
+    pub fn render_lines(&self, width: u16) -> Vec<String> {
         let Some(message) = &self.last_message else {
             return Vec::new();
         };
 
+        let width = width.max(1);
         let has_visible_content = message.content.iter().any(|content| match content {
             AssistantMessageContent::Text(text) => !text.trim().is_empty(),
             AssistantMessageContent::Thinking(thinking) => !thinking.trim().is_empty(),
@@ -85,7 +93,7 @@ impl AssistantMessageComponent {
         for (index, content) in message.content.iter().enumerate() {
             match content {
                 AssistantMessageContent::Text(text) if !text.trim().is_empty() => {
-                    lines.extend(split_trimmed_lines(text));
+                    lines.extend(render_markdown_lines(text.trim(), width));
                 }
                 AssistantMessageContent::Thinking(thinking) if !thinking.trim().is_empty() => {
                     let has_visible_content_after = message.content[index + 1..].iter().any(|next| {
@@ -94,9 +102,14 @@ impl AssistantMessageComponent {
                     });
 
                     if self.hide_thinking_block {
-                        lines.push(self.hidden_thinking_label.clone());
+                        lines.push(apply_line_style(&self.hidden_thinking_label, &[ITALIC, THINKING_COLOR]));
                     } else {
-                        lines.extend(split_trimmed_lines(thinking));
+                        let thinking_lines = render_markdown_lines(thinking.trim(), width);
+                        lines.extend(
+                            thinking_lines
+                                .into_iter()
+                                .map(|line| apply_line_style(&line, &[ITALIC, THINKING_COLOR])),
+                        );
                     }
 
                     if has_visible_content_after {
@@ -115,12 +128,12 @@ impl AssistantMessageComponent {
                         _ => "Operation aborted".to_string(),
                     };
                     lines.push(String::new());
-                    lines.push(abort_message);
+                    lines.push(apply_line_style(&abort_message, &[ERROR_COLOR]));
                 }
                 Some(AssistantStopReason::Error) => {
                     let error_message = message.error_message.as_deref().unwrap_or("Unknown error");
                     lines.push(String::new());
-                    lines.push(format!("Error: {error_message}"));
+                    lines.push(apply_line_style(&format!("Error: {error_message}"), &[ERROR_COLOR]));
                 }
                 _ => {}
             }
@@ -130,10 +143,20 @@ impl AssistantMessageComponent {
     }
 
     pub fn render_plain_text(&self) -> String {
-        self.render_lines().join("\n")
+        self.render_lines(80).join("\n")
     }
 }
 
-fn split_trimmed_lines(value: &str) -> Vec<String> {
-    value.trim().lines().map(|line| line.to_string()).collect()
+fn render_markdown_lines(text: &str, width: u16) -> Vec<String> {
+    let mut renderer = MarkdownRenderer::new(text);
+    renderer.render(width)
+}
+
+fn apply_line_style(line: &str, styles: &[&str]) -> String {
+    let style_prefix = styles.join("");
+    if line.is_empty() {
+        return style_prefix + RESET;
+    }
+    let reapplied = line.replace(RESET, &format!("{RESET}{style_prefix}"));
+    format!("{style_prefix}{reapplied}{RESET}")
 }
