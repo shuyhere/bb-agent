@@ -13,7 +13,7 @@ use self::events::{
 };
 use self::interactive_commands::InteractiveCommands;
 use bb_core::agent_loop::AgentLoopEvent;
-use bb_core::agent_session::PromptOptions;
+use bb_core::agent_session::{PromptOptions, ThinkingLevel};
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_provider::Provider;
 use bb_session::{compaction, store};
@@ -686,6 +686,20 @@ impl InteractiveMode {
             },
             KeyAction::SessionResume,
         ));
+        self.key_handlers.push((
+            KeyBinding {
+                code: KeyCode::Char('l'),
+                modifiers: KeyModifiers::CONTROL,
+            },
+            KeyAction::SelectModel,
+        ));
+        self.key_handlers.push((
+            KeyBinding {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+            },
+            KeyAction::CycleModelForward,
+        ));
     }
 
     fn setup_editor_submit_handler(&mut self) {
@@ -806,7 +820,7 @@ impl InteractiveMode {
             KeyAction::CycleThinking => self.cycle_thinking_level(),
             KeyAction::CycleModelForward => self.cycle_model("forward"),
             KeyAction::CycleModelBackward => self.cycle_model("backward"),
-            KeyAction::SelectModel => self.show_placeholder("model selector"),
+            KeyAction::SelectModel => self.show_model_selector(),
             KeyAction::ToggleToolExpansion => self.toggle_tool_output_expansion(),
             KeyAction::ToggleThinkingVisibility => self.toggle_thinking_block_visibility(),
             KeyAction::OpenExternalEditor => self.show_placeholder("external editor"),
@@ -1401,12 +1415,25 @@ impl InteractiveMode {
     }
 
     fn handle_escape(&mut self) {
+        // Priority 1: dismiss overlay
+        if self.ui.has_overlay() {
+            self.ui.hide_overlay();
+            return;
+        }
+        // Priority 2: abort loading animation
         if self.loading_animation {
-            self.show_status("TODO: abort queued loading state");
-        } else if self.is_bash_running {
+            self.loading_animation = false;
+            self.show_status("Aborted loading");
+            return;
+        }
+        // Priority 3: cancel bash run
+        if self.is_bash_running {
             self.is_bash_running = false;
             self.show_warning("Canceled bash placeholder run");
-        } else if self
+            return;
+        }
+        // Priority 4: exit bash mode
+        if self
             .is_bash_mode
             .lock()
             .map(|value| *value)
@@ -1415,22 +1442,50 @@ impl InteractiveMode {
             self.clear_editor();
             self.set_bash_mode(false);
             self.show_status("Exited bash mode");
-        } else if self.editor_text().trim().is_empty() {
-            let now = Instant::now();
-            let activate = self
-                .last_escape_time
-                .map(|last| now.saturating_duration_since(last) < Duration::from_millis(500))
-                .unwrap_or(false);
-            if activate {
-                self.show_tree_selector();
-                self.last_escape_time = None;
-            } else {
-                self.last_escape_time = Some(now);
-            }
+            return;
+        }
+        // Priority 5: abort streaming
+        if self.is_streaming {
+            self.is_streaming = false;
+            self.show_warning("Aborted");
+            return;
+        }
+        // Priority 6: clear editor if it has text
+        if !self.editor_text().trim().is_empty() {
+            self.clear_editor();
+            self.show_status("Editor cleared");
+            return;
+        }
+        // Priority 7: double-escape -> tree selector
+        let now = Instant::now();
+        let activate = self
+            .last_escape_time
+            .map(|last| now.saturating_duration_since(last) < Duration::from_millis(500))
+            .unwrap_or(false);
+        if activate {
+            self.show_tree_selector();
+            self.last_escape_time = None;
+        } else {
+            self.last_escape_time = Some(now);
         }
     }
 
     fn handle_ctrl_c(&mut self) {
+        // If streaming, abort and show "Aborted"
+        if self.is_streaming {
+            self.is_streaming = false;
+            self.show_warning("Aborted");
+            self.last_sigint_time = Some(Instant::now());
+            return;
+        }
+        // If editor has text, clear it
+        if !self.editor_text().trim().is_empty() {
+            self.clear_editor();
+            self.show_status("Editor cleared");
+            self.last_sigint_time = Some(Instant::now());
+            return;
+        }
+        // Double Ctrl-C -> shutdown
         let now = Instant::now();
         let is_double = self
             .last_sigint_time
@@ -1458,40 +1513,65 @@ impl InteractiveMode {
     }
 
     fn cycle_thinking_level(&mut self) {
-        self.hide_thinking_block = !self.hide_thinking_block;
-        self.show_status(if self.hide_thinking_block {
-            "Thinking visibility cycled to hidden"
-        } else {
-            "Thinking visibility cycled to visible"
-        });
+        let current = self.controller.runtime_host.session().thinking_level();
+        let next = match current {
+            ThinkingLevel::Off => ThinkingLevel::Low,
+            ThinkingLevel::Low => ThinkingLevel::Medium,
+            ThinkingLevel::Medium => ThinkingLevel::High,
+            ThinkingLevel::High | ThinkingLevel::XHigh => ThinkingLevel::Off,
+        };
+        self.controller
+            .runtime_host
+            .session_mut()
+            .set_thinking_level(next);
+        let label = match next {
+            ThinkingLevel::Off => "off",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::XHigh => "xhigh",
+        };
+        self.show_status(format!("Thinking level: {label}"));
+        self.rebuild_footer();
     }
 
     fn cycle_model(&mut self, direction: &str) {
-        self.show_status(format!("TODO: cycle model {direction}"));
+        // Get current model display
+        let current_model = self
+            .controller
+            .runtime_host
+            .session()
+            .model()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .unwrap_or_else(|| "none".to_string());
+        self.show_status(format!("Model: {current_model} (cycle {direction} — no model list available)"));
+        self.rebuild_footer();
     }
 
     fn toggle_tool_output_expansion(&mut self) {
         self.tool_output_expanded = !self.tool_output_expanded;
-        self.show_status(format!(
-            "tool output expansion {}",
-            if self.tool_output_expanded {
-                "enabled"
-            } else {
-                "collapsed"
-            }
-        ));
+        let state_label = if self.tool_output_expanded {
+            "enabled"
+        } else {
+            "collapsed"
+        };
+        self.show_status(format!("tool output expansion {state_label}"));
+        // Re-render chat to reflect new expansion state
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
     }
 
     fn toggle_thinking_block_visibility(&mut self) {
         self.hide_thinking_block = !self.hide_thinking_block;
-        self.show_status(format!(
-            "thinking block {}",
-            if self.hide_thinking_block {
-                "hidden"
-            } else {
-                "expanded"
-            }
-        ));
+        let state_label = if self.hide_thinking_block {
+            "hidden"
+        } else {
+            "expanded"
+        };
+        self.show_status(format!("thinking block {state_label}"));
+        // Re-render chat to reflect new thinking visibility
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
     }
 
     fn handle_follow_up(&mut self) {
@@ -1791,6 +1871,20 @@ impl InteractiveMode {
         self.compaction_queued_messages
             .push_back(QueuedMessage { text, kind });
         self.show_status("Queued message while compaction is active");
+    }
+
+    fn show_model_selector(&mut self) {
+        let current_model = self
+            .controller
+            .runtime_host
+            .session()
+            .model()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .unwrap_or_else(|| "none".to_string());
+        let overlay_text = format!("Model Selector\nCurrent: {current_model}\n\nPress Esc to close");
+        let component = Box::new(Text::new(&overlay_text));
+        self.ui.show_overlay(component);
+        self.show_status("Model selector opened");
     }
 
     fn show_placeholder(&mut self, label: &str) {
