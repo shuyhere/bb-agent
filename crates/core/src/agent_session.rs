@@ -180,7 +180,7 @@ pub fn parse_model_arg(
     let default_model = match default_provider.as_str() {
         "openai" | "openai-codex" => "gpt-5.4",
         "google" => "gemini-2.5-pro",
-        _ => "claude-haiku-4-5-20251001",
+        _ => "claude-opus-4-6",
     };
 
     let model_str = match model {
