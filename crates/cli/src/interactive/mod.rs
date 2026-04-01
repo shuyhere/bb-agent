@@ -6,6 +6,8 @@ pub mod interactive_commands;
 #[path = "../interactive_events.rs"]
 pub mod events;
 
+use self::events::{assistant_message_from_parts, ChatItem, InteractiveMessage, InteractiveRenderState, PendingMessages, QueuedMessage as RenderQueuedMessage, QueuedMessageMode};
+use self::interactive_commands::InteractiveCommands;
 use bb_tui::component::{Component, Container, Spacer, Text, CURSOR_MARKER};
 use bb_tui::tui_core::TUI;
 use bb_tui::terminal::{Terminal, TerminalEvent};
@@ -28,6 +30,40 @@ pub struct InteractiveModeOptions {
     pub initial_message: Option<String>,
     pub initial_images: Vec<String>,
     pub initial_messages: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct InteractiveSessionState {
+    render_state: InteractiveRenderState,
+    pending_messages: PendingMessages,
+}
+
+struct InteractiveRuntime<H = ()> {
+    host: H,
+    session: InteractiveSessionState,
+}
+
+impl<H> InteractiveRuntime<H> {
+    fn new(host: H) -> Self {
+        Self {
+            host,
+            session: InteractiveSessionState::default(),
+        }
+    }
+}
+
+struct InteractiveController<H = ()> {
+    runtime: InteractiveRuntime<H>,
+    commands: InteractiveCommands,
+}
+
+impl<H> InteractiveController<H> {
+    fn new(host: H) -> Self {
+        Self {
+            runtime: InteractiveRuntime::new(host),
+            commands: InteractiveCommands::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,7 +339,7 @@ impl Component for EditorComponent {
 }
 
 pub struct InteractiveMode<H = ()> {
-    runtime_host: H,
+    controller: InteractiveController<H>,
     ui: TUI,
     header_container: Arc<Mutex<Container>>,
     chat_container: Arc<Mutex<Container>>,
@@ -360,7 +396,7 @@ impl<H> InteractiveMode<H> {
         )));
 
         let mut this = Self {
-            runtime_host,
+            controller: InteractiveController::new(runtime_host),
             ui: TUI::new(),
             header_container: Arc::new(Mutex::new(Container::new())),
             chat_container: Arc::new(Mutex::new(Container::new())),
@@ -406,6 +442,59 @@ impl<H> InteractiveMode<H> {
         this.render_widgets();
         this.rebuild_footer();
         this
+    }
+
+    fn render_state(&self) -> &InteractiveRenderState {
+        &self.controller.runtime.session.render_state
+    }
+
+    fn render_state_mut(&mut self) -> &mut InteractiveRenderState {
+        &mut self.controller.runtime.session.render_state
+    }
+
+    fn sync_pending_render_state(&mut self) {
+        let queued = self
+            .compaction_queued_messages
+            .iter()
+            .map(|message| RenderQueuedMessage {
+                text: message.text.clone(),
+                mode: match message.kind {
+                    QueuedMessageKind::Steer => QueuedMessageMode::Steer,
+                },
+            })
+            .collect::<Vec<_>>();
+        let pending = InteractiveRenderState::collect_pending_messages(&[], &[], &queued);
+        self.controller.runtime.session.pending_messages = pending.clone();
+        self.render_state_mut().update_pending_messages_display(&pending);
+    }
+
+    fn render_items_to_lines(items: &[ChatItem]) -> Vec<String> {
+        items
+            .iter()
+            .flat_map(|item| match item {
+                ChatItem::Spacer => vec![String::new()],
+                ChatItem::UserMessage(text) => vec![format!("you> {text}")],
+                ChatItem::AssistantMessage(component) => component.render_lines(),
+                ChatItem::ToolExecution(component) => component.render_lines(),
+                ChatItem::BashExecution(component) => component.render_lines(),
+                ChatItem::CustomMessage { text, .. } => vec![text.clone()],
+                ChatItem::CompactionSummary(summary) => vec![format!("compaction> {summary}")],
+                ChatItem::BranchSummary(summary) => vec![format!("branch> {summary}")],
+                ChatItem::PendingMessageLine(line) => vec![line.clone()],
+            })
+            .collect()
+    }
+
+    fn chat_render_lines(&self) -> Vec<String> {
+        let mut lines = Self::render_items_to_lines(&self.render_state().chat_items);
+        lines.extend(self.chat_lines.iter().cloned());
+        lines
+    }
+
+    fn pending_render_lines(&self) -> Vec<String> {
+        let mut lines = Self::render_items_to_lines(&self.render_state().pending_items);
+        lines.extend(self.pending_lines.iter().cloned());
+        lines
     }
 
     pub fn set_on_input_callback<F>(&mut self, callback: F)
@@ -966,8 +1055,16 @@ impl<H> InteractiveMode<H> {
     }
 
     async fn dispatch_prompt(&mut self, user_input: String) -> InteractiveResult<()> {
-        self.chat_lines.push(format!("you> {user_input}"));
-        self.chat_lines.push("assistant> TODO: runtime host prompt dispatch not wired yet".to_string());
+        self.render_state_mut()
+            .add_message_to_chat(InteractiveMessage::User { text: user_input.clone() });
+        self.render_state_mut().add_message_to_chat(InteractiveMessage::Assistant {
+            message: assistant_message_from_parts(
+                "TODO: runtime host prompt dispatch not wired yet",
+                None,
+                false,
+            ),
+            tool_calls: Vec::new(),
+        });
         self.pending_working_message = None;
         self.rebuild_footer();
         self.refresh_ui();
@@ -1026,16 +1123,14 @@ impl<H> InteractiveMode<H> {
     }
 
     fn rebuild_chat_container(&mut self) {
-        Self::replace_container_lines(&self.chat_container, &self.chat_lines);
+        let lines = self.chat_render_lines();
+        Self::replace_container_lines(&self.chat_container, &lines);
     }
 
     fn rebuild_pending_container(&mut self) {
-        self.pending_lines = self
-            .compaction_queued_messages
-            .iter()
-            .map(|message| format!("queued ({:?})> {}", message.kind, message.text))
-            .collect();
-        Self::replace_container_lines(&self.pending_messages_container, &self.pending_lines);
+        self.sync_pending_render_state();
+        let lines = self.pending_render_lines();
+        Self::replace_container_lines(&self.pending_messages_container, &lines);
     }
 
     fn rebuild_status_container(&mut self) {
@@ -1052,8 +1147,8 @@ impl<H> InteractiveMode<H> {
             self.is_streaming,
             self.is_compacting,
             self.is_bash_mode.lock().map(|v| *v).unwrap_or(false),
-            self.compaction_queued_messages.len(),
-            self.chat_lines.len()
+            self.controller.runtime.session.pending_messages.combined().len(),
+            self.render_state().chat_items.len() + self.chat_lines.len()
         )];
         Self::replace_container_lines(&self.footer_container, &self.footer_lines);
     }
@@ -1129,6 +1224,7 @@ impl<H> InteractiveMode<H> {
     }
 
     fn render_initial_messages(&mut self) {
+        self.render_state_mut().last_status = Some("interactive controller initialized".to_string());
         self.show_status("interactive controller initialized");
     }
 
@@ -1234,6 +1330,7 @@ impl<H> InteractiveMode<H> {
     }
 
     fn show_settings_selector(&mut self) {
+        let _ = self.controller.commands.show_settings_selector();
         self.show_placeholder("settings selector");
     }
 
@@ -1277,16 +1374,24 @@ impl<H> InteractiveMode<H> {
     }
 
     fn show_user_message_selector(&mut self) {
+        let _ = self.controller.commands.show_user_message_selector();
         self.show_placeholder("user message selector");
     }
 
     fn show_tree_selector(&mut self) {
+        let _ = self.controller.commands.open_placeholder_selector(
+            self::interactive_commands::SelectorKind::Tree,
+            "Session Tree",
+        );
         self.show_placeholder("session tree selector");
     }
 
     fn handle_clear_command(&mut self) {
         self.chat_lines.clear();
         self.pending_lines.clear();
+        self.compaction_queued_messages.clear();
+        self.render_state_mut().chat_items.clear();
+        self.render_state_mut().pending_items.clear();
         self.show_status("Started a fresh interactive session shell");
     }
 
@@ -1307,10 +1412,17 @@ impl<H> InteractiveMode<H> {
     }
 
     fn handle_armin_says_hi(&mut self) {
-        self.chat_lines.push("assistant> hi armin 👋".to_string());
+        self.render_state_mut().add_message_to_chat(InteractiveMessage::Assistant {
+            message: assistant_message_from_parts("hi armin 👋", None, false),
+            tool_calls: Vec::new(),
+        });
     }
 
     fn show_session_selector(&mut self) {
+        let _ = self.controller.commands.open_placeholder_selector(
+            self::interactive_commands::SelectorKind::Session,
+            "Session Selector",
+        );
         self.show_placeholder("session selector");
     }
 
@@ -1348,11 +1460,15 @@ impl<H> InteractiveMode<H> {
     }
 
     fn show_warning(&mut self, message: impl Into<String>) {
-        self.status_lines.push(format!("warning: {}", message.into()));
+        let message = message.into();
+        self.render_state_mut().last_status = Some(format!("warning: {message}"));
+        self.status_lines.push(format!("warning: {message}"));
     }
 
     fn show_status(&mut self, message: impl Into<String>) {
-        self.status_lines.push(message.into());
+        let message = message.into();
+        self.render_state_mut().last_status = Some(message.clone());
+        self.status_lines.push(message);
     }
 }
 

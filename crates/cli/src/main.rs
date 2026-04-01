@@ -198,10 +198,10 @@ async fn main() -> Result<()> {
 
     // Print mode stays a thin entry layer; interactive mode owns the TUI controller.
     if cli.print {
-        return run::run_print_mode(cli).await;
+        run::run_print_mode(cli).await
+    } else {
+        interactive::run_interactive(interactive::InteractiveEntryOptions::from(&cli)).await
     }
-
-    interactive::run_interactive(cli).await
 }
 
 // Cli is already visible to submodules via crate::Cli
