@@ -20,6 +20,7 @@ use bb_provider::Provider;
 use bb_session::{compaction, store};
 use bb_tools::{Tool, ToolContext};
 use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
+use bb_tui::components::Loader;
 use bb_tui::editor::Editor;
 use bb_tui::footer::{Footer, FooterData, FooterDataProvider};
 use bb_tui::model_selector::{ModelSelection, ModelSelector};
@@ -257,6 +258,64 @@ struct QueuedMessage {
 
 
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusLoaderStyle {
+    Accent,
+    Warning,
+}
+
+struct StatusLoaderComponent {
+    style: StatusLoaderStyle,
+    loader: Loader,
+}
+
+impl StatusLoaderComponent {
+    fn new(style: StatusLoaderStyle, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let loader = match style {
+            StatusLoaderStyle::Accent => Loader::new(
+                None,
+                |s| format!("\x1b[38;2;178;148;187m{s}\x1b[0m"),
+                |s| format!("\x1b[90m{s}\x1b[0m"),
+                message,
+            ),
+            StatusLoaderStyle::Warning => Loader::new(
+                None,
+                |s| format!("\x1b[33m{s}\x1b[0m"),
+                |s| format!("\x1b[90m{s}\x1b[0m"),
+                message,
+            ),
+        };
+        Self { style, loader }
+    }
+
+    fn set_message(&self, message: impl Into<String>) {
+        self.loader.set_message(message);
+    }
+
+    fn stop(&self) {
+        self.loader.stop();
+    }
+}
+
+impl Component for StatusLoaderComponent {
+    fn render(&self, width: u16) -> Vec<String> {
+        self.loader.render(width)
+    }
+
+    fn invalidate(&mut self) {
+        self.loader.invalidate();
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 struct SharedContainer {
     inner: Arc<Mutex<Container>>,
 }
@@ -321,8 +380,7 @@ pub struct InteractiveMode {
     options: InteractiveModeOptions,
     is_initialized: bool,
     on_input_callback: Option<Box<dyn FnMut(String) + Send>>,
-    loading_animation: bool,
-    loading_frame: usize,
+    status_loader: Option<(StatusLoaderStyle, String)>,
     pending_working_message: Option<String>,
     default_working_message: &'static str,
     default_hidden_thinking_label: &'static str,
@@ -384,8 +442,7 @@ impl InteractiveMode {
             options,
             is_initialized: false,
             on_input_callback: None,
-            loading_animation: false,
-            loading_frame: 0,
+            status_loader: None,
             pending_working_message: None,
             default_working_message: "Working...",
             default_hidden_thinking_label: "Thinking...",
@@ -1630,8 +1687,9 @@ impl InteractiveMode {
                     self.refresh_ui();
                 },
                 _ = &mut spinner_tick => {
-                    self.loading_frame = (self.loading_frame + 1) % 10;
-                    self.refresh_ui();
+                    if self.status_loader.is_some() {
+                        self.refresh_ui();
+                    }
                 },
                 // Both channels closed
                 else => {
@@ -1705,30 +1763,67 @@ impl InteractiveMode {
     }
 
     fn rebuild_status_container(&mut self) {
-        let mut recent = self
-            .status_lines
-            .iter()
-            .rev()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        recent.reverse();
+        if let Ok(mut container) = self.status_container.lock() {
+            if let Some((style, message)) = &self.status_loader {
+                let mut reused = false;
+                if container.children.len() == 1 {
+                    if let Some(loader) = container.children[0]
+                        .as_any_mut()
+                        .downcast_mut::<StatusLoaderComponent>()
+                    {
+                        if &loader.style == style {
+                            loader.set_message(message.clone());
+                            reused = true;
+                        } else {
+                            loader.stop();
+                        }
+                    }
+                }
+                if !reused {
+                    container.clear();
+                    container.add(Box::new(StatusLoaderComponent::new(*style, message.clone())));
+                }
+                return;
+            }
 
-        if recent.is_empty() && self.is_streaming {
-            let dim = "\x1b[90m";
-            let accent = "\x1b[38;2;178;148;187m";
-            let reset = "\x1b[0m";
-            let frames = ["|", "/", "-", "\\", "|", "/", "-", "\\", "|", "/"];
-            let frame = frames[self.loading_frame % frames.len()];
-            let message = self
-                .pending_working_message
-                .as_deref()
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or(self.default_working_message);
-            recent.push(format!("{accent}{frame}{reset} {dim}{message}{reset}"));
+            let recent = self
+                .status_lines
+                .iter()
+                .rev()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut recent = recent;
+            recent.reverse();
+
+            if recent.is_empty() {
+                if let Some(loader) = container
+                    .children
+                    .get_mut(0)
+                    .and_then(|child| child.as_any_mut().downcast_mut::<StatusLoaderComponent>())
+                {
+                    loader.stop();
+                }
+                container.clear();
+                return;
+            }
+
+            let text = recent.join("\n");
+            if container.children.len() == 1 {
+                if let Some(existing) = container.children[0].as_any_mut().downcast_mut::<Text>() {
+                    existing.set(&text);
+                    return;
+                }
+                if let Some(loader) = container.children[0]
+                    .as_any_mut()
+                    .downcast_mut::<StatusLoaderComponent>()
+                {
+                    loader.stop();
+                }
+            }
+            container.clear();
+            container.add(Box::new(Text::new(&text)));
         }
-
-        Self::replace_container_lines(&self.status_container, &recent);
     }
 
     fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
@@ -1911,8 +2006,8 @@ impl InteractiveMode {
             return;
         }
         // Priority 2: abort loading animation
-        if self.loading_animation {
-            self.loading_animation = false;
+        if self.status_loader.is_some() {
+            self.status_loader = None;
             self.show_status("Aborted loading");
             return;
         }
@@ -2571,8 +2666,12 @@ impl InteractiveMode {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
                 self.is_streaming = true;
-                self.loading_frame = 0;
-                self.pending_working_message = None;
+                let loader_message = self
+                    .pending_working_message
+                    .take()
+                    .filter(|text| !text.trim().is_empty())
+                    .unwrap_or_else(|| self.default_working_message.to_string());
+                self.status_loader = Some((StatusLoaderStyle::Accent, loader_message));
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
                 self.streaming_tool_calls.clear();
@@ -2736,6 +2835,7 @@ impl InteractiveMode {
             }
             AgentLoopEvent::AssistantDone => {
                 self.is_streaming = false;
+                self.status_loader = None;
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
                 self.streaming_tool_calls.clear();
@@ -2753,6 +2853,7 @@ impl InteractiveMode {
             }
             AgentLoopEvent::Error { message } => {
                 self.is_streaming = false;
+                self.status_loader = None;
                 self.finalize_streaming_assistant_message(
                     Some(components::assistant_message::AssistantStopReason::Error),
                     Some(message.clone()),
@@ -2787,8 +2888,8 @@ impl InteractiveMode {
         let dim = "\x1b[90m";
         let yellow = "\x1b[33m";
         let reset = "\x1b[0m";
+        self.status_loader = None;
         self.render_state_mut().last_status = Some(format!("{yellow}[!]{reset} {dim}{message}{reset}"));
-        // Only keep latest status visible
         self.status_lines = vec![format!("{yellow}[!]{reset} {dim}{message}{reset}")];
     }
 
@@ -2796,6 +2897,7 @@ impl InteractiveMode {
         let message = message.into();
         let dim = "\x1b[90m";
         let reset = "\x1b[0m";
+        self.status_loader = None;
         self.render_state_mut().last_status = Some(format!("{dim}{message}{reset}"));
         self.status_lines = vec![format!("{dim}{message}{reset}")];
     }
