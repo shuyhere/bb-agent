@@ -16,6 +16,7 @@ use bb_tui::editor::Editor;
 use bb_tui::markdown::MarkdownRenderer;
 use bb_tui::model_selector::ModelSelector;
 use bb_tui::session_selector::SessionSelector;
+use bb_tui::tree_selector::{TreeSelector, TreeAction};
 use bb_tui::status;
 use bb_tui::terminal::{ProcessTerminal, Terminal};
 use chrono::Utc;
@@ -398,6 +399,58 @@ impl InteractiveMode {
         result
     }
 
+    /// Run the tree selector overlay
+    fn run_tree_selector(&mut self) -> Option<String> {
+        let tree_nodes = tree::get_tree(&self.conn, &self.session_id).ok()?;
+        if tree_nodes.is_empty() {
+            println!("No entries in session tree.");
+            return None;
+        }
+
+        let entries = store::get_entries(&self.conn, &self.session_id).ok()?;
+        let session = store::get_session(&self.conn, &self.session_id).ok()??;
+        let active_leaf = session.leaf_id.as_deref();
+
+        let mut selector = bb_tui::tree_selector::build_tree_selector(
+            tree_nodes,
+            &entries,
+            active_leaf,
+            15,
+        );
+        let width = self.terminal.columns();
+
+        crossterm::terminal::enable_raw_mode().ok();
+
+        let result = loop {
+            let lines = selector.render(width);
+            let mut stdout = std::io::stdout();
+            use std::io::Write;
+            write!(stdout, "\x1b[?2026h").ok();
+            for line in &lines {
+                write!(stdout, "\r{}\x1b[K\n", line).ok();
+            }
+            write!(stdout, "\x1b[?2026l").ok();
+            stdout.flush().ok();
+
+            if let Ok(Event::Key(key)) = event::read() {
+                match selector.handle_key(key) {
+                    TreeAction::Selected(entry_id) => break Some(entry_id),
+                    TreeAction::Cancelled => break None,
+                    TreeAction::None => {
+                        let mut stdout = std::io::stdout();
+                        for _ in 0..lines.len() {
+                            write!(stdout, "\x1b[A\x1b[K").ok();
+                        }
+                        stdout.flush().ok();
+                    }
+                }
+            }
+        };
+
+        crossterm::terminal::disable_raw_mode().ok();
+        result
+    }
+
     async fn run_compaction(&mut self, custom_instructions: Option<&str>) -> Result<bool> {
         let compaction_settings = CompactionSettings::default();
         let path = tree::active_path(&self.conn, &self.session_id)?;
@@ -503,7 +556,20 @@ impl InteractiveMode {
                 }
             }
             SlashResult::Tree => {
-                println!("Tree navigation not yet implemented.");
+                if let Some(selected_id) = self.run_tree_selector() {
+                    // Navigate to the selected entry by updating the session leaf
+                    if let Err(e) = store::set_leaf(&self.conn, &self.session_id, Some(&selected_id)) {
+                        println!("Error navigating: {e}");
+                    } else {
+                        // Reload messages from the new path
+                        self.messages.clear();
+                        self.total_tokens = 0;
+                        if let Ok(ctx) = context::build_context(&self.conn, &self.session_id) {
+                            self.restore_messages(&ctx.messages);
+                        }
+                        println!("Navigated to entry {}.", &selected_id[..8.min(selected_id.len())]);
+                    }
+                }
             }
             SlashResult::Fork => {
                 println!("Fork not yet implemented.");

@@ -10,3 +10,4 @@ pub mod app;
 pub mod select_list;
 pub mod model_selector;
 pub mod session_selector;
+pub mod tree_selector;

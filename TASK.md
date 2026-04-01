@@ -1,192 +1,134 @@
-# W5: Wire slash commands + hierarchical context loading + @file args
+# A5: Build tree selector for /tree navigation
 
-Working dir: `/tmp/bb-w/w5-commands-context/`
+Working dir: `/tmp/bb-final/a5-tree-selector/`
+BB-Agent Rust project.
 
-## Problem
-Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
+## Task: Create `crates/tui/src/tree_selector.rs`
 
-## Tasks
+Build an interactive tree navigation component for the `/tree` command. This is pi's killer feature — navigate the session tree, select any node, and continue from there.
 
-### 1. Wire `/model` to ModelSelector
+### Tree display format
+```
+├─ user: "Hello, can you help..."
+│  └─ assistant: "Of course! I can..."
+│     ├─ user: "Let's try approach A..."
+│     │  └─ assistant: "For approach A..."
+│     │     └─ [compaction: 12k tokens]
+│     │        └─ user: "That worked..."  ← active
+│     └─ user: "Actually, approach B..."
+│        └─ assistant: "For approach B..."
+```
 
-In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
+### Implementation
 
 ```rust
-SlashResult::ModelSelect(search) => {
-    // Use the ModelSelector from tui
-    let registry = bb_provider::registry::ModelRegistry::new();
-    let models: Vec<_> = registry.list().to_vec();
+use bb_session::store::EntryRow;
+use bb_session::tree::TreeNode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    // Simple text-based selector for now
-    println!("Available models:");
-    for (i, m) in models.iter().enumerate() {
-        let marker = if m.id == current_model_id { ">" } else { " " };
-        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
-    }
-    print!("Select (number): ");
-    // Read selection and switch model
-    // Write ModelChange entry to session
+pub struct TreeSelector {
+    nodes: Vec<FlatNode>,     // flattened tree for display
+    selected: usize,
+    scroll_offset: usize,
+    max_visible: usize,
+    active_leaf: Option<String>,
+    filter: TreeFilter,
+}
+
+#[derive(Clone)]
+struct FlatNode {
+    entry_id: String,
+    entry_type: String,
+    depth: usize,
+    preview: String,       // truncated message preview
+    is_active: bool,       // is this the current leaf?
+    has_children: bool,
+    timestamp: String,
+}
+
+pub enum TreeFilter {
+    All,
+    UserOnly,
+}
+
+pub enum TreeAction {
+    None,
+    Selected(String),    // entry_id selected
+    Cancelled,
+}
+
+impl TreeSelector {
+    pub fn new(tree: Vec<TreeNode>, active_leaf: Option<&str>, max_visible: usize) -> Self;
+    pub fn render(&self, width: u16) -> Vec<String>;
+    pub fn handle_key(&mut self, key: KeyEvent) -> TreeAction;
 }
 ```
 
-### 2. Wire `/resume` to session listing + selection
+### Flatten the tree
+Convert the recursive `TreeNode` into a flat list with depth info:
 
 ```rust
-SlashResult::Resume => {
-    let sessions = store::list_sessions(&conn, cwd_str)?;
-    if sessions.is_empty() {
-        println!("No sessions found.");
-    } else {
-        println!("Sessions:");
-        for (i, s) in sessions.iter().take(20).enumerate() {
-            let name = s.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {}. {} {} ({} entries, {})",
-                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
-        }
-        print!("Select (number): ");
-        // Read selection, switch to that session
-        // Rebuild context and re-render messages
+fn flatten(nodes: &[TreeNode], depth: usize, active_leaf: Option<&str>) -> Vec<FlatNode> {
+    let mut flat = Vec::new();
+    for node in nodes {
+        let preview = extract_preview(&node);
+        let is_active = active_leaf.map(|l| l == node.entry_id).unwrap_or(false);
+        flat.push(FlatNode {
+            entry_id: node.entry_id.clone(),
+            entry_type: node.entry_type.clone(),
+            depth,
+            preview,
+            is_active,
+            has_children: !node.children.is_empty(),
+            timestamp: node.timestamp.clone(),
+        });
+        flat.extend(flatten(&node.children, depth + 1, active_leaf));
     }
+    flat
 }
 ```
 
-### 3. Wire `/new` to create fresh session
+### Extract preview text from entry
+Parse the entry payload JSON to get a short preview:
+- `message` with `user` role → first 60 chars of text
+- `message` with `assistant` role → "assistant: " + first 40 chars
+- `compaction` → "[compaction: {tokens_before} tokens]"
+- `branch_summary` → "[branch summary]"
+- `model_change` → "[model: {model_id}]"
+- other → "[{type}]"
 
-```rust
-SlashResult::NewSession => {
-    session_id = store::create_session(&conn, cwd_str)?;
-    println!("New session: {}", &session_id[..8]);
-    // Clear displayed messages
-}
+### Rendering
+Each line:
+```
+{indent}{connector} {type_icon}: {preview}  {active_marker}
 ```
 
-### 4. Wire `/name` to persist
+Where:
+- `indent` = `│  ` repeated by depth
+- `connector` = `├─` for non-last child, `└─` for last child
+- `type_icon` = colored by type (user=blue, assistant=green, compaction=gray)
+- `active_marker` = `← active` if this is the current leaf
+- Selected line gets reverse video or `>` marker
 
-```rust
-SlashResult::SetName(name) => {
-    let entry = SessionEntry::SessionInfo {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(&conn, &session_id),
-            timestamp: Utc::now(),
-        },
-        name: Some(name.clone()),
-    };
-    store::append_entry(&conn, &session_id, &entry)?;
-    println!("Session named: {name}");
-}
-```
+### Key bindings
+- Up/Down — navigate
+- Enter — select (return entry_id)
+- Escape — cancel
+- Ctrl+U — toggle user-only filter
+- Home/End — first/last
 
-### 5. Hierarchical AGENTS.md loading
+### Wire into interactive mode
 
-Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
-
-```rust
-fn load_agents_md(cwd: &Path) -> Option<String> {
-    let mut contents = Vec::new();
-
-    // 1. Global
-    let global = bb_core::config::global_dir().join("AGENTS.md");
-    if global.exists() {
-        if let Ok(c) = std::fs::read_to_string(&global) {
-            contents.push(c);
-        }
-    }
-
-    // 2. Walk parent directories up to git root (or filesystem root)
-    let mut dir = cwd.to_path_buf();
-    let mut scanned = Vec::new();
-    loop {
-        let agents = dir.join("AGENTS.md");
-        if agents.exists() {
-            scanned.push(agents);
-        }
-        // Also check CLAUDE.md alias
-        let claude = dir.join("CLAUDE.md");
-        if claude.exists() && !agents.exists() {
-            scanned.push(claude);
-        }
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-
-    // Reverse so we go from root → cwd (outermost first)
-    scanned.reverse();
-    for path in scanned {
-        if let Ok(c) = std::fs::read_to_string(&path) {
-            contents.push(c);
-        }
-    }
-
-    if contents.is_empty() {
-        None
-    } else {
-        Some(contents.join("\n\n---\n\n"))
-    }
-}
-```
-
-### 6. Implement `@file` arguments
-
-In `crates/cli/src/main.rs`, before routing to mode:
-
-```rust
-// Process @file arguments from messages
-let mut prompt_parts = Vec::new();
-let mut regular_messages = Vec::new();
-
-for msg in &cli.messages {
-    if msg.starts_with('@') {
-        let path = &msg[1..];
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
-            }
-            Err(e) => {
-                eprintln!("Warning: Could not read {}: {}", path, e);
-            }
-        }
-    } else {
-        regular_messages.push(msg.clone());
-    }
-}
-
-// Combine file contents with messages
-let final_prompt = if prompt_parts.is_empty() {
-    regular_messages.join(" ")
-} else {
-    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
-};
-```
-
-### 7. Implement `/session` info
-
-```rust
-"/session" => {
-    let session = store::get_session(&conn, &session_id)?.unwrap();
-    let entries = store::get_entries(&conn, &session_id)?;
-    let ctx = context::build_context(&conn, &session_id)?;
-    let tokens: u64 = ctx.messages.iter()
-        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-        .sum();
-    println!("Session: {}", session.session_id);
-    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
-    println!("  CWD: {}", session.cwd);
-    println!("  Entries: {}", entries.len());
-    println!("  Context tokens: ~{}", tokens);
-    println!("  Created: {}", session.created_at);
-    println!("  Updated: {}", session.updated_at);
-}
-```
+In `crates/cli/src/interactive.rs`, when `/tree` is entered:
+1. Get tree from `bb_session::tree::get_tree()`
+2. Get current leaf from session
+3. Create `TreeSelector`
+4. Enter selection loop
+5. On selection: call session navigation (branch to parent if user msg, branch to node if other)
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w5-commands-context
+cd /tmp/bb-final/a5-tree-selector
 cargo build && cargo test
-git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
+git add -A && git commit -m "A5: tree selector for /tree navigation"
 ```
