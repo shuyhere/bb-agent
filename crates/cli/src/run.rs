@@ -136,26 +136,21 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
 fn resolve_session_id(conn: &rusqlite::Connection, cwd: &std::path::Path, cli: &Cli) -> Result<String> {
     let cwd_str = cwd.to_str().unwrap_or(".");
     if let Some(session_arg) = &cli.session {
-        let all_sessions = store::list_sessions(conn, cwd_str)?;
-        let matches: Vec<_> = all_sessions
-            .iter()
-            .filter(|session| session.session_id.starts_with(session_arg.as_str()))
-            .collect();
+        let all = store::list_sessions(conn, cwd_str)?;
+        let matches: Vec<_> = all.iter().filter(|s| s.session_id.starts_with(session_arg.as_str())).collect();
         return match matches.len() {
             1 => Ok(matches[0].session_id.clone()),
             0 => bail!("No session matching '{}'", session_arg),
             n => bail!("{n} sessions match '{}', be more specific", session_arg),
         };
     }
-
     if cli.r#continue {
         let sessions = store::list_sessions(conn, cwd_str)?;
-        if let Some(session) = sessions.first() {
-            tracing::info!("Continuing session {}", session.session_id);
-            return Ok(session.session_id.clone());
+        if let Some(s) = sessions.first() {
+            tracing::info!("Continuing session {}", s.session_id);
+            return Ok(s.session_id.clone());
         }
     }
-
     store::create_session(conn, cwd_str).map_err(Into::into)
 }
 
@@ -163,30 +158,22 @@ fn select_tools(cli: &Cli) -> Vec<Box<dyn Tool>> {
     if cli.no_tools {
         Vec::new()
     } else if let Some(tools_str) = &cli.tools {
-        let tool_names: Vec<&str> = tools_str.split(',').map(|name| name.trim()).collect();
-        builtin_tools()
-            .into_iter()
-            .filter(|tool| tool_names.contains(&tool.name()))
-            .collect()
+        let names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
+        builtin_tools().into_iter().filter(|t| names.contains(&t.name())).collect()
     } else {
         builtin_tools()
     }
 }
 
 fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name(),
-                    "description": tool.description(),
-                    "parameters": tool.parameters_schema(),
-                }
-            })
-        })
-        .collect()
+    tools.iter().map(|t| serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": t.name(),
+            "description": t.description(),
+            "parameters": t.parameters_schema(),
+        }
+    })).collect()
 }
 
 async fn run_print_turn(
@@ -374,5 +361,5 @@ fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
     store::get_session(conn, session_id)
         .ok()
         .flatten()
-        .and_then(|session| session.leaf_id.map(EntryId))
+        .and_then(|s| s.leaf_id.map(EntryId))
 }
