@@ -21,6 +21,7 @@ use bb_session::{compaction, store};
 use bb_tools::{Tool, ToolContext};
 use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
 use bb_tui::editor::Editor;
+use bb_tui::footer::{Footer, FooterData, FooterDataProvider};
 use bb_tui::model_selector::{ModelSelection, ModelSelector};
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
@@ -314,6 +315,7 @@ pub struct InteractiveMode {
     widget_container_above: Arc<Mutex<Container>>,
     widget_container_below: Arc<Mutex<Container>>,
     footer_container: Arc<Mutex<Container>>,
+    footer_data_provider: FooterDataProvider,
     editor: Arc<Mutex<Editor>>,
     version: String,
     options: InteractiveModeOptions,
@@ -362,6 +364,7 @@ impl InteractiveMode {
             Arc::new(Mutex::new(e))
         };
         let is_bash_mode = Arc::new(Mutex::new(false));
+        let footer_cwd = runtime_host.cwd().to_path_buf();
 
         let mut this = Self {
             controller: InteractiveController::new(runtime_host),
@@ -374,6 +377,7 @@ impl InteractiveMode {
             widget_container_above: Arc::new(Mutex::new(Container::new())),
             widget_container_below: Arc::new(Mutex::new(Container::new())),
             footer_container: Arc::new(Mutex::new(Container::new())),
+            footer_data_provider: FooterDataProvider::new(footer_cwd),
             editor,
             version: env!("CARGO_PKG_VERSION").to_string(),
             options,
@@ -1688,71 +1692,105 @@ impl InteractiveMode {
     }
 
     fn rebuild_status_container(&mut self) {
-        let recent = self
+        let mut recent = self
             .status_lines
             .iter()
             .rev()
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
-        let mut recent = recent;
         recent.reverse();
+
+        if recent.is_empty() && self.is_streaming {
+            let dim = "\x1b[90m";
+            let accent = "\x1b[38;2;178;148;187m";
+            let reset = "\x1b[0m";
+            recent.push(format!("{accent}..{reset} {dim}{}{reset}", self.default_working_message));
+        }
+
         Self::replace_container_lines(&self.status_container, &recent);
     }
 
+    fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
+        let mut total_input = 0_u64;
+        let mut total_output = 0_u64;
+        let mut total_cache_read = 0_u64;
+        let mut total_cache_write = 0_u64;
+        let mut total_cost = 0.0_f64;
+
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    if let bb_core::types::SessionEntry::Message {
+                        message: bb_core::types::AgentMessage::Assistant(message),
+                        ..
+                    } = entry
+                    {
+                        total_input += message.usage.input;
+                        total_output += message.usage.output;
+                        total_cache_read += message.usage.cache_read;
+                        total_cache_write += message.usage.cache_write;
+                        total_cost += message.usage.cost.total;
+                    }
+                }
+            }
+        }
+
+        (
+            total_input,
+            total_output,
+            total_cache_read,
+            total_cache_write,
+            total_cost,
+        )
+    }
+
+    fn available_provider_count(&self) -> usize {
+        crate::login::authenticated_providers().len()
+    }
+
     fn rebuild_footer(&mut self) {
-        let core_model = self
-            .controller
-            .runtime_host
-            .runtime()
-            .model
+        self.footer_data_provider
+            .set_cwd(self.controller.runtime_host.cwd().to_path_buf());
+        self.footer_data_provider
+            .set_available_provider_count(self.available_provider_count());
+
+        let (input_tokens, output_tokens, cache_read, cache_write, cost) = self.footer_usage_totals();
+        let context_usage = self.controller.runtime_host.runtime().get_context_usage();
+        let context_percent = context_usage
             .as_ref()
-            .map(|model| format!("{}/{}", model.provider, model.id))
-            .unwrap_or_else(|| "none".to_string());
-        let cwd = self
-            .controller
-            .runtime_host
-            .cwd()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(".");
+            .and_then(|usage| usage.percent.map(|p| p as f64));
+        let context_window = context_usage
+            .as_ref()
+            .map(|usage| usage.context_window as u64)
+            .unwrap_or(self.session_setup.model.context_window);
+        let session_row = store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+            .ok()
+            .flatten();
 
-        // Pi-style footer: left=tokens cost context%  right=(provider) model . thinking
-        let home = std::env::var("HOME").unwrap_or_default();
-        let cwd_full = self.controller.runtime_host.cwd().display().to_string();
-        let cwd_display = if !home.is_empty() && cwd_full.starts_with(&home) {
-            format!("~{}", &cwd_full[home.len()..])
-        } else {
-            cwd.to_string()
-        };
+        let footer = Footer::new(FooterData {
+            model_name: self.session_setup.model.id.clone(),
+            provider: self.session_setup.model.provider.clone(),
+            cwd: self.controller.runtime_host.cwd().display().to_string(),
+            git_branch: self.footer_data_provider.get_git_branch(),
+            session_name: session_row.and_then(|row| row.name),
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_write,
+            cost,
+            context_percent,
+            context_window,
+            auto_compact: true,
+            thinking_level: if self.session_setup.model.reasoning {
+                Some(self.session_setup.thinking_level.clone())
+            } else {
+                None
+            },
+            available_provider_count: self.footer_data_provider.get_available_provider_count(),
+        });
 
-        let model_name = &self.session_setup.model.id;
-        let provider_name = &self.session_setup.model.provider;
-        let thinking_display = if self.hide_thinking_block { "off" } else { "high" };
-
-        // Right side: (provider) model . thinking
-        let right_side = format!("({provider_name}) {model_name} \u{2022} {thinking_display}");
-
-        // Left side: $cost (sub) context%/window (auto)
-        let chat_count = self.render_state().chat_items.len() + self.chat_lines.len();
-        let left_side = if chat_count > 0 {
-            format!("$0.000 (sub) 0.0%/{}k (auto)", self.session_setup.model.context_window / 1000)
-        } else {
-            format!("$0.000 (sub) 0.0%/{}k (auto)", self.session_setup.model.context_window / 1000)
-        };
-
-        // Build padded line
-        let dim = "\x1b[90m";
-        let reset = "\x1b[0m";
-        let total_content = left_side.len() + right_side.len() + 2;
-        let term_width = self.ui.columns() as usize;
-        let padding = if term_width > total_content {
-            " ".repeat(term_width - total_content)
-        } else {
-            "  ".to_string()
-        };
-        let footer = format!("{dim}{left_side}{padding}{right_side}{reset}");
-        self.footer_lines = vec![footer];
+        self.footer_lines = footer.render(self.ui.columns());
         Self::replace_container_lines(&self.footer_container, &self.footer_lines);
     }
 
@@ -2100,7 +2138,20 @@ impl InteractiveMode {
     }
 
     fn get_model_candidates(&self) -> Vec<Model> {
-        self.build_model_registry().list().to_vec()
+        let current_provider = self.session_setup.model.provider.clone();
+        let available = crate::login::authenticated_providers();
+        let has_any_available = !available.is_empty();
+
+        self.build_model_registry()
+            .list()
+            .iter()
+            .filter(|model| {
+                !has_any_available
+                    || available.iter().any(|provider| provider == &model.provider)
+                    || model.provider == current_provider
+            })
+            .cloned()
+            .collect()
     }
 
     fn find_exact_model_match(&self, search_term: &str) -> Option<Model> {

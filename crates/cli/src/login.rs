@@ -247,6 +247,21 @@ fn get_provider_status(name: &str) -> &'static str {
 }
 
 /// Resolve API key for a provider: auth.json first, then env var.
+pub fn provider_has_auth(provider: &str) -> bool {
+    resolve_api_key(provider)
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub fn authenticated_providers() -> Vec<String> {
+    KNOWN_PROVIDERS
+        .iter()
+        .map(|(name, _, _)| *name)
+        .filter(|provider| provider_has_auth(provider))
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn resolve_api_key(provider: &str) -> Option<String> {
     // 1. Check BB's own auth.json
     let store = load_auth();
