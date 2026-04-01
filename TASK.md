@@ -1,165 +1,140 @@
-# A2: Implement actual TypeScript plugin loading and execution
+# A3: Fix Anthropic thinking/reasoning + OpenAI quirks + retry + model registry
 
-Working dir: `/tmp/bb-final/a2-plugin-loading/`
-BB-Agent Rust project. Read BLUEPRINT.md and REVIEW.md for context.
+Working dir: `/tmp/bb-final/a3-anthropic-thinking/`
+BB-Agent Rust project. Read REVIEW.md for what's missing.
 
-## Problem
-Plugin discovery (`crates/plugin-host/src/discovery.rs`) finds `.ts` files, and the host (`host.rs`) can spawn a Node process, but NO plugins are ever loaded or executed. The JSON-RPC protocol types exist but there's no host runtime that loads plugins and bridges events.
+## Tasks
 
-## Task: Build a working plugin host that loads and runs TS plugins
+### 1. Fix Anthropic thinking in `crates/provider/src/anthropic.rs`
 
-### 1. Create `crates/plugin-host/src/runtime.rs` — the plugin runtime
+Currently the `thinking` field in CompletionRequest exists but isn't applied to the Anthropic API body.
 
-This is the JS file that Node runs. It loads plugins and bridges JSON-RPC:
-
-Create the file `crates/plugin-host/js/host.js` that gets embedded or shipped:
-
-```javascript
-// Read JSON-RPC messages from stdin, line-delimited
-// Each plugin exports default function(bb) where bb has:
-//   bb.on(event, handler)
-//   bb.registerTool(def)
-//   bb.registerCommand(name, def)
-
-const readline = require('readline');
-const path = require('path');
-
-const handlers = {};  // event -> [handler]
-const tools = {};     // name -> def
-const commands = {};  // name -> def
-
-const bb = {
-    on(event, handler) {
-        if (!handlers[event]) handlers[event] = [];
-        handlers[event].push(handler);
-    },
-    registerTool(def) {
-        tools[def.name] = def;
-        // Notify Rust side
-        send({ jsonrpc: "2.0", method: "tool_registered", params: { name: def.name, description: def.description, parameters: def.parameters } });
-    },
-    registerCommand(name, def) {
-        commands[name] = def;
-        send({ jsonrpc: "2.0", method: "command_registered", params: { name, description: def.description } });
-    },
-};
-
-function send(msg) {
-    process.stdout.write(JSON.stringify(msg) + '\n');
+Add thinking support:
+```rust
+// In the body building:
+if let Some(ref thinking) = request.thinking {
+    let budget = match thinking.as_str() {
+        "minimal" => 1024,
+        "low" => 2048,
+        "medium" => 8192,
+        "high" => 16384,
+        "xhigh" => 32768,
+        _ => 8192,
+    };
+    body["thinking"] = json!({
+        "type": "enabled",
+        "budget_tokens": budget,
+    });
+    // When thinking is enabled, Anthropic requires max_tokens to be higher
+    if request.max_tokens.unwrap_or(0) < (budget as u32 + 4096) {
+        body["max_tokens"] = json!(budget + 4096);
+    }
 }
+```
 
-// Load plugins from args
-for (const pluginPath of process.argv.slice(2)) {
-    try {
-        const mod = require(path.resolve(pluginPath));
-        const factory = mod.default || mod;
-        if (typeof factory === 'function') factory(bb);
-    } catch (e) {
-        send({ jsonrpc: "2.0", method: "plugin_error", params: { path: pluginPath, error: e.message } });
+### 2. Fix OpenAI provider quirks in `crates/provider/src/openai.rs`
+
+Add provider-specific handling:
+```rust
+// In body building:
+// Some providers don't support max_completion_tokens, use max_tokens instead
+let is_groq = options.base_url.contains("groq.com");
+let is_ollama = options.base_url.contains("localhost") || options.base_url.contains("127.0.0.1");
+
+if let Some(max_tokens) = request.max_tokens {
+    if is_groq || is_ollama {
+        body["max_tokens"] = json!(max_tokens);
+    } else {
+        body["max_completion_tokens"] = json!(max_tokens);
     }
 }
 
-send({ jsonrpc: "2.0", method: "plugins_loaded", params: { count: process.argv.length - 2 } });
+// Add reasoning_effort for OpenAI models that support it
+if let Some(ref thinking) = request.thinking {
+    let effort = match thinking.as_str() {
+        "low" | "minimal" => "low",
+        "medium" => "medium",
+        "high" | "xhigh" => "high",
+        _ => "medium",
+    };
+    body["reasoning_effort"] = json!(effort);
+}
+```
 
-// Handle incoming events from Rust
-const rl = readline.createInterface({ input: process.stdin });
-rl.on('line', async (line) => {
-    try {
-        const msg = JSON.parse(line);
-        if (msg.method === 'event') {
-            const event = msg.params;
-            const eventHandlers = handlers[event.type] || [];
-            let result = null;
-            for (const handler of eventHandlers) {
-                const r = await handler(event, {});
-                if (r) result = { ...result, ...r };
-                if (r?.block || r?.cancel) break;
-            }
-            if (msg.id !== undefined) {
-                send({ jsonrpc: "2.0", id: msg.id, result: result || {} });
-            }
-        } else if (msg.method === 'execute_tool') {
-            const { name, toolCallId, params: toolParams } = msg.params;
-            const tool = tools[name];
-            if (tool && tool.execute) {
-                try {
-                    const result = await tool.execute(toolCallId, toolParams);
-                    send({ jsonrpc: "2.0", id: msg.id, result });
-                } catch (e) {
-                    send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: e.message } });
+### 3. Add retry with exponential backoff in both providers
+
+Create `crates/provider/src/retry.rs`:
+```rust
+use std::time::Duration;
+use tokio::time::sleep;
+use bb_core::error::{BbError, BbResult};
+
+pub async fn with_retry<F, Fut, T>(max_retries: u32, f: F) -> BbResult<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = BbResult<T>>,
+{
+    let mut last_err = BbError::Provider("No attempts made".into());
+    for attempt in 0..max_retries {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_err = e;
+                if attempt < max_retries - 1 {
+                    let delay = Duration::from_millis(1000 * 2u64.pow(attempt));
+                    tracing::warn!("Provider request failed (attempt {}), retrying in {:?}", attempt + 1, delay);
+                    sleep(delay).await;
                 }
-            } else {
-                send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: `Tool ${name} not found` } });
             }
         }
-    } catch (e) {
-        // Ignore parse errors
     }
-});
-```
-
-### 2. Modify `crates/plugin-host/src/host.rs`
-
-Update `PluginHost` to:
-- Write `host.js` to a temp file on startup (or embed it)
-- Spawn Node with `host.js` + list of plugin paths as args
-- Read `plugins_loaded`, `tool_registered`, `command_registered` notifications
-- Provide methods to send events and receive responses:
-
-```rust
-impl PluginHost {
-    pub async fn load_plugins(plugin_paths: &[PathBuf]) -> Result<Self, ...>;
-    pub async fn send_event(&mut self, event: &Event) -> Option<HookResult>;
-    pub async fn execute_tool(&mut self, name: &str, tool_call_id: &str, params: Value) -> Result<ToolResult>;
-    pub fn registered_tools(&self) -> &[RegisteredTool];
-    pub fn registered_commands(&self) -> &[RegisteredCommand];
+    Err(last_err)
 }
 ```
 
-### 3. Integrate with the agent loop
+Wrap the HTTP request in both `anthropic.rs` and `openai.rs` with `with_retry(3, || async { ... })`.
 
-In `crates/cli/src/interactive.rs` or `run.rs`:
+### 4. Expand model registry in `crates/provider/src/registry.rs`
 
-On startup:
+Add more models to the hardcoded list. At minimum add:
+- `claude-3-5-haiku-20241022` (Anthropic, cheap fast model)
+- `claude-3-7-sonnet-20250219` (Anthropic, older sonnet)
+- `gpt-4-turbo` (OpenAI)
+- `o1-mini` (OpenAI reasoning)
+- `llama-3.1-8b-instant` (Groq, fast)
+- `mixtral-8x7b-32768` (Groq)
+
+### 5. Update `crates/provider/src/lib.rs`
+
+Add `pub mod retry;`
+
+### 6. Tests
+
 ```rust
-let plugins = discovery::discover_plugins(&global_dir, Some(&project_dir));
-let plugin_host = if !plugins.is_empty() {
-    let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
-    Some(PluginHost::load_plugins(&paths).await?)
-} else {
-    None
-};
-```
-
-Before each event emission on the EventBus, also send to plugin host:
-```rust
-if let Some(ref mut host) = plugin_host {
-    if let Some(result) = host.send_event(&event).await {
-        // Merge with bus results
-    }
-}
-```
-
-### 4. Test with a sample plugin
-
-Create `~/.bb-agent/plugins/test-plugin.ts`:
-```typescript
-export default function(bb) {
-    bb.on("session_start", (event, ctx) => {
-        console.error("[test-plugin] Session started!");
-    });
-
-    bb.on("tool_call", (event, ctx) => {
-        if (event.tool_name === "bash" && event.input.command?.includes("rm -rf /")) {
-            return { block: true, reason: "Blocked dangerous command" };
+#[tokio::test]
+async fn test_retry_succeeds_on_second_attempt() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let counter = Arc::new(AtomicU32::new(0));
+    let c = counter.clone();
+    let result = with_retry(3, || {
+        let c = c.clone();
+        async move {
+            let attempt = c.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                Err(BbError::Provider("temporary".into()))
+            } else {
+                Ok(42)
+            }
         }
-    });
+    }).await;
+    assert_eq!(result.unwrap(), 42);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 ```
 
 ### Build and test
 ```bash
-cd /tmp/bb-final/a2-plugin-loading
+cd /tmp/bb-final/a3-anthropic-thinking
 cargo build && cargo test
-git add -A && git commit -m "A2: implement TS plugin loading and execution"
+git add -A && git commit -m "A3: anthropic thinking + openai quirks + retry + models"
 ```

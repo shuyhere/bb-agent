@@ -3,6 +3,7 @@ pub mod resolver;
 pub mod openai;
 pub mod anthropic;
 pub mod streaming;
+pub mod retry;
 
 use async_trait::async_trait;
 use bb_core::error::BbResult;
