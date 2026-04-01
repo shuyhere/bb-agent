@@ -8,9 +8,11 @@ pub mod interactive_commands;
 
 use self::events::{
     ChatItem, InteractiveMessage, InteractiveRenderState, PendingMessages,
-    QueuedMessage as RenderQueuedMessage, QueuedMessageMode, assistant_message_from_parts,
+    QueuedMessage as RenderQueuedMessage, QueuedMessageMode, ToolCallContent,
+    assistant_message_from_parts,
 };
 use self::interactive_commands::InteractiveCommands;
+use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::agent_session::PromptOptions;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_provider::Provider;
@@ -24,6 +26,7 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub type InteractiveResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -389,6 +392,10 @@ pub struct InteractiveMode {
     key_handlers: Vec<(KeyBinding, KeyAction)>,
     submit_routes: Vec<SubmitRoute>,
     events: Option<UnboundedReceiver<TerminalEvent>>,
+    agent_events: Option<mpsc::UnboundedReceiver<AgentLoopEvent>>,
+    streaming_text: String,
+    streaming_thinking: String,
+    streaming_tool_calls: Vec<ToolCallContent>,
     header_lines: Vec<String>,
     chat_lines: Vec<String>,
     pending_lines: Vec<String>,
@@ -447,6 +454,10 @@ impl InteractiveMode {
             key_handlers: Vec::new(),
             submit_routes: Vec::new(),
             events: None,
+            agent_events: None,
+            streaming_text: String::new(),
+            streaming_thinking: String::new(),
+            streaming_tool_calls: Vec::new(),
             header_lines: Vec::new(),
             chat_lines: Vec::new(),
             pending_lines: Vec::new(),
@@ -1090,18 +1101,280 @@ impl InteractiveMode {
             .add_message_to_chat(InteractiveMessage::User {
                 text: user_input.clone(),
             });
-        self.render_state_mut().add_message_to_chat(InteractiveMessage::Assistant {
-            message: assistant_message_from_parts(
-                "TODO: core session prompt dispatch is bootstrapped; event wiring still pending",
-                None,
-                false,
-            ),
-            tool_calls: Vec::new(),
+
+        // Reset streaming accumulators
+        self.streaming_text.clear();
+        self.streaming_thinking.clear();
+        self.streaming_tool_calls.clear();
+        self.is_streaming = true;
+
+        // Start streaming assistant message (empty initially)
+        let initial_message = assistant_message_from_parts("", None, false);
+        self.render_state_mut()
+            .handle_event(
+                events::InteractiveSessionEvent::MessageStart {
+                    message: InteractiveMessage::Assistant {
+                        message: initial_message,
+                        tool_calls: Vec::new(),
+                    },
+                },
+                &PendingMessages::default(),
+            );
+
+        // Spawn agent streaming task
+        let (tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
+        self.agent_events = Some(rx);
+
+        // Send TurnStart immediately
+        let _ = tx.send(AgentLoopEvent::TurnStart { turn_index: 0 });
+
+        // Spawn the background streaming task
+        // The runtime_host doesn't expose a provider directly yet, so we
+        // simulate the turn loop via AgentLoopEvent. When the real provider
+        // is wired (Wave 2C+), this task will call provider.stream() and
+        // forward StreamEvents as AgentLoopEvents.
+        tokio::spawn(async move {
+            // TODO: Wire real provider streaming here.
+            // For now, emit AssistantDone so the UI transitions correctly.
+            let _ = tx.send(AgentLoopEvent::AssistantDone);
+            // tx drops here, closing the channel
         });
+
+        // Process agent events inline until streaming completes
+        self.process_agent_events_until_done().await?;
+
         self.pending_working_message = None;
         self.rebuild_footer();
         self.refresh_ui();
         Ok(())
+    }
+
+    /// Drive the event loop while streaming is active, handling both
+    /// terminal events (keyboard input) and agent events (streaming text,
+    /// tool calls, done signals).
+    async fn process_agent_events_until_done(&mut self) -> InteractiveResult<()> {
+        while self.is_streaming {
+            let terminal_events = self.events.as_mut();
+            let agent_events = self.agent_events.as_mut();
+
+            tokio::select! {
+                // Terminal input events
+                Some(event) = async {
+                    match terminal_events {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match event {
+                        TerminalEvent::Resize(_, _) => {
+                            self.ui.force_render();
+                        }
+                        TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
+                            self.ui.handle_raw_input(&data);
+                            self.sync_bash_mode_from_editor();
+                            self.refresh_ui();
+                        }
+                        TerminalEvent::Key(key) => {
+                            // During streaming, Ctrl-C can interrupt
+                            if key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            {
+                                self.handle_ctrl_c();
+                                if self.shutdown_requested {
+                                    self.is_streaming = false;
+                                    break;
+                                }
+                            }
+                            // Queue text input for after streaming
+                            if key.code == KeyCode::Enter
+                                && !key.modifiers.contains(KeyModifiers::SHIFT)
+                            {
+                                let text = self.editor_text();
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    self.push_editor_history(&text);
+                                    self.clear_editor();
+                                    self.pending_lines
+                                        .push(format!("queued> {text}"));
+                                    self.refresh_ui();
+                                }
+                            } else {
+                                self.ui.handle_key(&key);
+                                self.sync_bash_mode_from_editor();
+                                self.refresh_ui();
+                            }
+                        }
+                    }
+                },
+                // Agent streaming events
+                Some(agent_event) = async {
+                    match agent_events {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.handle_agent_event(agent_event);
+                    self.refresh_ui();
+                },
+                // Both channels closed
+                else => {
+                    self.is_streaming = false;
+                    break;
+                }
+            }
+        }
+
+        // Clean up agent events channel
+        self.agent_events = None;
+        Ok(())
+    }
+
+    /// Handle a single `AgentLoopEvent` by updating the render state.
+    fn handle_agent_event(&mut self, event: AgentLoopEvent) {
+        match event {
+            AgentLoopEvent::TurnStart { turn_index } => {
+                self.show_status(format!("Turn {turn_index} started"));
+            }
+            AgentLoopEvent::TextDelta { text } => {
+                self.streaming_text.push_str(&text);
+                let thinking = if self.streaming_thinking.is_empty() {
+                    None
+                } else {
+                    Some(self.streaming_thinking.clone())
+                };
+                let has_tool_calls = !self.streaming_tool_calls.is_empty();
+                let tool_calls = self.streaming_tool_calls.clone();
+                let updated_message = assistant_message_from_parts(
+                    self.streaming_text.clone(),
+                    thinking,
+                    has_tool_calls,
+                );
+                self.render_state_mut().handle_event(
+                    events::InteractiveSessionEvent::MessageUpdate {
+                        message: InteractiveMessage::Assistant {
+                            message: updated_message,
+                            tool_calls,
+                        },
+                    },
+                    &PendingMessages::default(),
+                );
+            }
+            AgentLoopEvent::ThinkingDelta { text } => {
+                self.streaming_thinking.push_str(&text);
+                let thinking = Some(self.streaming_thinking.clone());
+                let has_tool_calls = !self.streaming_tool_calls.is_empty();
+                let tool_calls = self.streaming_tool_calls.clone();
+                let updated_message = assistant_message_from_parts(
+                    self.streaming_text.clone(),
+                    thinking,
+                    has_tool_calls,
+                );
+                self.render_state_mut().handle_event(
+                    events::InteractiveSessionEvent::MessageUpdate {
+                        message: InteractiveMessage::Assistant {
+                            message: updated_message,
+                            tool_calls,
+                        },
+                    },
+                    &PendingMessages::default(),
+                );
+            }
+            AgentLoopEvent::ToolCallStart { id, name } => {
+                self.streaming_tool_calls.push(ToolCallContent {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: serde_json::json!({}),
+                });
+                self.render_state_mut().handle_event(
+                    events::InteractiveSessionEvent::ToolExecutionStart {
+                        tool_call_id: id,
+                        tool_name: name,
+                        args: serde_json::json!({}),
+                    },
+                    &PendingMessages::default(),
+                );
+            }
+            AgentLoopEvent::ToolCallDelta { id, args_delta } => {
+                // Accumulate args delta into the matching tool call
+                if let Some(tc) = self.streaming_tool_calls.iter_mut().find(|tc| tc.id == id) {
+                    // Append to the arguments string representation
+                    if let Some(existing) = tc.arguments.as_str() {
+                        let mut s = existing.to_string();
+                        s.push_str(&args_delta);
+                        tc.arguments = serde_json::Value::String(s);
+                    } else {
+                        tc.arguments = serde_json::Value::String(args_delta);
+                    }
+                }
+            }
+            AgentLoopEvent::ToolExecuting { id, name } => {
+                self.show_status(format!("Executing tool: {name} ({id})"));
+            }
+            AgentLoopEvent::ToolResult {
+                id,
+                name,
+                content,
+                is_error,
+            } => {
+                use self::events::InteractiveSessionEvent;
+                use self::components::tool_execution::{ToolExecutionResult, ToolResultBlock};
+                let result = ToolExecutionResult {
+                    content: vec![ToolResultBlock {
+                        r#type: "text".to_string(),
+                        text: Some(content),
+                        data: None,
+                        mime_type: None,
+                    }],
+                    is_error,
+                    details: None,
+                };
+                self.render_state_mut().handle_event(
+                    InteractiveSessionEvent::ToolExecutionEnd {
+                        tool_call_id: id,
+                        result,
+                        is_error,
+                    },
+                    &PendingMessages::default(),
+                );
+                let _ = name; // name is informational here
+            }
+            AgentLoopEvent::TurnEnd { turn_index } => {
+                self.show_status(format!("Turn {turn_index} ended"));
+            }
+            AgentLoopEvent::AssistantDone => {
+                // Finalize the streaming assistant message
+                let thinking = if self.streaming_thinking.is_empty() {
+                    None
+                } else {
+                    Some(self.streaming_thinking.clone())
+                };
+                let has_tool_calls = !self.streaming_tool_calls.is_empty();
+                let tool_calls = self.streaming_tool_calls.clone();
+                let final_message = assistant_message_from_parts(
+                    self.streaming_text.clone(),
+                    thinking,
+                    has_tool_calls,
+                );
+                self.render_state_mut().handle_event(
+                    events::InteractiveSessionEvent::MessageEnd {
+                        message: InteractiveMessage::Assistant {
+                            message: final_message,
+                            tool_calls,
+                        },
+                    },
+                    &PendingMessages::default(),
+                );
+                self.render_state_mut().handle_event(
+                    events::InteractiveSessionEvent::AgentEnd,
+                    &PendingMessages::default(),
+                );
+                self.is_streaming = false;
+            }
+            AgentLoopEvent::Error { message } => {
+                self.show_warning(format!("Agent error: {message}"));
+                self.is_streaming = false;
+            }
+        }
     }
 
     fn take_last_submitted_text(&mut self) -> String {
