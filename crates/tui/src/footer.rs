@@ -7,6 +7,23 @@
 use crate::component::Component;
 use crate::utils::{truncate_to_width, visible_width};
 
+/// Detect git branch for the given cwd.
+pub fn detect_git_branch(cwd: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if branch.is_empty() { None } else { Some(branch) }
+    } else {
+        None
+    }
+}
+
 /// Data needed to render the footer.
 #[derive(Clone, Debug)]
 pub struct FooterData {

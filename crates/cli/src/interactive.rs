@@ -8,7 +8,6 @@
 //! - Real footer with cost/tokens/model
 
 use anyhow::Result;
-use std::io::Write;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
@@ -18,8 +17,8 @@ use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::{context, store};
-use bb_tools::{builtin_tools, Tool, ToolContext};
-use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
+use bb_tools::{builtin_tools, ToolContext};
+use bb_tui::component::{Container, Focusable, Spacer, Text};
 use bb_tui::editor::Editor;
 use bb_tui::footer::{Footer, FooterData};
 use bb_tui::markdown::MarkdownRenderer;
@@ -32,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::login;
-use crate::slash::{self, SlashResult};
+use crate::slash::SlashResult;
 use crate::Cli;
 
 // ── Styling helpers ─────────────────────────────────────────────────
@@ -77,12 +76,15 @@ fn style_error(text: &str) -> String {
 
 #[derive(Debug)]
 enum AgentEvent {
+    /// Assistant response starting (show header).
+    AssistantStart { model_id: String },
     /// Streaming text delta from assistant.
     TextDelta(String),
     /// Thinking indicator.
+    #[allow(dead_code)]
     ThinkingDelta(String),
     /// Tool call started.
-    ToolStart { name: String, id: String },
+    ToolStart { name: String, #[allow(dead_code)] id: String },
     /// Tool execution result.
     ToolResult {
         name: String,
@@ -92,11 +94,12 @@ enum AgentEvent {
     /// Assistant turn complete (text + tool calls collected).
     TurnComplete {
         text: String,
-        has_tool_calls: bool,
+        #[allow(dead_code)] has_tool_calls: bool,
         input_tokens: u64,
         output_tokens: u64,
     },
     /// Need to continue (tool calls need execution then another turn).
+    #[allow(dead_code)]
     NeedsContinue,
     /// Error.
     Error(String),
@@ -106,7 +109,7 @@ enum AgentEvent {
 
 // ── Banner component ────────────────────────────────────────────────
 
-fn make_header(model_name: &str) -> Text {
+fn make_header(_model_name: &str) -> Text {
     let lines = vec![
         String::new(),
         format!(" {} v{}", "bb-agent".with(Color::Cyan).bold(), env!("CARGO_PKG_VERSION")),
@@ -122,6 +125,7 @@ fn make_header(model_name: &str) -> Text {
 
 // ── Main interactive mode ───────────────────────────────────────────
 
+#[allow(unused_assignments)]
 pub async fn run_interactive(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
     let global_dir = config::global_dir();
@@ -192,7 +196,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
     let tools = builtin_tools();
-    let tool_ctx = ToolContext {
+    let _tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir,
         on_output: None,
@@ -211,7 +215,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         })
         .collect();
 
-    let provider: Box<dyn Provider> = match model.api {
+    let _provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
         _ => Box::new(OpenAiProvider::new()),
     };
@@ -239,10 +243,12 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     tui.root.add(Box::new(editor));
 
     // Index 4: Footer
+    let git_branch = bb_tui::footer::detect_git_branch(&cwd_str);
     let footer = Footer::new(FooterData {
         model_name: model.name.clone(),
         provider: model.provider.clone(),
         cwd: cwd_str.clone(),
+        git_branch,
         context_window: model.context_window,
         ..Default::default()
     });
@@ -274,11 +280,12 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     // Track cumulative stats
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
-    let mut total_cost: f64 = 0.0;
+    let total_cost: f64 = 0.0;
     let mut running = true;
     let mut agent_running = false;
     let mut cancel_token = CancellationToken::new();
     let mut streaming = StreamingState::new();
+    let mut last_ctrl_c = std::time::Instant::now() - std::time::Duration::from_secs(10);
 
     // If initial prompt, send it
     if !cli.messages.is_empty() {
@@ -321,17 +328,39 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                             }
                         }
 
-                        // Ctrl+C — cancel agent or clear editor
+                        // Escape — interrupt running agent
+                        if key.code == KeyCode::Esc {
+                            if agent_running {
+                                cancel_token.cancel();
+                                cancel_token = CancellationToken::new();
+                                agent_running = false;
+                                streaming.finalize(&mut tui, &streaming.text.clone());
+                                add_status_to_chat(&mut tui, &dim("[interrupted]"));
+                            }
+                            tui.render();
+                            continue;
+                        }
+
+                        // Ctrl+C — cancel agent, clear editor, or exit (double press)
                         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
                             if agent_running {
                                 cancel_token.cancel();
                                 cancel_token = CancellationToken::new();
                                 agent_running = false;
+                                streaming.finalize(&mut tui, &streaming.text.clone());
                                 add_status_to_chat(&mut tui, &dim("[cancelled]"));
                             } else {
                                 let editor = get_editor_mut(&mut tui);
+                                if editor.get_text().trim().is_empty() {
+                                    // Double Ctrl+C on empty editor = exit
+                                    if last_ctrl_c.elapsed() < std::time::Duration::from_millis(500) {
+                                        running = false;
+                                        break;
+                                    }
+                                }
                                 editor.clear();
                             }
+                            last_ctrl_c = std::time::Instant::now();
                             tui.render();
                             continue;
                         }
@@ -358,11 +387,16 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                 // Slash commands
                                 if text.starts_with('/') {
                                     match handle_slash(&text, &conn, &session_id, &cwd_str).await {
-                                        Ok(true) => {
+                                        Ok((true, _)) => {
                                             running = false;
                                             break;
                                         }
-                                        Ok(false) => {
+                                        Ok((false, lines)) => {
+                                            if !lines.is_empty() {
+                                                let mut out = lines;
+                                                out.push(String::new());
+                                                add_lines_to_chat(&mut tui, out);
+                                            }
                                             tui.render();
                                             continue;
                                         }
@@ -427,6 +461,13 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             // Agent events
             Some(agent_event) = agent_rx.recv() => {
                 match agent_event {
+                    AgentEvent::AssistantStart { model_id } => {
+                        add_lines_to_chat(&mut tui, vec![
+                            format!(" {}", style_role_assistant(&model_id)),
+                        ]);
+                        tui.render();
+                    }
+
                     AgentEvent::TextDelta(text) => {
                         streaming.append(&mut tui, &text);
                         tui.render();
@@ -513,12 +554,6 @@ fn add_user_to_chat(tui: &mut TUI, text: &str) {
     add_lines_to_chat(tui, lines);
 }
 
-fn add_assistant_header(tui: &mut TUI, model_id: &str) {
-    let lines = vec![
-        format!(" {}", style_role_assistant(model_id)),
-    ];
-    add_lines_to_chat(tui, lines);
-}
 
 fn add_status_to_chat(tui: &mut TUI, text: &str) {
     add_lines_to_chat(tui, vec![text.to_string(), String::new()]);
@@ -534,7 +569,7 @@ fn add_lines_to_chat(tui: &mut TUI, lines: Vec<String>) {
 
 /// Streaming state for in-progress assistant text.
 struct StreamingState {
-    text: String,
+    pub text: String,
     component_idx: Option<usize>,
 }
 
@@ -686,7 +721,7 @@ async fn run_agent_turn(
     session_id: &str,
     system_prompt: &str,
     model: &bb_provider::registry::Model,
-    provider_name: &str,
+    _provider_name: &str,
     api_key: &str,
     base_url: &str,
     tool_defs: &[serde_json::Value],
@@ -739,8 +774,10 @@ async fn run_agent_turn(
 
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        // Send assistant header
-        let _ = agent_tx.send(AgentEvent::TextDelta(String::new()));
+        // Send assistant header before streaming starts
+        let _ = agent_tx.send(AgentEvent::AssistantStart {
+            model_id: model.id.clone(),
+        });
 
         let stream_result = provider.stream(request, options, tx).await;
         if let Err(e) = stream_result {
@@ -934,51 +971,59 @@ fn handle_bash(input: &str, cwd: &std::path::Path, tui: &mut TUI) {
 
 // ── Slash command handling ──────────────────────────────────────────
 
+/// Handle slash commands, returning (should_exit, output_lines).
 async fn handle_slash(
     input: &str,
     conn: &rusqlite::Connection,
     session_id: &str,
     cwd_str: &str,
-) -> Result<bool> {
+) -> Result<(bool, Vec<String>)> {
+    let mut output = Vec::new();
     match crate::slash::handle_slash_command(input) {
-        SlashResult::Exit => return Ok(true),
+        SlashResult::Exit => return Ok((true, output)),
         SlashResult::Handled => {}
         SlashResult::NewSession => {
-            println!("  Start a new `bb` to get a fresh session.");
+            output.push("  Start a new `bb` to get a fresh session.".into());
         }
-        SlashResult::Compact(_) => {}
+        SlashResult::Compact(_) => {
+            output.push(dim("  (compaction not yet wired)"));
+        }
         SlashResult::ModelSelect(_) => {
-            crate::models::list_models(None);
+            output.push(dim("  Use --model to set model"));
         }
         SlashResult::Resume => {
             let sessions = store::list_sessions(conn, cwd_str)?;
             if sessions.is_empty() {
-                println!("  No sessions.");
+                output.push("  No sessions.".into());
             } else {
                 for (i, s) in sessions.iter().take(10).enumerate() {
                     let name = s.name.as_deref().unwrap_or("(unnamed)");
-                    println!("  {}. {} {} ({} entries)", i + 1, &s.session_id[..8], name, s.entry_count);
+                    output.push(format!("  {}. {} {} ({} entries)", i + 1, &s.session_id[..8], name, s.entry_count));
                 }
             }
         }
-        SlashResult::Tree | SlashResult::Fork => {}
+        SlashResult::Tree | SlashResult::Fork => {
+            output.push(dim("  (not yet implemented)"));
+        }
         SlashResult::Login => {
-            login::handle_login(None).await?;
+            output.push(dim("  Use `bb login` from a normal terminal"));
         }
         SlashResult::Logout => {
-            login::handle_logout(None).await?;
+            output.push(dim("  Use `bb logout` from a normal terminal"));
         }
         SlashResult::SetName(name) => {
-            println!("  Session named: {name}");
+            output.push(format!("  Session named: {name}"));
         }
         SlashResult::SessionInfo => {
             if let Ok(Some(session)) = store::get_session(conn, session_id) {
-                println!("  Session: {}", &session.session_id[..8]);
-                println!("  CWD: {}", session.cwd);
-                println!("  Entries: {}", session.entry_count);
+                output.push(format!("  Session: {}", &session.session_id[..8]));
+                output.push(format!("  CWD: {}", session.cwd));
+                output.push(format!("  Entries: {}", session.entry_count));
             }
         }
-        SlashResult::NotCommand => {}
+        SlashResult::NotCommand => {
+            output.push(dim("  Unknown command"));
+        }
     }
-    Ok(false)
+    Ok((false, output))
 }
