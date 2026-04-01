@@ -60,6 +60,7 @@ pub struct InteractiveSessionSetup {
     pub tool_defs: Vec<serde_json::Value>,
     pub tool_ctx: ToolContext,
     pub system_prompt: String,
+    pub thinking_level: String,
 }
 
 #[derive(Debug, Default)]
@@ -1134,7 +1135,7 @@ impl InteractiveMode {
                 model: self.session_setup.model.id.clone(),
                 max_tokens: Some(self.session_setup.model.max_tokens as u32),
                 stream: true,
-                thinking: None,
+                thinking: if self.session_setup.thinking_level == "off" { None } else { Some(self.session_setup.thinking_level.clone()) },
             };
 
             let options = bb_provider::RequestOptions {

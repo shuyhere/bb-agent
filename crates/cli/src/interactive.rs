@@ -69,13 +69,13 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
     let thinking_str = thinking_override
         .as_deref()
         .or(entry.thinking.as_deref())
-        .unwrap_or("off");
+        .unwrap_or("medium"); // pi default: medium thinking
     let thinking_level = match thinking_str {
         "low" | "minimal" => ThinkingLevel::Low,
         "medium" => ThinkingLevel::Medium,
         "high" => ThinkingLevel::High,
         "xhigh" => ThinkingLevel::XHigh,
-        _ => ThinkingLevel::Off,
+        _ => ThinkingLevel::Medium, // pi default
     };
 
     // Load AGENTS.md via core helper
@@ -171,6 +171,7 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         tool_defs,
         tool_ctx,
         system_prompt,
+        thinking_level: thinking_str.to_string(),
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {
