@@ -43,6 +43,21 @@ fn dim(text: &str) -> String {
     format!("\x1b[2m{}\x1b[0m", text)
 }
 
+fn title_case_provider(provider: &str) -> String {
+    match provider {
+        "openai" => "OpenAI".into(),
+        "xai" => "xAI".into(),
+        "openrouter" => "OpenRouter".into(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
 fn style_role_user() -> String {
     format!("{}", "You".with(Color::Blue).bold())
 }
@@ -363,7 +378,6 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     auth_dialog = None;
                                     clear_overlay(&mut tui);
                                     if key_value.is_empty() {
-                                        add_status_to_chat(&mut tui, &style_error("Login cancelled: empty API key"));
                                         tui.render();
                                         continue;
                                     }
@@ -373,9 +387,13 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                                 api_key = cli.api_key.clone().unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
                                             }
                                             update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
-                                            add_status_to_chat(&mut tui, &format!("  Logged in to {}", provider));
+                                            let provider_label = title_case_provider(&provider);
+                                            add_status_to_chat(&mut tui, &format!("Logged in to {}. Credentials saved to {}", provider_label, login::auth_path().display()));
                                         }
-                                        Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                        Err(e) => {
+                                            let provider_label = title_case_provider(&provider);
+                                            add_status_to_chat(&mut tui, &style_error(&format!("Failed to login to {}: {}", provider_label, e)));
+                                        }
                                     }
                                     tui.render();
                                     continue;
@@ -428,10 +446,11 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                                     api_key = login::resolve_api_key(&provider_name).unwrap_or_default();
                                                 }
                                                 update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
-                                                add_status_to_chat(&mut tui, &format!("  Logged out from {}", provider));
+                                                let provider_label = title_case_provider(&provider);
+                                                add_status_to_chat(&mut tui, &format!("Logged out of {}", provider_label));
                                             }
-                                            Ok(false) => add_status_to_chat(&mut tui, &style_error(&format!("Provider {} not found in auth store", provider))),
-                                            Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                            Ok(false) => add_status_to_chat(&mut tui, &style_error("No OAuth providers logged in. Use /login first.")),
+                                            Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Logout failed: {}", e))),
                                         }
                                     }
                                     tui.render();
@@ -551,23 +570,30 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     }
                                 };
                                 if accepted_text == "/model" {
+                                    get_editor_mut(&mut tui).clear();
                                     let selector = model_selector_from_registry(&registry, &provider_name, &model);
                                     let cols = tui.columns();
                                     let lines = selector.render(cols);
                                     set_overlay_lines(&mut tui, lines);
                                     model_selector = Some(selector);
                                 } else if accepted_text == "/login" {
+                                    get_editor_mut(&mut tui).clear();
                                     let list = provider_selector_list(true);
                                     let cols = tui.columns();
                                     let lines = render_provider_selector(true, &list, cols);
                                     set_overlay_lines(&mut tui, lines);
                                     provider_selector = Some((true, list));
                                 } else if accepted_text == "/logout" {
+                                    get_editor_mut(&mut tui).clear();
                                     let list = provider_selector_list(false);
-                                    let cols = tui.columns();
-                                    let lines = render_provider_selector(false, &list, cols);
-                                    set_overlay_lines(&mut tui, lines);
-                                    provider_selector = Some((false, list));
+                                    if login::list_known_providers().into_iter().all(|(_, configured)| !configured) {
+                                        add_status_to_chat(&mut tui, "No OAuth providers logged in. Use /login first.");
+                                    } else {
+                                        let cols = tui.columns();
+                                        let lines = render_provider_selector(false, &list, cols);
+                                        set_overlay_lines(&mut tui, lines);
+                                        provider_selector = Some((false, list));
+                                    }
                                 }
                                 tui.render();
                                 continue;
@@ -606,6 +632,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     }
 
                                     if text == "/login" {
+                                        get_editor_mut(&mut tui).clear();
                                         let list = provider_selector_list(true);
                                         let cols = tui.columns();
                                         let lines = render_provider_selector(true, &list, cols);
@@ -616,11 +643,16 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     }
 
                                     if text == "/logout" {
+                                        get_editor_mut(&mut tui).clear();
                                         let list = provider_selector_list(false);
-                                        let cols = tui.columns();
-                                        let lines = render_provider_selector(false, &list, cols);
-                                        set_overlay_lines(&mut tui, lines);
-                                        provider_selector = Some((false, list));
+                                        if login::list_known_providers().into_iter().all(|(_, configured)| !configured) {
+                                            add_status_to_chat(&mut tui, "No OAuth providers logged in. Use /login first.");
+                                        } else {
+                                            let cols = tui.columns();
+                                            let lines = render_provider_selector(false, &list, cols);
+                                            set_overlay_lines(&mut tui, lines);
+                                            provider_selector = Some((false, list));
+                                        }
                                         tui.render();
                                         continue;
                                     }

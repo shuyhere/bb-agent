@@ -66,7 +66,7 @@ pub fn remove_auth(provider: &str) -> Result<bool> {
     Ok(removed)
 }
 
-fn auth_path() -> PathBuf {
+pub fn auth_path() -> PathBuf {
     config::global_dir().join("auth.json")
 }
 
