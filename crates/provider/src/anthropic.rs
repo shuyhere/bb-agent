@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
 use crate::retry::with_retry;
+use crate::transforms::convert_messages_for_anthropic;
 
 /// Anthropic Messages API provider.
 pub struct AnthropicProvider {
@@ -52,8 +53,8 @@ impl Provider for AnthropicProvider {
             options.base_url.trim_end_matches('/')
         );
 
-        // Build messages in Anthropic format
-        let messages = convert_messages(&request.messages);
+        // Build messages in Anthropic format using shared transform layer
+        let messages = convert_messages_for_anthropic(&request.messages);
 
         // Build tools in Anthropic format
         let tools: Vec<Value> = request.tools.iter().map(|t| {
@@ -258,63 +259,4 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
     }
 }
 
-/// Convert from OpenAI-style messages to Anthropic format.
-fn convert_messages(messages: &[Value]) -> Vec<Value> {
-    messages
-        .iter()
-        .filter_map(|msg| {
-            let role = msg["role"].as_str()?;
-            match role {
-                "user" => Some(json!({
-                    "role": "user",
-                    "content": msg["content"],
-                })),
-                "assistant" => {
-                    let mut content = Vec::new();
-
-                    // Text content
-                    if let Some(text) = msg["content"].as_str() {
-                        if !text.is_empty() {
-                            content.push(json!({"type": "text", "text": text}));
-                        }
-                    }
-
-                    // Tool calls → tool_use blocks
-                    if let Some(tool_calls) = msg["tool_calls"].as_array() {
-                        for tc in tool_calls {
-                            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                            let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
-                            content.push(json!({
-                                "type": "tool_use",
-                                "id": tc["id"],
-                                "name": tc["function"]["name"],
-                                "input": args,
-                            }));
-                        }
-                    }
-
-                    if content.is_empty() {
-                        return None;
-                    }
-
-                    Some(json!({
-                        "role": "assistant",
-                        "content": content,
-                    }))
-                }
-                "tool" => {
-                    Some(json!({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": msg["tool_call_id"],
-                            "content": msg["content"],
-                        }],
-                    }))
-                }
-                "system" => None, // handled separately
-                _ => None,
-            }
-        })
-        .collect()
-}
+// Message conversion is now handled by crate::transforms::convert_messages_for_anthropic

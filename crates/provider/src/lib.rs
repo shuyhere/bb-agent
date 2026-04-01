@@ -5,6 +5,7 @@ pub mod anthropic;
 pub mod google;
 pub mod streaming;
 pub mod retry;
+pub mod transforms;
 
 use async_trait::async_trait;
 use bb_core::error::BbResult;

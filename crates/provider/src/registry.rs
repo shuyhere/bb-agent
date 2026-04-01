@@ -145,7 +145,9 @@ impl ModelRegistry {
 
 fn builtin_models() -> Vec<Model> {
     vec![
-        // Anthropic (current aliases first, then dated fallbacks)
+        // =====================================================================
+        // Anthropic — Claude 4 series (latest aliases + dated snapshots)
+        // =====================================================================
         Model {
             id: "claude-sonnet-4-6".into(),
             name: "Claude Sonnet 4.6".into(),
@@ -201,6 +203,45 @@ fn builtin_models() -> Vec<Model> {
             base_url: Some("https://api.anthropic.com".into()),
             cost: CostConfig { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
         },
+        // Claude 4 Haiku (fast, cheap)
+        Model {
+            id: "claude-haiku-4-20260115".into(),
+            name: "Claude Haiku 4".into(),
+            provider: "anthropic".into(),
+            api: ApiType::AnthropicMessages,
+            context_window: 200_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://api.anthropic.com".into()),
+            cost: CostConfig { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
+        },
+        // Claude 4 Sonnet (balanced)
+        Model {
+            id: "claude-sonnet-4-20260115".into(),
+            name: "Claude Sonnet 4 (Jan 2026)".into(),
+            provider: "anthropic".into(),
+            api: ApiType::AnthropicMessages,
+            context_window: 200_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://api.anthropic.com".into()),
+            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+        },
+        // Claude 4 Opus (most capable)
+        Model {
+            id: "claude-opus-4-20260115".into(),
+            name: "Claude Opus 4 (Jan 2026)".into(),
+            provider: "anthropic".into(),
+            api: ApiType::AnthropicMessages,
+            context_window: 200_000,
+            max_tokens: 32_000,
+            reasoning: true,
+            base_url: Some("https://api.anthropic.com".into()),
+            cost: CostConfig { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+        },
+        // =====================================================================
+        // Anthropic — Older models
+        // =====================================================================
         Model {
             id: "claude-3-5-haiku-20241022".into(),
             name: "Claude 3.5 Haiku".into(),
@@ -223,7 +264,9 @@ fn builtin_models() -> Vec<Model> {
             base_url: Some("https://api.anthropic.com".into()),
             cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
         },
-        // OpenAI
+        // =====================================================================
+        // OpenAI — GPT-5 series
+        // =====================================================================
         Model {
             id: "gpt-5.4".into(),
             name: "GPT-5.4".into(),
@@ -258,6 +301,31 @@ fn builtin_models() -> Vec<Model> {
             cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
         },
         Model {
+            id: "gpt-5".into(),
+            name: "GPT-5".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 256_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
+        },
+        Model {
+            id: "gpt-5-mini".into(),
+            name: "GPT-5 Mini".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 256_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 0.3, output: 1.2, ..Default::default() },
+        },
+        // =====================================================================
+        // OpenAI — GPT-4o / o-series
+        // =====================================================================
+        Model {
             id: "gpt-4o".into(),
             name: "GPT-4o".into(),
             provider: "openai".into(),
@@ -280,8 +348,30 @@ fn builtin_models() -> Vec<Model> {
             cost: CostConfig { input: 0.15, output: 0.6, ..Default::default() },
         },
         Model {
+            id: "o3".into(),
+            name: "o3".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 200_000,
+            max_tokens: 100_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
+        },
+        Model {
             id: "o3-mini".into(),
             name: "o3-mini".into(),
+            provider: "openai".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 200_000,
+            max_tokens: 100_000,
+            reasoning: true,
+            base_url: Some("https://api.openai.com/v1".into()),
+            cost: CostConfig { input: 1.1, output: 4.4, ..Default::default() },
+        },
+        Model {
+            id: "o4-mini".into(),
+            name: "o4-mini".into(),
             provider: "openai".into(),
             api: ApiType::OpenaiCompletions,
             context_window: 200_000,
@@ -312,7 +402,9 @@ fn builtin_models() -> Vec<Model> {
             base_url: Some("https://api.openai.com/v1".into()),
             cost: CostConfig { input: 3.0, output: 12.0, ..Default::default() },
         },
-        // Google
+        // =====================================================================
+        // Google — Gemini 2.5 series
+        // =====================================================================
         Model {
             id: "gemini-2.5-flash".into(),
             name: "Gemini 2.5 Flash".into(),
@@ -335,7 +427,20 @@ fn builtin_models() -> Vec<Model> {
             base_url: Some("https://generativelanguage.googleapis.com".into()),
             cost: CostConfig { input: 1.25, output: 10.0, ..Default::default() },
         },
+        Model {
+            id: "gemini-2.5-flash-lite".into(),
+            name: "Gemini 2.5 Flash Lite".into(),
+            provider: "google".into(),
+            api: ApiType::GoogleGenerative,
+            context_window: 1_000_000,
+            max_tokens: 65_536,
+            reasoning: false,
+            base_url: Some("https://generativelanguage.googleapis.com".into()),
+            cost: CostConfig { input: 0.075, output: 0.3, ..Default::default() },
+        },
+        // =====================================================================
         // Groq (OpenAI-compatible)
+        // =====================================================================
         Model {
             id: "llama-3.3-70b-versatile".into(),
             name: "Llama 3.3 70B".into(),
@@ -369,7 +474,9 @@ fn builtin_models() -> Vec<Model> {
             base_url: Some("https://api.groq.com/openai/v1".into()),
             cost: CostConfig { input: 0.24, output: 0.24, ..Default::default() },
         },
+        // =====================================================================
         // OpenRouter (OpenAI-compatible)
+        // =====================================================================
         Model {
             id: "anthropic/claude-sonnet-4".into(),
             name: "Claude Sonnet 4 (OpenRouter)".into(),
@@ -380,6 +487,28 @@ fn builtin_models() -> Vec<Model> {
             reasoning: true,
             base_url: Some("https://openrouter.ai/api/v1".into()),
             cost: CostConfig { input: 3.0, output: 15.0, ..Default::default() },
+        },
+        Model {
+            id: "anthropic/claude-opus-4".into(),
+            name: "Claude Opus 4 (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 200_000,
+            max_tokens: 32_000,
+            reasoning: true,
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            cost: CostConfig { input: 15.0, output: 75.0, ..Default::default() },
+        },
+        Model {
+            id: "openai/gpt-5".into(),
+            name: "GPT-5 (OpenRouter)".into(),
+            provider: "openrouter".into(),
+            api: ApiType::OpenaiCompletions,
+            context_window: 256_000,
+            max_tokens: 64_000,
+            reasoning: true,
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
         },
     ]
 }

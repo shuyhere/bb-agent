@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
 use crate::retry::with_retry;
+use crate::transforms::{convert_messages_for_openai, strip_thinking_blocks};
 
 /// OpenAI-compatible provider (works with OpenAI, Groq, Ollama, etc.)
 pub struct OpenAiProvider {
@@ -52,11 +53,15 @@ impl Provider for OpenAiProvider {
             options.base_url.trim_end_matches('/')
         );
 
+        // Apply message transforms: strip thinking blocks and convert to OpenAI format
+        let transformed = strip_thinking_blocks(&request.messages);
+        let converted = convert_messages_for_openai(&transformed);
+
         let mut messages = Vec::new();
         if !request.system_prompt.is_empty() {
             messages.push(json!({"role": "system", "content": request.system_prompt}));
         }
-        messages.extend(request.messages.iter().cloned());
+        messages.extend(converted);
 
         let mut body = json!({
             "model": request.model,
