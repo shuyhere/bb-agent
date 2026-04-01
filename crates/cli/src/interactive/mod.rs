@@ -376,9 +376,12 @@ impl InteractiveMode {
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
                 ChatItem::UserMessage(text) => {
-                    // Pi format: blank line, background-colored user text, blank line
+                    // Pi format: blank line, full-width background-colored line, blank line
                     let user_bg = "\x1b[48;2;52;53;65m";
-                    vec![String::new(), format!("{user_bg} {text}{reset}"), String::new()]
+                    // Pad to full terminal width with background color
+                    let content = format!(" {text}");
+                    // Use ANSI clear-to-end-of-line to fill background to edge
+                    vec![String::new(), format!("{user_bg}{content}\x1b[K{reset}"), String::new()]
                 }
                 ChatItem::AssistantMessage(component) => {
                     // Pi format: indented assistant text
