@@ -1,192 +1,165 @@
-# W5: Wire slash commands + hierarchical context loading + @file args
+# A2: Implement actual TypeScript plugin loading and execution
 
-Working dir: `/tmp/bb-w/w5-commands-context/`
+Working dir: `/tmp/bb-final/a2-plugin-loading/`
+BB-Agent Rust project. Read BLUEPRINT.md and REVIEW.md for context.
 
 ## Problem
-Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
+Plugin discovery (`crates/plugin-host/src/discovery.rs`) finds `.ts` files, and the host (`host.rs`) can spawn a Node process, but NO plugins are ever loaded or executed. The JSON-RPC protocol types exist but there's no host runtime that loads plugins and bridges events.
 
-## Tasks
+## Task: Build a working plugin host that loads and runs TS plugins
 
-### 1. Wire `/model` to ModelSelector
+### 1. Create `crates/plugin-host/src/runtime.rs` — the plugin runtime
 
-In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
+This is the JS file that Node runs. It loads plugins and bridges JSON-RPC:
 
-```rust
-SlashResult::ModelSelect(search) => {
-    // Use the ModelSelector from tui
-    let registry = bb_provider::registry::ModelRegistry::new();
-    let models: Vec<_> = registry.list().to_vec();
+Create the file `crates/plugin-host/js/host.js` that gets embedded or shipped:
 
-    // Simple text-based selector for now
-    println!("Available models:");
-    for (i, m) in models.iter().enumerate() {
-        let marker = if m.id == current_model_id { ">" } else { " " };
-        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
-    }
-    print!("Select (number): ");
-    // Read selection and switch model
-    // Write ModelChange entry to session
+```javascript
+// Read JSON-RPC messages from stdin, line-delimited
+// Each plugin exports default function(bb) where bb has:
+//   bb.on(event, handler)
+//   bb.registerTool(def)
+//   bb.registerCommand(name, def)
+
+const readline = require('readline');
+const path = require('path');
+
+const handlers = {};  // event -> [handler]
+const tools = {};     // name -> def
+const commands = {};  // name -> def
+
+const bb = {
+    on(event, handler) {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event].push(handler);
+    },
+    registerTool(def) {
+        tools[def.name] = def;
+        // Notify Rust side
+        send({ jsonrpc: "2.0", method: "tool_registered", params: { name: def.name, description: def.description, parameters: def.parameters } });
+    },
+    registerCommand(name, def) {
+        commands[name] = def;
+        send({ jsonrpc: "2.0", method: "command_registered", params: { name, description: def.description } });
+    },
+};
+
+function send(msg) {
+    process.stdout.write(JSON.stringify(msg) + '\n');
 }
-```
 
-### 2. Wire `/resume` to session listing + selection
-
-```rust
-SlashResult::Resume => {
-    let sessions = store::list_sessions(&conn, cwd_str)?;
-    if sessions.is_empty() {
-        println!("No sessions found.");
-    } else {
-        println!("Sessions:");
-        for (i, s) in sessions.iter().take(20).enumerate() {
-            let name = s.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {}. {} {} ({} entries, {})",
-                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
-        }
-        print!("Select (number): ");
-        // Read selection, switch to that session
-        // Rebuild context and re-render messages
-    }
-}
-```
-
-### 3. Wire `/new` to create fresh session
-
-```rust
-SlashResult::NewSession => {
-    session_id = store::create_session(&conn, cwd_str)?;
-    println!("New session: {}", &session_id[..8]);
-    // Clear displayed messages
-}
-```
-
-### 4. Wire `/name` to persist
-
-```rust
-SlashResult::SetName(name) => {
-    let entry = SessionEntry::SessionInfo {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(&conn, &session_id),
-            timestamp: Utc::now(),
-        },
-        name: Some(name.clone()),
-    };
-    store::append_entry(&conn, &session_id, &entry)?;
-    println!("Session named: {name}");
-}
-```
-
-### 5. Hierarchical AGENTS.md loading
-
-Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
-
-```rust
-fn load_agents_md(cwd: &Path) -> Option<String> {
-    let mut contents = Vec::new();
-
-    // 1. Global
-    let global = bb_core::config::global_dir().join("AGENTS.md");
-    if global.exists() {
-        if let Ok(c) = std::fs::read_to_string(&global) {
-            contents.push(c);
-        }
-    }
-
-    // 2. Walk parent directories up to git root (or filesystem root)
-    let mut dir = cwd.to_path_buf();
-    let mut scanned = Vec::new();
-    loop {
-        let agents = dir.join("AGENTS.md");
-        if agents.exists() {
-            scanned.push(agents);
-        }
-        // Also check CLAUDE.md alias
-        let claude = dir.join("CLAUDE.md");
-        if claude.exists() && !agents.exists() {
-            scanned.push(claude);
-        }
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-
-    // Reverse so we go from root → cwd (outermost first)
-    scanned.reverse();
-    for path in scanned {
-        if let Ok(c) = std::fs::read_to_string(&path) {
-            contents.push(c);
-        }
-    }
-
-    if contents.is_empty() {
-        None
-    } else {
-        Some(contents.join("\n\n---\n\n"))
+// Load plugins from args
+for (const pluginPath of process.argv.slice(2)) {
+    try {
+        const mod = require(path.resolve(pluginPath));
+        const factory = mod.default || mod;
+        if (typeof factory === 'function') factory(bb);
+    } catch (e) {
+        send({ jsonrpc: "2.0", method: "plugin_error", params: { path: pluginPath, error: e.message } });
     }
 }
-```
 
-### 6. Implement `@file` arguments
+send({ jsonrpc: "2.0", method: "plugins_loaded", params: { count: process.argv.length - 2 } });
 
-In `crates/cli/src/main.rs`, before routing to mode:
-
-```rust
-// Process @file arguments from messages
-let mut prompt_parts = Vec::new();
-let mut regular_messages = Vec::new();
-
-for msg in &cli.messages {
-    if msg.starts_with('@') {
-        let path = &msg[1..];
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
+// Handle incoming events from Rust
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', async (line) => {
+    try {
+        const msg = JSON.parse(line);
+        if (msg.method === 'event') {
+            const event = msg.params;
+            const eventHandlers = handlers[event.type] || [];
+            let result = null;
+            for (const handler of eventHandlers) {
+                const r = await handler(event, {});
+                if (r) result = { ...result, ...r };
+                if (r?.block || r?.cancel) break;
             }
-            Err(e) => {
-                eprintln!("Warning: Could not read {}: {}", path, e);
+            if (msg.id !== undefined) {
+                send({ jsonrpc: "2.0", id: msg.id, result: result || {} });
+            }
+        } else if (msg.method === 'execute_tool') {
+            const { name, toolCallId, params: toolParams } = msg.params;
+            const tool = tools[name];
+            if (tool && tool.execute) {
+                try {
+                    const result = await tool.execute(toolCallId, toolParams);
+                    send({ jsonrpc: "2.0", id: msg.id, result });
+                } catch (e) {
+                    send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: e.message } });
+                }
+            } else {
+                send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: `Tool ${name} not found` } });
             }
         }
-    } else {
-        regular_messages.push(msg.clone());
+    } catch (e) {
+        // Ignore parse errors
     }
-}
+});
+```
 
-// Combine file contents with messages
-let final_prompt = if prompt_parts.is_empty() {
-    regular_messages.join(" ")
+### 2. Modify `crates/plugin-host/src/host.rs`
+
+Update `PluginHost` to:
+- Write `host.js` to a temp file on startup (or embed it)
+- Spawn Node with `host.js` + list of plugin paths as args
+- Read `plugins_loaded`, `tool_registered`, `command_registered` notifications
+- Provide methods to send events and receive responses:
+
+```rust
+impl PluginHost {
+    pub async fn load_plugins(plugin_paths: &[PathBuf]) -> Result<Self, ...>;
+    pub async fn send_event(&mut self, event: &Event) -> Option<HookResult>;
+    pub async fn execute_tool(&mut self, name: &str, tool_call_id: &str, params: Value) -> Result<ToolResult>;
+    pub fn registered_tools(&self) -> &[RegisteredTool];
+    pub fn registered_commands(&self) -> &[RegisteredCommand];
+}
+```
+
+### 3. Integrate with the agent loop
+
+In `crates/cli/src/interactive.rs` or `run.rs`:
+
+On startup:
+```rust
+let plugins = discovery::discover_plugins(&global_dir, Some(&project_dir));
+let plugin_host = if !plugins.is_empty() {
+    let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+    Some(PluginHost::load_plugins(&paths).await?)
 } else {
-    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
+    None
 };
 ```
 
-### 7. Implement `/session` info
-
+Before each event emission on the EventBus, also send to plugin host:
 ```rust
-"/session" => {
-    let session = store::get_session(&conn, &session_id)?.unwrap();
-    let entries = store::get_entries(&conn, &session_id)?;
-    let ctx = context::build_context(&conn, &session_id)?;
-    let tokens: u64 = ctx.messages.iter()
-        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-        .sum();
-    println!("Session: {}", session.session_id);
-    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
-    println!("  CWD: {}", session.cwd);
-    println!("  Entries: {}", entries.len());
-    println!("  Context tokens: ~{}", tokens);
-    println!("  Created: {}", session.created_at);
-    println!("  Updated: {}", session.updated_at);
+if let Some(ref mut host) = plugin_host {
+    if let Some(result) = host.send_event(&event).await {
+        // Merge with bus results
+    }
+}
+```
+
+### 4. Test with a sample plugin
+
+Create `~/.bb-agent/plugins/test-plugin.ts`:
+```typescript
+export default function(bb) {
+    bb.on("session_start", (event, ctx) => {
+        console.error("[test-plugin] Session started!");
+    });
+
+    bb.on("tool_call", (event, ctx) => {
+        if (event.tool_name === "bash" && event.input.command?.includes("rm -rf /")) {
+            return { block: true, reason: "Blocked dangerous command" };
+        }
+    });
 }
 ```
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w5-commands-context
+cd /tmp/bb-final/a2-plugin-loading
 cargo build && cargo test
-git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
+git add -A && git commit -m "A2: implement TS plugin loading and execution"
 ```

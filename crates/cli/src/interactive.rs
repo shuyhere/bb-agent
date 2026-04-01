@@ -5,6 +5,7 @@ use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
 use bb_core::types::*;
 use bb_hooks::EventBus;
+use bb_plugin_host::{PluginHost, discover_plugins};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
@@ -132,6 +133,8 @@ struct InteractiveMode {
     tool_ctx: ToolContext,
     // Provider
     provider: Box<dyn Provider>,
+    // Plugin host
+    plugin_host: Option<PluginHost>,
     // Tracking
     total_tokens: u64,
     // Running state
@@ -708,6 +711,28 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
 
     let _event_bus = EventBus::new();
 
+    // Plugin discovery and loading
+    let project_bb_dir = cwd.join(".bb-agent");
+    let plugins = discover_plugins(&global_dir, Some(&project_bb_dir));
+    let plugin_host = if !plugins.is_empty() {
+        let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+        eprintln!("Loading {} plugin(s)...", paths.len());
+        match PluginHost::load_plugins(&paths).await {
+            Ok(host) => {
+                eprintln!("Plugins loaded: {} tool(s), {} command(s)",
+                    host.registered_tools().len(),
+                    host.registered_commands().len());
+                Some(host)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load plugins: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
         _ => Box::new(OpenAiProvider::new()),
@@ -731,6 +756,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         tool_defs,
         tool_ctx,
         provider,
+        plugin_host,
         total_tokens: 0,
         cancel: None,
         agent_running: false,
@@ -1083,6 +1109,40 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         for tc in &collected.tool_calls {
             let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+
+            // Send tool_call event to plugins — may block execution
+            if let Some(ref mut host) = mode.plugin_host {
+                let tool_event = bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    input: args.clone(),
+                });
+                if let Some(result) = host.send_event(&tool_event).await {
+                    if result.block == Some(true) {
+                        let reason = result.reason.unwrap_or_else(|| "Blocked by plugin".into());
+                        println!("  {} {} {}", "🚫".with(Color::Red), tc.name.clone().with(Color::Cyan), reason.clone().with(Color::Red));
+                        // Store blocked result
+                        let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
+                            tool_call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            content: vec![ContentBlock::Text { text: format!("Blocked: {reason}") }],
+                            details: None,
+                            is_error: true,
+                            timestamp: Utc::now().timestamp_millis(),
+                        });
+                        let tr_entry = SessionEntry::Message {
+                            base: EntryBase {
+                                id: EntryId::generate(),
+                                parent_id: get_leaf(&mode.conn, &mode.session_id),
+                                timestamp: Utc::now(),
+                            },
+                            message: tool_result_msg,
+                        };
+                        store::append_entry(&mode.conn, &mode.session_id, &tr_entry)?;
+                        continue;
+                    }
+                }
+            }
 
             print!(
                 "  {} {} ",

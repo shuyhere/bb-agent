@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
@@ -5,6 +7,7 @@ use bb_core::config;
 use bb_core::settings::Settings;
 use bb_core::types::*;
 use bb_hooks::EventBus;
+use bb_plugin_host::{PluginHost, discover_plugins};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
@@ -163,8 +166,30 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
         })
         .collect();
 
-    // Event bus (for future plugin support)
+    // Event bus
     let _event_bus = EventBus::new();
+
+    // Plugin discovery and loading
+    let project_bb_dir = cwd.join(".bb-agent");
+    let plugins = discover_plugins(&global_dir, Some(&project_bb_dir));
+    let mut plugin_host = if !plugins.is_empty() {
+        let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+        eprintln!("Loading {} plugin(s)...", paths.len());
+        match PluginHost::load_plugins(&paths).await {
+            Ok(host) => {
+                eprintln!("Plugins loaded: {} tool(s), {} command(s)",
+                    host.registered_tools().len(),
+                    host.registered_commands().len());
+                Some(host)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load plugins: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Provider — select based on API type
     let provider: Box<dyn Provider> = match model.api {
