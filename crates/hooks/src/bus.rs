@@ -4,6 +4,9 @@ use tokio::sync::RwLock;
 
 use crate::events::{Event, HookResult};
 
+/// Shared, cloneable event bus handle.
+pub type SharedEventBus = Arc<EventBus>;
+
 /// Handler function type.
 pub type HandlerFn = Arc<dyn Fn(&Event) -> Option<HookResult> + Send + Sync>;
 
@@ -22,6 +25,11 @@ impl EventBus {
         Self {
             handlers: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Create a new EventBus wrapped in Arc for shared ownership.
+    pub fn shared() -> SharedEventBus {
+        Arc::new(Self::new())
     }
 
     /// Register a handler for an event type.
@@ -171,5 +179,153 @@ mod tests {
         let result = bus.emit(&event).await.unwrap();
         assert_eq!(result.block, Some(true));
         assert_eq!(result.reason, Some("Dangerous command".into()));
+    }
+
+    #[tokio::test]
+    async fn test_context_hook_modifies_messages() {
+        use bb_core::types::{AgentMessage, UserMessage, ContentBlock};
+
+        let bus = EventBus::new();
+        bus.on(
+            "context",
+            "context-manager",
+            Arc::new(|event| {
+                if let Event::Context(_ctx) = event {
+                    // Return a single replacement message as JSON
+                    let replacement = serde_json::json!([
+                        { "User": { "content": [{ "Text": { "text": "replaced" } }], "timestamp": 0 } }
+                    ]);
+                    if let serde_json::Value::Array(arr) = replacement {
+                        return Some(HookResult {
+                            messages: Some(arr),
+                            ..Default::default()
+                        });
+                    }
+                }
+                None
+            }),
+        )
+        .await;
+
+        let original_messages = vec![AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text { text: "original".into() }],
+            timestamp: 0,
+        })];
+
+        let event = Event::Context(ContextEvent {
+            messages: original_messages,
+        });
+        let result = bus.emit(&event).await.unwrap();
+        assert!(result.messages.is_some());
+        let msgs = result.messages.unwrap();
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_before_agent_start_modifies_prompt() {
+        let bus = EventBus::new();
+        bus.on(
+            "before_agent_start",
+            "prompt-modifier",
+            Arc::new(|event| {
+                if let Event::BeforeAgentStart { system_prompt, .. } = event {
+                    let modified = format!("{system_prompt}\n\nAdditional instructions.");
+                    return Some(HookResult {
+                        system_prompt: Some(modified),
+                        ..Default::default()
+                    });
+                }
+                None
+            }),
+        )
+        .await;
+
+        let event = Event::BeforeAgentStart {
+            prompt: "Hello".into(),
+            system_prompt: "You are a helpful assistant.".into(),
+        };
+        let result = bus.emit(&event).await.unwrap();
+        assert_eq!(
+            result.system_prompt,
+            Some("You are a helpful assistant.\n\nAdditional instructions.".into()),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shared_event_bus() {
+        let bus = EventBus::shared();
+        bus.on(
+            "session_start",
+            "test",
+            Arc::new(|_| {
+                Some(HookResult {
+                    action: Some("started".into()),
+                    ..Default::default()
+                })
+            }),
+        )
+        .await;
+
+        let bus2 = bus.clone();
+        let result = bus2.emit(&Event::SessionStart).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().action, Some("started".into()));
+    }
+
+    #[tokio::test]
+    async fn test_session_before_compact_cancel() {
+        let bus = EventBus::new();
+        bus.on(
+            "session_before_compact",
+            "compaction-guard",
+            Arc::new(|_| {
+                Some(HookResult {
+                    cancel: Some(true),
+                    reason: Some("Compaction disabled by extension".into()),
+                    ..Default::default()
+                })
+            }),
+        )
+        .await;
+
+        let event = Event::SessionBeforeCompact(CompactPrep {
+            first_kept_entry_id: "abc123".into(),
+            tokens_before: 5000,
+        });
+        let result = bus.emit(&event).await.unwrap();
+        assert_eq!(result.cancel, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_tool_result_hook_replaces_content() {
+        let bus = EventBus::new();
+        bus.on(
+            "tool_result",
+            "content-filter",
+            Arc::new(|event| {
+                if let Event::ToolResult(tr) = event {
+                    if tr.tool_name == "bash" {
+                        return Some(HookResult {
+                            content: Some(vec![serde_json::json!({ "Text": { "text": "[redacted]" } })]),
+                            ..Default::default()
+                        });
+                    }
+                }
+                None
+            }),
+        )
+        .await;
+
+        let event = Event::ToolResult(ToolResultEvent {
+            tool_call_id: "1".into(),
+            tool_name: "bash".into(),
+            content: vec![bb_core::types::ContentBlock::Text { text: "secret output".into() }],
+            is_error: false,
+        });
+        let result = bus.emit(&event).await.unwrap();
+        assert!(result.content.is_some());
+        let content = result.content.unwrap();
+        assert_eq!(content.len(), 1);
+        assert!(content[0].to_string().contains("redacted"));
     }
 }

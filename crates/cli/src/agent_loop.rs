@@ -6,6 +6,7 @@
 use bb_core::agent;
 use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::types::*;
+use bb_hooks::{Event, ToolCallEvent, ToolResultEvent, ContextEvent, SharedEventBus};
 use bb_provider::streaming::CollectedResponse;
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::{compaction, context, store, tree};
@@ -31,20 +32,40 @@ pub async fn run_agent_loop(
     tool_defs: &[serde_json::Value],
     tool_ctx: &ToolContext,
     event_tx: &mpsc::UnboundedSender<AgentLoopEvent>,
+    event_bus: &SharedEventBus,
 ) -> anyhow::Result<()> {
     let mut turn_index: u32 = 0;
+    let mut active_system_prompt = system_prompt.to_string();
 
     loop {
         // Step 1: Send TurnStart
         let _ = event_tx.send(AgentLoopEvent::TurnStart { turn_index });
 
+        // Fire turn_start hook
+        let _ = event_bus.emit(&Event::TurnStart { turn_index }).await;
+
         // Step 2: Build context from session
         let ctx = context::build_context(conn, session_id)?;
-        let provider_messages = messages_to_provider(&ctx.messages);
+
+        // Fire context hook — extensions can replace the message list
+        let mut final_messages = ctx.messages.clone();
+        let context_event = Event::Context(ContextEvent { messages: ctx.messages.clone() });
+        if let Some(result) = event_bus.emit(&context_event).await {
+            if let Some(new_msgs_json) = result.messages {
+                // Try to deserialize replacement messages
+                if let Ok(parsed) = serde_json::from_value::<Vec<AgentMessage>>(
+                    serde_json::Value::Array(new_msgs_json),
+                ) {
+                    final_messages = parsed;
+                }
+            }
+        }
+
+        let provider_messages = messages_to_provider(&final_messages);
 
         // Step 3: Build completion request
         let request = CompletionRequest {
-            system_prompt: system_prompt.to_string(),
+            system_prompt: active_system_prompt.clone(),
             messages: provider_messages,
             tools: tool_defs.to_vec(),
             model: model.id.clone(),
@@ -165,8 +186,50 @@ pub async fn run_agent_loop(
         // Step 6: Execute tool calls
         let cancel = CancellationToken::new();
         for tc in &collected.tool_calls {
-            let args: serde_json::Value =
+            let mut args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+
+            // Fire tool_call hook — can block or mutate input
+            let tc_event = Event::ToolCall(ToolCallEvent {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                input: args.clone(),
+            });
+            if let Some(hook_result) = event_bus.emit(&tc_event).await {
+                if hook_result.block == Some(true) {
+                    let reason = hook_result.reason.unwrap_or_else(|| "Blocked by extension".into());
+                    // Append blocked tool result
+                    let blocked_content = vec![ContentBlock::Text { text: reason.clone() }];
+                    let _ = event_tx.send(AgentLoopEvent::ToolResult {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        content: reason,
+                        is_error: true,
+                    });
+                    let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        content: blocked_content,
+                        details: None,
+                        is_error: true,
+                        timestamp: Utc::now().timestamp_millis(),
+                    });
+                    let tr_entry = SessionEntry::Message {
+                        base: EntryBase {
+                            id: EntryId::generate(),
+                            parent_id: get_leaf(conn, session_id),
+                            timestamp: Utc::now(),
+                        },
+                        message: tool_result_msg,
+                    };
+                    store::append_entry(conn, session_id, &tr_entry)?;
+                    continue;
+                }
+                // If the hook returned mutated input, use it
+                if let Some(payload) = hook_result.payload {
+                    args = payload;
+                }
+            }
 
             let _ = event_tx.send(AgentLoopEvent::ToolExecuting {
                 id: tc.id.clone(),
@@ -182,13 +245,30 @@ pub async fn run_agent_loop(
                 ))),
             };
 
-            let (content, is_error) = match result {
+            let (mut content, is_error) = match result {
                 Ok(r) => (r.content, r.is_error),
                 Err(e) => {
                     let msg = format!("Error: {e}");
                     (vec![ContentBlock::Text { text: msg }], true)
                 }
             };
+
+            // Fire tool_result hook — can replace content
+            let tr_event = Event::ToolResult(ToolResultEvent {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                content: content.clone(),
+                is_error,
+            });
+            if let Some(hook_result) = event_bus.emit(&tr_event).await {
+                if let Some(new_content_json) = hook_result.content {
+                    if let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(
+                        serde_json::Value::Array(new_content_json),
+                    ) {
+                        content = parsed;
+                    }
+                }
+            }
 
             // Extract text for the event
             let content_text = content
@@ -230,6 +310,9 @@ pub async fn run_agent_loop(
 
         let _ = event_tx.send(AgentLoopEvent::TurnEnd { turn_index });
 
+        // Fire turn_end hook
+        let _ = event_bus.emit(&Event::TurnEnd { turn_index }).await;
+
         // Step 8: Auto-compaction check
         let compaction_settings = CompactionSettings::default();
         let ctx_check = context::build_context(conn, session_id)?;
@@ -240,6 +323,22 @@ pub async fn run_agent_loop(
         if compaction::should_compact(total_tokens, model.context_window, &compaction_settings) {
             let path = tree::active_path(conn, session_id)?;
             if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+                // Fire session_before_compact hook — can cancel
+                let compact_event = Event::SessionBeforeCompact(bb_hooks::CompactPrep {
+                    first_kept_entry_id: prep.first_kept_entry_id.clone(),
+                    tokens_before: prep.tokens_before,
+                });
+                let should_skip = if let Some(hook_result) = event_bus.emit(&compact_event).await {
+                    hook_result.cancel == Some(true)
+                } else {
+                    false
+                };
+
+                if should_skip {
+                    turn_index += 1;
+                    continue;
+                }
+
                 let cancel_compact = CancellationToken::new();
                 let result = compaction::compact(
                     &prep, provider, &model.id, api_key, base_url,
