@@ -35,8 +35,8 @@ impl ModelSelector {
                     m.provider, ctx, thinking_tag,
                 );
                 SelectItem {
-                    label: m.name.clone(),
-                    detail: Some(detail),
+                    label: m.id.clone(),
+                    detail: Some(format!("{} · {}", detail, m.name)),
                     value: format!("{}:{}", m.provider, m.id),
                 }
             })

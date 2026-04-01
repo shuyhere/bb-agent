@@ -185,6 +185,13 @@ pub async fn handle_logout(provider: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub fn list_known_providers() -> Vec<(String, bool)> {
+    KNOWN_PROVIDERS
+        .iter()
+        .map(|(name, _, _)| ((*name).to_string(), get_provider_status(name).starts_with('✓')))
+        .collect()
+}
+
 fn get_provider_status(name: &str) -> &'static str {
     let store = load_auth();
     if store.providers.contains_key(name) {

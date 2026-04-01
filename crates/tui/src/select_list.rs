@@ -25,6 +25,7 @@ pub struct SelectList {
     scroll_offset: usize,
     max_visible: usize,
     search: String,
+    show_search: bool,
 }
 
 impl SelectList {
@@ -37,7 +38,12 @@ impl SelectList {
             scroll_offset: 0,
             max_visible,
             search: String::new(),
+            show_search: true,
         }
+    }
+
+    pub fn set_show_search(&mut self, show: bool) {
+        self.show_search = show;
     }
 
     /// Update the search query and re-filter.
@@ -51,8 +57,8 @@ impl SelectList {
         let w = width as usize;
         let mut lines = Vec::new();
 
-        // Search bar
-        if !self.search.is_empty() {
+        // Optional search bar
+        if self.show_search && !self.search.is_empty() {
             let search_line = format!(
                 " {} {}",
                 "🔍".to_string(),

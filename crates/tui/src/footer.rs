@@ -27,6 +27,7 @@ pub fn detect_git_branch(cwd: &str) -> Option<String> {
 /// Data needed to render the footer.
 #[derive(Clone, Debug)]
 pub struct FooterData {
+    /// Model identifier shown in footer (pi uses model id, not display name)
     pub model_name: String,
     pub provider: String,
     pub cwd: String,
@@ -164,10 +165,14 @@ impl Component for Footer {
         let stats_left = parts.join(" ");
         let stats_left_width = visible_width(&stats_left);
 
-        // Right side: (provider) model + thinking
+        // Right side: pi uses model id, plus thinking status when reasoning is supported
         let mut right = d.model_name.clone();
         if let Some(ref level) = d.thinking_level {
-            right = format!("{} • {}", right, level);
+            right = if level == "off" {
+                format!("{} • thinking off", right)
+            } else {
+                format!("{} • {}", right, level)
+            };
         }
         // Prepend provider if there's enough room
         let right_with_provider = format!("({}) {}", d.provider, right);

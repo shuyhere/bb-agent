@@ -157,6 +157,7 @@ impl Editor {
             return;
         };
         let mut list = SelectList::new(self.slash_commands.clone(), 6);
+        list.set_show_search(false);
         let search = query.trim_start_matches('/');
         list.set_search(search);
         self.slash_menu = Some(list);

@@ -24,6 +24,7 @@ use bb_tui::editor::Editor;
 use bb_tui::footer::{Footer, FooterData};
 use bb_tui::markdown::MarkdownRenderer;
 use bb_tui::model_selector::ModelSelector;
+use bb_tui::select_list::{SelectAction, SelectItem, SelectList};
 use bb_tui::terminal::TerminalEvent;
 use bb_tui::tui_core::TUI;
 use chrono::Utc;
@@ -313,6 +314,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let mut streaming = StreamingState::new();
     let mut last_ctrl_c = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let mut model_selector: Option<ModelSelector> = None;
+    let mut provider_selector: Option<(bool, SelectList)> = None; // (is_login, list)
 
     // If initial prompt, send it
     if !cli.messages.is_empty() {
@@ -344,6 +346,44 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             Some(event) = term_events.recv() => {
                 match event {
                     TerminalEvent::Key(key) => {
+                        // Active provider selector captures input first
+                        if let Some((is_login, list)) = &mut provider_selector {
+                            let login_mode = *is_login;
+                            match list.handle_key(key) {
+                                SelectAction::None => {
+                                    let cols = tui.columns();
+                                    let lines = render_provider_selector(login_mode, list, cols);
+                                    set_overlay_lines(&mut tui, lines);
+                                    tui.render();
+                                    continue;
+                                }
+                                SelectAction::Cancelled => {
+                                    provider_selector = None;
+                                    clear_overlay(&mut tui);
+                                    tui.render();
+                                    continue;
+                                }
+                                SelectAction::Selected(provider) => {
+                                    provider_selector = None;
+                                    clear_overlay(&mut tui);
+                                    tui.stop();
+                                    let result = if login_mode {
+                                        login::handle_login(Some(&provider)).await
+                                    } else {
+                                        login::handle_logout(Some(&provider)).await
+                                    };
+                                    term_events = tui.start();
+                                    tui.force_render();
+                                    match result {
+                                        Ok(()) => add_status_to_chat(&mut tui, &format!("  {} {}", if login_mode { "Logged in to" } else { "Logged out from" }, provider)),
+                                        Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                    }
+                                    tui.render();
+                                    continue;
+                                }
+                            }
+                        }
+
                         // Active model selector captures input first
                         if let Some(selector) = &mut model_selector {
                             if let Some(result) = selector.handle_key(key) {
@@ -460,6 +500,18 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     let lines = selector.render(cols);
                                     set_overlay_lines(&mut tui, lines);
                                     model_selector = Some(selector);
+                                } else if accepted_text == "/login" {
+                                    let list = provider_selector_list(true);
+                                    let cols = tui.columns();
+                                    let lines = render_provider_selector(true, &list, cols);
+                                    set_overlay_lines(&mut tui, lines);
+                                    provider_selector = Some((true, list));
+                                } else if accepted_text == "/logout" {
+                                    let list = provider_selector_list(false);
+                                    let cols = tui.columns();
+                                    let lines = render_provider_selector(false, &list, cols);
+                                    set_overlay_lines(&mut tui, lines);
+                                    provider_selector = Some((false, list));
                                 }
                                 tui.render();
                                 continue;
@@ -498,26 +550,22 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                     }
 
                                     if text == "/login" {
-                                        tui.stop();
-                                        let login_result = login::handle_login(None).await;
-                                        term_events = tui.start();
-                                        tui.force_render();
-                                        if let Err(e) = login_result {
-                                            add_status_to_chat(&mut tui, &style_error(&format!("Login error: {e}")));
-                                            tui.render();
-                                        }
+                                        let list = provider_selector_list(true);
+                                        let cols = tui.columns();
+                                        let lines = render_provider_selector(true, &list, cols);
+                                        set_overlay_lines(&mut tui, lines);
+                                        provider_selector = Some((true, list));
+                                        tui.render();
                                         continue;
                                     }
 
                                     if text == "/logout" {
-                                        tui.stop();
-                                        let logout_result = login::handle_logout(None).await;
-                                        term_events = tui.start();
-                                        tui.force_render();
-                                        if let Err(e) = logout_result {
-                                            add_status_to_chat(&mut tui, &style_error(&format!("Logout error: {e}")));
-                                            tui.render();
-                                        }
+                                        let list = provider_selector_list(false);
+                                        let cols = tui.columns();
+                                        let lines = render_provider_selector(false, &list, cols);
+                                        set_overlay_lines(&mut tui, lines);
+                                        provider_selector = Some((false, list));
+                                        tui.render();
                                         continue;
                                     }
 
@@ -786,6 +834,29 @@ impl StreamingState {
 }
 
 // ── Footer update ──────────────────────────────────────────────────
+
+fn provider_selector_list(is_login: bool) -> SelectList {
+    let mut items: Vec<SelectItem> = login::list_known_providers()
+        .into_iter()
+        .filter(|(_, configured)| is_login || *configured)
+        .map(|(name, configured)| SelectItem {
+            label: name.clone(),
+            detail: Some(if configured { "configured".into() } else { "not configured".into() }),
+            value: name,
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    let mut list = SelectList::new(items, 8);
+    list.set_show_search(false);
+    list
+}
+
+fn render_provider_selector(is_login: bool, list: &SelectList, width: u16) -> Vec<String> {
+    let title = if is_login { "Select provider to login:" } else { "Select provider to logout:" };
+    let mut lines = vec![title.to_string(), String::new()];
+    lines.extend(list.render(width));
+    lines
+}
 
 fn model_selector_from_registry(
     registry: &ModelRegistry,
