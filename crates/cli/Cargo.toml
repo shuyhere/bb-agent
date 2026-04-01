@@ -1,5 +1,5 @@
 [package]
-name = "bb-agent"
+name = "bb-cli"
 version.workspace = true
 edition.workspace = true
 
