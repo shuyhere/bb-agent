@@ -1765,6 +1765,28 @@ impl InteractiveMode {
         }
     }
 
+    fn check_auto_compaction(&mut self) {
+        let session_id = self.session_setup.session_id.clone();
+        let settings = bb_core::types::CompactionSettings::default();
+        if let Ok(entries) = store::get_entries(&self.session_setup.conn, &session_id) {
+            let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
+            let window = self.session_setup.model.context_window;
+            if compaction::should_compact(total_tokens, window, &settings) {
+                self.chat_lines.push(format!(
+                    "[c] Auto-compaction triggered ({total_tokens} tokens, window {window})"
+                ));
+                // Prepare and note — full async LLM summarization deferred to future wave
+                if let Some(prep) = compaction::prepare_compaction(&entries, &settings) {
+                    self.chat_lines.push(format!(
+                        "[c] {} messages to summarize, {} kept",
+                        prep.messages_to_summarize.len(),
+                        prep.kept_messages.len()
+                    ));
+                }
+            }
+        }
+    }
+
     fn handle_compact_command(&mut self, instructions: Option<&str>) {
         self.is_compacting = true;
         let session_id = self.session_setup.session_id.clone();
@@ -2076,6 +2098,13 @@ impl InteractiveMode {
                 self.render_state_mut().streaming_component = None;
                 self.render_state_mut().streaming_message = None;
                 self.render_state_mut().pending_tools.clear();
+                // Auto-compaction check
+                self.check_auto_compaction();
+                // Dispatch queued steering messages
+                if let Some(queued) = self.steering_queue.pop_front() {
+                    self.chat_lines.push(format!("queued(steer)> {queued}"));
+                    self.pending_working_message = Some(queued);
+                }
                 self.rebuild_footer();
                 self.refresh_ui();
             }
