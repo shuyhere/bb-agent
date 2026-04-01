@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
 mod interactive;
@@ -124,7 +123,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -164,23 +163,36 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Read piped stdin if available
-    let stdin_content = if !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        if buf.trim().is_empty() { None } else { Some(buf) }
-    } else {
-        None
-    };
+    // Process @file arguments from messages
+    let mut cli = cli;
+    let mut prompt_parts = Vec::new();
+    let mut regular_messages = Vec::new();
 
-    // Prepend stdin to prompt if available
-    if let Some(stdin) = stdin_content {
-        if cli.messages.is_empty() {
-            cli.messages.push(stdin);
+    for msg in &cli.messages {
+        if msg.starts_with('@') {
+            let path = &msg[1..];
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
+                }
+                Err(e) => {
+                    eprintln!("Warning: Could not read {}: {}", path, e);
+                }
+            }
         } else {
-            let prompt = cli.messages.join(" ");
-            cli.messages = vec![format!("{stdin}\n\n{prompt}")];
+            regular_messages.push(msg.clone());
         }
+    }
+
+    // Combine file contents with messages
+    if !prompt_parts.is_empty() {
+        let file_context = prompt_parts.join("\n\n");
+        let user_text = regular_messages.join(" ");
+        cli.messages = if user_text.is_empty() {
+            vec![file_context]
+        } else {
+            vec![format!("{}\n\n{}", file_context, user_text)]
+        };
     }
 
     // Run the agent

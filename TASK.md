@@ -1,160 +1,192 @@
-# W4: Streaming bash display + edit diff
+# W5: Wire slash commands + hierarchical context loading + @file args
 
-Working dir: `/tmp/bb-w/w4-streaming-bash-diff/`
+Working dir: `/tmp/bb-w/w5-commands-context/`
 
 ## Problem
-1. Bash tool waits for process to finish before showing any output — no real-time feedback
-2. Edit tool shows "Applied N/N edit(s)" with no diff — user can't see what changed
+Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
 
 ## Tasks
 
-### 1. Add streaming callback to bash tool
+### 1. Wire `/model` to ModelSelector
 
-Modify `crates/tools/src/bash.rs`:
-
-Add an `on_output` callback that streams chunks as they arrive:
+In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
 
 ```rust
-pub struct BashTool;
+SlashResult::ModelSelect(search) => {
+    // Use the ModelSelector from tui
+    let registry = bb_provider::registry::ModelRegistry::new();
+    let models: Vec<_> = registry.list().to_vec();
 
-// Add a way to set a streaming callback
-// The simplest approach: add it to ToolContext
-```
-
-Actually, modify `ToolContext` in `crates/tools/src/lib.rs`:
-```rust
-pub struct ToolContext {
-    pub cwd: PathBuf,
-    pub artifacts_dir: PathBuf,
-    pub on_output: Option<Box<dyn Fn(&str) + Send + Sync>>,
-}
-```
-
-Then in `bash.rs`, stream chunks as they arrive:
-```rust
-// Instead of reading all stdout at once, read in chunks:
-let mut stdout = child.stdout.take().unwrap();
-let mut buf = [0u8; 4096];
-loop {
-    let n = stdout.read(&mut buf).await?;
-    if n == 0 { break; }
-    let chunk = String::from_utf8_lossy(&buf[..n]);
-    if let Some(ref on_output) = ctx.on_output {
-        on_output(&chunk);
+    // Simple text-based selector for now
+    println!("Available models:");
+    for (i, m) in models.iter().enumerate() {
+        let marker = if m.id == current_model_id { ">" } else { " " };
+        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
     }
-    stdout_buf.extend_from_slice(&buf[..n]);
+    print!("Select (number): ");
+    // Read selection and switch model
+    // Write ModelChange entry to session
 }
 ```
 
-This way the TUI can display bash output in real-time as it streams.
-
-### 2. Create `crates/tools/src/diff.rs` — edit diff display
-
-When the edit tool modifies a file, show a colored inline diff.
+### 2. Wire `/resume` to session listing + selection
 
 ```rust
-use similar::{ChangeTag, TextDiff};
-
-pub struct DiffLine {
-    pub tag: ChangeTag,  // Equal, Delete, Insert
-    pub content: String,
-}
-
-/// Generate a unified diff between old and new text.
-pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Vec<DiffLine> {
-    let diff = TextDiff::from_lines(old, new);
-    let mut lines = Vec::new();
-
-    for change in diff.iter_all_changes() {
-        lines.push(DiffLine {
-            tag: change.tag(),
-            content: change.value().to_string(),
-        });
+SlashResult::Resume => {
+    let sessions = store::list_sessions(&conn, cwd_str)?;
+    if sessions.is_empty() {
+        println!("No sessions found.");
+    } else {
+        println!("Sessions:");
+        for (i, s) in sessions.iter().take(20).enumerate() {
+            let name = s.name.as_deref().unwrap_or("(unnamed)");
+            println!("  {}. {} {} ({} entries, {})",
+                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
+        }
+        print!("Select (number): ");
+        // Read selection, switch to that session
+        // Rebuild context and re-render messages
     }
-
-    lines
-}
-
-/// Render diff lines with ANSI colors.
-pub fn render_diff(diff_lines: &[DiffLine]) -> Vec<String> {
-    diff_lines.iter().map(|line| {
-        let prefix = match line.tag {
-            ChangeTag::Equal => "  ",
-            ChangeTag::Delete => "- ",
-            ChangeTag::Insert => "+ ",
-        };
-        let color = match line.tag {
-            ChangeTag::Equal => "",
-            ChangeTag::Delete => "\x1b[31m",  // red
-            ChangeTag::Insert => "\x1b[32m",  // green
-        };
-        let reset = if color.is_empty() { "" } else { "\x1b[0m" };
-        format!("    {}{}{}{}", color, prefix, line.content.trim_end(), reset)
-    }).collect()
 }
 ```
 
-### 3. Integrate diff into edit tool
-
-Modify `crates/tools/src/edit.rs`:
-
-Before applying the edit, save the old content. After applying, generate and display the diff:
+### 3. Wire `/new` to create fresh session
 
 ```rust
-// In execute():
-let old_content = tokio::fs::read_to_string(&path).await?;
-
-// ... apply edits ...
-
-let new_content = tokio::fs::read_to_string(&path).await?;
-
-// Generate diff
-let diff_lines = diff::generate_diff(&old_content, &new_content, 3);
-let rendered = diff::render_diff(&diff_lines);
-
-// Include diff in result
-let mut msg = format!("Applied {applied}/{} edit(s) to {path_str}", edits.len());
-if !rendered.is_empty() {
-    msg.push('\n');
-    msg.push_str(&rendered.join("\n"));
+SlashResult::NewSession => {
+    session_id = store::create_session(&conn, cwd_str)?;
+    println!("New session: {}", &session_id[..8]);
+    // Clear displayed messages
 }
 ```
 
-### 4. Update lib.rs
-
-Add `pub mod diff;` to `crates/tools/src/lib.rs`.
-
-### 5. Tests
+### 4. Wire `/name` to persist
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+SlashResult::SetName(name) => {
+    let entry = SessionEntry::SessionInfo {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: get_leaf(&conn, &session_id),
+            timestamp: Utc::now(),
+        },
+        name: Some(name.clone()),
+    };
+    store::append_entry(&conn, &session_id, &entry)?;
+    println!("Session named: {name}");
+}
+```
 
-    #[test]
-    fn test_generate_diff() {
-        let old = "line1\nline2\nline3\n";
-        let new = "line1\nmodified\nline3\n";
-        let diff = generate_diff(old, new, 1);
-        assert!(diff.iter().any(|l| l.tag == ChangeTag::Delete));
-        assert!(diff.iter().any(|l| l.tag == ChangeTag::Insert));
+### 5. Hierarchical AGENTS.md loading
+
+Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
+
+```rust
+fn load_agents_md(cwd: &Path) -> Option<String> {
+    let mut contents = Vec::new();
+
+    // 1. Global
+    let global = bb_core::config::global_dir().join("AGENTS.md");
+    if global.exists() {
+        if let Ok(c) = std::fs::read_to_string(&global) {
+            contents.push(c);
+        }
     }
 
-    #[test]
-    fn test_render_diff() {
-        let old = "hello\n";
-        let new = "world\n";
-        let diff = generate_diff(old, new, 0);
-        let rendered = render_diff(&diff);
-        assert!(rendered.iter().any(|l| l.contains("hello")));
-        assert!(rendered.iter().any(|l| l.contains("world")));
+    // 2. Walk parent directories up to git root (or filesystem root)
+    let mut dir = cwd.to_path_buf();
+    let mut scanned = Vec::new();
+    loop {
+        let agents = dir.join("AGENTS.md");
+        if agents.exists() {
+            scanned.push(agents);
+        }
+        // Also check CLAUDE.md alias
+        let claude = dir.join("CLAUDE.md");
+        if claude.exists() && !agents.exists() {
+            scanned.push(claude);
+        }
+        // Stop at git root
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
     }
+
+    // Reverse so we go from root → cwd (outermost first)
+    scanned.reverse();
+    for path in scanned {
+        if let Ok(c) = std::fs::read_to_string(&path) {
+            contents.push(c);
+        }
+    }
+
+    if contents.is_empty() {
+        None
+    } else {
+        Some(contents.join("\n\n---\n\n"))
+    }
+}
+```
+
+### 6. Implement `@file` arguments
+
+In `crates/cli/src/main.rs`, before routing to mode:
+
+```rust
+// Process @file arguments from messages
+let mut prompt_parts = Vec::new();
+let mut regular_messages = Vec::new();
+
+for msg in &cli.messages {
+    if msg.starts_with('@') {
+        let path = &msg[1..];
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not read {}: {}", path, e);
+            }
+        }
+    } else {
+        regular_messages.push(msg.clone());
+    }
+}
+
+// Combine file contents with messages
+let final_prompt = if prompt_parts.is_empty() {
+    regular_messages.join(" ")
+} else {
+    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
+};
+```
+
+### 7. Implement `/session` info
+
+```rust
+"/session" => {
+    let session = store::get_session(&conn, &session_id)?.unwrap();
+    let entries = store::get_entries(&conn, &session_id)?;
+    let ctx = context::build_context(&conn, &session_id)?;
+    let tokens: u64 = ctx.messages.iter()
+        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+        .sum();
+    println!("Session: {}", session.session_id);
+    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
+    println!("  CWD: {}", session.cwd);
+    println!("  Entries: {}", entries.len());
+    println!("  Context tokens: ~{}", tokens);
+    println!("  Created: {}", session.created_at);
+    println!("  Updated: {}", session.updated_at);
 }
 ```
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w4-streaming-bash-diff
+cd /tmp/bb-w/w5-commands-context
 cargo build && cargo test
-git add -A && git commit -m "W4: streaming bash + edit diff display"
+git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
 ```
