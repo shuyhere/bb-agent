@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::interactive::components::assistant_message::{
+use super::components::assistant_message::{
     AssistantMessage, AssistantMessageComponent, AssistantMessageContent, AssistantStopReason,
 };
-use crate::interactive::components::bash_execution::{BashExecutionComponent, TruncationResult};
-use crate::interactive::components::tool_execution::{
+use super::components::bash_execution::{BashExecutionComponent, TruncationResult};
+use super::components::tool_execution::{
     ToolExecutionComponent, ToolExecutionOptions, ToolExecutionResult, ToolResultBlock,
 };
 
@@ -213,7 +213,7 @@ impl InteractiveRenderState {
                 }
                 InteractiveMessage::Assistant { message, .. } => {
                     let mut component =
-                        AssistantMessageComponent::new(None, self.hide_thinking_block);
+                        AssistantMessageComponent::new(None::<AssistantMessage>, self.hide_thinking_block);
                     component.set_hidden_thinking_label(self.hidden_thinking_label.clone());
                     component.update_content(message.clone());
                     self.streaming_component = Some(component);
