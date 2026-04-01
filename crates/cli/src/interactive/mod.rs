@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[path = "../interactive_events.rs"]
+pub mod events;
+
 use bb_tui::component::{Component, Container, Spacer, Text, CURSOR_MARKER};
 use bb_tui::tui_core::TUI;
 use bb_tui::terminal::{Terminal, TerminalEvent};
