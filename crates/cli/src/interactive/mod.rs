@@ -1867,10 +1867,50 @@ impl InteractiveMode {
 
     fn handle_model_command(&mut self, search_term: Option<&str>) {
         match search_term {
-            Some(search_term) => {
-                self.show_status(format!("TODO: model command search '{search_term}'"))
+            Some(model_str) => {
+                // Direct model switch: /model provider/model or /model model-name
+                let (provider, model_id, thinking) = bb_core::agent_session::parse_model_arg(
+                    None, Some(model_str),
+                );
+                let mut registry = bb_provider::registry::ModelRegistry::new();
+                let settings = bb_core::settings::Settings::load_merged(
+                    &self.controller.runtime_host.cwd(),
+                );
+                registry.load_custom_models(&settings);
+                if let Some(model) = registry.find(&provider, &model_id)
+                    .or_else(|| registry.find_fuzzy(&model_id, Some(&provider)))
+                    .or_else(|| registry.find_fuzzy(&model_id, None))
+                    .cloned()
+                {
+                    let api_key = crate::login::resolve_api_key(&model.provider)
+                        .unwrap_or_default();
+                    let base_url = model.base_url.clone()
+                        .unwrap_or_else(|| match model.api {
+                            bb_provider::registry::ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+                            bb_provider::registry::ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
+                            _ => "https://api.openai.com/v1".to_string(),
+                        });
+                    let new_provider: Box<dyn bb_provider::Provider> = match model.api {
+                        bb_provider::registry::ApiType::AnthropicMessages => Box::new(bb_provider::anthropic::AnthropicProvider::new()),
+                        bb_provider::registry::ApiType::GoogleGenerative => Box::new(bb_provider::google::GoogleProvider::new()),
+                        _ => Box::new(bb_provider::openai::OpenAiProvider::new()),
+                    };
+                    let display = format!("{}/{}", model.provider, model.id);
+                    self.session_setup.model = model;
+                    self.session_setup.provider = new_provider;
+                    self.session_setup.api_key = api_key;
+                    self.session_setup.base_url = base_url;
+                    self.show_status(format!("Switched to {display}"));
+                    self.rebuild_footer();
+                } else {
+                    self.show_warning(format!("Model not found: {model_str}"));
+                }
             }
-            None => self.show_status("TODO: model command"),
+            None => {
+                // Show current model
+                let current = format!("{}/{}", self.session_setup.model.provider, self.session_setup.model.id);
+                self.show_status(format!("Current model: {current}. Use /model <name> to switch."));
+            }
         }
     }
 

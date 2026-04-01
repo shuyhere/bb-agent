@@ -125,17 +125,21 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // In interactive mode, suppress tracing to avoid leaking into TUI.
+    // In print mode or verbose, show warnings.
+    let log_level = if cli.verbose {
+        tracing::Level::DEBUG
+    } else if cli.print {
+        tracing::Level::WARN
+    } else {
+        tracing::Level::ERROR // interactive: only errors, no WARN noise in TUI
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive(
-                if cli.verbose {
-                    tracing::Level::DEBUG
-                } else {
-                    tracing::Level::WARN
-                }
-                .into(),
-            ),
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(log_level.into()),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     // Handle subcommands
