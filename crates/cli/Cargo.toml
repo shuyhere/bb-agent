@@ -1,0 +1,28 @@
+[package]
+name = "bb-agent"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "bb"
+path = "src/main.rs"
+
+[dependencies]
+bb-core.workspace = true
+bb-session.workspace = true
+bb-tools.workspace = true
+bb-provider.workspace = true
+bb-hooks.workspace = true
+bb-plugin-host.workspace = true
+bb-tui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+tokio-util.workspace = true
+crossterm = "0.28"

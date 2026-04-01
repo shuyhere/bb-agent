@@ -1,0 +1,17 @@
+[package]
+name = "bb-provider"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+tokio-util.workspace = true
+async-trait = "0.1"

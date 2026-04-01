@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/session",
+    "crates/tools",
+    "crates/provider",
+    "crates/hooks",
+    "crates/plugin-host",
+    "crates/tui",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["BB-Agent Contributors"]
+
+[workspace.dependencies]
+# Shared deps across crates
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.35", features = ["bundled", "serde_json"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+futures = "0.3"
+tokio-util = "0.7"
+similar = "2"
+regex = "1"
+
+# Internal crates
+bb-core = { path = "crates/core" }
+bb-session = { path = "crates/session" }
+bb-tools = { path = "crates/tools" }
+bb-provider = { path = "crates/provider" }
+bb-hooks = { path = "crates/hooks" }
+bb-plugin-host = { path = "crates/plugin-host" }
+bb-tui = { path = "crates/tui" }

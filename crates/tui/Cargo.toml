@@ -1,0 +1,20 @@
+[package]
+name = "bb-tui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+bb-session.workspace = true
+bb-hooks.workspace = true
+bb-provider.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+crossterm = "0.28"
+unicode-width = "0.2"
+pulldown-cmark = "0.12"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "html", "regex-onig"] }
