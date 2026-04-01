@@ -11,6 +11,7 @@
 //! - Scrolling within editor area (30% of terminal height)
 
 use crate::component::{Component, Focusable, CURSOR_MARKER};
+use crate::select_list::{SelectAction, SelectItem, SelectList};
 use crate::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -39,6 +40,9 @@ pub struct Editor {
     pub disable_submit: bool,
     /// Border color escape code (default: dim).
     pub border_color: String,
+    /// Slash command autocomplete menu.
+    slash_menu: Option<SelectList>,
+    slash_commands: Vec<SelectItem>,
 }
 
 impl Editor {
@@ -57,6 +61,8 @@ impl Editor {
             on_submit: None,
             disable_submit: false,
             border_color: "\x1b[90m".to_string(), // dim gray
+            slash_menu: None,
+            slash_commands: default_slash_commands(),
         }
     }
 
@@ -78,6 +84,7 @@ impl Editor {
         self.state.cursor_line = self.state.lines.len() - 1;
         self.state.cursor_col = self.state.lines[self.state.cursor_line].len();
         self.scroll_offset = 0;
+        self.update_slash_menu();
     }
 
     /// Clear the editor.
@@ -87,6 +94,7 @@ impl Editor {
         self.state.cursor_col = 0;
         self.scroll_offset = 0;
         self.history_index = -1;
+        self.slash_menu = None;
     }
 
     /// Add text to history.
@@ -122,6 +130,43 @@ impl Editor {
 
     fn is_empty(&self) -> bool {
         self.state.lines.len() == 1 && self.state.lines[0].is_empty()
+    }
+
+    pub fn is_showing_slash_menu(&self) -> bool {
+        self.slash_menu.is_some()
+    }
+
+    fn slash_query(&self) -> Option<String> {
+        if self.state.cursor_line != 0 {
+            return None;
+        }
+        let line = &self.state.lines[0];
+        let before = &line[..self.state.cursor_col.min(line.len())];
+        if !before.starts_with('/') {
+            return None;
+        }
+        if before.contains(' ') || before.contains('\n') {
+            return None;
+        }
+        Some(before.to_string())
+    }
+
+    fn update_slash_menu(&mut self) {
+        let Some(query) = self.slash_query() else {
+            self.slash_menu = None;
+            return;
+        };
+        let mut list = SelectList::new(self.slash_commands.clone(), 6);
+        let search = query.trim_start_matches('/');
+        list.set_search(search);
+        self.slash_menu = Some(list);
+    }
+
+    fn accept_slash_selection(&mut self, value: String) {
+        self.state.lines[0] = value;
+        self.state.cursor_line = 0;
+        self.state.cursor_col = self.state.lines[0].len();
+        self.slash_menu = None;
     }
 
     /// Word-wrap a line into chunks for display.
@@ -477,6 +522,31 @@ struct LayoutLine {
     cursor_pos: Option<usize>,
 }
 
+fn default_slash_commands() -> Vec<SelectItem> {
+    vec![
+        ("help", "Show help"),
+        ("new", "Start a new session"),
+        ("resume", "Resume a previous session"),
+        ("model", "Switch model"),
+        ("compact", "Compact conversation context"),
+        ("tree", "Navigate session tree"),
+        ("fork", "Fork current session"),
+        ("name", "Set session display name"),
+        ("session", "Show current session info"),
+        ("login", "Login to a provider"),
+        ("logout", "Logout from a provider"),
+        ("settings", "Show settings info"),
+        ("quit", "Exit"),
+    ]
+    .into_iter()
+    .map(|(label, detail)| SelectItem {
+        label: format!("/{label}"),
+        detail: Some(detail.to_string()),
+        value: format!("/{label}"),
+    })
+    .collect()
+}
+
 impl Component for Editor {
     crate::impl_as_any!();
 
@@ -576,7 +646,12 @@ impl Component for Editor {
                 "\x1b[0m"
             ));
         } else {
-            result.push(border);
+            result.push(border.clone());
+        }
+
+        if let Some(menu) = &self.slash_menu {
+            let menu_lines = menu.render(width);
+            result.extend(menu_lines);
         }
 
         result
@@ -585,10 +660,33 @@ impl Component for Editor {
     fn handle_input(&mut self, key: &KeyEvent) {
         let KeyEvent { code, modifiers, .. } = *key;
 
+        if let Some(menu) = &mut self.slash_menu {
+            match (code, modifiers) {
+                (KeyCode::Up, _) | (KeyCode::Down, _) | (KeyCode::PageUp, _) | (KeyCode::PageDown, _) | (KeyCode::Home, _) | (KeyCode::End, _) => {
+                    let _ = menu.handle_key(*key);
+                    return;
+                }
+                (KeyCode::Esc, _) => {
+                    self.slash_menu = None;
+                    return;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Tab, KeyModifiers::NONE) => {
+                    match menu.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+                        SelectAction::Selected(value) => {
+                            self.accept_slash_selection(value);
+                        }
+                        SelectAction::Cancelled | SelectAction::None => {}
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match (code, modifiers) {
             // Submit (Enter, no modifiers)
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                // Handled externally via try_take_submitted
+                // Handled externally via try_submit()
             }
 
             // Newline (Alt+Enter, Shift+Enter)
@@ -665,6 +763,8 @@ impl Component for Editor {
 
             _ => {}
         }
+
+        self.update_slash_menu();
     }
 
     fn handle_raw_input(&mut self, data: &str) {
@@ -676,6 +776,7 @@ impl Component for Editor {
                 self.insert_char(c);
             }
         }
+        self.update_slash_menu();
     }
 
     fn invalidate(&mut self) {}
@@ -694,6 +795,9 @@ impl Focusable for Editor {
 impl Editor {
     /// Try to take a submitted value. Called from the event loop after Enter.
     pub fn try_submit(&mut self) -> Option<String> {
+        if self.slash_menu.is_some() {
+            return None;
+        }
         self.submit()
     }
 }
@@ -819,5 +923,30 @@ mod tests {
     fn test_word_wrap_line() {
         let chunks = Editor::word_wrap_line("hello world foo", 10);
         assert!(chunks.len() >= 2, "Should wrap, got {} chunks", chunks.len());
+    }
+
+    #[test]
+    fn test_slash_menu_shows_on_slash() {
+        let mut editor = Editor::new();
+        editor.insert_char('/');
+        editor.update_slash_menu();
+        assert!(editor.is_showing_slash_menu());
+    }
+
+    #[test]
+    fn test_slash_menu_hides_after_space() {
+        let mut editor = Editor::new();
+        editor.set_text("/model foo");
+        assert!(!editor.is_showing_slash_menu());
+    }
+
+    #[test]
+    fn test_slash_menu_render_contains_commands() {
+        let mut editor = Editor::new();
+        editor.insert_char('/');
+        editor.update_slash_menu();
+        let lines = editor.render(80);
+        let joined = lines.join("\n");
+        assert!(joined.contains("/help") || joined.contains("/model"));
     }
 }

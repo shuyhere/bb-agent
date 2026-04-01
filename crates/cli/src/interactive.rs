@@ -366,8 +366,19 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                             continue;
                         }
 
-                        // Enter — submit if not during agent turn
+                        // Enter — accept slash menu or submit if not during agent turn
                         if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE && !agent_running {
+                            let showing_slash_menu = {
+                                let editor = get_editor_mut(&mut tui);
+                                editor.is_showing_slash_menu()
+                            };
+
+                            if showing_slash_menu {
+                                tui.handle_key(&key);
+                                tui.render();
+                                continue;
+                            }
+
                             let editor = get_editor_mut(&mut tui);
                             if let Some(text) = editor.try_submit() {
                                 let text = text.trim().to_string();
