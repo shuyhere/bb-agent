@@ -5,7 +5,7 @@ mod api;
 mod controller;
 #[path = "../interactive_events.rs"]
 pub mod events;
-#[path = "../interactive_commands.rs"]
+#[path = "../interactive_commands/mod.rs"]
 pub mod interactive_commands;
 mod model_selector_overlay;
 mod state;

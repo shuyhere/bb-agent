@@ -1,0 +1,226 @@
+use super::*;
+
+impl InteractiveMode {
+    pub(super) fn take_last_submitted_text(&mut self) -> String {
+        self.pending_working_message
+            .take()
+            .unwrap_or_else(|| String::new())
+    }
+
+    pub(super) fn sync_static_sections(&mut self) {
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_status_container();
+        self.rebuild_footer();
+    }
+
+    pub(super) fn refresh_ui(&mut self) {
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_status_container();
+        self.rebuild_footer();
+        // Always use differential render — never clear scrollback
+        self.ui.render();
+    }
+
+    pub(super) fn rebuild_header(&mut self) {
+        self.header_lines.clear();
+        if !self.options.quiet_startup {
+            let dim = "\x1b[90m";
+            let reset = "\x1b[0m";
+            let bold = "\x1b[1m";
+            let cyan = "\x1b[36m";
+            self.header_lines.push(format!(
+                "{bold}{cyan}BB-Agent{reset} v{}",
+                self.version
+            ));
+            self.header_lines.push(format!(
+                "{dim}Ctrl-C exit . / commands . ! bash . F2 thinking . /help for more{reset}"
+            ));
+        }
+
+        if let Ok(mut header) = self.header_container.lock() {
+            header.clear();
+            if !self.header_lines.is_empty() {
+                header.add(Box::new(Text::new(&self.header_lines.join("\n"))));
+                header.add(Box::new(Spacer::new(1)));
+            }
+        }
+    }
+
+    pub(super) fn rebuild_chat_container(&mut self) {
+        let lines = self.chat_render_lines();
+        Self::replace_container_lines(&self.chat_container, &lines);
+    }
+
+    pub(super) fn rebuild_pending_container(&mut self) {
+        self.sync_pending_render_state();
+        let lines = self.pending_render_lines();
+        Self::replace_container_lines(&self.pending_messages_container, &lines);
+    }
+
+    pub(super) fn rebuild_status_container(&mut self) {
+        if let Ok(mut container) = self.status_container.lock() {
+            if let Some((style, message)) = &self.status_loader {
+                let mut reused = false;
+                if container.children.len() == 1 {
+                    if let Some(loader) = container.children[0]
+                        .as_any_mut()
+                        .downcast_mut::<StatusLoaderComponent>()
+                    {
+                        if &loader.style == style {
+                            loader.set_message(message.clone());
+                            reused = true;
+                        } else {
+                            loader.stop();
+                        }
+                    }
+                }
+                if !reused {
+                    container.clear();
+                    container.add(Box::new(StatusLoaderComponent::new(*style, message.clone())));
+                }
+                return;
+            }
+
+            let recent = self
+                .status_lines
+                .iter()
+                .rev()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut recent = recent;
+            recent.reverse();
+
+            if recent.is_empty() {
+                if let Some(loader) = container
+                    .children
+                    .get_mut(0)
+                    .and_then(|child| child.as_any_mut().downcast_mut::<StatusLoaderComponent>())
+                {
+                    loader.stop();
+                }
+                container.clear();
+                return;
+            }
+
+            let text = recent.join("\n");
+            if container.children.len() == 1 {
+                if let Some(existing) = container.children[0].as_any_mut().downcast_mut::<Text>() {
+                    existing.set(&text);
+                    return;
+                }
+                if let Some(loader) = container.children[0]
+                    .as_any_mut()
+                    .downcast_mut::<StatusLoaderComponent>()
+                {
+                    loader.stop();
+                }
+            }
+            container.clear();
+            container.add(Box::new(Text::new(&text)));
+        }
+    }
+
+    pub(super) fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
+        let mut total_input = 0_u64;
+        let mut total_output = 0_u64;
+        let mut total_cache_read = 0_u64;
+        let mut total_cache_write = 0_u64;
+        let mut total_cost = 0.0_f64;
+
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    if let bb_core::types::SessionEntry::Message {
+                        message: bb_core::types::AgentMessage::Assistant(message),
+                        ..
+                    } = entry
+                    {
+                        total_input += message.usage.input;
+                        total_output += message.usage.output;
+                        total_cache_read += message.usage.cache_read;
+                        total_cache_write += message.usage.cache_write;
+                        total_cost += message.usage.cost.total;
+                    }
+                }
+            }
+        }
+
+        (
+            total_input,
+            total_output,
+            total_cache_read,
+            total_cache_write,
+            total_cost,
+        )
+    }
+
+    pub(super) fn available_provider_count(&self) -> usize {
+        crate::login::authenticated_providers().len()
+    }
+
+    pub(super) fn rebuild_footer(&mut self) {
+        self.footer_data_provider
+            .set_cwd(self.controller.runtime_host.cwd().to_path_buf());
+        self.footer_data_provider
+            .set_available_provider_count(self.available_provider_count());
+
+        let (input_tokens, output_tokens, cache_read, cache_write, cost) = self.footer_usage_totals();
+        let context_usage = self.controller.runtime_host.runtime().get_context_usage();
+        let context_percent = context_usage
+            .as_ref()
+            .and_then(|usage| usage.percent.map(|p| p as f64));
+        let context_window = context_usage
+            .as_ref()
+            .map(|usage| usage.context_window as u64)
+            .unwrap_or(self.session_setup.model.context_window);
+        let session_row = store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+            .ok()
+            .flatten();
+
+        let footer = Footer::new(FooterData {
+            model_name: self.session_setup.model.id.clone(),
+            provider: self.session_setup.model.provider.clone(),
+            cwd: self.controller.runtime_host.cwd().display().to_string(),
+            git_branch: self.footer_data_provider.get_git_branch(),
+            session_name: session_row.and_then(|row| row.name),
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_write,
+            cost,
+            context_percent,
+            context_window,
+            auto_compact: true,
+            thinking_level: if self.session_setup.model.reasoning {
+                Some(self.session_setup.thinking_level.clone())
+            } else {
+                None
+            },
+            available_provider_count: self.footer_data_provider.get_available_provider_count(),
+        });
+
+        self.footer_lines = footer.render(self.ui.columns());
+        Self::replace_container_lines(&self.footer_container, &self.footer_lines);
+    }
+
+    pub(super) fn render_widgets(&mut self) {
+        // No extra spacing around editor — pi doesn't have it
+        self.widgets_above_lines = vec![];
+        self.widgets_below_lines = vec![];
+        Self::replace_container_lines(&self.widget_container_above, &self.widgets_above_lines);
+        Self::replace_container_lines(&self.widget_container_below, &self.widgets_below_lines);
+    }
+
+    pub(super) fn replace_container_lines(container: &Arc<Mutex<Container>>, lines: &[String]) {
+        if let Ok(mut container) = container.lock() {
+            container.clear();
+            if lines.is_empty() {
+                return;
+            }
+            container.add(Box::new(Text::new(&lines.join("\n"))));
+        }
+    }
+}

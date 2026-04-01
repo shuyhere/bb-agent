@@ -1,0 +1,121 @@
+use super::*;
+
+impl InteractiveMode {
+    pub(super) fn show_settings_selector(&mut self) {
+        let _ = self.controller.commands.show_settings_selector();
+        self.show_placeholder("settings selector");
+    }
+
+    pub(super) fn handle_model_command(&mut self, search_term: Option<&str>) {
+        let Some(search_term) = search_term.map(str::trim).filter(|s| !s.is_empty()) else {
+            self.show_model_selector(None);
+            return;
+        };
+
+        if let Some(model) = self.find_exact_model_match(search_term) {
+            self.apply_model_selection(model);
+            return;
+        }
+
+        self.show_model_selector(Some(search_term));
+    }
+
+    pub(super) fn build_model_registry(&self) -> ModelRegistry {
+        let mut registry = ModelRegistry::new();
+        let settings = bb_core::settings::Settings::load_merged(&self.controller.runtime_host.cwd());
+        registry.load_custom_models(&settings);
+        registry
+    }
+
+    pub(super) fn get_model_candidates(&self) -> Vec<Model> {
+        let current_provider = self.session_setup.model.provider.clone();
+        let available = crate::login::authenticated_providers();
+        let has_any_available = !available.is_empty();
+
+        self.build_model_registry()
+            .list()
+            .iter()
+            .filter(|model| {
+                !has_any_available
+                    || available.iter().any(|provider| provider == &model.provider)
+                    || model.provider == current_provider
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn find_exact_model_match(&self, search_term: &str) -> Option<Model> {
+        let needle = search_term.trim().to_ascii_lowercase();
+        self.get_model_candidates().into_iter().find(|model| {
+            let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+            let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
+            model.id.eq_ignore_ascii_case(&needle)
+                || model.name.eq_ignore_ascii_case(&needle)
+                || provider_id == needle
+                || provider_colon_id == needle
+        })
+    }
+
+    pub(super) fn apply_model_selection(&mut self, model: Model) {
+        let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+        let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
+            ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+            ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
+            _ => "https://api.openai.com/v1".to_string(),
+        });
+        let new_provider: Box<dyn bb_provider::Provider> = match model.api {
+            ApiType::AnthropicMessages => Box::new(bb_provider::anthropic::AnthropicProvider::new()),
+            ApiType::GoogleGenerative => Box::new(bb_provider::google::GoogleProvider::new()),
+            _ => Box::new(bb_provider::openai::OpenAiProvider::new()),
+        };
+        let display = format!("{}/{}", model.provider, model.id);
+
+        self.controller.runtime_host.session_mut().set_model(ModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            reasoning: model.reasoning,
+        });
+        self.controller.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            context_window: model.context_window as usize,
+        });
+        self.session_setup.model = model;
+        self.session_setup.provider = new_provider;
+        self.session_setup.api_key = api_key;
+        self.session_setup.base_url = base_url;
+        self.options.model_display = Some(display.clone());
+        self.show_status(format!("Model: {display}"));
+        self.rebuild_footer();
+    }
+
+    pub(super) fn process_overlay_actions(&mut self) {
+        let action = self
+            .ui
+            .topmost_overlay_as_mut::<ModelSelectorOverlay>()
+            .and_then(|overlay| overlay.take_action());
+
+        match action {
+            Some(ModelSelectorOverlayAction::Selected(selection)) => {
+                self.ui.hide_overlay();
+                if let Some(model) = self
+                    .get_model_candidates()
+                    .into_iter()
+                    .find(|m| m.provider == selection.provider && m.id == selection.model_id)
+                {
+                    self.apply_model_selection(model);
+                } else {
+                    self.show_warning(format!(
+                        "Model not found: {}/{}",
+                        selection.provider, selection.model_id
+                    ));
+                }
+            }
+            Some(ModelSelectorOverlayAction::Cancelled) => {
+                self.ui.hide_overlay();
+                self.show_status("Canceled model selector");
+            }
+            None => {}
+        }
+    }
+}

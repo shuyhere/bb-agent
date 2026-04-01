@@ -1,0 +1,252 @@
+use super::*;
+
+impl InteractiveMode {
+    pub(super) async fn handle_submitted_text(&mut self, text: String) -> InteractiveResult<SubmitOutcome> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Ok(SubmitOutcome::Ignored);
+        }
+
+        for route in &self.submit_routes {
+            let matched = match route.matcher {
+                SubmitMatch::Exact(command) => text == command,
+                SubmitMatch::Prefix(prefix) => text.starts_with(prefix),
+            };
+            if !matched {
+                continue;
+            }
+
+            match route.action {
+                SubmitAction::Settings => {
+                    self.show_settings_selector();
+                    self.clear_editor();
+                }
+                SubmitAction::ScopedModels => {
+                    self.clear_editor();
+                    self.show_placeholder("scoped models selector");
+                }
+                SubmitAction::Model => {
+                    let search = text
+                        .strip_prefix("/model")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    self.clear_editor();
+                    self.handle_model_command(search);
+                }
+                SubmitAction::Export => {
+                    self.handle_export_command(&text);
+                    self.clear_editor();
+                }
+                SubmitAction::Import => {
+                    self.handle_import_command(&text);
+                    self.clear_editor();
+                }
+                SubmitAction::Share => {
+                    self.handle_share_command();
+                    self.clear_editor();
+                }
+                SubmitAction::Copy => {
+                    self.handle_copy_command();
+                    self.clear_editor();
+                }
+                SubmitAction::Name => {
+                    self.handle_name_command(&text);
+                    self.clear_editor();
+                }
+                SubmitAction::Session => {
+                    self.handle_session_command();
+                    self.clear_editor();
+                }
+                SubmitAction::Changelog => {
+                    self.handle_changelog_command();
+                    self.clear_editor();
+                }
+                SubmitAction::Hotkeys => {
+                    self.handle_hotkeys_command();
+                    self.clear_editor();
+                }
+                SubmitAction::Fork => {
+                    self.show_user_message_selector();
+                    self.clear_editor();
+                }
+                SubmitAction::Tree => {
+                    self.show_tree_selector();
+                    self.clear_editor();
+                }
+                SubmitAction::Login => {
+                    self.show_placeholder("oauth login selector");
+                    self.clear_editor();
+                }
+                SubmitAction::Logout => {
+                    self.show_placeholder("oauth logout selector");
+                    self.clear_editor();
+                }
+                SubmitAction::New => {
+                    self.clear_editor();
+                    self.handle_new_session();
+                }
+                SubmitAction::Compact => {
+                    let instructions = text
+                        .strip_prefix("/compact")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    self.clear_editor();
+                    self.handle_compact_command(instructions);
+                }
+                SubmitAction::Reload => {
+                    self.clear_editor();
+                    self.handle_reload_command();
+                }
+                SubmitAction::Debug => {
+                    self.handle_debug_command();
+                    self.clear_editor();
+                }
+                SubmitAction::ArminSaysHi => {
+                    self.handle_armin_says_hi();
+                    self.clear_editor();
+                }
+                SubmitAction::Resume => {
+                    self.show_session_selector();
+                    self.clear_editor();
+                }
+                SubmitAction::Quit => {
+                    self.clear_editor();
+                    self.shutdown();
+                    return Ok(SubmitOutcome::Shutdown);
+                }
+                SubmitAction::Help => {
+                    self.handle_help_command();
+                    self.clear_editor();
+                }
+            }
+            return Ok(SubmitOutcome::Ignored);
+        }
+
+        if text.starts_with('!') {
+            let excluded = text.starts_with("!!");
+            let command = if excluded {
+                text[2..].trim()
+            } else {
+                text[1..].trim()
+            };
+            if !command.is_empty() {
+                if self.is_bash_running {
+                    self.show_warning(
+                        "A bash command is already running. Press Esc to cancel it first.",
+                    );
+                    self.set_editor_text(&text);
+                    return Ok(SubmitOutcome::Ignored);
+                }
+                self.push_editor_history(&text);
+                self.handle_bash_command(command, excluded);
+                self.set_bash_mode(false);
+                self.clear_editor();
+                return Ok(SubmitOutcome::Ignored);
+            }
+        }
+
+        if self.is_compacting {
+            if self.is_extension_command(&text) {
+                self.push_editor_history(&text);
+                self.clear_editor();
+                self.chat_lines.push(format!("extension> {text}"));
+            } else {
+                self.queue_compaction_message(text, QueuedMessageKind::Steer);
+            }
+            return Ok(SubmitOutcome::Ignored);
+        }
+
+        if self.is_streaming {
+            self.push_editor_history(&text);
+            self.clear_editor();
+            self.steering_queue.push_back(text);
+            self.sync_pending_render_state();
+            return Ok(SubmitOutcome::Ignored);
+        }
+
+        self.flush_pending_bash_components();
+        if let Some(callback) = self.on_input_callback.as_mut() {
+            callback(text.clone());
+        }
+        self.push_editor_history(&text);
+        self.clear_editor();
+        self.pending_working_message = Some(text);
+        Ok(SubmitOutcome::Submitted)
+    }
+
+    pub(super) async fn dispatch_prompt(&mut self, user_input: String) -> InteractiveResult<()> {
+        self.controller
+            .runtime_host
+            .session_mut()
+            .prompt(user_input.clone(), PromptOptions::default())
+            .map_err(|err| -> Box<dyn Error + Send + Sync> { Box::new(err) })?;
+
+        // Show user message IMMEDIATELY with background color (pi-style)
+        self.render_state_mut()
+            .add_message_to_chat(InteractiveMessage::User {
+                text: user_input.clone(),
+            });
+        // Render now so user sees their message before streaming starts
+        self.refresh_ui();
+
+        // Reset streaming accumulators
+        self.streaming_text.clear();
+        self.streaming_thinking.clear();
+        self.streaming_tool_calls.clear();
+        self.is_streaming = true;
+
+        // Append user message to session DB
+        {
+            let user_entry = bb_core::types::SessionEntry::Message {
+                base: bb_core::types::EntryBase {
+                    id: bb_core::types::EntryId::generate(),
+                    parent_id: self.get_session_leaf(),
+                    timestamp: chrono::Utc::now(),
+                },
+                message: bb_core::types::AgentMessage::User(bb_core::types::UserMessage {
+                    content: vec![bb_core::types::ContentBlock::Text {
+                        text: user_input.clone(),
+                    }],
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                }),
+            };
+            store::append_entry(
+                &self.session_setup.conn,
+                &self.session_setup.session_id,
+                &user_entry,
+            ).map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+        }
+
+        // Run the streaming turn loop
+        self.run_streaming_turn_loop().await?;
+
+        self.pending_working_message = None;
+        self.rebuild_footer();
+        self.refresh_ui();
+        Ok(())
+    }
+
+    /// Drain steering queue first, then follow-up queue, dispatching each as a new prompt.
+    pub(super) async fn drain_queued_messages(&mut self) -> InteractiveResult<()> {
+        // First drain all steering messages
+        while let Some(text) = self.steering_queue.pop_front() {
+            self.sync_pending_render_state();
+            self.refresh_ui();
+            self.dispatch_prompt(text).await?;
+            if self.shutdown_requested {
+                return Ok(());
+            }
+        }
+        // Then drain all follow-up messages
+        while let Some(text) = self.follow_up_queue.pop_front() {
+            self.sync_pending_render_state();
+            self.refresh_ui();
+            self.dispatch_prompt(text).await?;
+            if self.shutdown_requested {
+                return Ok(());
+            }
+        }
+        self.sync_pending_render_state();
+        Ok(())
+    }
+}
