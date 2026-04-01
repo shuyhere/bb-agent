@@ -1,192 +1,163 @@
-# W5: Wire slash commands + hierarchical context loading + @file args
+# A6: Error recovery + context overflow handling + message queue
 
-Working dir: `/tmp/bb-w/w5-commands-context/`
-
-## Problem
-Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
+Working dir: `/tmp/bb-final/a6-error-recovery/`
+BB-Agent Rust project.
 
 ## Tasks
 
-### 1. Wire `/model` to ModelSelector
+### 1. Context overflow recovery
 
-In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
+When the LLM returns a context overflow error (HTTP 400 with "context_length_exceeded" or similar), the agent should:
+
+1. Detect the error
+2. Auto-compact
+3. Retry the request
+
+In `crates/cli/src/agent_loop.rs` (or wherever the provider call happens):
 
 ```rust
-SlashResult::ModelSelect(search) => {
-    // Use the ModelSelector from tui
-    let registry = bb_provider::registry::ModelRegistry::new();
-    let models: Vec<_> = registry.list().to_vec();
-
-    // Simple text-based selector for now
-    println!("Available models:");
-    for (i, m) in models.iter().enumerate() {
-        let marker = if m.id == current_model_id { ">" } else { " " };
-        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
+// After provider.stream() or provider.complete():
+match result {
+    Err(BbError::Provider(msg)) if is_context_overflow(&msg) => {
+        tracing::warn!("Context overflow detected, auto-compacting...");
+        // Trigger compaction
+        let path = tree::active_path(conn, session_id)?;
+        if let Some(prep) = compaction::prepare_compaction(&path, settings) {
+            let comp_result = compaction::compact(&prep, ...).await?;
+            // Append compaction entry
+            store::append_entry(conn, session_id, &comp_entry)?;
+            // Retry the request (continue the loop)
+            continue;
+        } else {
+            return Err(BbError::Provider("Context overflow but nothing to compact".into()));
+        }
     }
-    print!("Select (number): ");
-    // Read selection and switch model
-    // Write ModelChange entry to session
+    Err(e) => return Err(e.into()),
+    Ok(events) => { /* normal flow */ }
+}
+
+fn is_context_overflow(msg: &str) -> bool {
+    let msg_lower = msg.to_lowercase();
+    msg_lower.contains("context_length_exceeded")
+        || msg_lower.contains("maximum context length")
+        || msg_lower.contains("too many tokens")
+        || msg_lower.contains("request too large")
+        || msg_lower.contains("prompt is too long")
+        || (msg_lower.contains("400") && msg_lower.contains("token"))
 }
 ```
 
-### 2. Wire `/resume` to session listing + selection
+### 2. Rate limit handling
+
+When the provider returns 429 (rate limit), wait and retry:
 
 ```rust
-SlashResult::Resume => {
-    let sessions = store::list_sessions(&conn, cwd_str)?;
-    if sessions.is_empty() {
-        println!("No sessions found.");
-    } else {
-        println!("Sessions:");
-        for (i, s) in sessions.iter().take(20).enumerate() {
-            let name = s.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {}. {} {} ({} entries, {})",
-                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
-        }
-        print!("Select (number): ");
-        // Read selection, switch to that session
-        // Rebuild context and re-render messages
-    }
+Err(BbError::Provider(msg)) if is_rate_limited(&msg) => {
+    tracing::warn!("Rate limited, waiting 10 seconds...");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    continue; // retry the turn
+}
+
+fn is_rate_limited(msg: &str) -> bool {
+    msg.contains("429") || msg.to_lowercase().contains("rate limit")
 }
 ```
 
-### 3. Wire `/new` to create fresh session
+### 3. Basic message queue
+
+Implement simple message queuing so the user can type while the agent is working.
+
+In `crates/cli/src/interactive.rs`:
 
 ```rust
-SlashResult::NewSession => {
-    session_id = store::create_session(&conn, cwd_str)?;
-    println!("New session: {}", &session_id[..8]);
-    // Clear displayed messages
+struct MessageQueue {
+    messages: Vec<QueuedMessage>,
+}
+
+enum QueuedMessage {
+    Steer(String),    // Enter while agent is working
+    FollowUp(String), // Alt+Enter while agent is working
+}
+
+impl MessageQueue {
+    fn push_steer(&mut self, text: String) { ... }
+    fn push_follow_up(&mut self, text: String) { ... }
+    fn take_steers(&mut self) -> Vec<String> { ... }
+    fn take_follow_ups(&mut self) -> Vec<String> { ... }
+    fn is_empty(&self) -> bool { ... }
 }
 ```
 
-### 4. Wire `/name` to persist
+Integration:
+- While agent is running, if user presses Enter → queue as steer message
+- After each agent turn (before next LLM call), check for steer messages:
+  ```rust
+  let steers = message_queue.take_steers();
+  for steer in steers {
+      // Append as user message to session
+      // The next LLM call will see it
+  }
+  ```
+- After agent finishes all tool calls (AssistantDone), check for follow-ups:
+  ```rust
+  let follow_ups = message_queue.take_follow_ups();
+  for msg in follow_ups {
+      // Start a new agent turn with this message
+  }
+  ```
+
+### 4. Graceful error display
+
+Instead of crashing on provider errors, display them nicely:
 
 ```rust
-SlashResult::SetName(name) => {
-    let entry = SessionEntry::SessionInfo {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(&conn, &session_id),
-            timestamp: Utc::now(),
-        },
-        name: Some(name.clone()),
-    };
-    store::append_entry(&conn, &session_id, &entry)?;
-    println!("Session named: {name}");
+Err(e) => {
+    eprintln!("\x1b[31m✗ Error: {e}\x1b[0m");
+    // Don't crash, re-enable editor, let user try again
+    break;
 }
 ```
 
-### 5. Hierarchical AGENTS.md loading
+### 5. Ctrl+C abort improvement
 
-Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
+Currently Ctrl+C might not properly cancel a running agent. Ensure:
+- CancellationToken is shared between input handler and agent task
+- When Ctrl+C pressed during agent execution:
+  1. Cancel the token
+  2. Display "[Aborted]"
+  3. Keep partial assistant response in session (if any)
+  4. Re-enable editor
 
-```rust
-fn load_agents_md(cwd: &Path) -> Option<String> {
-    let mut contents = Vec::new();
-
-    // 1. Global
-    let global = bb_core::config::global_dir().join("AGENTS.md");
-    if global.exists() {
-        if let Ok(c) = std::fs::read_to_string(&global) {
-            contents.push(c);
-        }
-    }
-
-    // 2. Walk parent directories up to git root (or filesystem root)
-    let mut dir = cwd.to_path_buf();
-    let mut scanned = Vec::new();
-    loop {
-        let agents = dir.join("AGENTS.md");
-        if agents.exists() {
-            scanned.push(agents);
-        }
-        // Also check CLAUDE.md alias
-        let claude = dir.join("CLAUDE.md");
-        if claude.exists() && !agents.exists() {
-            scanned.push(claude);
-        }
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-
-    // Reverse so we go from root → cwd (outermost first)
-    scanned.reverse();
-    for path in scanned {
-        if let Ok(c) = std::fs::read_to_string(&path) {
-            contents.push(c);
-        }
-    }
-
-    if contents.is_empty() {
-        None
-    } else {
-        Some(contents.join("\n\n---\n\n"))
-    }
-}
-```
-
-### 6. Implement `@file` arguments
-
-In `crates/cli/src/main.rs`, before routing to mode:
+### 6. Tests
 
 ```rust
-// Process @file arguments from messages
-let mut prompt_parts = Vec::new();
-let mut regular_messages = Vec::new();
-
-for msg in &cli.messages {
-    if msg.starts_with('@') {
-        let path = &msg[1..];
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
-            }
-            Err(e) => {
-                eprintln!("Warning: Could not read {}: {}", path, e);
-            }
-        }
-    } else {
-        regular_messages.push(msg.clone());
-    }
+#[test]
+fn test_is_context_overflow() {
+    assert!(is_context_overflow("HTTP 400: context_length_exceeded"));
+    assert!(is_context_overflow("maximum context length is 200000 tokens"));
+    assert!(!is_context_overflow("HTTP 401: Unauthorized"));
 }
 
-// Combine file contents with messages
-let final_prompt = if prompt_parts.is_empty() {
-    regular_messages.join(" ")
-} else {
-    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
-};
-```
+#[test]
+fn test_is_rate_limited() {
+    assert!(is_rate_limited("HTTP 429: Rate limit exceeded"));
+    assert!(!is_rate_limited("HTTP 400: Bad request"));
+}
 
-### 7. Implement `/session` info
-
-```rust
-"/session" => {
-    let session = store::get_session(&conn, &session_id)?.unwrap();
-    let entries = store::get_entries(&conn, &session_id)?;
-    let ctx = context::build_context(&conn, &session_id)?;
-    let tokens: u64 = ctx.messages.iter()
-        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-        .sum();
-    println!("Session: {}", session.session_id);
-    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
-    println!("  CWD: {}", session.cwd);
-    println!("  Entries: {}", entries.len());
-    println!("  Context tokens: ~{}", tokens);
-    println!("  Created: {}", session.created_at);
-    println!("  Updated: {}", session.updated_at);
+#[test]
+fn test_message_queue() {
+    let mut q = MessageQueue::new();
+    q.push_steer("fix the bug".into());
+    q.push_follow_up("then run tests".into());
+    assert_eq!(q.take_steers().len(), 1);
+    assert_eq!(q.take_follow_ups().len(), 1);
+    assert!(q.is_empty());
 }
 ```
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w5-commands-context
+cd /tmp/bb-final/a6-error-recovery
 cargo build && cargo test
-git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
+git add -A && git commit -m "A6: error recovery + context overflow + message queue"
 ```
