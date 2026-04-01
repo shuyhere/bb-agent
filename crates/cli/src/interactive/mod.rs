@@ -322,6 +322,7 @@ pub struct InteractiveMode {
     is_initialized: bool,
     on_input_callback: Option<Box<dyn FnMut(String) + Send>>,
     loading_animation: bool,
+    loading_frame: usize,
     pending_working_message: Option<String>,
     default_working_message: &'static str,
     default_hidden_thinking_label: &'static str,
@@ -384,6 +385,7 @@ impl InteractiveMode {
             is_initialized: false,
             on_input_callback: None,
             loading_animation: false,
+            loading_frame: 0,
             pending_working_message: None,
             default_working_message: "Working...",
             default_hidden_thinking_label: "Thinking...",
@@ -479,9 +481,8 @@ impl InteractiveMode {
                     .map(|line| if line.is_empty() { String::new() } else { format!(" {line}") })
                     .collect(),
                 ChatItem::ToolExecution(component) => component
-                    .render_lines()
-                    .iter()
-                    .flat_map(|l| wrap_prefixed(l))
+                    .render_lines(width)
+                    .into_iter()
                     .collect(),
                 ChatItem::BashExecution(component) => component
                     .render_lines()
@@ -1550,6 +1551,8 @@ impl InteractiveMode {
         while self.is_streaming {
             let terminal_events = self.events.as_mut();
             let agent_events = self.agent_events.as_mut();
+            let spinner_tick = tokio::time::sleep(Duration::from_millis(80));
+            tokio::pin!(spinner_tick);
 
             tokio::select! {
                 // Terminal input events
@@ -1624,6 +1627,10 @@ impl InteractiveMode {
                     }
                 } => {
                     self.handle_agent_event(agent_event);
+                    self.refresh_ui();
+                },
+                _ = &mut spinner_tick => {
+                    self.loading_frame = (self.loading_frame + 1) % 10;
                     self.refresh_ui();
                 },
                 // Both channels closed
@@ -1711,7 +1718,14 @@ impl InteractiveMode {
             let dim = "\x1b[90m";
             let accent = "\x1b[38;2;178;148;187m";
             let reset = "\x1b[0m";
-            recent.push(format!("{accent}..{reset} {dim}{}{reset}", self.default_working_message));
+            let frames = ["|", "/", "-", "\\", "|", "/", "-", "\\", "|", "/"];
+            let frame = frames[self.loading_frame % frames.len()];
+            let message = self
+                .pending_working_message
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or(self.default_working_message);
+            recent.push(format!("{accent}{frame}{reset} {dim}{message}{reset}"));
         }
 
         Self::replace_container_lines(&self.status_container, &recent);
@@ -2557,6 +2571,7 @@ impl InteractiveMode {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
                 self.is_streaming = true;
+                self.loading_frame = 0;
                 self.pending_working_message = None;
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();

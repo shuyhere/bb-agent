@@ -1,3 +1,4 @@
+use bb_tui::utils::visible_width;
 use serde_json::Value;
 
 use super::diff_display::render_diff_lines;
@@ -9,6 +10,9 @@ const ACCENT: &str = "\x1b[38;2;178;148;187m";
 const SUCCESS: &str = "\x1b[32m";
 const ERROR: &str = "\x1b[31m";
 const MUTED: &str = "\x1b[38;2;148;163;184m";
+const TOOL_PENDING_BG: &str = "\x1b[48;2;40;40;50m";
+const TOOL_SUCCESS_BG: &str = "\x1b[48;2;40;50;40m";
+const TOOL_ERROR_BG: &str = "\x1b[48;2;60;40;40m";
 
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionOptions {
@@ -120,41 +124,32 @@ impl ToolExecutionComponent {
         self.expanded
     }
 
-    pub fn render_lines(&self) -> Vec<String> {
-        let (status_mark, border_color) = if let Some(result) = &self.result {
+    pub fn render_lines(&self, width: u16) -> Vec<String> {
+        let (status_mark, bg) = if let Some(result) = &self.result {
             if result.is_error {
-                (format!("{ERROR}x{RESET}"), ERROR)
+                (format!("{ERROR}x{RESET}"), TOOL_ERROR_BG)
             } else {
-                (format!("{SUCCESS}*{RESET}"), SUCCESS)
+                (format!("{SUCCESS}*{RESET}"), TOOL_SUCCESS_BG)
             }
         } else if self.execution_started {
-            (format!("{DIM}..{RESET}"), ACCENT)
+            (format!("{DIM}..{RESET}"), TOOL_PENDING_BG)
         } else {
-            (format!("{DIM}>{RESET}"), ACCENT)
+            (format!("{DIM}>{RESET}"), TOOL_PENDING_BG)
         };
 
-        let title = self.render_call_title();
-        if !self.expanded {
-            return vec![format!("{status_mark} {BOLD}{title}{RESET}")];
-        }
-
-        let mut lines = vec![String::new()];
-        lines.push(format!("{border_color}╭─ {status_mark} {BOLD}{title}{RESET}"));
-
-        for line in self.render_call_body() {
-            lines.push(format!("{border_color}│{RESET} {line}"));
-        }
+        let title = format!("{status_mark} {BOLD}{}{RESET}", self.render_call_title());
+        let mut content = vec![title];
+        content.extend(self.render_call_body());
 
         let result_lines = self.render_result_body();
         if !result_lines.is_empty() {
-            lines.push(format!("{border_color}├{RESET}"));
-            for line in result_lines {
-                lines.push(format!("{border_color}│{RESET} {line}"));
+            if !content.is_empty() {
+                content.push(String::new());
             }
+            content.extend(result_lines);
         }
 
-        lines.push(format!("{border_color}╰{RESET}"));
-        lines
+        render_box_lines(&content, width, bg)
     }
 
     fn render_call_title(&self) -> String {
@@ -516,4 +511,86 @@ fn summarize_inline(text: &str, max_chars: usize) -> String {
 
 fn replace_tabs(text: &str) -> String {
     text.replace('\t', "   ")
+}
+
+fn render_box_lines(content: &[String], width: u16, bg: &str) -> Vec<String> {
+    let total_width = width.max(4) as usize;
+    let inner_width = total_width.saturating_sub(2).max(1);
+    let mut lines = vec![String::new()];
+    lines.push(apply_bg_line("", total_width, bg));
+
+    for line in content {
+        let wrapped = wrap_ansi_line(line, inner_width);
+        if wrapped.is_empty() {
+            lines.push(apply_bg_line("", total_width, bg));
+        } else {
+            for wrapped_line in wrapped {
+                lines.push(apply_bg_line(&wrapped_line, total_width, bg));
+            }
+        }
+    }
+
+    lines.push(apply_bg_line("", total_width, bg));
+    lines
+}
+
+fn apply_bg_line(content: &str, total_width: usize, bg: &str) -> String {
+    let visible = visible_width(content);
+    let inner_width = total_width.saturating_sub(2);
+    let pad = inner_width.saturating_sub(visible);
+    format!("{bg} {}{} {RESET}", content, " ".repeat(pad))
+}
+
+fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    if visible_width(line) <= width {
+        return vec![line.to_string()];
+    }
+
+    let mut out = Vec::new();
+    let mut current = String::new();
+
+    for word in line.split(' ') {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if visible_width(&candidate) <= width {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            out.push(current);
+            current = String::new();
+        }
+        if visible_width(word) <= width {
+            current = word.to_string();
+        } else {
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                let next = format!("{chunk}{ch}");
+                if visible_width(&next) > width && !chunk.is_empty() {
+                    out.push(chunk);
+                    chunk = String::new();
+                }
+                chunk.push(ch);
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        out.push(current);
+    }
+
+    if out.is_empty() {
+        vec![line.to_string()]
+    } else {
+        out
+    }
 }
