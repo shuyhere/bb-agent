@@ -1,120 +1,130 @@
-# Sprint 1: Agent Session + Agent Loop
+# Sprint 2: Full Compaction Execution
 
-You are working in a git worktree at `/tmp/bb-worktrees/s1-agent-session/`.
+You are working in a git worktree at `/tmp/bb-worktrees/s2-compaction/`.
 This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md` and `PLAN.md` for context.
 
 ## Your task
 
-Extract the agent loop from `crates/cli/src/run.rs` into a proper `AgentSession` and `AgentLoop`.
+Implement full compaction: call the LLM to generate summaries, serialize conversations,
+and track file operations. Currently `crates/session/src/compaction.rs` only has `prepare_compaction()`.
 
-### 1. Create `crates/core/src/session.rs`
+### 1. Add to `crates/session/src/compaction.rs`
 
-The `AgentSession` manages the full lifecycle of a coding session.
+#### Conversation serialization
 
 ```rust
-use crate::types::*;
-use bb_session::store;
-use bb_provider::Provider;
+/// Serialize messages to text for the summarizer LLM.
+/// Format:
+///   [User]: message text
+///   [Assistant]: response text
+///   [Assistant tool calls]: read(path="..."); bash(command="...")
+///   [Tool result]: output text (truncated to 2000 chars)
+pub fn serialize_conversation(messages: &[AgentMessage]) -> String;
+```
 
-pub struct AgentSession {
-    pub conn: rusqlite::Connection,
-    pub session_id: String,
-    pub system_prompt: String,
-    pub model: bb_provider::registry::Model,
-    pub provider: Box<dyn Provider>,
-    pub api_key: String,
-    pub base_url: String,
-    pub tools: Vec<Box<dyn bb_tools::Tool>>,
-    pub tool_defs: Vec<serde_json::Value>,
-    pub tool_ctx: bb_tools::ToolContext,
-    pub compaction_settings: CompactionSettings,
-}
+#### Summarization prompt
 
-impl AgentSession {
-    /// Run a single user prompt through the full agent loop.
-    /// Returns a stream of AgentLoopEvents via a channel.
-    pub async fn run_prompt(&self, prompt: &str, tx: tokio::sync::mpsc::UnboundedSender<AgentLoopEvent>) -> Result<()>;
+```rust
+pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a conversation summarizer...";
 
-    /// Get current context usage.
-    pub fn context_usage(&self) -> Option<ContextUsage>;
+pub const SUMMARIZATION_PROMPT: &str = r#"The messages above are a conversation to summarize.
+Create a structured context checkpoint:
 
-    /// Trigger manual compaction.
-    pub async fn compact(&self, instructions: Option<&str>) -> Result<()>;
+## Goal
+[What is the user trying to accomplish?]
 
-    /// Check if auto-compaction should trigger, and run it if so.
-    pub async fn maybe_auto_compact(&self) -> Result<bool>;
+## Constraints & Preferences
+- [Requirements]
+
+## Progress
+### Done
+- [x] [Completed tasks]
+### In Progress
+- [ ] [Current work]
+
+## Key Decisions
+- **[Decision]**: [Rationale]
+
+## Next Steps
+1. [Ordered list]
+
+## Critical Context
+- [Data needed to continue]
+"#;
+```
+
+#### Compact execution
+
+```rust
+/// Execute compaction: call LLM to generate summary.
+/// Returns CompactionResult with summary text and metadata.
+pub async fn compact(
+    preparation: &CompactionPreparation,
+    provider: &dyn bb_provider::Provider,
+    model: &str,
+    api_key: &str,
+    base_url: &str,
+    custom_instructions: Option<&str>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<CompactionResult>;
+
+pub struct CompactionResult {
+    pub summary: String,
+    pub first_kept_entry_id: String,
+    pub tokens_before: u64,
+    pub read_files: Vec<String>,
+    pub modified_files: Vec<String>,
 }
 ```
 
-### 2. Create `crates/core/src/agent_loop.rs`
+Implementation:
+1. Serialize `preparation.messages_to_summarize` using `serialize_conversation()`
+2. Build the summarization prompt
+3. If `custom_instructions` provided, append to prompt
+4. If `preparation.previous_summary` exists, include as context
+5. Call the provider (non-streaming is fine for summarization)
+6. Parse the response text as the summary
+7. Extract file operations from the messages
+8. Append file lists to summary as `<read-files>` and `<modified-files>` blocks
+9. Return `CompactionResult`
 
-The inner turn loop:
+#### File operation tracking
 
 ```rust
-pub enum AgentLoopEvent {
-    TurnStart { turn_index: u32 },
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args_delta: String },
-    ToolExecuting { id: String, name: String },
-    ToolResult { id: String, name: String, content: String, is_error: bool },
-    TurnEnd { turn_index: u32 },
-    AssistantDone,
-    Error { message: String },
-}
+/// Extract read/modified files from messages by looking at tool calls.
+pub fn extract_file_operations(messages: &[AgentMessage]) -> (Vec<String>, Vec<String>);
 ```
 
-The loop:
-1. Build context from session (using `bb_session::context::build_context`)
-2. Convert messages to provider format
-3. Call provider with streaming (using `provider.stream()`)
-4. Forward streaming events to the channel as `AgentLoopEvent`s
-5. Collect final response, build `AssistantMessage`, append to session
-6. If tool calls present:
-   a. Execute each tool
-   b. Send `ToolExecuting` and `ToolResult` events
-   c. Append `ToolResultMessage` entries to session
-   d. Loop back to step 1
-7. If no tool calls: send `AssistantDone`, exit loop
-8. After each turn: check auto-compaction
+Look at tool calls in assistant messages:
+- `read(path=...)` → read files
+- `edit(path=...)` → modified files
+- `write(path=...)` → modified files
+- `bash(command=...)` with redirects → modified files (best effort)
 
-### 3. Modify `crates/cli/src/run.rs`
+### 2. Add provider dependency to session crate
 
-Refactor to use `AgentSession`:
-- Remove the inline agent loop code
-- Create `AgentSession` with all config
-- Call `session.run_prompt(text, tx)`
-- Receive events from channel
-- Display events (keep current inline display for now)
-
-### 4. Update `crates/core/src/lib.rs`
-
-Add new modules:
-```rust
-pub mod session;
-pub mod agent_loop;
-```
-
-### 5. Update `crates/core/Cargo.toml`
-
-Add dependencies needed:
+Update `crates/session/Cargo.toml`:
 ```toml
-bb-session.workspace = true
-bb-tools.workspace = true
 bb-provider.workspace = true
 tokio-util.workspace = true
 ```
 
+### 3. Tests
+
+Add tests in `compaction.rs`:
+- `test_serialize_conversation` — verify format
+- `test_extract_file_operations` — verify file tracking
+- `test_summarization_prompt_format` — verify prompt includes required sections
+
 ## Build and test
 
 ```bash
-cd /tmp/bb-worktrees/s1-agent-session
+cd /tmp/bb-worktrees/s2-compaction
 cargo build
 cargo test
 ```
 
 Make sure ALL existing tests still pass. Then commit:
 ```bash
-git add -A && git commit -m "S1: extract AgentSession and AgentLoop from run.rs"
+git add -A && git commit -m "S2: implement full compaction with LLM summarization"
 ```
