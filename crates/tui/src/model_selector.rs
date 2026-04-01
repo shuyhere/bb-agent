@@ -28,7 +28,7 @@ impl ModelSelector {
         let items: Vec<SelectItem> = models
             .iter()
             .map(|m| {
-                let thinking_tag = if m.reasoning { " 🧠" } else { "" };
+                let thinking_tag = if m.reasoning { " reasoning" } else { "" };
                 let ctx = format_context(m.context_window);
                 let detail = format!(
                     "[{}] {}ctx{}",
@@ -50,12 +50,7 @@ impl ModelSelector {
 
     /// Render the selector.
     pub fn render(&self, width: u16) -> Vec<String> {
-        let mut lines = vec![
-            format!("Select Model"),
-            format!(""),
-        ];
-        lines.extend(self.list.render(width));
-        lines
+        self.list.render(width)
     }
 
     /// Handle a key event. Returns None for no action, Some for selection/cancel.
@@ -110,8 +105,6 @@ mod tests {
         let selector = ModelSelector::new(&registry, 10);
         let lines = selector.render(80);
         assert!(!lines.is_empty());
-        // Should have "Select Model" header
-        assert!(lines[0].contains("Select Model"));
     }
 
     #[test]

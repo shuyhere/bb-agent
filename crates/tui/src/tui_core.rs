@@ -195,6 +195,12 @@ impl TUI {
         self.overlay_stack.iter_mut().rev().find(|e| !e.hidden)
     }
 
+    /// Downcast the topmost visible overlay to a concrete component type.
+    pub fn topmost_overlay_as_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.topmost_visible_overlay_mut()
+            .and_then(|entry| entry.component.as_any_mut().downcast_mut::<T>())
+    }
+
     /// Terminal width.
     pub fn columns(&self) -> u16 {
         self.terminal.columns()

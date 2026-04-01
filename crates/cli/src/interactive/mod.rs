@@ -13,13 +13,15 @@ use self::events::{
 };
 use self::interactive_commands::InteractiveCommands;
 use bb_core::agent_loop::AgentLoopEvent;
-use bb_core::agent_session::{PromptOptions, ThinkingLevel};
-use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
+use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
+use bb_core::agent_session_runtime::{AgentSessionRuntimeHost, RuntimeModelRef};
+use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_provider::Provider;
 use bb_session::{compaction, store};
 use bb_tools::{Tool, ToolContext};
 use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
 use bb_tui::editor::Editor;
+use bb_tui::model_selector::{ModelSelection, ModelSelector};
 use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -67,6 +69,80 @@ pub struct InteractiveSessionSetup {
 struct InteractiveSessionState {
     render_state: InteractiveRenderState,
     pending_messages: PendingMessages,
+}
+
+enum ModelSelectorOverlayAction {
+    Selected(ModelSelection),
+    Cancelled,
+}
+
+struct ModelSelectorOverlay {
+    selector: ModelSelector,
+    current_model: String,
+    initial_search: Option<String>,
+    pending_action: Option<ModelSelectorOverlayAction>,
+}
+
+impl ModelSelectorOverlay {
+    fn new(selector: ModelSelector, current_model: String, initial_search: Option<String>) -> Self {
+        Self {
+            selector,
+            current_model,
+            initial_search,
+            pending_action: None,
+        }
+    }
+
+    fn take_action(&mut self) -> Option<ModelSelectorOverlayAction> {
+        self.pending_action.take()
+    }
+}
+
+impl Component for ModelSelectorOverlay {
+    fn render(&self, width: u16) -> Vec<String> {
+        let purple = "\x1b[38;2;178;148;187m";
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
+        let inner_width = width.saturating_sub(2);
+        let border = format!("{purple}{}{reset}", "─".repeat(width.max(1) as usize));
+        let mut lines = vec![
+            border.clone(),
+            format!(" {purple}Select model{reset}"),
+            format!(" {dim}Current: {}{reset}", self.current_model),
+        ];
+        if let Some(search) = self.initial_search.as_deref().filter(|s| !s.is_empty()) {
+            lines.push(format!(" {dim}Search: {search}{reset}"));
+        } else {
+            lines.push(format!(" {dim}Type to search · Enter select · Esc cancel{reset}"));
+        }
+        lines.push(String::new());
+        lines.extend(
+            self.selector
+                .render(inner_width)
+                .into_iter()
+                .map(|line| format!(" {line}")),
+        );
+        lines.push(border);
+        lines
+    }
+
+    fn handle_input(&mut self, key: &KeyEvent) {
+        match self.selector.handle_key(*key) {
+            Some(Ok(selection)) => self.pending_action = Some(ModelSelectorOverlayAction::Selected(selection)),
+            Some(Err(())) => self.pending_action = Some(ModelSelectorOverlayAction::Cancelled),
+            None => {}
+        }
+    }
+
+    fn invalidate(&mut self) {}
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 struct InteractiveController {
@@ -568,6 +644,14 @@ impl InteractiveMode {
     }
 
     async fn handle_key_event(&mut self, key: KeyEvent) -> InteractiveResult<Option<String>> {
+        // Match pi: overlays own input while open.
+        if self.ui.has_overlay() {
+            self.ui.handle_key(&key);
+            self.process_overlay_actions();
+            self.refresh_ui();
+            return Ok(None);
+        }
+
         if let Some(action) = self.lookup_key_action(&key) {
             self.handle_key_action(action).await?;
             self.refresh_ui();
@@ -719,6 +803,20 @@ impl InteractiveMode {
             },
             KeyAction::CycleModelForward,
         ));
+        self.key_handlers.push((
+            KeyBinding {
+                code: KeyCode::Char('P'),
+                modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            },
+            KeyAction::CycleModelBackward,
+        ));
+        self.key_handlers.push((
+            KeyBinding {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            },
+            KeyAction::CycleModelBackward,
+        ));
     }
 
     fn setup_editor_submit_handler(&mut self) {
@@ -839,7 +937,7 @@ impl InteractiveMode {
             KeyAction::CycleThinking => self.cycle_thinking_level(),
             KeyAction::CycleModelForward => self.cycle_model("forward"),
             KeyAction::CycleModelBackward => self.cycle_model("backward"),
-            KeyAction::SelectModel => self.show_model_selector(),
+            KeyAction::SelectModel => self.show_model_selector(None),
             KeyAction::ToggleToolExpansion => self.toggle_tool_output_expansion(),
             KeyAction::ToggleThinkingVisibility => self.toggle_thinking_block_visibility(),
             KeyAction::OpenExternalEditor => self.show_placeholder("external editor"),
@@ -1785,16 +1883,32 @@ impl InteractiveMode {
     }
 
     fn cycle_model(&mut self, direction: &str) {
-        // Get current model display
-        let current_model = self
-            .controller
-            .runtime_host
-            .session()
-            .model()
-            .map(|m| format!("{}/{}", m.provider, m.id))
-            .unwrap_or_else(|| "none".to_string());
-        self.show_status(format!("Model: {current_model} (cycle {direction} - no model list available)"));
-        self.rebuild_footer();
+        let mut models = self.get_model_candidates();
+        if models.is_empty() {
+            self.show_warning("No models available");
+            return;
+        }
+        models.sort_by(|a, b| {
+            a.provider
+                .cmp(&b.provider)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        let current_provider = self.session_setup.model.provider.clone();
+        let current_id = self.session_setup.model.id.clone();
+        let current_idx = models
+            .iter()
+            .position(|m| m.provider == current_provider && m.id == current_id)
+            .unwrap_or(0);
+        let next_idx = match direction {
+            "backward" => {
+                if current_idx == 0 { models.len() - 1 } else { current_idx - 1 }
+            }
+            _ => (current_idx + 1) % models.len(),
+        };
+        if let Some(model) = models.get(next_idx).cloned() {
+            self.apply_model_selection(model);
+        }
     }
 
     fn toggle_tool_output_expansion(&mut self) {
@@ -1867,51 +1981,102 @@ impl InteractiveMode {
     }
 
     fn handle_model_command(&mut self, search_term: Option<&str>) {
-        match search_term {
-            Some(model_str) => {
-                // Direct model switch: /model provider/model or /model model-name
-                let (provider, model_id, thinking) = bb_core::agent_session::parse_model_arg(
-                    None, Some(model_str),
-                );
-                let mut registry = bb_provider::registry::ModelRegistry::new();
-                let settings = bb_core::settings::Settings::load_merged(
-                    &self.controller.runtime_host.cwd(),
-                );
-                registry.load_custom_models(&settings);
-                if let Some(model) = registry.find(&provider, &model_id)
-                    .or_else(|| registry.find_fuzzy(&model_id, Some(&provider)))
-                    .or_else(|| registry.find_fuzzy(&model_id, None))
-                    .cloned()
+        let Some(search_term) = search_term.map(str::trim).filter(|s| !s.is_empty()) else {
+            self.show_model_selector(None);
+            return;
+        };
+
+        if let Some(model) = self.find_exact_model_match(search_term) {
+            self.apply_model_selection(model);
+            return;
+        }
+
+        self.show_model_selector(Some(search_term));
+    }
+
+    fn build_model_registry(&self) -> ModelRegistry {
+        let mut registry = ModelRegistry::new();
+        let settings = bb_core::settings::Settings::load_merged(&self.controller.runtime_host.cwd());
+        registry.load_custom_models(&settings);
+        registry
+    }
+
+    fn get_model_candidates(&self) -> Vec<Model> {
+        self.build_model_registry().list().to_vec()
+    }
+
+    fn find_exact_model_match(&self, search_term: &str) -> Option<Model> {
+        let needle = search_term.trim().to_ascii_lowercase();
+        self.get_model_candidates().into_iter().find(|model| {
+            let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+            let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
+            model.id.eq_ignore_ascii_case(&needle)
+                || model.name.eq_ignore_ascii_case(&needle)
+                || provider_id == needle
+                || provider_colon_id == needle
+        })
+    }
+
+    fn apply_model_selection(&mut self, model: Model) {
+        let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+        let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
+            ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+            ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
+            _ => "https://api.openai.com/v1".to_string(),
+        });
+        let new_provider: Box<dyn bb_provider::Provider> = match model.api {
+            ApiType::AnthropicMessages => Box::new(bb_provider::anthropic::AnthropicProvider::new()),
+            ApiType::GoogleGenerative => Box::new(bb_provider::google::GoogleProvider::new()),
+            _ => Box::new(bb_provider::openai::OpenAiProvider::new()),
+        };
+        let display = format!("{}/{}", model.provider, model.id);
+
+        self.controller.runtime_host.session_mut().set_model(ModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            reasoning: model.reasoning,
+        });
+        self.controller.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            context_window: model.context_window as usize,
+        });
+        self.session_setup.model = model;
+        self.session_setup.provider = new_provider;
+        self.session_setup.api_key = api_key;
+        self.session_setup.base_url = base_url;
+        self.options.model_display = Some(display.clone());
+        self.show_status(format!("Model: {display}"));
+        self.rebuild_footer();
+    }
+
+    fn process_overlay_actions(&mut self) {
+        let action = self
+            .ui
+            .topmost_overlay_as_mut::<ModelSelectorOverlay>()
+            .and_then(|overlay| overlay.take_action());
+
+        match action {
+            Some(ModelSelectorOverlayAction::Selected(selection)) => {
+                self.ui.hide_overlay();
+                if let Some(model) = self
+                    .get_model_candidates()
+                    .into_iter()
+                    .find(|m| m.provider == selection.provider && m.id == selection.model_id)
                 {
-                    let api_key = crate::login::resolve_api_key(&model.provider)
-                        .unwrap_or_default();
-                    let base_url = model.base_url.clone()
-                        .unwrap_or_else(|| match model.api {
-                            bb_provider::registry::ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
-                            bb_provider::registry::ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
-                            _ => "https://api.openai.com/v1".to_string(),
-                        });
-                    let new_provider: Box<dyn bb_provider::Provider> = match model.api {
-                        bb_provider::registry::ApiType::AnthropicMessages => Box::new(bb_provider::anthropic::AnthropicProvider::new()),
-                        bb_provider::registry::ApiType::GoogleGenerative => Box::new(bb_provider::google::GoogleProvider::new()),
-                        _ => Box::new(bb_provider::openai::OpenAiProvider::new()),
-                    };
-                    let display = format!("{}/{}", model.provider, model.id);
-                    self.session_setup.model = model;
-                    self.session_setup.provider = new_provider;
-                    self.session_setup.api_key = api_key;
-                    self.session_setup.base_url = base_url;
-                    self.show_status(format!("Switched to {display}"));
-                    self.rebuild_footer();
+                    self.apply_model_selection(model);
                 } else {
-                    self.show_warning(format!("Model not found: {model_str}"));
+                    self.show_warning(format!(
+                        "Model not found: {}/{}",
+                        selection.provider, selection.model_id
+                    ));
                 }
             }
-            None => {
-                // Show current model
-                let current = format!("{}/{}", self.session_setup.model.provider, self.session_setup.model.id);
-                self.show_status(format!("Current model: {current}. Use /model <name> to switch."));
+            Some(ModelSelectorOverlayAction::Cancelled) => {
+                self.ui.hide_overlay();
+                self.show_status("Canceled model selector");
             }
+            None => {}
         }
     }
 
@@ -2184,18 +2349,38 @@ impl InteractiveMode {
         self.show_status("Queued message while compaction is active");
     }
 
-    fn show_model_selector(&mut self) {
+    fn show_model_selector(&mut self, initial_search: Option<&str>) {
         let current_model = self
             .controller
             .runtime_host
             .session()
             .model()
             .map(|m| format!("{}/{}", m.provider, m.id))
-            .unwrap_or_else(|| "none".to_string());
-        let overlay_text = format!("Model Selector\nCurrent: {current_model}\n\nPress Esc to close");
-        let component = Box::new(Text::new(&overlay_text));
+            .unwrap_or_else(|| format!("{}/{}", self.session_setup.model.provider, self.session_setup.model.id));
+
+        let mut models = self.get_model_candidates();
+        let current_provider = self.session_setup.model.provider.clone();
+        let current_id = self.session_setup.model.id.clone();
+        models.sort_by(|a, b| {
+            let a_current = a.provider == current_provider && a.id == current_id;
+            let b_current = b.provider == current_provider && b.id == current_id;
+            b_current
+                .cmp(&a_current)
+                .then_with(|| a.provider.cmp(&b.provider))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        let mut selector = ModelSelector::from_models(models, 10);
+        if let Some(query) = initial_search.filter(|s| !s.is_empty()) {
+            selector.set_search(query);
+        }
+        let component = Box::new(ModelSelectorOverlay::new(
+            selector,
+            current_model,
+            initial_search.map(|s| s.to_string()),
+        ));
         self.ui.show_overlay(component);
-        self.show_status("Model selector opened");
+        self.show_status("Opened model selector");
     }
 
     fn show_placeholder(&mut self, label: &str) {
