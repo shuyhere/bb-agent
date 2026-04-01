@@ -8,7 +8,7 @@ use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::types::*;
 use bb_provider::streaming::CollectedResponse;
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
-use bb_session::{context, store};
+use bb_session::{compaction, context, store, tree};
 use bb_tools::{Tool, ToolContext};
 use chrono::Utc;
 use tokio::sync::mpsc;
@@ -229,8 +229,44 @@ pub async fn run_agent_loop(
 
         let _ = event_tx.send(AgentLoopEvent::TurnEnd { turn_index });
 
-        // Step 8: After each turn, could check auto-compaction here
-        // (will be wired in Sprint 2)
+        // Step 8: Auto-compaction check
+        let compaction_settings = CompactionSettings::default();
+        let ctx_check = context::build_context(conn, session_id)?;
+        let total_tokens: u64 = ctx_check.messages.iter()
+            .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+            .sum();
+
+        if compaction::should_compact(total_tokens, model.context_window, &compaction_settings) {
+            let path = tree::active_path(conn, session_id)?;
+            if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+                let cancel_compact = CancellationToken::new();
+                let result = compaction::compact(
+                    &prep, provider, &model.id, api_key, base_url,
+                    None, cancel_compact,
+                ).await?;
+
+                let comp_entry = SessionEntry::Compaction {
+                    base: EntryBase {
+                        id: EntryId::generate(),
+                        parent_id: get_leaf(conn, session_id),
+                        timestamp: Utc::now(),
+                    },
+                    summary: result.summary,
+                    first_kept_entry_id: EntryId(result.first_kept_entry_id),
+                    tokens_before: result.tokens_before,
+                    details: Some(serde_json::json!({
+                        "readFiles": result.read_files,
+                        "modifiedFiles": result.modified_files,
+                    })),
+                    from_plugin: false,
+                };
+                store::append_entry(conn, session_id, &comp_entry)?;
+
+                let _ = event_tx.send(AgentLoopEvent::Error {
+                    message: format!("📦 Context compacted ({} tokens summarized)", result.tokens_before),
+                });
+            }
+        }
 
         turn_index += 1;
     }

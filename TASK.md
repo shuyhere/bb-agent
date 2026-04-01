@@ -1,86 +1,92 @@
-# W1: Wire TUI components into AgentSession interactive loop
+# W2: Wire compaction into agent loop + auto-compact
 
-Working dir: `/tmp/bb-w/w1-wire-tui-session/`
+Working dir: `/tmp/bb-w/w2-compaction-wire/`
 
 ## Problem
-The TUI components (editor, markdown, renderer, select_list, etc.) in `crates/tui/src/` are built but NOT used. The interactive mode in `crates/cli/src/interactive.rs` exists but doesn't properly connect to the `AgentSession` in `crates/cli/src/session.rs` and the agent loop in `crates/cli/src/agent_loop.rs`.
-
-The current `crates/cli/src/run.rs` still uses inline `print!()` for display. We need to replace this with a proper TUI-driven interactive mode.
+Compaction logic exists in `crates/session/src/compaction.rs` (prepare + compact + serialize) but is never called. The agent loop never checks if context is too large. `/compact` command is acknowledged but doesn't execute.
 
 ## Task
 
-### 1. Rewrite `crates/cli/src/interactive.rs`
+### 1. Add auto-compaction to the agent loop
 
-Make it the REAL interactive mode that:
+In `crates/cli/src/agent_loop.rs` (or `session.rs` if that's where the loop lives), after each turn:
 
-a) **Starts up properly:**
-   - Initialize crossterm raw mode
-   - Show welcome banner with version
-   - Show status bar (model name, context window)
-   - Show editor prompt
-
-b) **Main loop using crossterm event polling:**
 ```rust
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
+// After appending assistant message and tool results to session
+let ctx = context::build_context(&conn, &session_id)?;
+let total_tokens: u64 = ctx.messages.iter()
+    .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+    .sum();
 
-loop {
-    // Check for agent events from channel (non-blocking)
-    while let Ok(ev) = agent_rx.try_recv() {
-        handle_agent_event(ev);
-        render_all();
-    }
+if compaction::should_compact(total_tokens, model.context_window, &compaction_settings) {
+    // Prepare compaction
+    let path = tree::active_path(&conn, &session_id)?;
+    if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+        // Execute compaction (call LLM for summary)
+        let result = compaction::compact(
+            &prep, provider, &model.id, &api_key, &base_url, None, cancel.clone()
+        ).await?;
 
-    // Poll for keyboard input (50ms timeout)
-    if poll(Duration::from_millis(50))? {
-        if let Event::Key(key) = event::read()? {
-            handle_key(key);
-        }
+        // Append compaction entry to session
+        let comp_entry = SessionEntry::Compaction {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: get_leaf(&conn, &session_id),
+                timestamp: Utc::now(),
+            },
+            summary: result.summary,
+            first_kept_entry_id: EntryId(result.first_kept_entry_id),
+            tokens_before: result.tokens_before,
+            details: Some(serde_json::json!({
+                "readFiles": result.read_files,
+                "modifiedFiles": result.modified_files,
+            })),
+            from_plugin: false,
+        };
+        store::append_entry(&conn, &session_id, &comp_entry)?;
+
+        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
     }
 }
 ```
 
-c) **When user submits text:**
-   - If starts with `/` → route to slash command handler
-   - If starts with `!` → execute bash directly, display output
-   - Otherwise → spawn async task that calls agent session with streaming
+### 2. Wire `/compact` slash command
 
-d) **Display streaming agent output:**
-   - On `TextDelta` → print text inline (real-time streaming)
-   - On `ToolCallStart` → print `⚡ tool_name`
-   - On `ToolResult` → print brief result
-   - On `AssistantDone` → print newline, re-enable editor
+In the slash command handler, when user types `/compact`:
+- Get active path from session
+- Call `prepare_compaction()` + `compact()`
+- Append compaction entry
+- Display confirmation
 
-e) **On exit (Ctrl+C/Ctrl+D):**
-   - Disable raw mode
-   - Show cursor
-   - Print "Goodbye!"
+When `/compact some instructions`:
+- Pass `Some("some instructions")` as custom_instructions
 
-### 2. Modify `crates/cli/src/main.rs`
+### 3. Handle the compaction provider dependency
 
-Route properly:
+The `compact()` function in `crates/session/src/compaction.rs` needs to call a provider. It currently takes provider params. Make sure it works with the actual providers (OpenAI and Anthropic).
+
+The compaction should use a simple non-streaming request:
 ```rust
-if cli.print {
-    run::run_print_mode(cli).await
-} else {
-    interactive::run_interactive(cli).await
-}
+let events = provider.complete(request, options).await?;
+let collected = CollectedResponse::from_events(&events);
+let summary = collected.text;
 ```
 
-### 3. Modify `crates/cli/src/run.rs`
+### 4. Tests
 
-Keep only the `run_print_mode()` function for `-p` flag. Remove all interactive code.
-
-### 4. Key requirements
-- Must use `crossterm` for terminal control (raw mode, cursor, colors)
-- Must handle Ctrl+C to abort a running agent (use CancellationToken)
-- Must handle terminal resize
-- Must clean up terminal state on panic/exit (use a Drop guard)
-- The editor from `bb_tui::editor::Editor` should be used for input, calling `read_line()`
-- Status bar from `bb_tui::status::render_status()` should be displayed
+Add a test that verifies auto-compaction triggers:
+```rust
+#[test]
+fn test_should_compact_triggers() {
+    let settings = CompactionSettings::default(); // reserve=16384
+    assert!(should_compact(120_000, 128_000, &settings)); // over threshold
+    assert!(!should_compact(100_000, 128_000, &settings)); // under threshold
+}
+```
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w1-wire-tui-session
+cd /tmp/bb-w/w2-compaction-wire
 cargo build && cargo test
-git add -A && git commit -m "W1: wire TUI into interactive agent loop"
+git add -A && git commit -m "W2: wire compaction into agent loop + /compact"
 ```

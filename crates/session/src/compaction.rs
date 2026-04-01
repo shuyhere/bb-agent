@@ -669,6 +669,13 @@ mod tests {
     }
 
     #[test]
+    fn test_should_compact_triggers() {
+        let settings = CompactionSettings::default(); // reserve=16384
+        assert!(should_compact(120_000, 128_000, &settings)); // over threshold
+        assert!(!should_compact(100_000, 128_000, &settings)); // under threshold
+    }
+
+    #[test]
     fn test_estimate_tokens() {
         assert_eq!(estimate_tokens_text("hello world"), 2); // 11 chars / 4
         assert_eq!(estimate_tokens_text(""), 0);
