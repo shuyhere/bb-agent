@@ -212,14 +212,17 @@ impl InteractiveRenderState {
                     self.update_pending_messages_display(pending);
                 }
                 InteractiveMessage::Assistant { message, .. } => {
-                    let mut component =
-                        AssistantMessageComponent::new(None::<AssistantMessage>, self.hide_thinking_block);
+                    let mut component = AssistantMessageComponent::new(
+                        None::<AssistantMessage>,
+                        self.hide_thinking_block,
+                    );
                     component.set_hidden_thinking_label(self.hidden_thinking_label.clone());
                     component.update_content(message.clone());
                     self.streaming_component = Some(component);
                     self.streaming_message = Some(message.clone());
                     if let Some(component) = &self.streaming_component {
-                        self.chat_items.push(ChatItem::AssistantMessage(component.clone()));
+                        self.chat_items
+                            .push(ChatItem::AssistantMessage(component.clone()));
                     }
                 }
                 _ => {
@@ -227,7 +230,11 @@ impl InteractiveRenderState {
                 }
             },
             InteractiveSessionEvent::MessageUpdate { message } => {
-                if let InteractiveMessage::Assistant { message, tool_calls } = message {
+                if let InteractiveMessage::Assistant {
+                    message,
+                    tool_calls,
+                } = message
+                {
                     if let Some(component) = self.streaming_component.as_mut() {
                         component.update_content(message.clone());
                         self.streaming_message = Some(message.clone());
@@ -242,7 +249,8 @@ impl InteractiveRenderState {
                                     tool_call.arguments,
                                 );
                                 component.set_expanded(self.tool_output_expanded);
-                                self.chat_items.push(ChatItem::ToolExecution(component.clone()));
+                                self.chat_items
+                                    .push(ChatItem::ToolExecution(component.clone()));
                                 self.pending_tools.insert(tool_call.id, component);
                             }
                         }
@@ -311,10 +319,12 @@ impl InteractiveRenderState {
                 if let Some(component) = self.pending_tools.get_mut(&tool_call_id) {
                     component.mark_execution_started();
                 } else {
-                    let mut component = self.new_tool_component(tool_name, tool_call_id.clone(), args);
+                    let mut component =
+                        self.new_tool_component(tool_name, tool_call_id.clone(), args);
                     component.set_expanded(self.tool_output_expanded);
                     component.mark_execution_started();
-                    self.chat_items.push(ChatItem::ToolExecution(component.clone()));
+                    self.chat_items
+                        .push(ChatItem::ToolExecution(component.clone()));
                     self.pending_tools.insert(tool_call_id, component);
                 }
             }
@@ -354,7 +364,9 @@ impl InteractiveRenderState {
             } => {
                 if let Some(summary) = summary {
                     self.chat_items.clear();
-                    self.rebuild_chat_from_messages(&SessionContext { messages: Vec::new() });
+                    self.rebuild_chat_from_messages(&SessionContext {
+                        messages: Vec::new(),
+                    });
                     self.chat_items.push(ChatItem::CompactionSummary(summary));
                 }
                 if let Some(error_message) = error_message {
@@ -473,13 +485,17 @@ impl InteractiveRenderState {
                             tool_call.arguments.clone(),
                         );
                         component.set_expanded(self.tool_output_expanded);
-                        self.chat_items.push(ChatItem::ToolExecution(component.clone()));
+                        self.chat_items
+                            .push(ChatItem::ToolExecution(component.clone()));
 
                         if matches!(
                             message.stop_reason,
                             Some(AssistantStopReason::Aborted | AssistantStopReason::Error)
                         ) {
-                            let error_message = if matches!(message.stop_reason, Some(AssistantStopReason::Aborted)) {
+                            let error_message = if matches!(
+                                message.stop_reason,
+                                Some(AssistantStopReason::Aborted)
+                            ) {
                                 let retry_attempt = self.retry_attempt;
                                 if retry_attempt > 0 {
                                     format!(
@@ -508,7 +524,8 @@ impl InteractiveRenderState {
                                 },
                                 false,
                             );
-                            if let Some(ChatItem::ToolExecution(last)) = self.chat_items.last_mut() {
+                            if let Some(ChatItem::ToolExecution(last)) = self.chat_items.last_mut()
+                            {
                                 *last = component;
                             }
                         } else {
@@ -550,7 +567,9 @@ impl InteractiveRenderState {
         }
         for message in &pending.follow_up {
             self.pending_items
-                .push(ChatItem::PendingMessageLine(format!("Follow-up: {message}")));
+                .push(ChatItem::PendingMessageLine(format!(
+                    "Follow-up: {message}"
+                )));
         }
         self.pending_items.push(ChatItem::PendingMessageLine(
             "↳ dequeue to edit all queued messages".to_string(),

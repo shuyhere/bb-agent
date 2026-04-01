@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bb_provider::registry::{Model, ModelRegistry};
 use bb_session::{store::SessionRow, tree::TreeNode};
-use bb_tui::{model_selector::ModelSelector, session_selector::SessionSelector, tree_selector::TreeSelector};
+use bb_tui::{
+    model_selector::ModelSelector, session_selector::SessionSelector, tree_selector::TreeSelector,
+};
 
 /// Dedicated controller module for interactive slash/bang commands and selector flows.
 ///
@@ -72,11 +74,19 @@ pub enum SelectorAction {
 pub enum CommandAction {
     OpenSelector(SelectorRequest),
     Reload,
-    Export { output_path: Option<PathBuf>, format: ExportFormat },
-    Import { input_path: PathBuf, replace_current: bool },
+    Export {
+        output_path: Option<PathBuf>,
+        format: ExportFormat,
+    },
+    Import {
+        input_path: PathBuf,
+        replace_current: bool,
+    },
     Share,
     CopyLastAssistantMessage,
-    SetSessionName { name: Option<String> },
+    SetSessionName {
+        name: Option<String>,
+    },
     ShowSessionInfo,
     ShowChangelog,
     ShowHotkeys,
@@ -288,8 +298,15 @@ impl InteractiveCommands {
         self.show_selector(SelectorOverlay::Model(selector))
     }
 
-    pub fn open_session_selector(&mut self, sessions: Vec<SessionRow>, max_visible: usize) -> SelectorOverlay {
-        self.show_selector(SelectorOverlay::Session(SessionSelector::new(sessions, max_visible)))
+    pub fn open_session_selector(
+        &mut self,
+        sessions: Vec<SessionRow>,
+        max_visible: usize,
+    ) -> SelectorOverlay {
+        self.show_selector(SelectorOverlay::Session(SessionSelector::new(
+            sessions,
+            max_visible,
+        )))
     }
 
     pub fn open_tree_selector(
@@ -306,7 +323,11 @@ impl InteractiveCommands {
         self.show_selector(SelectorOverlay::Tree(selector))
     }
 
-    pub fn open_placeholder_selector(&mut self, kind: SelectorKind, title: &'static str) -> SelectorOverlay {
+    pub fn open_placeholder_selector(
+        &mut self,
+        kind: SelectorKind,
+        title: &'static str,
+    ) -> SelectorOverlay {
         self.show_selector(SelectorOverlay::Placeholder { kind, title })
     }
 
@@ -350,22 +371,29 @@ impl InteractiveCommands {
         SelectorAction::Cancel
     }
 
-    pub fn handle_reload_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<CommandAction> {
+    pub fn handle_reload_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<CommandAction> {
         host.reload_resources(ReloadPlan::default())?;
         host.set_status("Reloaded keybindings, extensions, skills, prompts, themes");
         Ok(CommandAction::Reload)
     }
 
     pub fn parse_export_command(&self, text: &str) -> ExportRequest {
-        let output_path = text
-            .split_whitespace()
-            .nth(1)
-            .map(PathBuf::from);
-        let format = match output_path.as_ref().and_then(|path| path.extension()).and_then(|ext| ext.to_str()) {
+        let output_path = text.split_whitespace().nth(1).map(PathBuf::from);
+        let format = match output_path
+            .as_ref()
+            .and_then(|path| path.extension())
+            .and_then(|ext| ext.to_str())
+        {
             Some("jsonl") => ExportFormat::Jsonl,
             _ => ExportFormat::Html,
         };
-        ExportRequest { output_path, format }
+        ExportRequest {
+            output_path,
+            format,
+        }
     }
 
     pub fn handle_export_command<H: InteractiveCommandHost>(
@@ -402,7 +430,10 @@ impl InteractiveCommands {
     ) -> Result<CommandAction> {
         let request = self.parse_import_command(text)?;
         host.import_session(request.clone())?;
-        host.set_status(format!("Session imported from: {}", request.input_path.display()));
+        host.set_status(format!(
+            "Session imported from: {}",
+            request.input_path.display()
+        ));
         Ok(CommandAction::Import {
             input_path: request.input_path,
             replace_current: request.replace_current,
@@ -416,13 +447,19 @@ impl InteractiveCommands {
         }
     }
 
-    pub fn handle_share_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<CommandAction> {
+    pub fn handle_share_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<CommandAction> {
         let url = host.share_session(self.default_share_request())?;
         host.set_status(format!("Share URL: {url}"));
         Ok(CommandAction::Share)
     }
 
-    pub fn handle_copy_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<CommandAction> {
+    pub fn handle_copy_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<CommandAction> {
         host.copy_last_assistant_message()?;
         host.set_status("Copied last agent message to clipboard");
         Ok(CommandAction::CopyLastAssistantMessage)
@@ -450,11 +487,17 @@ impl InteractiveCommands {
         Ok(CommandAction::SetSessionName { name })
     }
 
-    pub fn handle_session_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<SessionStatsView> {
+    pub fn handle_session_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<SessionStatsView> {
         host.session_stats()
     }
 
-    pub fn handle_changelog_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<String> {
+    pub fn handle_changelog_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<String> {
         host.changelog_markdown()
     }
 
@@ -466,7 +509,9 @@ impl InteractiveCommands {
                     .map(|part| {
                         let mut chars = part.chars();
                         match chars.next() {
-                            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                            Some(first) => {
+                                first.to_uppercase().collect::<String>() + chars.as_str()
+                            }
                             None => String::new(),
                         }
                     })
@@ -477,11 +522,17 @@ impl InteractiveCommands {
             .join("/")
     }
 
-    pub fn handle_hotkeys_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> HotkeysView {
+    pub fn handle_hotkeys_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> HotkeysView {
         host.hotkeys_view()
     }
 
-    pub fn handle_clear_command<H: InteractiveCommandHost>(&mut self, host: &mut H) -> Result<CommandAction> {
+    pub fn handle_clear_command<H: InteractiveCommandHost>(
+        &mut self,
+        host: &mut H,
+    ) -> Result<CommandAction> {
         host.clear_session()?;
         host.set_status("✓ New session started");
         Ok(CommandAction::ClearSession)
@@ -510,7 +561,9 @@ impl InteractiveCommands {
         host: &mut H,
         custom_instructions: Option<String>,
     ) -> Result<CommandAction> {
-        let request = CompactRequest { custom_instructions };
+        let request = CompactRequest {
+            custom_instructions,
+        };
         host.compact_session(request.clone())?;
         host.set_status("Compaction started");
         Ok(CommandAction::Compact {

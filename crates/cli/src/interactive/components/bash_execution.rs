@@ -119,7 +119,9 @@ impl BashExecutionComponent {
             if self.expanded {
                 lines.push(String::from("(collapse to hide output)"));
             } else {
-                lines.push(format!("... {hidden_line_count} more lines (expand to view)"));
+                lines.push(format!(
+                    "... {hidden_line_count} more lines (expand to view)"
+                ));
             }
         }
 

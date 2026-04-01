@@ -118,10 +118,7 @@ impl AssistantMessageComponent {
                     lines.push(abort_message);
                 }
                 Some(AssistantStopReason::Error) => {
-                    let error_message = message
-                        .error_message
-                        .as_deref()
-                        .unwrap_or("Unknown error");
+                    let error_message = message.error_message.as_deref().unwrap_or("Unknown error");
                     lines.push(String::new());
                     lines.push(format!("Error: {error_message}"));
                 }
@@ -138,9 +135,5 @@ impl AssistantMessageComponent {
 }
 
 fn split_trimmed_lines(value: &str) -> Vec<String> {
-    value
-        .trim()
-        .lines()
-        .map(|line| line.to_string())
-        .collect()
+    value.trim().lines().map(|line| line.to_string()).collect()
 }

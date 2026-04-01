@@ -38,7 +38,9 @@ impl CompactionSummaryMessageComponent {
             lines.push(String::new());
             lines.extend(self.message.summary.lines().map(|line| line.to_string()));
         } else {
-            lines.push(format!("Compacted from {token_str} tokens (expand to view)"));
+            lines.push(format!(
+                "Compacted from {token_str} tokens (expand to view)"
+            ));
         }
 
         lines

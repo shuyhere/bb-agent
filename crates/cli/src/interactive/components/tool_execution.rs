@@ -115,8 +115,8 @@ impl ToolExecutionComponent {
         lines.push(format!("{} [{}]", self.tool_name, self.tool_call_id));
 
         if !self.args.is_null() {
-            let rendered_args = serde_json::to_string_pretty(&self.args)
-                .unwrap_or_else(|_| self.args.to_string());
+            let rendered_args =
+                serde_json::to_string_pretty(&self.args).unwrap_or_else(|_| self.args.to_string());
             lines.push(String::new());
             lines.extend(rendered_args.lines().map(|line| line.to_string()));
         }
@@ -129,8 +129,8 @@ impl ToolExecutionComponent {
 
         if let Some(result) = &self.result {
             if let Some(details) = &result.details {
-                let rendered = serde_json::to_string_pretty(details)
-                    .unwrap_or_else(|_| details.to_string());
+                let rendered =
+                    serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
                 if !rendered.is_empty() {
                     lines.push(String::new());
                     lines.extend(rendered.lines().map(|line| line.to_string()));
