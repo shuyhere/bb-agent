@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
 mod agent_loop;
 #[path = "interactive.rs"]
@@ -197,12 +196,12 @@ async fn main() -> Result<()> {
         };
     }
 
-    // Run the agent
+    // Print mode stays a thin entry layer; interactive mode owns the TUI controller.
     if cli.print {
-        run::run_print_mode(cli).await
-    } else {
-        interactive::run_interactive(cli).await
+        return run::run_print_mode(cli).await;
     }
+
+    interactive::run_interactive(cli).await
 }
 
 // Cli is already visible to submodules via crate::Cli

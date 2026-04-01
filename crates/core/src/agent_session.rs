@@ -1,6 +1,9 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use crate::{agent, config};
 
 /// Main session object for the bb-core public API.
 ///
@@ -86,6 +89,237 @@ impl fmt::Debug for AgentSession {
             .field("thinking_level", &self.thinking_level)
             .field("is_streaming", &self.is_streaming)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrintTurnStopReason {
+    Completed,
+    Error,
+    Aborted,
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintTurnResult {
+    pub text: String,
+    pub stop_reason: PrintTurnStopReason,
+    pub error_message: Option<String>,
+}
+
+impl PrintTurnResult {
+    pub fn is_error(&self) -> bool {
+        matches!(
+            self.stop_reason,
+            PrintTurnStopReason::Error | PrintTurnStopReason::Aborted
+        )
+    }
+}
+
+/// Thin single-shot adapter that mirrors pi's print-mode layering:
+/// the CLI owns I/O, while prompt sequencing is owned by core session code.
+pub struct ThinPrintSession<F> {
+    run_turn: F,
+    last_result: Option<PrintTurnResult>,
+}
+
+impl<F> ThinPrintSession<F> {
+    pub fn new(run_turn: F) -> Self {
+        Self {
+            run_turn,
+            last_result: None,
+        }
+    }
+
+    pub fn last_result(&self) -> Option<&PrintTurnResult> {
+        self.last_result.as_ref()
+    }
+
+    pub async fn prompt<Fut, E>(&mut self, text: impl Into<String>) -> Result<&PrintTurnResult, E>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: Future<Output = Result<PrintTurnResult, E>>,
+    {
+        let result = (self.run_turn)(text.into()).await?;
+        self.last_result = Some(result);
+        Ok(self
+            .last_result
+            .as_ref()
+            .expect("thin print session stores the last turn result"))
+    }
+
+    pub async fn run<Fut, E>(
+        &mut self,
+        initial_message: Option<String>,
+        messages: Vec<String>,
+    ) -> Result<Option<&PrintTurnResult>, E>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: Future<Output = Result<PrintTurnResult, E>>,
+    {
+        if let Some(initial_message) = initial_message {
+            self.prompt(initial_message).await?;
+        }
+
+        for message in messages {
+            self.prompt(message).await?;
+        }
+
+        Ok(self.last_result())
+    }
+}
+
+pub fn parse_model_arg(provider: Option<&str>, model: Option<&str>) -> (String, String, Option<String>) {
+    let default_provider = provider.unwrap_or("openai").to_string();
+    let default_model = match default_provider.as_str() {
+        "anthropic" => "claude-opus-4-6",
+        "google" => "gemini-2.5-pro",
+        _ => "gpt-5.4",
+    };
+
+    let model_str = match model {
+        Some(model) => model,
+        None => return (default_provider, default_model.to_string(), None),
+    };
+
+    let (model_part, thinking) = if let Some(pos) = model_str.rfind(':') {
+        let level = &model_str[pos + 1..];
+        let valid = ["off", "low", "medium", "high", "minimal", "xhigh"];
+        if valid.contains(&level) {
+            (&model_str[..pos], Some(level.to_string()))
+        } else {
+            (model_str, None)
+        }
+    } else {
+        (model_str, None)
+    };
+
+    if let Some(pos) = model_part.find('/') {
+        let provider_name = &model_part[..pos];
+        let model_id = &model_part[pos + 1..];
+        (provider_name.to_string(), model_id.to_string(), thinking)
+    } else {
+        (default_provider, model_part.to_string(), thinking)
+    }
+}
+
+pub fn messages_to_provider(messages: &[crate::types::AgentMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .filter_map(|msg| match msg {
+            crate::types::AgentMessage::User(user) => {
+                let text = user
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(serde_json::json!({"role": "user", "content": text}))
+            }
+            crate::types::AgentMessage::Assistant(assistant) => {
+                let text = agent::extract_text(&assistant.content);
+                let tool_calls: Vec<serde_json::Value> = assistant
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::AssistantContent::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } => Some(serde_json::json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": serde_json::to_string(arguments).unwrap_or_default()
+                            }
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                let mut msg = serde_json::json!({"role": "assistant"});
+                if !text.is_empty() {
+                    msg["content"] = serde_json::json!(text);
+                }
+                if !tool_calls.is_empty() {
+                    msg["tool_calls"] = serde_json::json!(tool_calls);
+                }
+                Some(msg)
+            }
+            crate::types::AgentMessage::ToolResult(tool_result) => {
+                let text = tool_result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": tool_result.tool_call_id,
+                    "content": text,
+                }))
+            }
+            crate::types::AgentMessage::CompactionSummary(compaction) => Some(serde_json::json!({
+                "role": "user",
+                "content": format!("[Previous conversation summary]\n\n{}", compaction.summary),
+            })),
+            crate::types::AgentMessage::BranchSummary(branch) => Some(serde_json::json!({
+                "role": "user",
+                "content": format!("[Branch summary]\n\n{}", branch.summary),
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn load_agents_md(cwd: &Path) -> Option<String> {
+    let mut contents = Vec::new();
+
+    let global = config::global_dir().join("AGENTS.md");
+    if global.exists() {
+        if let Ok(content) = std::fs::read_to_string(&global) {
+            contents.push(content);
+        }
+    }
+
+    let mut dir = cwd.to_path_buf();
+    let mut scanned = Vec::new();
+    loop {
+        let agents = dir.join("AGENTS.md");
+        if agents.exists() {
+            scanned.push(agents);
+        } else {
+            let claude = dir.join("CLAUDE.md");
+            if claude.exists() {
+                scanned.push(claude);
+            }
+        }
+
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    scanned.reverse();
+    for path in scanned {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            contents.push(content);
+        }
+    }
+
+    if contents.is_empty() {
+        None
+    } else {
+        Some(contents.join("\n\n---\n\n"))
     }
 }
 
