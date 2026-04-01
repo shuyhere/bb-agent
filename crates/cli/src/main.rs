@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod agent_loop;
 mod interactive;
 mod login;
 mod models;

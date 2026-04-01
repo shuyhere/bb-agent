@@ -30,6 +30,63 @@ use crate::login;
 use crate::slash::{self, SlashResult};
 use crate::Cli;
 
+// ── Message queue ────────────────────────────────────────────────────
+
+/// Queued message types for when the user types while the agent is running.
+#[derive(Clone, Debug)]
+pub enum QueuedMessage {
+    /// Enter while agent is working – steers the current turn
+    Steer(String),
+    /// Alt+Enter while agent is working – queued as follow-up
+    FollowUp(String),
+}
+
+/// Simple message queue so the user can type while the agent is working.
+#[derive(Debug, Default)]
+pub struct MessageQueue {
+    messages: Vec<QueuedMessage>,
+}
+
+impl MessageQueue {
+    pub fn new() -> Self {
+        Self { messages: Vec::new() }
+    }
+
+    pub fn push_steer(&mut self, text: String) {
+        self.messages.push(QueuedMessage::Steer(text));
+    }
+
+    pub fn push_follow_up(&mut self, text: String) {
+        self.messages.push(QueuedMessage::FollowUp(text));
+    }
+
+    pub fn take_steers(&mut self) -> Vec<String> {
+        let steers: Vec<String> = self.messages.iter()
+            .filter_map(|m| match m {
+                QueuedMessage::Steer(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        self.messages.retain(|m| !matches!(m, QueuedMessage::Steer(_)));
+        steers
+    }
+
+    pub fn take_follow_ups(&mut self) -> Vec<String> {
+        let follow_ups: Vec<String> = self.messages.iter()
+            .filter_map(|m| match m {
+                QueuedMessage::FollowUp(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        self.messages.retain(|m| !matches!(m, QueuedMessage::FollowUp(_)));
+        follow_ups
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+}
+
 // ── Rendered message types ───────────────────────────────────────────
 
 enum RenderedMessage {
@@ -145,6 +202,8 @@ struct InteractiveMode {
     status_message: Option<String>,
     // Thinking level
     thinking: Option<String>,
+    // Message queue for typing while agent runs
+    message_queue: MessageQueue,
 }
 
 impl InteractiveMode {
@@ -828,6 +887,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         agent_running: false,
         status_message: None,
         thinking: cli.thinking.clone(),
+        message_queue: MessageQueue::new(),
     };
 
     // Print banner
@@ -941,6 +1001,23 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
 
     // Agent loop (tool use can cause multiple turns)
     loop {
+        // Process any queued steer messages before the next LLM call
+        let steers = mode.message_queue.take_steers();
+        for steer in steers {
+            let steer_entry = SessionEntry::Message {
+                base: EntryBase {
+                    id: EntryId::generate(),
+                    parent_id: get_leaf(&mode.conn, &mode.session_id),
+                    timestamp: Utc::now(),
+                },
+                message: AgentMessage::User(UserMessage {
+                    content: vec![ContentBlock::Text { text: steer }],
+                    timestamp: Utc::now().timestamp_millis(),
+                }),
+            };
+            store::append_entry(&mode.conn, &mode.session_id, &steer_entry)?;
+        }
+
         let ctx = context::build_context(&mode.conn, &mode.session_id)?;
         let provider_messages = crate::run::messages_to_provider(&ctx.messages);
 
@@ -1009,7 +1086,48 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         let stream_result = mode.provider.stream(request, options, tx).await;
         if let Err(e) = stream_result {
             println!();
-            eprintln!("{}", format!("Provider error: {e}").with(Color::Red));
+            let err_msg = format!("{e}");
+
+            // Context overflow: auto-compact and retry
+            if crate::agent_loop::is_context_overflow(&err_msg) {
+                eprintln!("\x1b[33m⚠ Context overflow detected, auto-compacting...\x1b[0m");
+                // Remove the streaming message
+                if matches!(mode.messages.last(), Some(RenderedMessage::Streaming(_))) {
+                    mode.messages.pop();
+                }
+                cancel.cancel();
+                let _ = abort_handle.await;
+                mode.agent_running = false;
+                mode.cancel = None;
+                match mode.run_compaction(None).await {
+                    Ok(true) => continue, // retry the turn
+                    Ok(false) => {
+                        eprintln!("\x1b[31m✗ Context overflow but nothing to compact\x1b[0m");
+                        break;
+                    }
+                    Err(ce) => {
+                        eprintln!("\x1b[31m✗ Auto-compaction failed: {ce}\x1b[0m");
+                        break;
+                    }
+                }
+            }
+
+            // Rate limit: wait and retry
+            if crate::agent_loop::is_rate_limited(&err_msg) {
+                eprintln!("\x1b[33m⚠ Rate limited, waiting 10 seconds...\x1b[0m");
+                if matches!(mode.messages.last(), Some(RenderedMessage::Streaming(_))) {
+                    mode.messages.pop();
+                }
+                cancel.cancel();
+                let _ = abort_handle.await;
+                mode.agent_running = false;
+                mode.cancel = None;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                continue; // retry the turn
+            }
+
+            // Other errors: display gracefully, don't crash
+            eprintln!("\x1b[31m✗ Error: {e}\x1b[0m");
             mode.agent_running = false;
             mode.cancel = None;
             // Remove the streaming message
@@ -1087,15 +1205,46 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         let _ = abort_handle.await; // wait for it to finish
 
         // Check if aborted
-        let was_aborted = cancel.is_cancelled() && all_events.iter().any(|e| matches!(e, StreamEvent::Done));
+        let has_content = all_events.iter().any(|e| matches!(e, StreamEvent::TextDelta { .. }));
+        let was_cancelled = cancel.is_cancelled();
 
         // Finalize streaming message
         mode.finalize_streaming();
         mode.agent_running = false;
         mode.cancel = None;
 
-        if was_aborted && all_events.iter().all(|e| !matches!(e, StreamEvent::TextDelta { .. })) {
+        if was_cancelled {
             println!("  {}", "[Aborted]".with(Color::Yellow));
+            // Keep partial assistant response in session if any content was received
+            if has_content {
+                let collected = CollectedResponse::from_events(&all_events);
+                let mut assistant_content = Vec::new();
+                if !collected.text.is_empty() {
+                    assistant_content.push(AssistantContent::Text {
+                        text: collected.text,
+                    });
+                }
+                if !assistant_content.is_empty() {
+                    let assistant_msg = AgentMessage::Assistant(AssistantMessage {
+                        content: assistant_content,
+                        provider: mode.model.provider.clone(),
+                        model: mode.model.id.clone(),
+                        usage: Usage::default(),
+                        stop_reason: StopReason::Stop,
+                        error_message: Some("Aborted by user".into()),
+                        timestamp: Utc::now().timestamp_millis(),
+                    });
+                    let asst_entry = SessionEntry::Message {
+                        base: EntryBase {
+                            id: EntryId::generate(),
+                            parent_id: get_leaf(&mode.conn, &mode.session_id),
+                            timestamp: Utc::now(),
+                        },
+                        message: assistant_msg,
+                    };
+                    store::append_entry(&mode.conn, &mode.session_id, &asst_entry).ok();
+                }
+            }
             break;
         }
 
@@ -1317,6 +1466,13 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         }
 
         // Continue the agent loop for the next turn
+    }
+
+    // After agent finishes, process any queued follow-up messages
+    let follow_ups = mode.message_queue.take_follow_ups();
+    for msg in follow_ups {
+        // Recursively start a new agent turn with each follow-up
+        Box::pin(run_agent_turn(mode, &msg)).await?;
     }
 
     Ok(())

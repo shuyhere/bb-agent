@@ -1,134 +1,163 @@
-# A5: Build tree selector for /tree navigation
+# A6: Error recovery + context overflow handling + message queue
 
-Working dir: `/tmp/bb-final/a5-tree-selector/`
+Working dir: `/tmp/bb-final/a6-error-recovery/`
 BB-Agent Rust project.
 
-## Task: Create `crates/tui/src/tree_selector.rs`
+## Tasks
 
-Build an interactive tree navigation component for the `/tree` command. This is pi's killer feature — navigate the session tree, select any node, and continue from there.
+### 1. Context overflow recovery
 
-### Tree display format
-```
-├─ user: "Hello, can you help..."
-│  └─ assistant: "Of course! I can..."
-│     ├─ user: "Let's try approach A..."
-│     │  └─ assistant: "For approach A..."
-│     │     └─ [compaction: 12k tokens]
-│     │        └─ user: "That worked..."  ← active
-│     └─ user: "Actually, approach B..."
-│        └─ assistant: "For approach B..."
-```
+When the LLM returns a context overflow error (HTTP 400 with "context_length_exceeded" or similar), the agent should:
 
-### Implementation
+1. Detect the error
+2. Auto-compact
+3. Retry the request
+
+In `crates/cli/src/agent_loop.rs` (or wherever the provider call happens):
 
 ```rust
-use bb_session::store::EntryRow;
-use bb_session::tree::TreeNode;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-pub struct TreeSelector {
-    nodes: Vec<FlatNode>,     // flattened tree for display
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
-    active_leaf: Option<String>,
-    filter: TreeFilter,
-}
-
-#[derive(Clone)]
-struct FlatNode {
-    entry_id: String,
-    entry_type: String,
-    depth: usize,
-    preview: String,       // truncated message preview
-    is_active: bool,       // is this the current leaf?
-    has_children: bool,
-    timestamp: String,
-}
-
-pub enum TreeFilter {
-    All,
-    UserOnly,
-}
-
-pub enum TreeAction {
-    None,
-    Selected(String),    // entry_id selected
-    Cancelled,
-}
-
-impl TreeSelector {
-    pub fn new(tree: Vec<TreeNode>, active_leaf: Option<&str>, max_visible: usize) -> Self;
-    pub fn render(&self, width: u16) -> Vec<String>;
-    pub fn handle_key(&mut self, key: KeyEvent) -> TreeAction;
-}
-```
-
-### Flatten the tree
-Convert the recursive `TreeNode` into a flat list with depth info:
-
-```rust
-fn flatten(nodes: &[TreeNode], depth: usize, active_leaf: Option<&str>) -> Vec<FlatNode> {
-    let mut flat = Vec::new();
-    for node in nodes {
-        let preview = extract_preview(&node);
-        let is_active = active_leaf.map(|l| l == node.entry_id).unwrap_or(false);
-        flat.push(FlatNode {
-            entry_id: node.entry_id.clone(),
-            entry_type: node.entry_type.clone(),
-            depth,
-            preview,
-            is_active,
-            has_children: !node.children.is_empty(),
-            timestamp: node.timestamp.clone(),
-        });
-        flat.extend(flatten(&node.children, depth + 1, active_leaf));
+// After provider.stream() or provider.complete():
+match result {
+    Err(BbError::Provider(msg)) if is_context_overflow(&msg) => {
+        tracing::warn!("Context overflow detected, auto-compacting...");
+        // Trigger compaction
+        let path = tree::active_path(conn, session_id)?;
+        if let Some(prep) = compaction::prepare_compaction(&path, settings) {
+            let comp_result = compaction::compact(&prep, ...).await?;
+            // Append compaction entry
+            store::append_entry(conn, session_id, &comp_entry)?;
+            // Retry the request (continue the loop)
+            continue;
+        } else {
+            return Err(BbError::Provider("Context overflow but nothing to compact".into()));
+        }
     }
-    flat
+    Err(e) => return Err(e.into()),
+    Ok(events) => { /* normal flow */ }
+}
+
+fn is_context_overflow(msg: &str) -> bool {
+    let msg_lower = msg.to_lowercase();
+    msg_lower.contains("context_length_exceeded")
+        || msg_lower.contains("maximum context length")
+        || msg_lower.contains("too many tokens")
+        || msg_lower.contains("request too large")
+        || msg_lower.contains("prompt is too long")
+        || (msg_lower.contains("400") && msg_lower.contains("token"))
 }
 ```
 
-### Extract preview text from entry
-Parse the entry payload JSON to get a short preview:
-- `message` with `user` role → first 60 chars of text
-- `message` with `assistant` role → "assistant: " + first 40 chars
-- `compaction` → "[compaction: {tokens_before} tokens]"
-- `branch_summary` → "[branch summary]"
-- `model_change` → "[model: {model_id}]"
-- other → "[{type}]"
+### 2. Rate limit handling
 
-### Rendering
-Each line:
+When the provider returns 429 (rate limit), wait and retry:
+
+```rust
+Err(BbError::Provider(msg)) if is_rate_limited(&msg) => {
+    tracing::warn!("Rate limited, waiting 10 seconds...");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    continue; // retry the turn
+}
+
+fn is_rate_limited(msg: &str) -> bool {
+    msg.contains("429") || msg.to_lowercase().contains("rate limit")
+}
 ```
-{indent}{connector} {type_icon}: {preview}  {active_marker}
+
+### 3. Basic message queue
+
+Implement simple message queuing so the user can type while the agent is working.
+
+In `crates/cli/src/interactive.rs`:
+
+```rust
+struct MessageQueue {
+    messages: Vec<QueuedMessage>,
+}
+
+enum QueuedMessage {
+    Steer(String),    // Enter while agent is working
+    FollowUp(String), // Alt+Enter while agent is working
+}
+
+impl MessageQueue {
+    fn push_steer(&mut self, text: String) { ... }
+    fn push_follow_up(&mut self, text: String) { ... }
+    fn take_steers(&mut self) -> Vec<String> { ... }
+    fn take_follow_ups(&mut self) -> Vec<String> { ... }
+    fn is_empty(&self) -> bool { ... }
+}
 ```
 
-Where:
-- `indent` = `│  ` repeated by depth
-- `connector` = `├─` for non-last child, `└─` for last child
-- `type_icon` = colored by type (user=blue, assistant=green, compaction=gray)
-- `active_marker` = `← active` if this is the current leaf
-- Selected line gets reverse video or `>` marker
+Integration:
+- While agent is running, if user presses Enter → queue as steer message
+- After each agent turn (before next LLM call), check for steer messages:
+  ```rust
+  let steers = message_queue.take_steers();
+  for steer in steers {
+      // Append as user message to session
+      // The next LLM call will see it
+  }
+  ```
+- After agent finishes all tool calls (AssistantDone), check for follow-ups:
+  ```rust
+  let follow_ups = message_queue.take_follow_ups();
+  for msg in follow_ups {
+      // Start a new agent turn with this message
+  }
+  ```
 
-### Key bindings
-- Up/Down — navigate
-- Enter — select (return entry_id)
-- Escape — cancel
-- Ctrl+U — toggle user-only filter
-- Home/End — first/last
+### 4. Graceful error display
 
-### Wire into interactive mode
+Instead of crashing on provider errors, display them nicely:
 
-In `crates/cli/src/interactive.rs`, when `/tree` is entered:
-1. Get tree from `bb_session::tree::get_tree()`
-2. Get current leaf from session
-3. Create `TreeSelector`
-4. Enter selection loop
-5. On selection: call session navigation (branch to parent if user msg, branch to node if other)
+```rust
+Err(e) => {
+    eprintln!("\x1b[31m✗ Error: {e}\x1b[0m");
+    // Don't crash, re-enable editor, let user try again
+    break;
+}
+```
+
+### 5. Ctrl+C abort improvement
+
+Currently Ctrl+C might not properly cancel a running agent. Ensure:
+- CancellationToken is shared between input handler and agent task
+- When Ctrl+C pressed during agent execution:
+  1. Cancel the token
+  2. Display "[Aborted]"
+  3. Keep partial assistant response in session (if any)
+  4. Re-enable editor
+
+### 6. Tests
+
+```rust
+#[test]
+fn test_is_context_overflow() {
+    assert!(is_context_overflow("HTTP 400: context_length_exceeded"));
+    assert!(is_context_overflow("maximum context length is 200000 tokens"));
+    assert!(!is_context_overflow("HTTP 401: Unauthorized"));
+}
+
+#[test]
+fn test_is_rate_limited() {
+    assert!(is_rate_limited("HTTP 429: Rate limit exceeded"));
+    assert!(!is_rate_limited("HTTP 400: Bad request"));
+}
+
+#[test]
+fn test_message_queue() {
+    let mut q = MessageQueue::new();
+    q.push_steer("fix the bug".into());
+    q.push_follow_up("then run tests".into());
+    assert_eq!(q.take_steers().len(), 1);
+    assert_eq!(q.take_follow_ups().len(), 1);
+    assert!(q.is_empty());
+}
+```
 
 ### Build and test
 ```bash
-cd /tmp/bb-final/a5-tree-selector
+cd /tmp/bb-final/a6-error-recovery
 cargo build && cargo test
-git add -A && git commit -m "A5: tree selector for /tree navigation"
+git add -A && git commit -m "A6: error recovery + context overflow + message queue"
 ```

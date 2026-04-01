@@ -3,6 +3,8 @@
 //! Takes a session with messages already appended, streams LLM responses,
 //! executes tool calls, and loops until the assistant is done.
 
+use std::time::Duration;
+
 use bb_core::agent;
 use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::types::*;
@@ -86,6 +88,60 @@ pub async fn run_agent_loop(
 
         let stream_result = provider.stream(request, options, stream_tx).await;
         if let Err(e) = stream_result {
+            let msg = format!("{e}");
+
+            // Context overflow: auto-compact and retry
+            if is_context_overflow(&msg) {
+                tracing::warn!("Context overflow detected, auto-compacting...");
+                let _ = event_tx.send(AgentLoopEvent::Error {
+                    message: "Context overflow detected, auto-compacting...".into(),
+                });
+                let compaction_settings = CompactionSettings::default();
+                let path = tree::active_path(conn, session_id)?;
+                if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+                    let cancel_compact = CancellationToken::new();
+                    let result = compaction::compact(
+                        &prep, provider, &model.id, api_key, base_url,
+                        None, cancel_compact,
+                    ).await?;
+                    let comp_entry = SessionEntry::Compaction {
+                        base: EntryBase {
+                            id: EntryId::generate(),
+                            parent_id: get_leaf(conn, session_id),
+                            timestamp: Utc::now(),
+                        },
+                        summary: result.summary,
+                        first_kept_entry_id: EntryId(result.first_kept_entry_id),
+                        tokens_before: result.tokens_before,
+                        details: Some(serde_json::json!({
+                            "readFiles": result.read_files,
+                            "modifiedFiles": result.modified_files,
+                        })),
+                        from_plugin: false,
+                    };
+                    store::append_entry(conn, session_id, &comp_entry)?;
+                    let _ = event_tx.send(AgentLoopEvent::Error {
+                        message: format!("📦 Auto-compacted ({} tokens summarized), retrying...", result.tokens_before),
+                    });
+                    continue; // retry the turn
+                } else {
+                    let _ = event_tx.send(AgentLoopEvent::Error {
+                        message: "Context overflow but nothing to compact".into(),
+                    });
+                    return Err(anyhow::anyhow!("Context overflow but nothing to compact"));
+                }
+            }
+
+            // Rate limit: wait and retry
+            if is_rate_limited(&msg) {
+                tracing::warn!("Rate limited, waiting 10 seconds...");
+                let _ = event_tx.send(AgentLoopEvent::Error {
+                    message: "Rate limited, waiting 10 seconds...".into(),
+                });
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue; // retry the turn
+            }
+
             let _ = event_tx.send(AgentLoopEvent::Error {
                 message: format!("Provider error: {e}"),
             });
@@ -381,6 +437,22 @@ fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
         .and_then(|s| s.leaf_id.map(EntryId))
 }
 
+/// Check if the error message indicates a context overflow.
+pub fn is_context_overflow(msg: &str) -> bool {
+    let msg_lower = msg.to_lowercase();
+    msg_lower.contains("context_length_exceeded")
+        || msg_lower.contains("maximum context length")
+        || msg_lower.contains("too many tokens")
+        || msg_lower.contains("request too large")
+        || msg_lower.contains("prompt is too long")
+        || (msg_lower.contains("400") && msg_lower.contains("token"))
+}
+
+/// Check if the error message indicates a rate limit.
+pub fn is_rate_limited(msg: &str) -> bool {
+    msg.contains("429") || msg.to_lowercase().contains("rate limit")
+}
+
 /// Convert agent messages to provider format (JSON).
 pub fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value> {
     messages
@@ -445,4 +517,62 @@ pub fn messages_to_provider(messages: &[AgentMessage]) -> Vec<serde_json::Value>
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interactive::MessageQueue;
+
+    #[test]
+    fn test_is_context_overflow() {
+        assert!(is_context_overflow("HTTP 400: context_length_exceeded"));
+        assert!(is_context_overflow("maximum context length is 200000 tokens"));
+        assert!(is_context_overflow("too many tokens in the request"));
+        assert!(is_context_overflow("request too large for model"));
+        assert!(is_context_overflow("prompt is too long"));
+        assert!(is_context_overflow("HTTP 400: token limit exceeded"));
+        assert!(!is_context_overflow("HTTP 401: Unauthorized"));
+        assert!(!is_context_overflow("HTTP 500: Internal Server Error"));
+    }
+
+    #[test]
+    fn test_is_rate_limited() {
+        assert!(is_rate_limited("HTTP 429: Rate limit exceeded"));
+        assert!(is_rate_limited("rate limit reached"));
+        assert!(is_rate_limited("429 Too Many Requests"));
+        assert!(!is_rate_limited("HTTP 400: Bad request"));
+        assert!(!is_rate_limited("HTTP 500: Internal Server Error"));
+    }
+
+    #[test]
+    fn test_message_queue() {
+        let mut q = MessageQueue::new();
+        assert!(q.is_empty());
+
+        q.push_steer("fix the bug".into());
+        q.push_follow_up("then run tests".into());
+        q.push_steer("also check imports".into());
+
+        assert!(!q.is_empty());
+
+        let steers = q.take_steers();
+        assert_eq!(steers.len(), 2);
+        assert_eq!(steers[0], "fix the bug");
+        assert_eq!(steers[1], "also check imports");
+
+        let follow_ups = q.take_follow_ups();
+        assert_eq!(follow_ups.len(), 1);
+        assert_eq!(follow_ups[0], "then run tests");
+
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn test_message_queue_empty_operations() {
+        let mut q = MessageQueue::new();
+        assert!(q.take_steers().is_empty());
+        assert!(q.take_follow_ups().is_empty());
+        assert!(q.is_empty());
+    }
 }
