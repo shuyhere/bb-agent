@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod agent_loop;
 #[path = "interactive.rs"]
 mod interactive;
 mod login;
