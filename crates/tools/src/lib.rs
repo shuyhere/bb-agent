@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod read;
 pub mod bash;
+pub mod diff;
 pub mod edit;
 pub mod write;
 pub mod scheduler;
@@ -24,6 +25,7 @@ pub struct ToolResult {
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub artifacts_dir: PathBuf,
+    pub on_output: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
 /// Trait for built-in and custom tools.

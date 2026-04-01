@@ -651,6 +651,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir: artifacts_dir.clone(),
+        on_output: None,
     };
     let tool_defs: Vec<serde_json::Value> = tools
         .iter()

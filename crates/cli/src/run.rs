@@ -145,6 +145,7 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir: artifacts_dir.clone(),
+        on_output: None,
     };
 
     // Build tool definitions for the provider

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{diff, Tool, ToolContext, ToolResult};
 
 pub struct EditTool;
 
@@ -69,9 +69,11 @@ impl Tool for EditTool {
             return Err(BbError::Tool("Empty edits array".into()));
         }
 
-        let mut content = tokio::fs::read_to_string(&path)
+        let old_content = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| BbError::Tool(format!("Failed to read {}: {e}", path.display())))?;
+
+        let mut content = old_content.clone();
 
         let mut applied = 0;
         let mut errors = Vec::new();
@@ -112,6 +114,14 @@ impl Tool for EditTool {
         }
 
         let mut msg = format!("Applied {applied}/{} edit(s) to {path_str}", edits.len());
+        if applied > 0 {
+            let diff_lines = diff::generate_diff(&old_content, &content, 3);
+            let rendered = diff::render_diff(&diff_lines);
+            if !rendered.is_empty() {
+                msg.push('\n');
+                msg.push_str(&rendered.join("\n"));
+            }
+        }
         if !errors.is_empty() {
             msg.push_str(&format!("\nErrors:\n{}", errors.join("\n")));
         }
