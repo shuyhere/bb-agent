@@ -52,6 +52,7 @@ impl Provider for AnthropicProvider {
             "{}/v1/messages",
             options.base_url.trim_end_matches('/')
         );
+        let is_oauth = is_anthropic_oauth_token(&options.api_key);
 
         // Build messages in Anthropic format using shared transform layer
         let messages = convert_messages_for_anthropic(&request.messages);
@@ -73,7 +74,19 @@ impl Provider for AnthropicProvider {
             "stream": true,
         });
 
-        if !request.system_prompt.is_empty() {
+        if is_oauth {
+            let mut system_blocks = vec![json!({
+                "type": "text",
+                "text": "You are Claude Code, Anthropic's official CLI for Claude."
+            })];
+            if !request.system_prompt.is_empty() {
+                system_blocks.push(json!({
+                    "type": "text",
+                    "text": request.system_prompt
+                }));
+            }
+            body["system"] = json!(system_blocks);
+        } else if !request.system_prompt.is_empty() {
             body["system"] = json!(request.system_prompt);
         }
 
@@ -103,9 +116,26 @@ impl Provider for AnthropicProvider {
         let response = with_retry(3, || {
             let mut r = self.client
                 .post(&url)
-                .header("x-api-key", &options.api_key)
                 .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json");
+                .header("content-type", "application/json")
+                .header("accept", "application/json")
+                .header("anthropic-dangerous-direct-browser-access", "true");
+
+            if is_oauth {
+                r = r
+                    .header("Authorization", format!("Bearer {}", options.api_key))
+                    .header(
+                        "anthropic-beta",
+                        "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14",
+                    )
+                    .header("user-agent", "claude-cli/2.1.75")
+                    .header("x-app", "cli");
+            } else {
+                r = r
+                    .header("x-api-key", &options.api_key)
+                    .header("anthropic-beta", "fine-grained-tool-streaming-2025-05-14");
+            }
+
             for (k, v) in &options.headers {
                 r = r.header(k.as_str(), v.as_str());
             }
@@ -260,3 +290,7 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
 }
 
 // Message conversion is now handled by crate::transforms::convert_messages_for_anthropic
+
+fn is_anthropic_oauth_token(api_key: &str) -> bool {
+    api_key.contains("sk-ant-oat")
+}
