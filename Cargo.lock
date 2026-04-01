@@ -170,7 +170,9 @@ dependencies = [
  "bb-hooks",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

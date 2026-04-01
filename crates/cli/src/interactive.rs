@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
 use bb_core::types::*;
-use bb_hooks::{Event as HookEvent, SharedEventBus};
+use bb_hooks::EventBus;
+use bb_plugin_host::{PluginHost, discover_plugins};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
@@ -132,6 +133,8 @@ struct InteractiveMode {
     tool_ctx: ToolContext,
     // Provider
     provider: Box<dyn Provider>,
+    // Plugin host
+    plugin_host: Option<PluginHost>,
     // Tracking
     total_tokens: u64,
     // Running state
@@ -141,8 +144,6 @@ struct InteractiveMode {
     status_message: Option<String>,
     // Thinking level
     thinking: Option<String>,
-    // Event bus
-    event_bus: SharedEventBus,
 }
 
 impl InteractiveMode {
@@ -708,7 +709,29 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         })
         .collect();
 
-    let event_bus = bb_hooks::EventBus::shared();
+    let _event_bus = EventBus::new();
+
+    // Plugin discovery and loading
+    let project_bb_dir = cwd.join(".bb-agent");
+    let plugins = discover_plugins(&global_dir, Some(&project_bb_dir));
+    let plugin_host = if !plugins.is_empty() {
+        let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+        eprintln!("Loading {} plugin(s)...", paths.len());
+        match PluginHost::load_plugins(&paths).await {
+            Ok(host) => {
+                eprintln!("Plugins loaded: {} tool(s), {} command(s)",
+                    host.registered_tools().len(),
+                    host.registered_commands().len());
+                Some(host)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load plugins: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
@@ -733,16 +756,13 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         tool_defs,
         tool_ctx,
         provider,
+        plugin_host,
         total_tokens: 0,
         cancel: None,
         agent_running: false,
         status_message: None,
         thinking: cli.thinking.clone(),
-        event_bus: event_bus.clone(),
     };
-
-    // Fire session_start hook
-    let _ = event_bus.emit(&HookEvent::SessionStart).await;
 
     // Print banner
     println!("bb-agent v{}", env!("CARGO_PKG_VERSION"));
@@ -829,9 +849,6 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         run_agent_turn(&mut mode, &input).await?;
     }
 
-    // Fire session_shutdown hook
-    let _ = event_bus.emit(&HookEvent::SessionShutdown).await;
-
     println!("\nGoodbye!");
     Ok(())
 }
@@ -856,50 +873,13 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
     store::append_entry(&mode.conn, &mode.session_id, &user_entry)?;
     mode.add_user_message(prompt);
 
-    // Fire before_agent_start hook — can modify system prompt or inject message
-    let mut active_system_prompt = mode.system_prompt.clone();
-    let before_start_event = HookEvent::BeforeAgentStart {
-        prompt: prompt.to_string(),
-        system_prompt: mode.system_prompt.clone(),
-    };
-    if let Some(result) = mode.event_bus.emit(&before_start_event).await {
-        if let Some(sp) = result.system_prompt {
-            active_system_prompt = sp;
-        }
-        // If result has a message, prepend it to context (as injected user message)
-        if let Some(_injected) = result.message {
-            // The injected message would need to be appended to the session
-            // so it appears in context on the next build_context call.
-            // For now we log it — full implementation depends on message format.
-            tracing::debug!("before_agent_start injected a message");
-        }
-    }
-
     // Agent loop (tool use can cause multiple turns)
-    let mut turn_index: u32 = 0;
     loop {
-        // Fire turn_start hook
-        let _ = mode.event_bus.emit(&HookEvent::TurnStart { turn_index }).await;
-
         let ctx = context::build_context(&mode.conn, &mode.session_id)?;
-
-        // Fire context hook — extensions can replace the message list
-        let mut final_messages = ctx.messages.clone();
-        let context_event = HookEvent::Context(bb_hooks::ContextEvent { messages: ctx.messages.clone() });
-        if let Some(result) = mode.event_bus.emit(&context_event).await {
-            if let Some(new_msgs_json) = result.messages {
-                if let Ok(parsed) = serde_json::from_value::<Vec<AgentMessage>>(
-                    serde_json::Value::Array(new_msgs_json),
-                ) {
-                    final_messages = parsed;
-                }
-            }
-        }
-
-        let provider_messages = crate::run::messages_to_provider(&final_messages);
+        let provider_messages = crate::run::messages_to_provider(&ctx.messages);
 
         let request = CompletionRequest {
-            system_prompt: active_system_prompt.clone(),
+            system_prompt: mode.system_prompt.clone(),
             messages: provider_messages,
             tools: mode.tool_defs.clone(),
             model: mode.model.id.clone(),
@@ -1127,42 +1107,40 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         // Execute tool calls
         let tool_cancel = CancellationToken::new();
         for tc in &collected.tool_calls {
-            let mut args: serde_json::Value =
+            let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
 
-            // Fire tool_call hook — can block or mutate input
-            let tc_event = HookEvent::ToolCall(bb_hooks::ToolCallEvent {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                input: args.clone(),
-            });
-            if let Some(hook_result) = mode.event_bus.emit(&tc_event).await {
-                if hook_result.block == Some(true) {
-                    let reason = hook_result.reason.unwrap_or_else(|| "Blocked by extension".into());
-                    let blocked_content = vec![ContentBlock::Text { text: reason }];
-                    // Store blocked result
-                    let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        content: blocked_content.clone(),
-                        details: None,
-                        is_error: true,
-                        timestamp: Utc::now().timestamp_millis(),
-                    });
-                    let tr_entry = SessionEntry::Message {
-                        base: EntryBase {
-                            id: EntryId::generate(),
-                            parent_id: get_leaf(&mode.conn, &mode.session_id),
-                            timestamp: Utc::now(),
-                        },
-                        message: tool_result_msg,
-                    };
-                    store::append_entry(&mode.conn, &mode.session_id, &tr_entry)?;
-                    mode.add_tool_result_display(&tc.name, &blocked_content, true);
-                    continue;
-                }
-                if let Some(payload) = hook_result.payload {
-                    args = payload;
+            // Send tool_call event to plugins — may block execution
+            if let Some(ref mut host) = mode.plugin_host {
+                let tool_event = bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    input: args.clone(),
+                });
+                if let Some(result) = host.send_event(&tool_event).await {
+                    if result.block == Some(true) {
+                        let reason = result.reason.unwrap_or_else(|| "Blocked by plugin".into());
+                        println!("  {} {} {}", "🚫".with(Color::Red), tc.name.clone().with(Color::Cyan), reason.clone().with(Color::Red));
+                        // Store blocked result
+                        let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
+                            tool_call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            content: vec![ContentBlock::Text { text: format!("Blocked: {reason}") }],
+                            details: None,
+                            is_error: true,
+                            timestamp: Utc::now().timestamp_millis(),
+                        });
+                        let tr_entry = SessionEntry::Message {
+                            base: EntryBase {
+                                id: EntryId::generate(),
+                                parent_id: get_leaf(&mode.conn, &mode.session_id),
+                                timestamp: Utc::now(),
+                            },
+                            message: tool_result_msg,
+                        };
+                        store::append_entry(&mode.conn, &mode.session_id, &tr_entry)?;
+                        continue;
+                    }
                 }
             }
 
@@ -1179,9 +1157,10 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
                 None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
             };
 
-            let (mut content, is_error) = match result {
+            let (content, is_error) = match result {
                 Ok(r) => {
                     println!("{}", "✓".with(Color::Green));
+                    // Show brief result preview
                     for block in &r.content {
                         if let ContentBlock::Text { text } = block {
                             let preview: Vec<&str> = text.lines().take(5).collect();
@@ -1203,23 +1182,6 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
                     (vec![ContentBlock::Text { text: msg }], true)
                 }
             };
-
-            // Fire tool_result hook — can replace content
-            let tr_event = HookEvent::ToolResult(bb_hooks::ToolResultEvent {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                content: content.clone(),
-                is_error,
-            });
-            if let Some(hook_result) = mode.event_bus.emit(&tr_event).await {
-                if let Some(new_content_json) = hook_result.content {
-                    if let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(
-                        serde_json::Value::Array(new_content_json),
-                    ) {
-                        content = parsed;
-                    }
-                }
-            }
 
             // Store tool result
             let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
@@ -1247,9 +1209,6 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
 
         println!();
 
-        // Fire turn_end hook
-        let _ = mode.event_bus.emit(&HookEvent::TurnEnd { turn_index }).await;
-
         // Auto-compaction check after tool-use turn
         let compaction_settings = CompactionSettings::default();
         let ctx_check = context::build_context(&mode.conn, &mode.session_id)?;
@@ -1260,22 +1219,6 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         if compaction::should_compact(total_tokens, mode.model.context_window, &compaction_settings) {
             let path = tree::active_path(&mode.conn, &mode.session_id)?;
             if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
-                // Fire session_before_compact hook — can cancel
-                let compact_event = HookEvent::SessionBeforeCompact(bb_hooks::CompactPrep {
-                    first_kept_entry_id: prep.first_kept_entry_id.clone(),
-                    tokens_before: prep.tokens_before,
-                });
-                let should_skip = if let Some(hook_result) = mode.event_bus.emit(&compact_event).await {
-                    hook_result.cancel == Some(true)
-                } else {
-                    false
-                };
-
-                if should_skip {
-                    turn_index += 1;
-                    continue;
-                }
-
                 let cancel_compact = CancellationToken::new();
                 match compaction::compact(
                     &prep, mode.provider.as_ref(), &mode.model.id,
@@ -1307,7 +1250,6 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
             }
         }
 
-        turn_index += 1;
         // Continue the agent loop for the next turn
     }
 

@@ -1,112 +1,165 @@
-# A1: Wire hook events into agent lifecycle
+# A2: Implement actual TypeScript plugin loading and execution
 
-Working dir: `/tmp/bb-final/a1-hook-lifecycle/`
+Working dir: `/tmp/bb-final/a2-plugin-loading/`
 BB-Agent Rust project. Read BLUEPRINT.md and REVIEW.md for context.
 
 ## Problem
-The event bus in `crates/hooks/` defines 14 event types, but NONE are ever fired from the agent loop. The extension system is architecturally complete but functionally dead.
+Plugin discovery (`crates/plugin-host/src/discovery.rs`) finds `.ts` files, and the host (`host.rs`) can spawn a Node process, but NO plugins are ever loaded or executed. The JSON-RPC protocol types exist but there's no host runtime that loads plugins and bridges events.
 
-## Task: Fire events from the agent loop at every lifecycle point
+## Task: Build a working plugin host that loads and runs TS plugins
 
-### 1. Modify `crates/cli/src/agent_loop.rs` (or wherever the agent turn loop runs)
+### 1. Create `crates/plugin-host/src/runtime.rs` — the plugin runtime
 
-Add event emission at each lifecycle point. The EventBus is in `crates/hooks/src/bus.rs`.
+This is the JS file that Node runs. It loads plugins and bridges JSON-RPC:
 
-You need to pass an `Arc<EventBus>` into the agent loop and fire events:
+Create the file `crates/plugin-host/js/host.js` that gets embedded or shipped:
 
-```rust
-use bb_hooks::{EventBus, Event, ToolCallEvent, ToolResultEvent, ContextEvent};
-use std::sync::Arc;
-```
+```javascript
+// Read JSON-RPC messages from stdin, line-delimited
+// Each plugin exports default function(bb) where bb has:
+//   bb.on(event, handler)
+//   bb.registerTool(def)
+//   bb.registerCommand(name, def)
 
-**Events to fire (in order of the agent loop):**
+const readline = require('readline');
+const path = require('path');
 
-1. **`session_start`** — on startup, after session is opened
-2. **`before_agent_start`** — after user submits prompt, before agent loop begins
-   - Payload: `{ prompt, system_prompt }`
-   - Result: can inject a message, can modify system_prompt
-   - If result has `system_prompt`, use it instead
-   - If result has `message`, prepend it to context
-3. **`turn_start`** — at the start of each LLM call
-4. **`context`** — after building context messages, before calling provider
-   - Payload: `{ messages: Vec<AgentMessage> }`
-   - Result: if `messages` returned, use those instead
-   - This is THE critical hook for context management
-5. **`tool_call`** — before executing each tool call
-   - Payload: `{ tool_call_id, tool_name, input }`
-   - Result: if `block: true`, skip tool execution, return error result
-   - If input was mutated, use mutated version
-6. **`tool_result`** — after tool execution, before appending to session
-   - Payload: `{ tool_call_id, tool_name, content, is_error }`
-   - Result: if `content` returned, replace the tool result content
-7. **`turn_end`** — after each turn completes
-8. **`session_before_compact`** — before auto/manual compaction
-   - Result: if `cancel: true`, skip compaction
-   - If `payload` has compaction override, use that instead
-9. **`session_shutdown`** — on exit
+const handlers = {};  // event -> [handler]
+const tools = {};     // name -> def
+const commands = {};  // name -> def
 
-### 2. Modify `crates/hooks/src/bus.rs`
+const bb = {
+    on(event, handler) {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event].push(handler);
+    },
+    registerTool(def) {
+        tools[def.name] = def;
+        // Notify Rust side
+        send({ jsonrpc: "2.0", method: "tool_registered", params: { name: def.name, description: def.description, parameters: def.parameters } });
+    },
+    registerCommand(name, def) {
+        commands[name] = def;
+        send({ jsonrpc: "2.0", method: "command_registered", params: { name, description: def.description } });
+    },
+};
 
-The current EventBus uses synchronous handlers (`Fn`). For the agent loop integration, we need the bus to be accessible from async code. It already uses `RwLock`, which is fine.
+function send(msg) {
+    process.stdout.write(JSON.stringify(msg) + '\n');
+}
 
-Make the bus `Clone`-able by wrapping in `Arc`:
-```rust
-pub type SharedEventBus = Arc<EventBus>;
-```
-
-### 3. Modify `crates/cli/src/interactive.rs` and `crates/cli/src/run.rs`
-
-Pass `SharedEventBus` into the agent session and agent loop. Fire `session_start` on startup and `session_shutdown` on exit.
-
-### 4. Apply hook results
-
-The critical ones:
-
-**`context` hook:**
-```rust
-let context_event = Event::Context(ContextEvent { messages: ctx.messages.clone() });
-if let Some(result) = event_bus.emit(&context_event).await {
-    if let Some(new_messages) = result.messages {
-        // Deserialize and use the new messages
-        ctx.messages = /* parse from JSON */;
+// Load plugins from args
+for (const pluginPath of process.argv.slice(2)) {
+    try {
+        const mod = require(path.resolve(pluginPath));
+        const factory = mod.default || mod;
+        if (typeof factory === 'function') factory(bb);
+    } catch (e) {
+        send({ jsonrpc: "2.0", method: "plugin_error", params: { path: pluginPath, error: e.message } });
     }
 }
-```
 
-**`tool_call` hook:**
-```rust
-let tc_event = Event::ToolCall(ToolCallEvent {
-    tool_call_id: tc.id.clone(),
-    tool_name: tc.name.clone(),
-    input: args.clone(),
+send({ jsonrpc: "2.0", method: "plugins_loaded", params: { count: process.argv.length - 2 } });
+
+// Handle incoming events from Rust
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', async (line) => {
+    try {
+        const msg = JSON.parse(line);
+        if (msg.method === 'event') {
+            const event = msg.params;
+            const eventHandlers = handlers[event.type] || [];
+            let result = null;
+            for (const handler of eventHandlers) {
+                const r = await handler(event, {});
+                if (r) result = { ...result, ...r };
+                if (r?.block || r?.cancel) break;
+            }
+            if (msg.id !== undefined) {
+                send({ jsonrpc: "2.0", id: msg.id, result: result || {} });
+            }
+        } else if (msg.method === 'execute_tool') {
+            const { name, toolCallId, params: toolParams } = msg.params;
+            const tool = tools[name];
+            if (tool && tool.execute) {
+                try {
+                    const result = await tool.execute(toolCallId, toolParams);
+                    send({ jsonrpc: "2.0", id: msg.id, result });
+                } catch (e) {
+                    send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: e.message } });
+                }
+            } else {
+                send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: `Tool ${name} not found` } });
+            }
+        }
+    } catch (e) {
+        // Ignore parse errors
+    }
 });
-if let Some(result) = event_bus.emit(&tc_event).await {
-    if result.block == Some(true) {
-        // Skip this tool, return error result
-        let reason = result.reason.unwrap_or("Blocked by extension".into());
-        // Append error tool result
-        continue;
+```
+
+### 2. Modify `crates/plugin-host/src/host.rs`
+
+Update `PluginHost` to:
+- Write `host.js` to a temp file on startup (or embed it)
+- Spawn Node with `host.js` + list of plugin paths as args
+- Read `plugins_loaded`, `tool_registered`, `command_registered` notifications
+- Provide methods to send events and receive responses:
+
+```rust
+impl PluginHost {
+    pub async fn load_plugins(plugin_paths: &[PathBuf]) -> Result<Self, ...>;
+    pub async fn send_event(&mut self, event: &Event) -> Option<HookResult>;
+    pub async fn execute_tool(&mut self, name: &str, tool_call_id: &str, params: Value) -> Result<ToolResult>;
+    pub fn registered_tools(&self) -> &[RegisteredTool];
+    pub fn registered_commands(&self) -> &[RegisteredCommand];
+}
+```
+
+### 3. Integrate with the agent loop
+
+In `crates/cli/src/interactive.rs` or `run.rs`:
+
+On startup:
+```rust
+let plugins = discovery::discover_plugins(&global_dir, Some(&project_dir));
+let plugin_host = if !plugins.is_empty() {
+    let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+    Some(PluginHost::load_plugins(&paths).await?)
+} else {
+    None
+};
+```
+
+Before each event emission on the EventBus, also send to plugin host:
+```rust
+if let Some(ref mut host) = plugin_host {
+    if let Some(result) = host.send_event(&event).await {
+        // Merge with bus results
     }
 }
 ```
 
-### 5. Tests
+### 4. Test with a sample plugin
 
-Add tests in `crates/hooks/`:
-```rust
-#[tokio::test]
-async fn test_context_hook_modifies_messages() { ... }
+Create `~/.bb-agent/plugins/test-plugin.ts`:
+```typescript
+export default function(bb) {
+    bb.on("session_start", (event, ctx) => {
+        console.error("[test-plugin] Session started!");
+    });
 
-#[tokio::test]
-async fn test_tool_call_hook_blocks() { ... }  // already exists, verify still works
-
-#[tokio::test]
-async fn test_before_agent_start_modifies_prompt() { ... }
+    bb.on("tool_call", (event, ctx) => {
+        if (event.tool_name === "bash" && event.input.command?.includes("rm -rf /")) {
+            return { block: true, reason: "Blocked dangerous command" };
+        }
+    });
+}
 ```
 
 ### Build and test
 ```bash
-cd /tmp/bb-final/a1-hook-lifecycle
+cd /tmp/bb-final/a2-plugin-loading
 cargo build && cargo test
-git add -A && git commit -m "A1: wire all hook events into agent lifecycle"
+git add -A && git commit -m "A2: implement TS plugin loading and execution"
 ```

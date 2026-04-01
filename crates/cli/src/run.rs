@@ -1,10 +1,13 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::config;
 use bb_core::settings::Settings;
 use bb_core::types::*;
-use bb_hooks::{Event, SharedEventBus};
+use bb_hooks::EventBus;
+use bb_plugin_host::{PluginHost, discover_plugins};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
@@ -164,7 +167,29 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
         .collect();
 
     // Event bus
-    let event_bus = bb_hooks::EventBus::shared();
+    let _event_bus = EventBus::new();
+
+    // Plugin discovery and loading
+    let project_bb_dir = cwd.join(".bb-agent");
+    let plugins = discover_plugins(&global_dir, Some(&project_bb_dir));
+    let mut plugin_host = if !plugins.is_empty() {
+        let paths: Vec<PathBuf> = plugins.iter().map(|p| p.path.clone()).collect();
+        eprintln!("Loading {} plugin(s)...", paths.len());
+        match PluginHost::load_plugins(&paths).await {
+            Ok(host) => {
+                eprintln!("Plugins loaded: {} tool(s), {} command(s)",
+                    host.registered_tools().len(),
+                    host.registered_commands().len());
+                Some(host)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load plugins: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Provider — select based on API type
     let provider: Box<dyn Provider> = match model.api {
@@ -176,19 +201,14 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
     let mut app = App::new();
     app.set_model(&model.name);
 
-    // Fire session_start hook
-    let _ = event_bus.emit(&Event::SessionStart).await;
-
     if cli.print && !cli.messages.is_empty() {
         // Print mode: single prompt
         let prompt = cli.messages.join(" ");
         run_turn(
             &conn, &session_id, &prompt, &system_prompt, &model, &*provider,
-            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app, &event_bus,
+            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app,
         )
         .await?;
-        // Fire session_shutdown hook
-        let _ = event_bus.emit(&Event::SessionShutdown).await;
         return Ok(());
     }
 
@@ -201,7 +221,7 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
         let prompt = cli.messages.join(" ");
         run_turn(
             &conn, &session_id, &prompt, &system_prompt, &model, &*provider,
-            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app, &event_bus,
+            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app,
         )
         .await?;
     }
@@ -337,13 +357,10 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
 
         run_turn(
             &conn, &session_id, &input, &system_prompt, &model, &*provider,
-            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app, &event_bus,
+            &api_key, &base_url, &tools, &tool_defs, &tool_ctx, &app,
         )
         .await?;
     }
-
-    // Fire session_shutdown hook
-    let _ = event_bus.emit(&Event::SessionShutdown).await;
 
     println!("\nGoodbye!");
     Ok(())
@@ -362,7 +379,6 @@ async fn run_turn(
     tool_defs: &[serde_json::Value],
     tool_ctx: &ToolContext,
     app: &App,
-    event_bus: &SharedEventBus,
 ) -> Result<()> {
     use crossterm::style::{Color, Stylize};
     use std::io::Write;
@@ -385,43 +401,13 @@ async fn run_turn(
         app.display_message(message);
     }
 
-    // Fire before_agent_start hook
-    let mut active_system_prompt = system_prompt.to_string();
-    let before_start_event = Event::BeforeAgentStart {
-        prompt: prompt.to_string(),
-        system_prompt: system_prompt.to_string(),
-    };
-    if let Some(result) = event_bus.emit(&before_start_event).await {
-        if let Some(sp) = result.system_prompt {
-            active_system_prompt = sp;
-        }
-    }
-
     // Agent loop
-    let mut turn_index: u32 = 0;
     loop {
-        // Fire turn_start hook
-        let _ = event_bus.emit(&Event::TurnStart { turn_index }).await;
-
         let ctx = context::build_context(conn, session_id)?;
-
-        // Fire context hook
-        let mut final_messages = ctx.messages.clone();
-        let context_event = Event::Context(bb_hooks::ContextEvent { messages: ctx.messages.clone() });
-        if let Some(result) = event_bus.emit(&context_event).await {
-            if let Some(new_msgs_json) = result.messages {
-                if let Ok(parsed) = serde_json::from_value::<Vec<AgentMessage>>(
-                    serde_json::Value::Array(new_msgs_json),
-                ) {
-                    final_messages = parsed;
-                }
-            }
-        }
-
-        let provider_messages = messages_to_provider(&final_messages);
+        let provider_messages = messages_to_provider(&ctx.messages);
 
         let request = CompletionRequest {
-            system_prompt: active_system_prompt.clone(),
+            system_prompt: system_prompt.to_string(),
             messages: provider_messages,
             tools: tool_defs.to_vec(),
             model: model.id.clone(),
@@ -575,42 +561,8 @@ async fn run_turn(
         // Execute tool calls
         let cancel = CancellationToken::new();
         for tc in &collected.tool_calls {
-            let mut args: serde_json::Value =
+            let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-
-            // Fire tool_call hook — can block or mutate input
-            let tc_event = Event::ToolCall(bb_hooks::ToolCallEvent {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                input: args.clone(),
-            });
-            if let Some(hook_result) = event_bus.emit(&tc_event).await {
-                if hook_result.block == Some(true) {
-                    let reason = hook_result.reason.unwrap_or_else(|| "Blocked by extension".into());
-                    let blocked_content = vec![ContentBlock::Text { text: reason }];
-                    let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        content: blocked_content,
-                        details: None,
-                        is_error: true,
-                        timestamp: Utc::now().timestamp_millis(),
-                    });
-                    let tr_entry = SessionEntry::Message {
-                        base: EntryBase {
-                            id: EntryId::generate(),
-                            parent_id: get_leaf(conn, session_id),
-                            timestamp: Utc::now(),
-                        },
-                        message: tool_result_msg,
-                    };
-                    store::append_entry(conn, session_id, &tr_entry)?;
-                    continue;
-                }
-                if let Some(payload) = hook_result.payload {
-                    args = payload;
-                }
-            }
 
             print!(
                 "  {} {} ",
@@ -625,9 +577,10 @@ async fn run_turn(
                 None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
             };
 
-            let (mut content, is_error) = match result {
+            let (content, is_error) = match result {
                 Ok(r) => {
                     println!("{}", "✓".with(Color::Green));
+                    // Show brief result preview
                     for block in &r.content {
                         if let ContentBlock::Text { text } = block {
                             let preview: Vec<&str> = text.lines().take(5).collect();
@@ -650,23 +603,6 @@ async fn run_turn(
                 }
             };
 
-            // Fire tool_result hook — can replace content
-            let tr_event = Event::ToolResult(bb_hooks::ToolResultEvent {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                content: content.clone(),
-                is_error,
-            });
-            if let Some(hook_result) = event_bus.emit(&tr_event).await {
-                if let Some(new_content_json) = hook_result.content {
-                    if let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(
-                        serde_json::Value::Array(new_content_json),
-                    ) {
-                        content = parsed;
-                    }
-                }
-            }
-
             let tool_result_msg = AgentMessage::ToolResult(ToolResultMessage {
                 tool_call_id: tc.id.clone(),
                 tool_name: tc.name.clone(),
@@ -686,10 +622,6 @@ async fn run_turn(
             };
             store::append_entry(conn, session_id, &tr_entry)?;
         }
-
-        // Fire turn_end hook
-        let _ = event_bus.emit(&Event::TurnEnd { turn_index }).await;
-        turn_index += 1;
 
         println!();
     }
