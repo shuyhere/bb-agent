@@ -121,7 +121,7 @@ pub async fn run_agent_loop(
                     };
                     store::append_entry(conn, session_id, &comp_entry)?;
                     let _ = event_tx.send(AgentLoopEvent::Error {
-                        message: format!("📦 Auto-compacted ({} tokens summarized), retrying...", result.tokens_before),
+                        message: format!("[c] Auto-compacted ({} tokens summarized), retrying...", result.tokens_before),
                     });
                     continue; // retry the turn
                 } else {
@@ -419,7 +419,7 @@ pub async fn run_agent_loop(
                 store::append_entry(conn, session_id, &comp_entry)?;
 
                 let _ = event_tx.send(AgentLoopEvent::Error {
-                    message: format!("📦 Context compacted ({} tokens summarized)", result.tokens_before),
+                    message: format!("[c] Context compacted ({} tokens summarized)", result.tokens_before),
                 });
             }
         }

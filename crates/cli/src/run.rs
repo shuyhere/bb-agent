@@ -475,7 +475,7 @@ async fn run_turn(
                     }
                     print!(
                         "  {} {}",
-                        "⚡".with(Color::Yellow),
+                        "*".with(Color::Yellow),
                         name.clone().bold(),
                     );
                     std::io::stdout().flush().ok();
@@ -568,7 +568,7 @@ async fn run_turn(
 
             print!(
                 "  {} {} ",
-                if true { "⏳" } else { "⚡" },
+                if true { "." } else { "*" },
                 tc.name.clone().with(Color::Cyan),
             );
             std::io::stdout().flush().ok();

@@ -73,7 +73,7 @@ fn render_assistant(msg: &AssistantMessage) -> Vec<String> {
                 };
                 lines.push(format!(
                     "  {} {}({})",
-                    "⚡".with(Color::Yellow),
+                    "*".with(Color::Yellow),
                     name.clone().bold(),
                     preview.with(Color::DarkGrey),
                 ));
@@ -119,7 +119,7 @@ fn render_tool_result(msg: &ToolResultMessage) -> Vec<String> {
 fn render_bash(msg: &BashExecutionMessage) -> Vec<String> {
     let mut lines = vec![format!(
         "  {} $ {}",
-        "⚡".with(Color::Yellow),
+        "*".with(Color::Yellow),
         msg.command.clone().with(Color::Cyan),
     )];
     let preview: Vec<&str> = msg.output.lines().take(10).collect();
@@ -134,7 +134,7 @@ fn render_compaction(msg: &CompactionSummaryMessage) -> Vec<String> {
     vec![
         format!(
             "{} [compaction: {} tokens summarized]",
-            "📦".with(Color::DarkGrey),
+            "[c]".with(Color::DarkGrey),
             msg.tokens_before,
         ),
         String::new(),
@@ -145,7 +145,7 @@ fn render_branch_summary(msg: &BranchSummaryMessage) -> Vec<String> {
     vec![
         format!(
             "{} [branch summary from {}]",
-            "🌿".with(Color::DarkGrey),
+            "[b]".with(Color::DarkGrey),
             msg.from_id,
         ),
         String::new(),
@@ -158,7 +158,7 @@ fn render_custom(msg: &CustomMessage) -> Vec<String> {
     }
     let mut lines = vec![format!(
         "{} [{}]",
-        "📎".with(Color::DarkGrey),
+        "[+]".with(Color::DarkGrey),
         msg.custom_type,
     )];
     for block in &msg.content {

@@ -5,7 +5,7 @@
 //! - The editor at the bottom is the only part that uses raw mode
 //! - Streaming assistant output appears in real-time
 //! - Status bar shows model + context usage
-//! - Tool calls show with ⚡ indicator and result previews
+//! - Tool calls show with * indicator and result previews
 
 use anyhow::Result;
 use std::io::Write;
@@ -52,7 +52,7 @@ fn style_role_assistant(model: &str) -> String {
 fn style_tool_call(name: &str) -> String {
     format!(
         "  {} {}",
-        "⚡".with(Color::Yellow),
+        "*".with(Color::Yellow),
         name.bold(),
     )
 }
@@ -60,7 +60,7 @@ fn style_tool_call(name: &str) -> String {
 fn style_tool_running(name: &str) -> String {
     format!(
         "  {} {} ",
-        "⏳",
+        ".",
         name.with(Color::Cyan),
     )
 }
@@ -212,7 +212,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         eprintln!(
             " {}",
             format!(
-                "⚠ No API key for '{}'. Run `bb login {}` or set env var.",
+                "[!] No API key for '{}'. Run `bb login {}` or set env var.",
                 provider_name, provider_name,
             )
             .with(Color::Yellow)
@@ -375,7 +375,7 @@ fn display_message(msg: &AgentMessage, model_id: &str) {
         AgentMessage::CompactionSummary(c) => {
             println!(
                 " {} {}",
-                "📦".with(Color::DarkGrey),
+                "[c]".with(Color::DarkGrey),
                 format!("[compaction: {} tokens summarized]", c.tokens_before).with(Color::DarkGrey),
             );
             println!();
@@ -383,7 +383,7 @@ fn display_message(msg: &AgentMessage, model_id: &str) {
         AgentMessage::BranchSummary(b) => {
             println!(
                 " {} {}",
-                "🌿".with(Color::DarkGrey),
+                "[b]".with(Color::DarkGrey),
                 format!("[branch summary from {}]", b.from_id).with(Color::DarkGrey),
             );
             println!();
