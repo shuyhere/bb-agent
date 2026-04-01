@@ -1460,12 +1460,8 @@ impl InteractiveMode {
         self.rebuild_pending_container();
         self.rebuild_status_container();
         self.rebuild_footer();
-        if self.is_streaming {
-            // During streaming, force full re-render to avoid diff artifacts
-            self.ui.force_render();
-        } else {
-            self.ui.render();
-        }
+        // Always use differential render — never clear scrollback
+        self.ui.render();
     }
 
     fn rebuild_header(&mut self) {
