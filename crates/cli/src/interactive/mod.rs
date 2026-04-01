@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+pub mod components;
+#[path = "../interactive_commands.rs"]
+pub mod interactive_commands;
 #[path = "../interactive_events.rs"]
 pub mod events;
 
@@ -1402,3 +1405,7 @@ impl Component for SharedEditor {
         self
     }
 }
+=======
+pub use interactive_commands::*;
+pub use legacy::*;
+>>>>>>> f222cb3 (chunk port: interactive-mode commands selectors actions)
