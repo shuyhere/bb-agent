@@ -2,6 +2,7 @@ pub mod registry;
 pub mod resolver;
 pub mod openai;
 pub mod anthropic;
+pub mod google;
 pub mod streaming;
 
 use async_trait::async_trait;

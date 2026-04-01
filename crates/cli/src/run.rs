@@ -6,6 +6,7 @@ use bb_core::settings::Settings;
 use bb_core::types::*;
 use bb_hooks::EventBus;
 use bb_provider::anthropic::AnthropicProvider;
+use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_provider::streaming::CollectedResponse;
@@ -169,6 +170,7 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
     // Provider — select based on API type
     let provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
+        ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
         _ => Box::new(OpenAiProvider::new()),
     };
 

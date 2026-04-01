@@ -1,192 +1,150 @@
-# W5: Wire slash commands + hierarchical context loading + @file args
+# A4: Implement Google Generative AI provider
 
-Working dir: `/tmp/bb-w/w5-commands-context/`
+Working dir: `/tmp/bb-final/a4-google-provider/`
+BB-Agent Rust project.
 
-## Problem
-Most slash commands print a message but don't actually do anything. AGENTS.md only loads from cwd, not parent dirs. `@file` arguments don't work.
+## Task: Create `crates/provider/src/google.rs`
 
-## Tasks
+Implement the Google Generative AI API provider (Gemini models).
 
-### 1. Wire `/model` to ModelSelector
-
-In `crates/cli/src/interactive.rs` or wherever slash commands are handled:
-
-```rust
-SlashResult::ModelSelect(search) => {
-    // Use the ModelSelector from tui
-    let registry = bb_provider::registry::ModelRegistry::new();
-    let models: Vec<_> = registry.list().to_vec();
-
-    // Simple text-based selector for now
-    println!("Available models:");
-    for (i, m) in models.iter().enumerate() {
-        let marker = if m.id == current_model_id { ">" } else { " " };
-        println!("  {marker} {}. {}/{} ({}K context)", i+1, m.provider, m.id, m.context_window/1000);
-    }
-    print!("Select (number): ");
-    // Read selection and switch model
-    // Write ModelChange entry to session
-}
+### API endpoint
+```
+POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={apiKey}&alt=sse
 ```
 
-### 2. Wire `/resume` to session listing + selection
-
-```rust
-SlashResult::Resume => {
-    let sessions = store::list_sessions(&conn, cwd_str)?;
-    if sessions.is_empty() {
-        println!("No sessions found.");
-    } else {
-        println!("Sessions:");
-        for (i, s) in sessions.iter().take(20).enumerate() {
-            let name = s.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {}. {} {} ({} entries, {})",
-                i+1, &s.session_id[..8], name, s.entry_count, s.updated_at);
-        }
-        print!("Select (number): ");
-        // Read selection, switch to that session
-        // Rebuild context and re-render messages
+### Request format
+```json
+{
+    "contents": [
+        { "role": "user", "parts": [{ "text": "Hello" }] },
+        { "role": "model", "parts": [{ "text": "Hi!" }] }
+    ],
+    "systemInstruction": {
+        "parts": [{ "text": "You are a helpful assistant" }]
+    },
+    "tools": [{
+        "functionDeclarations": [{
+            "name": "read",
+            "description": "Read a file",
+            "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" } }, "required": ["path"] }
+        }]
+    }],
+    "generationConfig": {
+        "maxOutputTokens": 16384
     }
 }
 ```
 
-### 3. Wire `/new` to create fresh session
+### Message role mapping
+- user → `user`
+- assistant → `model`
+- tool results → `user` with `functionResponse` parts
 
-```rust
-SlashResult::NewSession => {
-    session_id = store::create_session(&conn, cwd_str)?;
-    println!("New session: {}", &session_id[..8]);
-    // Clear displayed messages
+### Tool call format
+Google returns tool calls as `functionCall` parts in model responses:
+```json
+{ "functionCall": { "name": "read", "args": { "path": "foo.rs" } } }
+```
+
+### Tool result format
+```json
+{
+    "role": "user",
+    "parts": [{
+        "functionResponse": {
+            "name": "read",
+            "response": { "content": "file contents here" }
+        }
+    }]
 }
 ```
 
-### 4. Wire `/name` to persist
-
-```rust
-SlashResult::SetName(name) => {
-    let entry = SessionEntry::SessionInfo {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(&conn, &session_id),
-            timestamp: Utc::now(),
-        },
-        name: Some(name.clone()),
-    };
-    store::append_entry(&conn, &session_id, &entry)?;
-    println!("Session named: {name}");
-}
-```
-
-### 5. Hierarchical AGENTS.md loading
-
-Modify the AGENTS.md loading in `crates/cli/src/run.rs` (or `core/agent.rs`):
-
-```rust
-fn load_agents_md(cwd: &Path) -> Option<String> {
-    let mut contents = Vec::new();
-
-    // 1. Global
-    let global = bb_core::config::global_dir().join("AGENTS.md");
-    if global.exists() {
-        if let Ok(c) = std::fs::read_to_string(&global) {
-            contents.push(c);
+### SSE streaming
+Google streams via SSE with `data: {...}` lines. Each chunk has:
+```json
+{
+    "candidates": [{
+        "content": {
+            "parts": [{ "text": "delta text" }],
+            "role": "model"
         }
-    }
-
-    // 2. Walk parent directories up to git root (or filesystem root)
-    let mut dir = cwd.to_path_buf();
-    let mut scanned = Vec::new();
-    loop {
-        let agents = dir.join("AGENTS.md");
-        if agents.exists() {
-            scanned.push(agents);
-        }
-        // Also check CLAUDE.md alias
-        let claude = dir.join("CLAUDE.md");
-        if claude.exists() && !agents.exists() {
-            scanned.push(claude);
-        }
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-
-    // Reverse so we go from root → cwd (outermost first)
-    scanned.reverse();
-    for path in scanned {
-        if let Ok(c) = std::fs::read_to_string(&path) {
-            contents.push(c);
-        }
-    }
-
-    if contents.is_empty() {
-        None
-    } else {
-        Some(contents.join("\n\n---\n\n"))
+    }],
+    "usageMetadata": {
+        "promptTokenCount": 100,
+        "candidatesTokenCount": 50
     }
 }
 ```
 
-### 6. Implement `@file` arguments
-
-In `crates/cli/src/main.rs`, before routing to mode:
+### Implementation
 
 ```rust
-// Process @file arguments from messages
-let mut prompt_parts = Vec::new();
-let mut regular_messages = Vec::new();
+pub struct GoogleProvider {
+    client: Client,
+}
 
-for msg in &cli.messages {
-    if msg.starts_with('@') {
-        let path = &msg[1..];
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
+#[async_trait]
+impl Provider for GoogleProvider {
+    fn name(&self) -> &str { "google" }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+        options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let url = format!(
+            "{}/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
+            options.base_url.trim_end_matches('/'),
+            request.model,
+            options.api_key,
+        );
+
+        // Convert messages to Google format
+        let contents = convert_messages_google(&request.messages);
+
+        // Convert tools to Google format
+        let tools = convert_tools_google(&request.tools);
+
+        let mut body = json!({
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": request.max_tokens.unwrap_or(16384),
             }
-            Err(e) => {
-                eprintln!("Warning: Could not read {}: {}", path, e);
-            }
+        });
+
+        if !request.system_prompt.is_empty() {
+            body["systemInstruction"] = json!({
+                "parts": [{ "text": request.system_prompt }]
+            });
         }
-    } else {
-        regular_messages.push(msg.clone());
+
+        if !tools.is_empty() {
+            body["tools"] = json!([{ "functionDeclarations": tools }]);
+        }
+
+        // Send request and parse SSE stream...
     }
 }
-
-// Combine file contents with messages
-let final_prompt = if prompt_parts.is_empty() {
-    regular_messages.join(" ")
-} else {
-    format!("{}\n\n{}", prompt_parts.join("\n\n"), regular_messages.join(" "))
-};
 ```
 
-### 7. Implement `/session` info
+### Update `crates/provider/src/lib.rs`
+Add `pub mod google;`
 
+### Update `crates/cli/src/run.rs` (or interactive.rs)
+Add Google to provider selection:
 ```rust
-"/session" => {
-    let session = store::get_session(&conn, &session_id)?.unwrap();
-    let entries = store::get_entries(&conn, &session_id)?;
-    let ctx = context::build_context(&conn, &session_id)?;
-    let tokens: u64 = ctx.messages.iter()
-        .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
-        .sum();
-    println!("Session: {}", session.session_id);
-    println!("  Name: {}", session.name.unwrap_or("(unnamed)".into()));
-    println!("  CWD: {}", session.cwd);
-    println!("  Entries: {}", entries.len());
-    println!("  Context tokens: ~{}", tokens);
-    println!("  Created: {}", session.created_at);
-    println!("  Updated: {}", session.updated_at);
-}
+ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
 ```
+
+### Tests
+- Test message format conversion
+- Test tool format conversion
+- Test SSE parsing
 
 ### Build and test
 ```bash
-cd /tmp/bb-w/w5-commands-context
+cd /tmp/bb-final/a4-google-provider
 cargo build && cargo test
-git add -A && git commit -m "W5: wire commands + hierarchical context + @file args"
+git add -A && git commit -m "A4: implement Google Generative AI provider"
 ```
