@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::login;
-use crate::slash::SlashResult;
+use crate::slash::{self, SlashResult};
 use crate::Cli;
 
 // ── Styling helpers ─────────────────────────────────────────────────
@@ -113,11 +113,12 @@ fn make_header(_model_name: &str) -> Text {
     let lines = vec![
         String::new(),
         format!(" {} v{}", "bb-agent".with(Color::Cyan).bold(), env!("CARGO_PKG_VERSION")),
-        format!(" {}  {}", dim("enter"), "to submit"),
-        format!(" {}  {}", dim("alt+enter"), "for newline"),
-        format!(" {}  {}", dim("ctrl+c"), "to cancel/clear"),
-        format!(" {}  {}", dim("ctrl+d"), "to exit"),
-        format!(" {}  {}", dim("/"), "for commands"),
+        format!(" {} {}", dim("escape"), dim("to interrupt")),
+        format!(" {} {}", dim("ctrl+c"), dim("to clear")),
+        format!(" {} {}", dim("ctrl+c twice"), dim("to exit")),
+        format!(" {} {}", dim("ctrl+d"), dim("to exit (empty)")),
+        format!(" {} {}", dim("/"), dim("for commands")),
+        format!(" {} {}", dim("!"), dim("to run bash")),
         String::new(),
     ];
     Text { lines }
@@ -979,8 +980,11 @@ async fn handle_slash(
     cwd_str: &str,
 ) -> Result<(bool, Vec<String>)> {
     let mut output = Vec::new();
-    match crate::slash::handle_slash_command(input) {
+    match slash::handle_slash_command(input) {
         SlashResult::Exit => return Ok((true, output)),
+        SlashResult::Help => {
+            output = slash::help_lines();
+        }
         SlashResult::Handled => {}
         SlashResult::NewSession => {
             output.push("  Start a new `bb` to get a fresh session.".into());
@@ -1022,7 +1026,8 @@ async fn handle_slash(
             }
         }
         SlashResult::NotCommand => {
-            output.push(dim("  Unknown command"));
+            output.push(dim(&format!("  Unknown command: {}", input)));
+            output.push(dim("  Type /help for available commands"));
         }
     }
     Ok((false, output))

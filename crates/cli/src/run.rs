@@ -267,6 +267,12 @@ pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
         if input.starts_with('/') {
             match slash::handle_slash_command(&input) {
                 SlashResult::Exit => break,
+                SlashResult::Help => {
+                    for line in slash::help_lines() {
+                        println!("{line}");
+                    }
+                    continue;
+                }
                 SlashResult::Handled => continue,
                 SlashResult::NewSession => {
                     // TODO: create new session, reset state

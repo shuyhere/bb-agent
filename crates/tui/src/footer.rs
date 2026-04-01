@@ -164,10 +164,16 @@ impl Component for Footer {
         let stats_left = parts.join(" ");
         let stats_left_width = visible_width(&stats_left);
 
-        // Right side: model + thinking
+        // Right side: (provider) model + thinking
         let mut right = d.model_name.clone();
         if let Some(ref level) = d.thinking_level {
             right = format!("{} • {}", right, level);
+        }
+        // Prepend provider if there's enough room
+        let right_with_provider = format!("({}) {}", d.provider, right);
+        let right_with_provider_width = visible_width(&right_with_provider);
+        if stats_left_width + 2 + right_with_provider_width <= w {
+            right = right_with_provider;
         }
         let right_width = visible_width(&right);
 

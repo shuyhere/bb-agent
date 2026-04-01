@@ -1,17 +1,11 @@
 /// Handle slash commands in interactive mode.
-/// Returns true if the command was handled (don't send to LLM).
+/// Returns a SlashResult indicating what happened.
 pub fn handle_slash_command(text: &str) -> SlashResult {
     let text = text.trim();
     match text {
-        "/help" => {
-            print_help();
-            SlashResult::Handled
-        }
+        "/help" => SlashResult::Help,
         "/quit" | "/exit" => SlashResult::Exit,
-        "/new" => {
-            println!("Starting new session...");
-            SlashResult::NewSession
-        }
+        "/new" => SlashResult::NewSession,
         "/compact" => SlashResult::Compact(None),
         cmd if cmd.starts_with("/compact ") => {
             let instructions = cmd.strip_prefix("/compact ").unwrap().trim();
@@ -28,29 +22,21 @@ pub fn handle_slash_command(text: &str) -> SlashResult {
         "/login" => SlashResult::Login,
         "/logout" => SlashResult::Logout,
         "/session" => SlashResult::SessionInfo,
-        "/settings" => {
-            println!("Settings: ~/.bb-agent/settings.json");
-            SlashResult::Handled
-        }
-        "/name" => {
-            println!("Usage: /name <session-name>");
-            SlashResult::Handled
-        }
+        "/settings" => SlashResult::Handled,
+        "/name" => SlashResult::Handled,
         cmd if cmd.starts_with("/name ") => {
             let name = cmd.strip_prefix("/name ").unwrap().trim();
             SlashResult::SetName(name.to_string())
         }
-        _ => {
-            println!("Unknown command: {text}");
-            println!("Type /help for available commands.");
-            SlashResult::Handled
-        }
+        _ => SlashResult::NotCommand,
     }
 }
 
 pub enum SlashResult {
     /// Command handled, continue loop
     Handled,
+    /// Show help text
+    Help,
     /// Exit the agent
     Exit,
     /// Start new session
@@ -77,25 +63,27 @@ pub enum SlashResult {
     NotCommand,
 }
 
-fn print_help() {
-    println!("Available commands:");
-    println!("  /help          Show this help");
-    println!("  /new           Start a new session");
-    println!("  /resume        Resume a previous session");
-    println!("  /model [name]  Switch model");
-    println!("  /compact       Compact conversation context");
-    println!("  /tree          Navigate session tree");
-    println!("  /fork          Fork current session");
-    println!("  /name <name>   Set session display name");
-    println!("  /session       Show current session info");
-    println!("  /login         Login to a provider");
-    println!("  /logout        Logout from a provider");
-    println!("  /settings      Show settings info");
-    println!("  /quit          Exit");
-    println!();
-    println!("Shortcuts:");
-    println!("  Ctrl+C         Abort / clear");
-    println!("  Ctrl+D         Exit (empty editor)");
-    println!("  !command       Run bash directly");
-    println!("  !!command      Run bash (no context)");
+/// Get help text as lines (for display in TUI).
+pub fn help_lines() -> Vec<String> {
+    vec![
+        "  Available commands:".into(),
+        "    /help          Show this help".into(),
+        "    /new           Start a new session".into(),
+        "    /resume        Resume a previous session".into(),
+        "    /model [name]  Switch model".into(),
+        "    /compact       Compact conversation context".into(),
+        "    /tree          Navigate session tree".into(),
+        "    /fork          Fork current session".into(),
+        "    /name <name>   Set session display name".into(),
+        "    /session       Show current session info".into(),
+        "    /login         Login to a provider".into(),
+        "    /logout        Logout from a provider".into(),
+        "    /settings      Show settings info".into(),
+        "    /quit          Exit".into(),
+        String::new(),
+        "  Shortcuts:".into(),
+        "    Ctrl+C         Abort / clear".into(),
+        "    Ctrl+D         Exit (empty editor)".into(),
+        "    !command       Run bash directly".into(),
+    ]
 }
