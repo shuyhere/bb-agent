@@ -139,6 +139,8 @@ struct InteractiveMode {
     agent_running: bool,
     // Status message (transient, e.g. errors)
     status_message: Option<String>,
+    // Thinking level
+    thinking: Option<String>,
 }
 
 impl InteractiveMode {
@@ -427,6 +429,19 @@ impl InteractiveMode {
                     self.api_key = login::resolve_api_key(&new_model.provider).unwrap_or_default();
                     self.base_url = new_model.base_url.clone()
                         .unwrap_or_else(|| "https://api.openai.com/v1".into());
+                    // Persist model change to session
+                    let entry = SessionEntry::ModelChange {
+                        base: EntryBase {
+                            id: EntryId::generate(),
+                            parent_id: get_leaf(&self.conn, &self.session_id),
+                            timestamp: Utc::now(),
+                        },
+                        provider: new_model.provider.clone(),
+                        model_id: new_model.id.clone(),
+                    };
+                    if let Err(e) = store::append_entry(&self.conn, &self.session_id, &entry) {
+                        eprintln!("Warning: failed to persist model change: {e}");
+                    }
                     println!("Switched to model: {}", new_model.name);
                     self.model = new_model;
                 }
@@ -502,19 +517,31 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let conn = store::open_db(&db_path)?;
 
     // Session management
-    let session_id = if cli.r#continue {
-        let sessions = store::list_sessions(&conn, cwd.to_str().unwrap_or("."))?;
+    let cwd_str = cwd.to_str().unwrap_or(".");
+    let session_id = if let Some(session_arg) = &cli.session {
+        // --session: resolve by prefix
+        let all_sessions = store::list_sessions(&conn, cwd_str)?;
+        let matches: Vec<_> = all_sessions.iter()
+            .filter(|s| s.session_id.starts_with(session_arg.as_str()))
+            .collect();
+        match matches.len() {
+            1 => matches[0].session_id.clone(),
+            0 => anyhow::bail!("No session matching '{}'", session_arg),
+            n => anyhow::bail!("{n} sessions match '{}', be more specific", session_arg),
+        }
+    } else if cli.r#continue {
+        let sessions = store::list_sessions(&conn, cwd_str)?;
         match sessions.first() {
             Some(s) => {
                 tracing::info!("Continuing session {}", s.session_id);
                 s.session_id.clone()
             }
-            None => store::create_session(&conn, cwd.to_str().unwrap_or("."))?,
+            None => store::create_session(&conn, cwd_str)?,
         }
     } else if cli.no_session {
-        store::create_session(&conn, cwd.to_str().unwrap_or("."))?
+        store::create_session(&conn, cwd_str)?
     } else {
-        store::create_session(&conn, cwd.to_str().unwrap_or("."))?
+        store::create_session(&conn, cwd_str)?
     };
 
     // Parse model
@@ -565,7 +592,18 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
     // Tools
-    let tools = builtin_tools();
+    // Tools — apply --tools / --no-tools filtering
+    let tools: Vec<Box<dyn Tool>> = if cli.no_tools {
+        vec![]
+    } else if let Some(tools_str) = &cli.tools {
+        let tool_names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
+        builtin_tools()
+            .into_iter()
+            .filter(|t| tool_names.contains(&t.name()))
+            .collect()
+    } else {
+        builtin_tools()
+    };
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir: artifacts_dir.clone(),
@@ -613,6 +651,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         cancel: None,
         agent_running: false,
         status_message: None,
+        thinking: cli.thinking.clone(),
     };
 
     // Print banner
@@ -736,6 +775,7 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
             model: mode.model.id.clone(),
             max_tokens: Some(mode.model.max_tokens as u32),
             stream: true,
+            thinking: mode.thinking.clone(),
         };
 
         let cancel = CancellationToken::new();
@@ -760,6 +800,34 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         std::io::stdout().flush().ok();
 
         let (tx, mut rx) = mpsc::unbounded_channel();
+
+        // Spawn abort listener: cancel on Escape or Ctrl+C during streaming
+        let abort_cancel = cancel.clone();
+        let abort_handle = tokio::task::spawn_blocking(move || {
+            crossterm::terminal::enable_raw_mode().ok();
+            loop {
+                if abort_cancel.is_cancelled() {
+                    break;
+                }
+                if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
+                    if let Ok(Event::Key(key)) = crossterm::event::read() {
+                        use crossterm::event::KeyCode;
+                        match key.code {
+                            KeyCode::Esc => {
+                                abort_cancel.cancel();
+                                break;
+                            }
+                            KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                abort_cancel.cancel();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            crossterm::terminal::disable_raw_mode().ok();
+        });
 
         // Spawn the streaming request
         let stream_result = mode.provider.stream(request, options, tx).await;
@@ -838,10 +906,22 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         }
         println!();
 
+        // Stop the abort listener
+        cancel.cancel(); // signal listener to stop if still running
+        let _ = abort_handle.await; // wait for it to finish
+
+        // Check if aborted
+        let was_aborted = cancel.is_cancelled() && all_events.iter().any(|e| matches!(e, StreamEvent::Done));
+
         // Finalize streaming message
         mode.finalize_streaming();
         mode.agent_running = false;
         mode.cancel = None;
+
+        if was_aborted && all_events.iter().all(|e| !matches!(e, StreamEvent::TextDelta { .. })) {
+            println!("  {}", "[Aborted]".with(Color::Yellow));
+            break;
+        }
 
         // Collect final response
         let collected = CollectedResponse::from_events(&all_events);

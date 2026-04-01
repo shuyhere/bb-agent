@@ -19,6 +19,9 @@ pub struct CompletionRequest {
     pub model: String,
     pub max_tokens: Option<u32>,
     pub stream: bool,
+    /// Thinking level: "low", "medium", "high", or None for disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// Options for a provider request.

@@ -50,6 +50,7 @@ pub async fn run_agent_loop(
             model: model.id.clone(),
             max_tokens: Some(model.max_tokens as u32),
             stream: true,
+            thinking: None,
         };
 
         let options = RequestOptions {

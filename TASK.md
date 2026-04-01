@@ -1,202 +1,127 @@
-# Sprint 4: Wire TUI Components into Agent Loop
+# W3: Apply --thinking, --tools, --session, abort, and model switching
 
-You are working in a git worktree at `/tmp/bb-worktrees/s4-wire-tui/`.
-This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md`, `PLAN.md`, and `TUI-PLAN.md` for context.
+Working dir: `/tmp/bb-w/w3-apply-flags/`
 
-## Your task
+## Problem
+Several CLI flags are parsed but not applied. Abort doesn't work. Model changes aren't persisted.
 
-Create an interactive mode controller that uses the TUI components (already built in
-`crates/tui/src/`) to provide a proper terminal UI. The TUI components exist but are
-NOT wired into the CLI's main loop — the CLI currently uses inline `print!()` statements.
+## Tasks
 
-### 1. Create `crates/cli/src/interactive.rs` (~800 lines)
+### 1. Apply `--thinking` to provider requests
 
-This is the interactive mode controller — the equivalent of pi's `interactive-mode.ts`.
+In `crates/cli/src/run.rs` and wherever CompletionRequest is built:
+- Parse thinking level from CLI
+- For Anthropic: add `thinking` parameter to request body in `crates/provider/src/anthropic.rs`
+  ```rust
+  // In the request body building:
+  if let Some(thinking) = &request.thinking {
+      body["thinking"] = json!({
+          "type": "enabled",
+          "budget_tokens": match thinking.as_str() {
+              "low" => 2048,
+              "medium" => 8192,
+              "high" => 16384,
+              _ => 8192,
+          }
+      });
+  }
+  ```
+- For OpenAI: set `reasoning_effort` parameter
 
+Add `thinking: Option<String>` to `CompletionRequest` in `crates/provider/src/lib.rs`.
+
+### 2. Apply `--tools` filtering
+
+In `crates/cli/src/run.rs`:
 ```rust
-use bb_tui::terminal::{ProcessTerminal, Terminal};
-use bb_tui::renderer::DiffRenderer;
-use bb_tui::component::Container;
-use bb_tui::editor::Editor;
-use bb_tui::chat;
-use bb_tui::markdown::MarkdownRenderer;
-use bb_tui::status;
-use bb_tui::select_list::SelectList;
-use bb_tui::model_selector::ModelSelector;
-use bb_tui::session_selector::SessionSelector;
-
-pub struct InteractiveMode {
-    terminal: ProcessTerminal,
-    renderer: DiffRenderer,
-    editor: Editor,
-    messages: Vec<RenderedMessage>,
-    model_name: String,
-    total_tokens: u64,
-    context_window: u64,
-    total_cost: f64,
-}
-
-enum RenderedMessage {
-    User(Vec<String>),
-    Assistant(Vec<String>),   // pre-rendered markdown lines
-    ToolResult(Vec<String>),
-    Compaction(Vec<String>),
-    Streaming(Vec<String>),   // currently-streaming assistant message
-}
-```
-
-#### Startup flow
-1. Create `ProcessTerminal` and enable raw mode
-2. Create `DiffRenderer`
-3. Print welcome banner
-4. Print status bar (model, context window)
-5. Show editor prompt at bottom
-6. Enter main event loop
-
-#### Main event loop
-```rust
-loop {
-    // Render: collect all message lines + status + editor → send to DiffRenderer
-    self.render();
-
-    // Wait for input event (key press or agent event)
-    match event {
-        EditorSubmit(text) => {
-            if text.starts_with('/') → handle slash command
-            if text.starts_with('!') → run bash directly
-            else → send prompt to agent session
-        }
-        AgentEvent(event) => {
-            match event {
-                TextDelta { text } → append to streaming markdown
-                ThinkingDelta { text } → show thinking indicator
-                ToolCallStart { name, .. } → show tool name
-                ToolExecuting { name, .. } → show spinner
-                ToolResult { .. } → show result preview
-                AssistantDone → finalize message, re-enable editor
-                Error { .. } → show error
-            }
-            self.render();  // re-render after each event
-        }
-        Resize → self.render()
-        Ctrl+C → abort current operation
-        Ctrl+D → exit
-        Ctrl+P → show model selector overlay
-    }
-}
-```
-
-#### Render function
-```rust
-fn render(&mut self) {
-    let width = self.terminal.columns();
-    let mut lines: Vec<String> = Vec::new();
-
-    // 1. All chat messages
-    for msg in &self.messages {
-        lines.extend(msg.lines());
-    }
-
-    // 2. Status bar
-    lines.push(status::render_status(...));
-
-    // 3. Editor
-    lines.extend(self.editor.render(width));
-
-    // 4. Send to differential renderer
-    self.renderer.render(&lines, &mut self.terminal);
-}
-```
-
-#### Slash command handling
-Route to appropriate handler:
-- `/model` → show `ModelSelector` (use `select_list`)
-- `/resume` → show `SessionSelector`
-- `/compact` → call agent session compact
-- `/tree` → show tree (text for now)
-- `/login` / `/logout` → call login module
-- `/new` → create new session
-- `/help` → display help
-- `/quit` → exit
-
-#### Agent event display
-When the agent is running:
-- Add a `RenderedMessage::Streaming` entry
-- On each `TextDelta`, append text to the streaming buffer
-- Re-render the markdown for the streaming content
-- On `ToolCallStart`, show `⚡ tool_name` line
-- On `ToolResult`, show brief result preview (5 lines)
-- On `AssistantDone`, convert streaming to final `Assistant` message
-
-#### Session restore
-When `--continue` is used:
-- Load messages from session context
-- Render each message into `RenderedMessage` entries
-- Display them before showing editor
-
-### 2. Modify `crates/cli/src/main.rs`
-
-Add interactive mode routing:
-```rust
-if cli.print {
-    run::run_print_mode(cli).await
+let tool_names: Vec<&str> = if cli.no_tools {
+    vec![]
+} else if let Some(tools_str) = &cli.tools {
+    tools_str.split(',').map(|s| s.trim()).collect()
 } else {
-    interactive::run_interactive(cli).await
-}
+    vec!["read", "bash", "edit", "write"]
+};
+
+let tools: Vec<Box<dyn Tool>> = builtin_tools()
+    .into_iter()
+    .filter(|t| tool_names.contains(&t.name()))
+    .collect();
 ```
 
-### 3. Modify `crates/cli/src/run.rs`
+### 3. Implement abort with CancellationToken
 
-Rename/refactor the existing `run_agent` to `run_print_mode` for print mode only.
-The interactive path should go through `interactive.rs`.
+In the agent loop:
+- Create a `CancellationToken` shared between the agent task and input handler
+- When Escape or Ctrl+C is pressed during agent execution:
+  ```rust
+  cancel_token.cancel();
+  ```
+- The provider's streaming loop checks `cancel.is_cancelled()` and stops
+- Tool execution checks the cancel token too
+- Display "[Aborted]" when cancelled
+- Re-enable the editor
 
-### 4. Handle keyboard input properly
+### 4. Write model_change entry on `/model` switch
 
-Use crossterm's event polling in the main loop:
+When the user switches models (via `/model` or Ctrl+P):
 ```rust
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
-use std::time::Duration;
+let entry = SessionEntry::ModelChange {
+    base: EntryBase {
+        id: EntryId::generate(),
+        parent_id: get_leaf(&conn, &session_id),
+        timestamp: Utc::now(),
+    },
+    provider: new_model.provider.clone(),
+    model_id: new_model.id.clone(),
+};
+store::append_entry(&conn, &session_id, &entry)?;
+```
 
-// Poll for input events with timeout
-if poll(Duration::from_millis(50))? {
-    if let Event::Key(key) = event::read()? {
-        // Handle key
+### 5. Implement `--session <id>` resolution
+
+When `--session` is provided:
+- If it looks like a file path → use directly
+- Otherwise → search session IDs in the database that start with the given prefix
+- Open that session instead of creating a new one
+
+```rust
+if let Some(session_arg) = &cli.session {
+    // Try to find by prefix
+    let all_sessions = store::list_sessions(&conn, cwd_str)?;
+    let matches: Vec<_> = all_sessions.iter()
+        .filter(|s| s.session_id.starts_with(session_arg))
+        .collect();
+    match matches.len() {
+        1 => session_id = matches[0].session_id.clone(),
+        0 => anyhow::bail!("No session matching '{session_arg}'"),
+        n => anyhow::bail!("{n} sessions match '{session_arg}', be more specific"),
     }
 }
+```
 
-// Also check for agent events from channel
-if let Ok(agent_event) = rx.try_recv() {
-    // Handle agent event
+### 6. Implement piped stdin
+
+```rust
+// In main.rs, before routing to mode:
+let stdin_content = if !std::io::stdin().is_terminal() {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    if buf.trim().is_empty() { None } else { Some(buf) }
+} else {
+    None
+};
+
+// Prepend to prompt if available
+if let Some(stdin) = stdin_content {
+    prompt = format!("{}\n\n{}", stdin, prompt);
 }
 ```
 
-### 5. Model selector integration
+Add `use std::io::{IsTerminal, Read};` at top.
 
-When user types `/model`:
-1. Build list of models from registry
-2. Create `ModelSelector` 
-3. Enter selection loop (the selector handles its own key events)
-4. On selection: update agent session model
-5. Re-render status bar
-
-### Important notes
-
-- Do NOT use `ratatui`. Use crossterm directly + the existing TUI components.
-- The `DiffRenderer` in `tui/renderer.rs` handles differential rendering.
-- The `Editor` in `tui/editor.rs` handles user input.
-- Wrap all terminal output in synchronized output (`\x1b[?2026h` / `\x1b[?2026l`).
-- Clean up terminal on exit (disable raw mode, show cursor).
-- Handle Ctrl+C gracefully (abort current operation, don't crash).
-
-## Build and test
-
+### Build and test
 ```bash
-cd /tmp/bb-worktrees/s4-wire-tui
-cargo build
-cargo test
-```
-
-Make sure ALL existing tests still pass. Then commit:
-```bash
-git add -A && git commit -m "S4: wire TUI components into interactive mode"
+cd /tmp/bb-w/w3-apply-flags
+cargo build && cargo test
+git add -A && git commit -m "W3: apply --thinking, --tools, abort, model switch, piped stdin"
 ```

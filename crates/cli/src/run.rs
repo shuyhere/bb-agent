@@ -20,7 +20,7 @@ use crate::login;
 use crate::slash::{self, SlashResult};
 use crate::Cli;
 
-pub async fn run_print_mode(cli: Cli) -> Result<()> {
+pub async fn run_print_mode(mut cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
 
     // Setup directories
@@ -34,21 +34,32 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let conn = store::open_db(&db_path)?;
 
     // Session management
-    let session_id = if cli.r#continue {
+    let cwd_str = cwd.to_str().unwrap_or(".");
+    let session_id = if let Some(session_arg) = &cli.session {
+        // --session: resolve by prefix
+        let all_sessions = store::list_sessions(&conn, cwd_str)?;
+        let matches: Vec<_> = all_sessions.iter()
+            .filter(|s| s.session_id.starts_with(session_arg.as_str()))
+            .collect();
+        match matches.len() {
+            1 => matches[0].session_id.clone(),
+            0 => anyhow::bail!("No session matching '{}'", session_arg),
+            n => anyhow::bail!("{n} sessions match '{}', be more specific", session_arg),
+        }
+    } else if cli.r#continue {
         // Continue most recent session for this cwd
-        let sessions = store::list_sessions(&conn, cwd.to_str().unwrap_or("."))?;
+        let sessions = store::list_sessions(&conn, cwd_str)?;
         match sessions.first() {
             Some(s) => {
                 tracing::info!("Continuing session {}", s.session_id);
                 s.session_id.clone()
             }
-            None => store::create_session(&conn, cwd.to_str().unwrap_or("."))?,
+            None => store::create_session(&conn, cwd_str)?,
         }
     } else if cli.no_session {
-        // Ephemeral: use in-memory (just create but don't persist path)
-        store::create_session(&conn, cwd.to_str().unwrap_or("."))?
+        store::create_session(&conn, cwd_str)?
     } else {
-        store::create_session(&conn, cwd.to_str().unwrap_or("."))?
+        store::create_session(&conn, cwd_str)?
     };
 
     // Load layered settings
@@ -119,8 +130,18 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
-    // Tools
-    let tools = builtin_tools();
+    // Tools — apply --tools / --no-tools filtering
+    let tools: Vec<Box<dyn Tool>> = if cli.no_tools {
+        vec![]
+    } else if let Some(tools_str) = &cli.tools {
+        let tool_names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
+        builtin_tools()
+            .into_iter()
+            .filter(|t| tool_names.contains(&t.name()))
+            .collect()
+    } else {
+        builtin_tools()
+    };
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir: artifacts_dir.clone(),
@@ -327,6 +348,7 @@ async fn run_turn(
             model: model.id.clone(),
             max_tokens: Some(model.max_tokens as u32),
             stream: true,
+            thinking: None,
         };
 
         let options = RequestOptions {
