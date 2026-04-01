@@ -6,12 +6,12 @@ use super::events::{
 };
 use super::interactive_commands::SelectorKind;
 use super::model_selector_overlay::{ModelSelectorOverlay, ModelSelectorOverlayAction};
-use super::status_loader::{StatusLoaderComponent, StatusLoaderStyle};
-use super::types::{
-    InteractiveController, InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup,
-    KeyAction, KeyBinding, QueuedMessage, QueuedMessageKind, SubmitAction, SubmitMatch,
-    SubmitOutcome, SubmitRoute,
+use super::api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
+use super::state::{
+    InteractiveController, KeyAction, KeyBinding, QueuedMessage, QueuedMessageKind,
+    SubmitAction, SubmitMatch, SubmitOutcome, SubmitRoute,
 };
+use super::status_loader::{StatusLoaderComponent, StatusLoaderStyle};
 use bb_core::agent_loop::AgentLoopEvent;
 use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
 use bb_core::agent_session_runtime::{AgentSessionRuntimeHost, RuntimeModelRef};
