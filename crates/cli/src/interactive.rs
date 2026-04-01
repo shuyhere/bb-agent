@@ -18,10 +18,11 @@ use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::{context, store};
 use bb_tools::{builtin_tools, ToolContext};
-use bb_tui::component::{Container, Focusable, Spacer, Text};
+use bb_tui::component::{Container, Focusable, Text};
 use bb_tui::editor::Editor;
 use bb_tui::footer::{Footer, FooterData};
 use bb_tui::markdown::MarkdownRenderer;
+use bb_tui::model_selector::ModelSelector;
 use bb_tui::terminal::TerminalEvent;
 use bb_tui::tui_core::TUI;
 use chrono::Utc;
@@ -148,7 +149,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         store::create_session(&conn, &cwd_str)?
     };
 
-    let (provider_name, model_id, _) = crate::run::parse_model_arg(
+    let (mut provider_name, model_id, _) = crate::run::parse_model_arg(
         cli.provider.as_deref(),
         cli.model.as_deref(),
     );
@@ -160,7 +161,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     );
 
     let registry = ModelRegistry::new();
-    let model = registry
+    let mut model = registry
         .find(&provider_name, &model_id)
         .cloned()
         .unwrap_or_else(|| bb_provider::registry::Model {
@@ -175,7 +176,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             cost: Default::default(),
         });
 
-    let api_key = cli
+    let mut api_key = cli
         .api_key
         .clone()
         .unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
@@ -191,7 +192,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         );
     }
 
-    let base_url = model
+    let mut base_url = model
         .base_url
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
@@ -234,8 +235,8 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let chat_container = Container::new();
     tui.root.add(Box::new(chat_container));
 
-    // Index 2: Spacer before editor
-    tui.root.add(Box::new(Spacer::new(0)));
+    // Index 2: Overlay/status area above editor (used for model selector)
+    tui.root.add(Box::new(Text::empty()));
 
     // Index 3: Editor (focused)
     let mut editor = Editor::new();
@@ -287,6 +288,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let mut cancel_token = CancellationToken::new();
     let mut streaming = StreamingState::new();
     let mut last_ctrl_c = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    let mut model_selector: Option<ModelSelector> = None;
 
     // If initial prompt, send it
     if !cli.messages.is_empty() {
@@ -318,6 +320,39 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             Some(event) = term_events.recv() => {
                 match event {
                     TerminalEvent::Key(key) => {
+                        // Active model selector captures input first
+                        if let Some(selector) = &mut model_selector {
+                            if let Some(result) = selector.handle_key(key) {
+                                match result {
+                                    Ok(selection) => {
+                                        provider_name = selection.provider.clone();
+                                        if let Some(found) = registry.find(&selection.provider, &selection.model_id).cloned() {
+                                            model = found;
+                                        } else {
+                                            model.provider = selection.provider.clone();
+                                            model.id = selection.model_id.clone();
+                                            model.name = selection.name.clone();
+                                            model.context_window = selection.context_window;
+                                            model.reasoning = selection.reasoning;
+                                        }
+                                        api_key = cli.api_key.clone().unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
+                                        base_url = model.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into());
+                                        update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
+                                        add_status_to_chat(&mut tui, &format!("  Switched to model: {} ({})", model.name, model.provider));
+                                    }
+                                    Err(()) => {}
+                                }
+                                model_selector = None;
+                                clear_overlay(&mut tui);
+                            } else {
+                                let cols = tui.columns();
+                                let lines = selector.render(cols);
+                                set_overlay_lines(&mut tui, lines);
+                            }
+                            tui.render();
+                            continue;
+                        }
+
                         // Match specific key combinations
 
                         // Ctrl+D — exit if editor empty
@@ -375,6 +410,21 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
 
                             if showing_slash_menu {
                                 tui.handle_key(&key);
+                                let accepted_text = {
+                                    let editor = get_editor_mut(&mut tui);
+                                    if !editor.is_showing_slash_menu() {
+                                        editor.get_text()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
+                                if accepted_text == "/model" {
+                                    let selector = ModelSelector::new(&registry, 8);
+                                    let cols = tui.columns();
+                                    let lines = selector.render(cols);
+                                    set_overlay_lines(&mut tui, lines);
+                                    model_selector = Some(selector);
+                                }
                                 tui.render();
                                 continue;
                             }
@@ -398,6 +448,19 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
 
                                 // Slash commands
                                 if text.starts_with('/') {
+                                    if text == "/model" || text.starts_with("/model ") {
+                                        let mut selector = ModelSelector::new(&registry, 8);
+                                        if let Some(query) = text.strip_prefix("/model ") {
+                                            selector.set_search(query.trim());
+                                        }
+                                        let cols = tui.columns();
+                                        let lines = selector.render(cols);
+                                        set_overlay_lines(&mut tui, lines);
+                                        model_selector = Some(selector);
+                                        tui.render();
+                                        continue;
+                                    }
+
                                     match handle_slash(&text, &conn, &session_id, &cwd_str).await {
                                         Ok((true, _)) => {
                                             running = false;
@@ -571,6 +634,18 @@ fn add_status_to_chat(tui: &mut TUI, text: &str) {
     add_lines_to_chat(tui, vec![text.to_string(), String::new()]);
 }
 
+fn set_overlay_lines(tui: &mut TUI, lines: Vec<String>) {
+    let overlay = tui.root.children[2]
+        .as_any_mut()
+        .downcast_mut::<Text>()
+        .expect("child[2] should be Text");
+    overlay.lines = lines;
+}
+
+fn clear_overlay(tui: &mut TUI) {
+    set_overlay_lines(tui, Vec::new());
+}
+
 fn add_lines_to_chat(tui: &mut TUI, lines: Vec<String>) {
     let chat = tui.root.children[1]
         .as_any_mut()
@@ -654,8 +729,8 @@ impl StreamingState {
 
 fn update_footer(
     tui: &mut TUI,
-    _model: &bb_provider::registry::Model,
-    _cwd: &str,
+    model: &bb_provider::registry::Model,
+    cwd: &str,
     input_tokens: u64,
     output_tokens: u64,
     cost: f64,
@@ -664,6 +739,11 @@ fn update_footer(
         .as_any_mut()
         .downcast_mut::<Footer>()
         .expect("child[4] is Footer");
+    footer.data.model_name = model.name.clone();
+    footer.data.provider = model.provider.clone();
+    footer.data.cwd = cwd.to_string();
+    footer.data.context_window = model.context_window;
+    footer.data.thinking_level = if model.reasoning { Some("medium".into()) } else { None };
     footer.data.input_tokens = input_tokens;
     footer.data.output_tokens = output_tokens;
     footer.data.cost = cost;
