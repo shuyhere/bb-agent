@@ -111,38 +111,55 @@ impl ToolExecutionComponent {
     }
 
     pub fn render_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push(format!("{} [{}]", self.tool_name, self.tool_call_id));
+        let dim = "\x1b[90m";
+        let green = "\x1b[32m";
+        let red = "\x1b[31m";
+        let reset = "\x1b[0m";
+        let bold = "\x1b[1m";
 
-        if !self.args.is_null() {
-            let rendered_args =
-                serde_json::to_string_pretty(&self.args).unwrap_or_else(|_| self.args.to_string());
-            lines.push(String::new());
-            lines.extend(rendered_args.lines().map(|line| line.to_string()));
+        // Status indicator
+        let status = if self.result.is_some() {
+            if self.result.as_ref().map(|r| r.is_error).unwrap_or(false) {
+                format!("{red}x{reset}")
+            } else {
+                format!("{green}*{reset}")
+            }
+        } else if self.execution_started {
+            format!("{dim}..{reset}")
+        } else {
+            format!("{dim}>{reset}")
+        };
+
+        // One-line summary: status tool_name(args_preview)
+        let args_preview = if self.args.is_null() || self.args.is_object() && self.args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+            String::new()
+        } else {
+            let s = self.args.to_string();
+            if s.len() > 80 { format!("({}...)", &s[..77]) } else { format!("({s})") }
+        };
+
+        let header = format!("{status} {bold}{}{reset}{dim}{args_preview}{reset}", self.tool_name);
+
+        if !self.expanded {
+            // Collapsed: just the header line
+            return vec![header];
         }
 
+        // Expanded: header + output
+        let mut lines = vec![header];
         let output = self.get_text_output();
         if !output.is_empty() {
-            lines.push(String::new());
-            lines.extend(output.lines().map(|line| line.to_string()));
-        }
-
-        if let Some(result) = &self.result {
-            if let Some(details) = &result.details {
-                let rendered =
-                    serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
-                if !rendered.is_empty() {
-                    lines.push(String::new());
-                    lines.extend(rendered.lines().map(|line| line.to_string()));
-                }
+            // Truncate very long output
+            let output_lines: Vec<&str> = output.lines().collect();
+            let max_lines = 30;
+            for line in output_lines.iter().take(max_lines) {
+                lines.push(format!("{dim}  {line}{reset}"));
+            }
+            if output_lines.len() > max_lines {
+                lines.push(format!("{dim}  ... ({} more lines){reset}", output_lines.len() - max_lines));
             }
         }
-
-        if lines.is_empty() {
-            vec![self.tool_name.clone()]
-        } else {
-            lines
-        }
+        lines
     }
 
     fn get_text_output(&self) -> String {

@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolContext, ToolResult};
 
-const DEFAULT_LIMIT: usize = 500;
+const DEFAULT_LIMIT: usize = 200;
 const MAX_DEPTH: usize = 3;
 
 pub struct LsTool;
