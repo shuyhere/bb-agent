@@ -1140,8 +1140,20 @@ impl InteractiveMode {
             let stream_result = self.session_setup.provider.stream(request, options, stream_tx).await;
 
             if let Err(e) = stream_result {
-                let msg = format!("{e}");
-                let _ = tx.send(AgentLoopEvent::Error { message: format!("Provider error: {msg}") });
+                let raw = format!("{e}");
+                // Extract a clean error message from provider JSON
+                let clean = if let Some(start) = raw.find("\"message\":") {
+                    let after = &raw[start + 10..];
+                    let after = after.trim_start_matches([' ', '"']);
+                    if let Some(end) = after.find('"') {
+                        after[..end].to_string()
+                    } else {
+                        raw.lines().next().unwrap_or(&raw).to_string()
+                    }
+                } else {
+                    raw.lines().next().unwrap_or(&raw).to_string()
+                };
+                let _ = tx.send(AgentLoopEvent::Error { message: clean });
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
                 break;
             }
@@ -1410,45 +1422,26 @@ impl InteractiveMode {
 
     fn rebuild_header(&mut self) {
         self.header_lines.clear();
-        if self.options.verbose || !self.options.quiet_startup {
-            self.header_lines
-                .push(format!("BB-Agent v{}", self.version));
-            if let Some(model_display) = &self.options.model_display {
-                self.header_lines
-                    .push(format!("Model: {}", model_display));
-            }
-            if let Some(session_id) = &self.options.session_id {
-                self.header_lines
-                    .push(format!("Session: {}", &session_id[..8.min(session_id.len())]));
-            }
-            if self.options.agents_md.is_some() {
-                self.header_lines
-                    .push("AGENTS.md loaded".to_string());
-            }
-            self.header_lines.push(
-                "Ctrl-C interrupt/exit • Ctrl-D exit(empty) • Esc clears bash mode".to_string(),
-            );
-            self.header_lines.push("F2 thinking • F3/F4 model • F6 tools • F7 thinking block • / for commands • ! for bash".to_string());
-            if let Some(changelog) = self.changelog_markdown.clone() {
-                self.header_lines.push(String::new());
-                self.header_lines.push("What’s New".to_string());
-                self.header_lines
-                    .extend(changelog.lines().map(ToOwned::to_owned));
-            }
-        } else if let Some(changelog) = self.changelog_markdown.clone() {
+        if !self.options.quiet_startup {
+            let dim = "\x1b[90m";
+            let reset = "\x1b[0m";
+            let bold = "\x1b[1m";
+            let cyan = "\x1b[36m";
             self.header_lines.push(format!(
-                "Updated recently. Use /changelog for details. {}",
-                changelog.lines().next().unwrap_or_default()
+                "{bold}{cyan}BB-Agent{reset} v{}",
+                self.version
+            ));
+            self.header_lines.push(format!(
+                "{dim}Ctrl-C exit . / commands . ! bash . F2 thinking . /help for more{reset}"
             ));
         }
 
         if let Ok(mut header) = self.header_container.lock() {
             header.clear();
-            header.add(Box::new(Spacer::new(1)));
             if !self.header_lines.is_empty() {
                 header.add(Box::new(Text::new(&self.header_lines.join("\n"))));
+                header.add(Box::new(Spacer::new(1)));
             }
-            header.add(Box::new(Spacer::new(1)));
         }
     }
 
@@ -1493,21 +1486,31 @@ impl InteractiveMode {
             .and_then(|name| name.to_str())
             .unwrap_or(".");
 
-        self.footer_lines = vec![format!(
-            "state: init={} stream={} compact={} bash={} queued(ui/core)={}/{} chat={} model={} cwd={}",
-            self.is_initialized,
-            self.is_streaming,
-            self.is_compacting,
-            self.is_bash_mode.lock().map(|v| *v).unwrap_or(false),
-            self.controller.session.pending_messages.combined().len(),
-            self.controller
-                .runtime_host
-                .session()
-                .pending_message_count(),
-            self.render_state().chat_items.len() + self.chat_lines.len(),
-            core_model,
-            cwd,
-        )];
+        // Pi-style footer: cwd  tokens  cost  context%/window  (provider) model . thinking
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cwd_full = self.controller.runtime_host.cwd().display().to_string();
+        let cwd_display = if !home.is_empty() && cwd_full.starts_with(&home) {
+            format!("~{}", &cwd_full[home.len()..])
+        } else {
+            cwd.to_string()
+        };
+
+        let model_name = self.session_setup.model.id.clone();
+        let provider_name = self.session_setup.model.provider.clone();
+
+        let thinking_display = if self.hide_thinking_block { "off" } else { "on" };
+        let right_side = if self.session_setup.model.reasoning {
+            format!("({provider_name}) {model_name} . {thinking_display}")
+        } else {
+            format!("({provider_name}) {model_name}")
+        };
+
+        let streaming_indicator = if self.is_streaming { " [streaming...]" } else { "" };
+        let left_side = format!("{cwd_display}{streaming_indicator}");
+
+        // Dim the whole footer line
+        let footer = format!("\x1b[90m{}  {}\x1b[0m", left_side, right_side);
+        self.footer_lines = vec![footer];
         Self::replace_container_lines(&self.footer_container, &self.footer_lines);
     }
 
@@ -1567,7 +1570,7 @@ impl InteractiveMode {
     }
 
     fn start_background_checks(&mut self) {
-        // Background checks are deferred — no TODO noise in the UI
+        // Background checks are deferred - no TODO noise in the UI
     }
 
     fn get_changelog_for_display(&self) -> Option<String> {
@@ -1580,16 +1583,7 @@ impl InteractiveMode {
     }
 
     fn render_initial_messages(&mut self) {
-        let reason = self
-            .controller
-            .runtime_host
-            .session()
-            .session_start_event()
-            .reason
-            .clone();
-        let status = format!("interactive controller initialized ({reason})");
-        self.render_state_mut().last_status = Some(status.clone());
-        self.show_status(status);
+        // No startup noise - pi doesn't show "initialized" messages
     }
 
     fn update_terminal_title(&mut self) {
@@ -1739,7 +1733,7 @@ impl InteractiveMode {
             .model()
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| "none".to_string());
-        self.show_status(format!("Model: {current_model} (cycle {direction} — no model list available)"));
+        self.show_status(format!("Model: {current_model} (cycle {direction} - no model list available)"));
         self.rebuild_footer();
     }
 
@@ -1870,19 +1864,19 @@ impl InteractiveMode {
     fn handle_hotkeys_command(&mut self) {
         let hotkeys = vec![
             "Key Bindings:",
-            "  Ctrl+C      — Interrupt / clear input",
-            "  Ctrl+D      — Exit (on empty input)",
-            "  Ctrl+Z      — Suspend",
-            "  Ctrl+J      — Cycle thinking level",
-            "  Ctrl+K      — Cycle model forward",
-            "  Ctrl+L      — Toggle tool output expansion",
-            "  Ctrl+T      — Toggle thinking visibility",
-            "  Ctrl+E      — Open external editor",
-            "  Ctrl+R      — Resume session selector",
-            "  Ctrl+N      — New session",
-            "  Ctrl+F      — Follow-up message",
-            "  Ctrl+V      — Paste image from clipboard",
-            "  Esc         — Cancel / back",
+            "  Ctrl+C      - Interrupt / clear input",
+            "  Ctrl+D      - Exit (on empty input)",
+            "  Ctrl+Z      - Suspend",
+            "  Ctrl+J      - Cycle thinking level",
+            "  Ctrl+K      - Cycle model forward",
+            "  Ctrl+L      - Toggle tool output expansion",
+            "  Ctrl+T      - Toggle thinking visibility",
+            "  Ctrl+E      - Open external editor",
+            "  Ctrl+R      - Resume session selector",
+            "  Ctrl+N      - New session",
+            "  Ctrl+F      - Follow-up message",
+            "  Ctrl+V      - Paste image from clipboard",
+            "  Esc         - Cancel / back",
         ];
         for line in hotkeys {
             self.chat_lines.push(line.to_string());
@@ -1937,23 +1931,23 @@ impl InteractiveMode {
     fn handle_help_command(&mut self) {
         let commands = vec![
             "Available commands:",
-            "  /help        — Show this help message",
-            "  /new         — Create a new session",
-            "  /name <name> — Rename current session",
-            "  /session     — Show session info",
-            "  /compact     — Trigger conversation compaction",
-            "  /clear       — Clear chat display",
-            "  /model       — Switch model",
-            "  /hotkeys     — Show key bindings",
-            "  /export      — Export session",
-            "  /import      — Import session",
-            "  /share       — Share session",
-            "  /copy        — Copy last response",
-            "  /debug       — Show debug info",
-            "  /reload      — Reload resources",
-            "  /quit        — Exit the application",
-            "  !<cmd>       — Execute bash command",
-            "  !!<cmd>      — Execute bash (excluded from context)",
+            "  /help        - Show this help message",
+            "  /new         - Create a new session",
+            "  /name <name> - Rename current session",
+            "  /session     - Show session info",
+            "  /compact     - Trigger conversation compaction",
+            "  /clear       - Clear chat display",
+            "  /model       - Switch model",
+            "  /hotkeys     - Show key bindings",
+            "  /export      - Export session",
+            "  /import      - Import session",
+            "  /share       - Share session",
+            "  /copy        - Copy last response",
+            "  /debug       - Show debug info",
+            "  /reload      - Reload resources",
+            "  /quit        - Exit the application",
+            "  !<cmd>       - Execute bash command",
+            "  !!<cmd>      - Execute bash (excluded from context)",
         ];
         for line in commands {
             self.chat_lines.push(line.to_string());
@@ -1970,7 +1964,7 @@ impl InteractiveMode {
                 self.chat_lines.push(format!(
                     "[c] Auto-compaction triggered ({total_tokens} tokens, window {window})"
                 ));
-                // Prepare and note — full async LLM summarization deferred to future wave
+                // Prepare and note - full async LLM summarization deferred to future wave
                 if let Some(prep) = compaction::prepare_compaction(&entries, &settings) {
                     self.chat_lines.push(format!(
                         "[c] {} messages to summarize, {} kept",
@@ -2323,14 +2317,20 @@ impl InteractiveMode {
 
     fn show_warning(&mut self, message: impl Into<String>) {
         let message = message.into();
-        self.render_state_mut().last_status = Some(format!("warning: {message}"));
-        self.status_lines.push(format!("warning: {message}"));
+        let dim = "\x1b[90m";
+        let yellow = "\x1b[33m";
+        let reset = "\x1b[0m";
+        self.render_state_mut().last_status = Some(format!("{yellow}[!]{reset} {dim}{message}{reset}"));
+        // Only keep latest status visible
+        self.status_lines = vec![format!("{yellow}[!]{reset} {dim}{message}{reset}")];
     }
 
     fn show_status(&mut self, message: impl Into<String>) {
         let message = message.into();
-        self.render_state_mut().last_status = Some(message.clone());
-        self.status_lines.push(message);
+        let dim = "\x1b[90m";
+        let reset = "\x1b[0m";
+        self.render_state_mut().last_status = Some(format!("{dim}{message}{reset}"));
+        self.status_lines = vec![format!("{dim}{message}{reset}")];
     }
 }
 
