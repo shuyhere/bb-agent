@@ -270,11 +270,12 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     // Index 4: Footer
     let git_branch = bb_tui::footer::detect_git_branch(&cwd_str);
     let footer = Footer::new(FooterData {
-        model_name: model.name.clone(),
+        model_name: model.id.clone(),
         provider: model.provider.clone(),
         cwd: cwd_str.clone(),
         git_branch,
         context_window: model.context_window,
+        thinking_level: if model.reasoning { Some("medium".into()) } else { None },
         ..Default::default()
     });
     tui.root.add(Box::new(footer));
@@ -493,6 +494,30 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                         set_overlay_lines(&mut tui, lines);
                                         model_selector = Some(selector);
                                         tui.render();
+                                        continue;
+                                    }
+
+                                    if text == "/login" {
+                                        tui.stop();
+                                        let login_result = login::handle_login(None).await;
+                                        term_events = tui.start();
+                                        tui.force_render();
+                                        if let Err(e) = login_result {
+                                            add_status_to_chat(&mut tui, &style_error(&format!("Login error: {e}")));
+                                            tui.render();
+                                        }
+                                        continue;
+                                    }
+
+                                    if text == "/logout" {
+                                        tui.stop();
+                                        let logout_result = login::handle_logout(None).await;
+                                        term_events = tui.start();
+                                        tui.force_render();
+                                        if let Err(e) = logout_result {
+                                            add_status_to_chat(&mut tui, &style_error(&format!("Logout error: {e}")));
+                                            tui.render();
+                                        }
                                         continue;
                                     }
 
@@ -801,7 +826,7 @@ fn update_footer(
         .as_any_mut()
         .downcast_mut::<Footer>()
         .expect("child[4] is Footer");
-    footer.data.model_name = model.name.clone();
+    footer.data.model_name = model.id.clone();
     footer.data.provider = model.provider.clone();
     footer.data.cwd = cwd.to_string();
     footer.data.context_window = model.context_window;
@@ -1162,12 +1187,8 @@ async fn handle_slash(
         SlashResult::Tree | SlashResult::Fork => {
             output.push(dim("  (not yet implemented)"));
         }
-        SlashResult::Login => {
-            output.push(dim("  Use `bb login` from a normal terminal"));
-        }
-        SlashResult::Logout => {
-            output.push(dim("  Use `bb logout` from a normal terminal"));
-        }
+        SlashResult::Login => {}
+        SlashResult::Logout => {}
         SlashResult::SetName(name) => {
             output.push(format!("  Session named: {name}"));
         }

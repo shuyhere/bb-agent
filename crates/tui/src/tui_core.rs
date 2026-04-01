@@ -33,6 +33,7 @@ impl TUI {
 
     /// Start the terminal (raw mode, bracketed paste, hide cursor).
     pub fn start(&mut self) -> mpsc::UnboundedReceiver<TerminalEvent> {
+        self.stopped = false;
         self.terminal.start();
         self.terminal.hide_cursor();
         let rx = self.terminal.spawn_event_reader();
