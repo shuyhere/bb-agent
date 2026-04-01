@@ -1,150 +1,134 @@
-# A4: Implement Google Generative AI provider
+# A5: Build tree selector for /tree navigation
 
-Working dir: `/tmp/bb-final/a4-google-provider/`
+Working dir: `/tmp/bb-final/a5-tree-selector/`
 BB-Agent Rust project.
 
-## Task: Create `crates/provider/src/google.rs`
+## Task: Create `crates/tui/src/tree_selector.rs`
 
-Implement the Google Generative AI API provider (Gemini models).
+Build an interactive tree navigation component for the `/tree` command. This is pi's killer feature — navigate the session tree, select any node, and continue from there.
 
-### API endpoint
+### Tree display format
 ```
-POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={apiKey}&alt=sse
-```
-
-### Request format
-```json
-{
-    "contents": [
-        { "role": "user", "parts": [{ "text": "Hello" }] },
-        { "role": "model", "parts": [{ "text": "Hi!" }] }
-    ],
-    "systemInstruction": {
-        "parts": [{ "text": "You are a helpful assistant" }]
-    },
-    "tools": [{
-        "functionDeclarations": [{
-            "name": "read",
-            "description": "Read a file",
-            "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" } }, "required": ["path"] }
-        }]
-    }],
-    "generationConfig": {
-        "maxOutputTokens": 16384
-    }
-}
-```
-
-### Message role mapping
-- user → `user`
-- assistant → `model`
-- tool results → `user` with `functionResponse` parts
-
-### Tool call format
-Google returns tool calls as `functionCall` parts in model responses:
-```json
-{ "functionCall": { "name": "read", "args": { "path": "foo.rs" } } }
-```
-
-### Tool result format
-```json
-{
-    "role": "user",
-    "parts": [{
-        "functionResponse": {
-            "name": "read",
-            "response": { "content": "file contents here" }
-        }
-    }]
-}
-```
-
-### SSE streaming
-Google streams via SSE with `data: {...}` lines. Each chunk has:
-```json
-{
-    "candidates": [{
-        "content": {
-            "parts": [{ "text": "delta text" }],
-            "role": "model"
-        }
-    }],
-    "usageMetadata": {
-        "promptTokenCount": 100,
-        "candidatesTokenCount": 50
-    }
-}
+├─ user: "Hello, can you help..."
+│  └─ assistant: "Of course! I can..."
+│     ├─ user: "Let's try approach A..."
+│     │  └─ assistant: "For approach A..."
+│     │     └─ [compaction: 12k tokens]
+│     │        └─ user: "That worked..."  ← active
+│     └─ user: "Actually, approach B..."
+│        └─ assistant: "For approach B..."
 ```
 
 ### Implementation
 
 ```rust
-pub struct GoogleProvider {
-    client: Client,
+use bb_session::store::EntryRow;
+use bb_session::tree::TreeNode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+pub struct TreeSelector {
+    nodes: Vec<FlatNode>,     // flattened tree for display
+    selected: usize,
+    scroll_offset: usize,
+    max_visible: usize,
+    active_leaf: Option<String>,
+    filter: TreeFilter,
 }
 
-#[async_trait]
-impl Provider for GoogleProvider {
-    fn name(&self) -> &str { "google" }
+#[derive(Clone)]
+struct FlatNode {
+    entry_id: String,
+    entry_type: String,
+    depth: usize,
+    preview: String,       // truncated message preview
+    is_active: bool,       // is this the current leaf?
+    has_children: bool,
+    timestamp: String,
+}
 
-    async fn stream(
-        &self,
-        request: CompletionRequest,
-        options: RequestOptions,
-        tx: mpsc::UnboundedSender<StreamEvent>,
-    ) -> BbResult<()> {
-        let url = format!(
-            "{}/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
-            options.base_url.trim_end_matches('/'),
-            request.model,
-            options.api_key,
-        );
+pub enum TreeFilter {
+    All,
+    UserOnly,
+}
 
-        // Convert messages to Google format
-        let contents = convert_messages_google(&request.messages);
+pub enum TreeAction {
+    None,
+    Selected(String),    // entry_id selected
+    Cancelled,
+}
 
-        // Convert tools to Google format
-        let tools = convert_tools_google(&request.tools);
-
-        let mut body = json!({
-            "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": request.max_tokens.unwrap_or(16384),
-            }
-        });
-
-        if !request.system_prompt.is_empty() {
-            body["systemInstruction"] = json!({
-                "parts": [{ "text": request.system_prompt }]
-            });
-        }
-
-        if !tools.is_empty() {
-            body["tools"] = json!([{ "functionDeclarations": tools }]);
-        }
-
-        // Send request and parse SSE stream...
-    }
+impl TreeSelector {
+    pub fn new(tree: Vec<TreeNode>, active_leaf: Option<&str>, max_visible: usize) -> Self;
+    pub fn render(&self, width: u16) -> Vec<String>;
+    pub fn handle_key(&mut self, key: KeyEvent) -> TreeAction;
 }
 ```
 
-### Update `crates/provider/src/lib.rs`
-Add `pub mod google;`
+### Flatten the tree
+Convert the recursive `TreeNode` into a flat list with depth info:
 
-### Update `crates/cli/src/run.rs` (or interactive.rs)
-Add Google to provider selection:
 ```rust
-ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
+fn flatten(nodes: &[TreeNode], depth: usize, active_leaf: Option<&str>) -> Vec<FlatNode> {
+    let mut flat = Vec::new();
+    for node in nodes {
+        let preview = extract_preview(&node);
+        let is_active = active_leaf.map(|l| l == node.entry_id).unwrap_or(false);
+        flat.push(FlatNode {
+            entry_id: node.entry_id.clone(),
+            entry_type: node.entry_type.clone(),
+            depth,
+            preview,
+            is_active,
+            has_children: !node.children.is_empty(),
+            timestamp: node.timestamp.clone(),
+        });
+        flat.extend(flatten(&node.children, depth + 1, active_leaf));
+    }
+    flat
+}
 ```
 
-### Tests
-- Test message format conversion
-- Test tool format conversion
-- Test SSE parsing
+### Extract preview text from entry
+Parse the entry payload JSON to get a short preview:
+- `message` with `user` role → first 60 chars of text
+- `message` with `assistant` role → "assistant: " + first 40 chars
+- `compaction` → "[compaction: {tokens_before} tokens]"
+- `branch_summary` → "[branch summary]"
+- `model_change` → "[model: {model_id}]"
+- other → "[{type}]"
+
+### Rendering
+Each line:
+```
+{indent}{connector} {type_icon}: {preview}  {active_marker}
+```
+
+Where:
+- `indent` = `│  ` repeated by depth
+- `connector` = `├─` for non-last child, `└─` for last child
+- `type_icon` = colored by type (user=blue, assistant=green, compaction=gray)
+- `active_marker` = `← active` if this is the current leaf
+- Selected line gets reverse video or `>` marker
+
+### Key bindings
+- Up/Down — navigate
+- Enter — select (return entry_id)
+- Escape — cancel
+- Ctrl+U — toggle user-only filter
+- Home/End — first/last
+
+### Wire into interactive mode
+
+In `crates/cli/src/interactive.rs`, when `/tree` is entered:
+1. Get tree from `bb_session::tree::get_tree()`
+2. Get current leaf from session
+3. Create `TreeSelector`
+4. Enter selection loop
+5. On selection: call session navigation (branch to parent if user msg, branch to node if other)
 
 ### Build and test
 ```bash
-cd /tmp/bb-final/a4-google-provider
+cd /tmp/bb-final/a5-tree-selector
 cargo build && cargo test
-git add -A && git commit -m "A4: implement Google Generative AI provider"
+git add -A && git commit -m "A5: tree selector for /tree navigation"
 ```
