@@ -1567,20 +1567,15 @@ impl InteractiveMode {
     }
 
     fn start_background_checks(&mut self) {
-        self.show_status("TODO: async version check hook");
-        self.show_status("TODO: async package update check hook");
-        self.show_status("TODO: async tmux keyboard setup check hook");
+        // Background checks are deferred — no TODO noise in the UI
     }
 
     fn get_changelog_for_display(&self) -> Option<String> {
-        Some("Interactive skeleton ported from pi: setup/init/run/controller state.".to_string())
+        None
     }
 
     async fn bind_current_session_extensions(&mut self) -> InteractiveResult<()> {
-        let cwd = self.controller.runtime_host.cwd().display().to_string();
-        self.show_status(format!(
-            "TODO: bind session extensions into header/footer/widget containers ({cwd})"
-        ));
+        // Extension binding is deferred
         Ok(())
     }
 
