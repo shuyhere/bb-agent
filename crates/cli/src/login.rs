@@ -33,6 +33,39 @@ const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
     ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/settings/keys"),
 ];
 
+pub fn provider_meta(provider: &str) -> (&str, &str) {
+    KNOWN_PROVIDERS
+        .iter()
+        .find(|(name, _, _)| *name == provider)
+        .map(|(_, env_var, url)| (*env_var, *url))
+        .unwrap_or(("API_KEY", ""))
+}
+
+pub fn provider_has_env_key(provider: &str) -> bool {
+    let (env_var, _) = provider_meta(provider);
+    std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
+}
+
+pub fn save_api_key(provider: &str, key: &str) -> Result<()> {
+    let mut store = load_auth();
+    store.providers.insert(
+        provider.to_string(),
+        AuthEntry::ApiKey {
+            key: key.to_string(),
+        },
+    );
+    save_auth(&store)
+}
+
+pub fn remove_auth(provider: &str) -> Result<bool> {
+    let mut store = load_auth();
+    let removed = store.providers.remove(provider).is_some();
+    if removed {
+        save_auth(&store)?;
+    }
+    Ok(removed)
+}
+
 fn auth_path() -> PathBuf {
     config::global_dir().join("auth.json")
 }
@@ -174,9 +207,7 @@ pub async fn handle_logout(provider: Option<&str>) -> Result<()> {
         }
     };
 
-    let mut store = load_auth();
-    if store.providers.remove(&provider).is_some() {
-        save_auth(&store)?;
+    if remove_auth(&provider)? {
         println!("✓ Logged out from {provider}");
     } else {
         println!("Provider {provider} not found in auth store.");

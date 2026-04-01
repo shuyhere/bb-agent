@@ -277,6 +277,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         git_branch,
         context_window: model.context_window,
         thinking_level: if model.reasoning { Some("medium".into()) } else { None },
+        available_provider_count: available_provider_count(),
         ..Default::default()
     });
     tui.root.add(Box::new(footer));
@@ -315,6 +316,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
     let mut last_ctrl_c = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let mut model_selector: Option<ModelSelector> = None;
     let mut provider_selector: Option<(bool, SelectList)> = None; // (is_login, list)
+    let mut auth_dialog: Option<AuthDialog> = None;
 
     // If initial prompt, send it
     if !cli.messages.is_empty() {
@@ -346,6 +348,53 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             Some(event) = term_events.recv() => {
                 match event {
                     TerminalEvent::Key(key) => {
+                        // Active auth dialog captures input first
+                        if let Some(dialog) = &mut auth_dialog {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    auth_dialog = None;
+                                    clear_overlay(&mut tui);
+                                    tui.render();
+                                    continue;
+                                }
+                                KeyCode::Enter => {
+                                    let provider = dialog.provider.clone();
+                                    let key_value = dialog.key_input.trim().to_string();
+                                    auth_dialog = None;
+                                    clear_overlay(&mut tui);
+                                    if key_value.is_empty() {
+                                        add_status_to_chat(&mut tui, &style_error("Login cancelled: empty API key"));
+                                        tui.render();
+                                        continue;
+                                    }
+                                    match login::save_api_key(&provider, &key_value) {
+                                        Ok(()) => {
+                                            if provider == provider_name {
+                                                api_key = cli.api_key.clone().unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
+                                            }
+                                            update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
+                                            add_status_to_chat(&mut tui, &format!("  Logged in to {}", provider));
+                                        }
+                                        Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                    }
+                                    tui.render();
+                                    continue;
+                                }
+                                KeyCode::Backspace => {
+                                    dialog.key_input.pop();
+                                }
+                                KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT => {
+                                    dialog.key_input.push(c);
+                                }
+                                _ => {}
+                            }
+                            let cols = tui.columns();
+                            let lines = render_auth_dialog(dialog, cols);
+                            set_overlay_lines(&mut tui, lines);
+                            tui.render();
+                            continue;
+                        }
+
                         // Active provider selector captures input first
                         if let Some((is_login, list)) = &mut provider_selector {
                             let login_mode = *is_login;
@@ -366,17 +415,24 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                                 SelectAction::Selected(provider) => {
                                     provider_selector = None;
                                     clear_overlay(&mut tui);
-                                    tui.stop();
-                                    let result = if login_mode {
-                                        login::handle_login(Some(&provider)).await
+                                    if login_mode {
+                                        let dialog = make_auth_dialog(provider.clone());
+                                        let cols = tui.columns();
+                                        let lines = render_auth_dialog(&dialog, cols);
+                                        set_overlay_lines(&mut tui, lines);
+                                        auth_dialog = Some(dialog);
                                     } else {
-                                        login::handle_logout(Some(&provider)).await
-                                    };
-                                    term_events = tui.start();
-                                    tui.force_render();
-                                    match result {
-                                        Ok(()) => add_status_to_chat(&mut tui, &format!("  {} {}", if login_mode { "Logged in to" } else { "Logged out from" }, provider)),
-                                        Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                        match login::remove_auth(&provider) {
+                                            Ok(true) => {
+                                                if provider == provider_name && cli.api_key.is_none() {
+                                                    api_key = login::resolve_api_key(&provider_name).unwrap_or_default();
+                                                }
+                                                update_footer(&mut tui, &model, &cwd_str, total_input_tokens, total_output_tokens, total_cost);
+                                                add_status_to_chat(&mut tui, &format!("  Logged out from {}", provider));
+                                            }
+                                            Ok(false) => add_status_to_chat(&mut tui, &style_error(&format!("Provider {} not found in auth store", provider))),
+                                            Err(e) => add_status_to_chat(&mut tui, &style_error(&format!("Auth error: {e}"))),
+                                        }
                                     }
                                     tui.render();
                                     continue;
@@ -835,13 +891,21 @@ impl StreamingState {
 
 // ── Footer update ──────────────────────────────────────────────────
 
+struct AuthDialog {
+    provider: String,
+    key_input: String,
+    env_var: String,
+    url: String,
+    has_env_key: bool,
+}
+
 fn provider_selector_list(is_login: bool) -> SelectList {
     let mut items: Vec<SelectItem> = login::list_known_providers()
         .into_iter()
         .filter(|(_, configured)| is_login || *configured)
         .map(|(name, configured)| SelectItem {
             label: name.clone(),
-            detail: Some(if configured { "configured".into() } else { "not configured".into() }),
+            detail: Some(if configured { "✓ logged in".into() } else { String::new() }),
             value: name,
         })
         .collect();
@@ -856,6 +920,40 @@ fn render_provider_selector(is_login: bool, list: &SelectList, width: u16) -> Ve
     let mut lines = vec![title.to_string(), String::new()];
     lines.extend(list.render(width));
     lines
+}
+
+fn make_auth_dialog(provider: String) -> AuthDialog {
+    let (env_var, url) = login::provider_meta(&provider);
+    let env_var = env_var.to_string();
+    let url = url.to_string();
+    let has_env_key = login::provider_has_env_key(&provider);
+    AuthDialog {
+        provider,
+        key_input: String::new(),
+        env_var,
+        url,
+        has_env_key,
+    }
+}
+
+fn render_auth_dialog(dialog: &AuthDialog, width: u16) -> Vec<String> {
+    let mut lines = vec![
+        format!("Login to {}", dialog.provider),
+        String::new(),
+    ];
+    if !dialog.url.is_empty() {
+        lines.push(format!("Get your API key from: {}", dialog.url));
+    }
+    lines.push(format!("Tip: you can also set {} in the environment", dialog.env_var));
+    if dialog.has_env_key {
+        lines.push(format!("{} is already set in the environment; saved key will override bb auth storage", dialog.env_var));
+    }
+    lines.push(String::new());
+    lines.push(format!("Enter API key for {}:", dialog.provider));
+    lines.push(format!("> {}", "*".repeat(dialog.key_input.chars().count())));
+    lines.push(String::new());
+    lines.push("Esc to cancel • Enter to save".to_string());
+    lines.into_iter().map(|line| bb_tui::utils::truncate_to_width(&line, width as usize)).collect()
 }
 
 fn model_selector_from_registry(
@@ -885,6 +983,14 @@ fn model_selector_from_registry(
     ModelSelector::from_models(models, 8)
 }
 
+fn available_provider_count() -> usize {
+    let count = login::list_known_providers()
+        .into_iter()
+        .filter(|(_, configured)| *configured)
+        .count();
+    count.max(1)
+}
+
 fn update_footer(
     tui: &mut TUI,
     model: &bb_provider::registry::Model,
@@ -902,6 +1008,7 @@ fn update_footer(
     footer.data.cwd = cwd.to_string();
     footer.data.context_window = model.context_window;
     footer.data.thinking_level = if model.reasoning { Some("medium".into()) } else { None };
+    footer.data.available_provider_count = available_provider_count();
     footer.data.input_tokens = input_tokens;
     footer.data.output_tokens = output_tokens;
     footer.data.cost = cost;

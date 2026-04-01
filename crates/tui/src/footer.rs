@@ -42,6 +42,7 @@ pub struct FooterData {
     pub context_window: u64,
     pub auto_compact: bool,
     pub thinking_level: Option<String>,
+    pub available_provider_count: usize,
 }
 
 impl Default for FooterData {
@@ -61,6 +62,7 @@ impl Default for FooterData {
             context_window: 128_000,
             auto_compact: true,
             thinking_level: None,
+            available_provider_count: 1,
         }
     }
 }
@@ -174,11 +176,13 @@ impl Component for Footer {
                 format!("{} • {}", right, level)
             };
         }
-        // Prepend provider if there's enough room
-        let right_with_provider = format!("({}) {}", d.provider, right);
-        let right_with_provider_width = visible_width(&right_with_provider);
-        if stats_left_width + 2 + right_with_provider_width <= w {
-            right = right_with_provider;
+        // Match pi: only prepend provider when multiple providers are available.
+        if d.available_provider_count > 1 {
+            let right_with_provider = format!("({}) {}", d.provider, right);
+            let right_with_provider_width = visible_width(&right_with_provider);
+            if stats_left_width + 2 + right_with_provider_width <= w {
+                right = right_with_provider;
+            }
         }
         let right_width = visible_width(&right);
 
