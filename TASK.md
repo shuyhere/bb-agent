@@ -1,202 +1,92 @@
-# Sprint 4: Wire TUI Components into Agent Loop
+# W2: Wire compaction into agent loop + auto-compact
 
-You are working in a git worktree at `/tmp/bb-worktrees/s4-wire-tui/`.
-This is the BB-Agent project — a Rust coding agent. Read `BLUEPRINT.md`, `PLAN.md`, and `TUI-PLAN.md` for context.
+Working dir: `/tmp/bb-w/w2-compaction-wire/`
 
-## Your task
+## Problem
+Compaction logic exists in `crates/session/src/compaction.rs` (prepare + compact + serialize) but is never called. The agent loop never checks if context is too large. `/compact` command is acknowledged but doesn't execute.
 
-Create an interactive mode controller that uses the TUI components (already built in
-`crates/tui/src/`) to provide a proper terminal UI. The TUI components exist but are
-NOT wired into the CLI's main loop — the CLI currently uses inline `print!()` statements.
+## Task
 
-### 1. Create `crates/cli/src/interactive.rs` (~800 lines)
+### 1. Add auto-compaction to the agent loop
 
-This is the interactive mode controller — the equivalent of pi's `interactive-mode.ts`.
+In `crates/cli/src/agent_loop.rs` (or `session.rs` if that's where the loop lives), after each turn:
 
 ```rust
-use bb_tui::terminal::{ProcessTerminal, Terminal};
-use bb_tui::renderer::DiffRenderer;
-use bb_tui::component::Container;
-use bb_tui::editor::Editor;
-use bb_tui::chat;
-use bb_tui::markdown::MarkdownRenderer;
-use bb_tui::status;
-use bb_tui::select_list::SelectList;
-use bb_tui::model_selector::ModelSelector;
-use bb_tui::session_selector::SessionSelector;
+// After appending assistant message and tool results to session
+let ctx = context::build_context(&conn, &session_id)?;
+let total_tokens: u64 = ctx.messages.iter()
+    .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+    .sum();
 
-pub struct InteractiveMode {
-    terminal: ProcessTerminal,
-    renderer: DiffRenderer,
-    editor: Editor,
-    messages: Vec<RenderedMessage>,
-    model_name: String,
-    total_tokens: u64,
-    context_window: u64,
-    total_cost: f64,
-}
+if compaction::should_compact(total_tokens, model.context_window, &compaction_settings) {
+    // Prepare compaction
+    let path = tree::active_path(&conn, &session_id)?;
+    if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+        // Execute compaction (call LLM for summary)
+        let result = compaction::compact(
+            &prep, provider, &model.id, &api_key, &base_url, None, cancel.clone()
+        ).await?;
 
-enum RenderedMessage {
-    User(Vec<String>),
-    Assistant(Vec<String>),   // pre-rendered markdown lines
-    ToolResult(Vec<String>),
-    Compaction(Vec<String>),
-    Streaming(Vec<String>),   // currently-streaming assistant message
-}
-```
+        // Append compaction entry to session
+        let comp_entry = SessionEntry::Compaction {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: get_leaf(&conn, &session_id),
+                timestamp: Utc::now(),
+            },
+            summary: result.summary,
+            first_kept_entry_id: EntryId(result.first_kept_entry_id),
+            tokens_before: result.tokens_before,
+            details: Some(serde_json::json!({
+                "readFiles": result.read_files,
+                "modifiedFiles": result.modified_files,
+            })),
+            from_plugin: false,
+        };
+        store::append_entry(&conn, &session_id, &comp_entry)?;
 
-#### Startup flow
-1. Create `ProcessTerminal` and enable raw mode
-2. Create `DiffRenderer`
-3. Print welcome banner
-4. Print status bar (model, context window)
-5. Show editor prompt at bottom
-6. Enter main event loop
-
-#### Main event loop
-```rust
-loop {
-    // Render: collect all message lines + status + editor → send to DiffRenderer
-    self.render();
-
-    // Wait for input event (key press or agent event)
-    match event {
-        EditorSubmit(text) => {
-            if text.starts_with('/') → handle slash command
-            if text.starts_with('!') → run bash directly
-            else → send prompt to agent session
-        }
-        AgentEvent(event) => {
-            match event {
-                TextDelta { text } → append to streaming markdown
-                ThinkingDelta { text } → show thinking indicator
-                ToolCallStart { name, .. } → show tool name
-                ToolExecuting { name, .. } → show spinner
-                ToolResult { .. } → show result preview
-                AssistantDone → finalize message, re-enable editor
-                Error { .. } → show error
-            }
-            self.render();  // re-render after each event
-        }
-        Resize → self.render()
-        Ctrl+C → abort current operation
-        Ctrl+D → exit
-        Ctrl+P → show model selector overlay
+        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
     }
 }
 ```
 
-#### Render function
+### 2. Wire `/compact` slash command
+
+In the slash command handler, when user types `/compact`:
+- Get active path from session
+- Call `prepare_compaction()` + `compact()`
+- Append compaction entry
+- Display confirmation
+
+When `/compact some instructions`:
+- Pass `Some("some instructions")` as custom_instructions
+
+### 3. Handle the compaction provider dependency
+
+The `compact()` function in `crates/session/src/compaction.rs` needs to call a provider. It currently takes provider params. Make sure it works with the actual providers (OpenAI and Anthropic).
+
+The compaction should use a simple non-streaming request:
 ```rust
-fn render(&mut self) {
-    let width = self.terminal.columns();
-    let mut lines: Vec<String> = Vec::new();
+let events = provider.complete(request, options).await?;
+let collected = CollectedResponse::from_events(&events);
+let summary = collected.text;
+```
 
-    // 1. All chat messages
-    for msg in &self.messages {
-        lines.extend(msg.lines());
-    }
+### 4. Tests
 
-    // 2. Status bar
-    lines.push(status::render_status(...));
-
-    // 3. Editor
-    lines.extend(self.editor.render(width));
-
-    // 4. Send to differential renderer
-    self.renderer.render(&lines, &mut self.terminal);
+Add a test that verifies auto-compaction triggers:
+```rust
+#[test]
+fn test_should_compact_triggers() {
+    let settings = CompactionSettings::default(); // reserve=16384
+    assert!(should_compact(120_000, 128_000, &settings)); // over threshold
+    assert!(!should_compact(100_000, 128_000, &settings)); // under threshold
 }
 ```
 
-#### Slash command handling
-Route to appropriate handler:
-- `/model` → show `ModelSelector` (use `select_list`)
-- `/resume` → show `SessionSelector`
-- `/compact` → call agent session compact
-- `/tree` → show tree (text for now)
-- `/login` / `/logout` → call login module
-- `/new` → create new session
-- `/help` → display help
-- `/quit` → exit
-
-#### Agent event display
-When the agent is running:
-- Add a `RenderedMessage::Streaming` entry
-- On each `TextDelta`, append text to the streaming buffer
-- Re-render the markdown for the streaming content
-- On `ToolCallStart`, show `⚡ tool_name` line
-- On `ToolResult`, show brief result preview (5 lines)
-- On `AssistantDone`, convert streaming to final `Assistant` message
-
-#### Session restore
-When `--continue` is used:
-- Load messages from session context
-- Render each message into `RenderedMessage` entries
-- Display them before showing editor
-
-### 2. Modify `crates/cli/src/main.rs`
-
-Add interactive mode routing:
-```rust
-if cli.print {
-    run::run_print_mode(cli).await
-} else {
-    interactive::run_interactive(cli).await
-}
-```
-
-### 3. Modify `crates/cli/src/run.rs`
-
-Rename/refactor the existing `run_agent` to `run_print_mode` for print mode only.
-The interactive path should go through `interactive.rs`.
-
-### 4. Handle keyboard input properly
-
-Use crossterm's event polling in the main loop:
-```rust
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
-use std::time::Duration;
-
-// Poll for input events with timeout
-if poll(Duration::from_millis(50))? {
-    if let Event::Key(key) = event::read()? {
-        // Handle key
-    }
-}
-
-// Also check for agent events from channel
-if let Ok(agent_event) = rx.try_recv() {
-    // Handle agent event
-}
-```
-
-### 5. Model selector integration
-
-When user types `/model`:
-1. Build list of models from registry
-2. Create `ModelSelector` 
-3. Enter selection loop (the selector handles its own key events)
-4. On selection: update agent session model
-5. Re-render status bar
-
-### Important notes
-
-- Do NOT use `ratatui`. Use crossterm directly + the existing TUI components.
-- The `DiffRenderer` in `tui/renderer.rs` handles differential rendering.
-- The `Editor` in `tui/editor.rs` handles user input.
-- Wrap all terminal output in synchronized output (`\x1b[?2026h` / `\x1b[?2026l`).
-- Clean up terminal on exit (disable raw mode, show cursor).
-- Handle Ctrl+C gracefully (abort current operation, don't crash).
-
-## Build and test
-
+### Build and test
 ```bash
-cd /tmp/bb-worktrees/s4-wire-tui
-cargo build
-cargo test
-```
-
-Make sure ALL existing tests still pass. Then commit:
-```bash
-git add -A && git commit -m "S4: wire TUI components into interactive mode"
+cd /tmp/bb-w/w2-compaction-wire
+cargo build && cargo test
+git add -A && git commit -m "W2: wire compaction into agent loop + /compact"
 ```

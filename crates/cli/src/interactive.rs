@@ -10,7 +10,7 @@ use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_provider::streaming::CollectedResponse;
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
-use bb_session::{context, store};
+use bb_session::{compaction, context, store, tree};
 use bb_tools::{builtin_tools, Tool, ToolContext};
 use bb_tui::editor::Editor;
 use bb_tui::markdown::MarkdownRenderer;
@@ -396,7 +396,47 @@ impl InteractiveMode {
         result
     }
 
-    fn handle_slash_command(&mut self, input: &str) -> bool {
+    async fn run_compaction(&mut self, custom_instructions: Option<&str>) -> Result<bool> {
+        let compaction_settings = CompactionSettings::default();
+        let path = tree::active_path(&self.conn, &self.session_id)?;
+        let prep = match compaction::prepare_compaction(&path, &compaction_settings) {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+
+        let cancel = CancellationToken::new();
+        let result = compaction::compact(
+            &prep,
+            self.provider.as_ref(),
+            &self.model.id,
+            &self.api_key,
+            &self.base_url,
+            custom_instructions,
+            cancel,
+        ).await?;
+
+        let comp_entry = SessionEntry::Compaction {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: get_leaf(&self.conn, &self.session_id),
+                timestamp: Utc::now(),
+            },
+            summary: result.summary,
+            first_kept_entry_id: EntryId(result.first_kept_entry_id),
+            tokens_before: result.tokens_before,
+            details: Some(serde_json::json!({
+                "readFiles": result.read_files,
+                "modifiedFiles": result.modified_files,
+            })),
+            from_plugin: false,
+        };
+        store::append_entry(&self.conn, &self.session_id, &comp_entry)?;
+
+        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
+        Ok(true)
+    }
+
+    async fn handle_slash_command(&mut self, input: &str) -> bool {
         match slash::handle_slash_command(input) {
             SlashResult::Exit => return false,
             SlashResult::Handled => {}
@@ -411,8 +451,12 @@ impl InteractiveMode {
                     Err(e) => println!("Error creating session: {e}"),
                 }
             }
-            SlashResult::Compact(_instructions) => {
-                println!("Compaction not yet implemented in interactive mode.");
+            SlashResult::Compact(instructions) => {
+                match self.run_compaction(instructions.as_deref()).await {
+                    Ok(true) => {},
+                    Ok(false) => println!("Nothing to compact."),
+                    Err(e) => println!("Compaction error: {e}"),
+                }
             }
             SlashResult::ModelSelect(_search) => {
                 if let Some(new_model) = self.run_model_selector() {
@@ -690,7 +734,7 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
                 }
                 _ => {
                     // Handle in method (for model/session selectors etc.)
-                    mode.handle_slash_command(&input);
+                    mode.handle_slash_command(&input).await;
                     continue;
                 }
             }
@@ -984,6 +1028,48 @@ async fn run_agent_turn(mode: &mut InteractiveMode, prompt: &str) -> Result<()> 
         }
 
         println!();
+
+        // Auto-compaction check after tool-use turn
+        let compaction_settings = CompactionSettings::default();
+        let ctx_check = context::build_context(&mode.conn, &mode.session_id)?;
+        let total_tokens: u64 = ctx_check.messages.iter()
+            .map(|m| compaction::estimate_tokens_text(&serde_json::to_string(m).unwrap_or_default()))
+            .sum();
+
+        if compaction::should_compact(total_tokens, mode.model.context_window, &compaction_settings) {
+            let path = tree::active_path(&mode.conn, &mode.session_id)?;
+            if let Some(prep) = compaction::prepare_compaction(&path, &compaction_settings) {
+                let cancel_compact = CancellationToken::new();
+                match compaction::compact(
+                    &prep, mode.provider.as_ref(), &mode.model.id,
+                    &mode.api_key, &mode.base_url, None, cancel_compact,
+                ).await {
+                    Ok(result) => {
+                        let comp_entry = SessionEntry::Compaction {
+                            base: EntryBase {
+                                id: EntryId::generate(),
+                                parent_id: get_leaf(&mode.conn, &mode.session_id),
+                                timestamp: Utc::now(),
+                            },
+                            summary: result.summary,
+                            first_kept_entry_id: EntryId(result.first_kept_entry_id),
+                            tokens_before: result.tokens_before,
+                            details: Some(serde_json::json!({
+                                "readFiles": result.read_files,
+                                "modifiedFiles": result.modified_files,
+                            })),
+                            from_plugin: false,
+                        };
+                        store::append_entry(&mode.conn, &mode.session_id, &comp_entry)?;
+                        println!("📦 Context compacted ({} tokens summarized)", result.tokens_before);
+                    }
+                    Err(e) => {
+                        eprintln!("Auto-compaction failed: {e}");
+                    }
+                }
+            }
+        }
+
         // Continue the agent loop for the next turn
     }
 
