@@ -164,11 +164,17 @@ impl Provider for AnthropicProvider {
     }
 }
 
+/// Track block index → tool_use ID for correlating deltas.
+static BLOCK_ID_MAP: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
     let event_type = event["type"].as_str().unwrap_or("");
 
     match event_type {
         "message_start" => {
+            // Clear block ID map for new message
+            BLOCK_ID_MAP.lock().unwrap().clear();
             if let Some(usage) = event.get("message").and_then(|m| m.get("usage")) {
                 let _ = tx.send(StreamEvent::Usage(UsageInfo {
                     input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
@@ -183,6 +189,9 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
                     "tool_use" => {
                         let id = block["id"].as_str().unwrap_or("").to_string();
                         let name = block["name"].as_str().unwrap_or("").to_string();
+                        let index = event["index"].as_u64().unwrap_or(0);
+                        // Track index → id mapping for delta correlation
+                        BLOCK_ID_MAP.lock().unwrap().insert(index, id.clone());
                         let _ = tx.send(StreamEvent::ToolCallStart { id, name });
                     }
                     // text and thinking blocks emit via deltas
@@ -210,10 +219,16 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
                     }
                     "input_json_delta" => {
                         if let Some(json_str) = delta["partial_json"].as_str() {
-                            // We need the index to find the tool call ID
                             let index = event["index"].as_u64().unwrap_or(0);
+                            // Look up the real tool_use ID from the block index
+                            let id = BLOCK_ID_MAP
+                                .lock()
+                                .unwrap()
+                                .get(&index)
+                                .cloned()
+                                .unwrap_or_else(|| format!("block_{index}"));
                             let _ = tx.send(StreamEvent::ToolCallDelta {
-                                id: format!("block_{index}"),
+                                id,
                                 arguments_delta: json_str.to_string(),
                             });
                         }
@@ -223,8 +238,10 @@ fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
             }
         }
         "content_block_stop" => {
-            // Tool call end — we'd need to track block index to ID mapping
-            // For now, handled via the accumulated arguments
+            let index = event["index"].as_u64().unwrap_or(0);
+            if let Some(id) = BLOCK_ID_MAP.lock().unwrap().get(&index).cloned() {
+                let _ = tx.send(StreamEvent::ToolCallEnd { id });
+            }
         }
         "message_delta" => {
             if let Some(usage) = event.get("usage") {

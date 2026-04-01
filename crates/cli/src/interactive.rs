@@ -1,8 +1,11 @@
-//! Interactive mode — scrollback-based TUI.
+//! Interactive mode — scrollback-based TUI matching pi's visual style.
 //!
-//! Design: messages are printed to the scrollback buffer (like a normal CLI).
-//! Only the editor at the bottom uses raw mode for input. Streaming output
-//! is printed in real-time as tokens arrive.
+//! Architecture (matching pi):
+//! - Chat messages are printed to the scrollback buffer (scroll naturally)
+//! - The editor at the bottom is the only part that uses raw mode
+//! - Streaming assistant output appears in real-time
+//! - Status bar shows model + context usage
+//! - Tool calls show with ⚡ indicator and result previews
 
 use anyhow::Result;
 use std::io::Write;
@@ -16,11 +19,10 @@ use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::{context, store};
 use bb_tools::{builtin_tools, Tool, ToolContext};
-use bb_tui::chat;
 use bb_tui::editor::Editor;
 use bb_tui::status;
 use chrono::Utc;
-use crossterm::style::{Color, Stylize};
+use crossterm::style::{Attribute, Color, Stylize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -28,22 +30,101 @@ use crate::login;
 use crate::slash::{self, SlashResult};
 use crate::Cli;
 
-/// Run bb in interactive mode.
+// ── Styling helpers (match pi's visual style) ───────────────────────
+
+fn style_header(text: &str) -> String {
+    format!("{}", text.with(Color::DarkGrey))
+}
+
+fn style_role_user() -> String {
+    format!("{}", "You".with(Color::Blue).bold())
+}
+
+fn style_role_assistant(model: &str) -> String {
+    format!(
+        "{} {}",
+        "Assistant".with(Color::Green).bold(),
+        format!("({})", model).with(Color::DarkGrey),
+    )
+}
+
+fn style_tool_call(name: &str) -> String {
+    format!(
+        "  {} {}",
+        "⚡".with(Color::Yellow),
+        name.bold(),
+    )
+}
+
+fn style_tool_running(name: &str) -> String {
+    format!(
+        "  {} {} ",
+        "⏳",
+        name.with(Color::Cyan),
+    )
+}
+
+fn style_tool_ok() -> String {
+    format!("{}", "✓".with(Color::Green))
+}
+
+fn style_tool_err() -> String {
+    format!("{}", "✗".with(Color::Red))
+}
+
+fn style_separator() -> String {
+    format!("{}", "─".repeat(60).with(Color::DarkGrey))
+}
+
+fn style_dim(text: &str) -> String {
+    format!("{}", text.with(Color::DarkGrey))
+}
+
+fn style_error(text: &str) -> String {
+    format!("{}", text.with(Color::Red))
+}
+
+// ── Banner (matches pi's startup header) ────────────────────────────
+
+fn print_banner(model_name: &str, context_window: u64) {
+    println!();
+    println!(
+        " {} v{}",
+        "bb-agent".with(Color::Cyan).bold(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    println!(
+        " {} {} {} {} {} {}",
+        "escape".with(Color::DarkGrey),
+        "to interrupt".with(Color::Grey),
+        "ctrl+c".with(Color::DarkGrey),
+        "to clear".with(Color::Grey),
+        "ctrl+d".with(Color::DarkGrey),
+        "to exit".with(Color::Grey),
+    );
+    println!(
+        " {} {} {} {}K",
+        "model:".with(Color::DarkGrey),
+        model_name.with(Color::Cyan),
+        "context:".with(Color::DarkGrey),
+        context_window / 1000,
+    );
+    println!();
+}
+
+// ── Main interactive mode ───────────────────────────────────────────
+
 pub async fn run_interactive(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
-
-    // Setup directories
     let global_dir = config::global_dir();
     std::fs::create_dir_all(&global_dir)?;
     let artifacts_dir = global_dir.join("artifacts");
     std::fs::create_dir_all(&artifacts_dir)?;
 
-    // Open session database
     let db_path = global_dir.join("sessions.db");
     let conn = store::open_db(&db_path)?;
-
-    // Session
     let cwd_str = cwd.to_str().unwrap_or(".");
+
     let session_id = if cli.r#continue {
         let sessions = store::list_sessions(&conn, cwd_str)?;
         match sessions.first() {
@@ -54,20 +135,17 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         store::create_session(&conn, cwd_str)?
     };
 
-    // Parse model
-    let (provider_name, model_id, _thinking) = crate::run::parse_model_arg(
+    let (provider_name, model_id, _) = crate::run::parse_model_arg(
         cli.provider.as_deref(),
         cli.model.as_deref(),
     );
 
-    // Load AGENTS.md
     let agents_md = crate::run::load_agents_md(&cwd);
     let system_prompt = agent::build_system_prompt(
         cli.system_prompt.as_deref().unwrap_or(DEFAULT_SYSTEM_PROMPT),
         agents_md.as_deref(),
     );
 
-    // Model registry + resolve
     let registry = ModelRegistry::new();
     let model = registry
         .find(&provider_name, &model_id)
@@ -84,30 +162,31 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             cost: Default::default(),
         });
 
-    // API key
-    let api_key = cli.api_key.clone().unwrap_or_else(|| {
-        login::resolve_api_key(&provider_name).unwrap_or_default()
-    });
+    let api_key = cli
+        .api_key
+        .clone()
+        .unwrap_or_else(|| login::resolve_api_key(&provider_name).unwrap_or_default());
+
     if api_key.is_empty() {
         eprintln!(
-            "{}",
+            " {}",
             format!(
-                "Warning: No API key for '{}'. Run `bb login` or set env var.",
-                provider_name
+                "⚠ No API key for '{}'. Run `bb login {}` or set env var.",
+                provider_name, provider_name,
             )
             .with(Color::Yellow)
         );
     }
+
     let base_url = model
         .base_url
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
-    // Tools
     let tools = builtin_tools();
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
-        artifacts_dir: artifacts_dir.clone(),
+        artifacts_dir,
         on_output: None,
     };
     let tool_defs: Vec<serde_json::Value> = tools
@@ -124,92 +203,45 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
         })
         .collect();
 
-    // Provider
     let provider: Box<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
         _ => Box::new(OpenAiProvider::new()),
     };
 
-    // Editor
     let mut editor = Editor::new("> ");
 
-    // ── Banner ──
-    println!(
-        "\n {} v{}",
-        "bb-agent".with(Color::Cyan).bold(),
-        env!("CARGO_PKG_VERSION"),
-    );
-    println!(
-        " {} {} | {} {}K context",
-        "model:".with(Color::DarkGrey),
-        model.name.clone().with(Color::Cyan),
-        "window:".with(Color::DarkGrey),
-        model.context_window / 1000,
-    );
-    println!(
-        " {} to submit, {} to exit\n",
-        "Enter".with(Color::DarkGrey),
-        "Ctrl+D".with(Color::DarkGrey),
-    );
+    // ── Startup ──
+    print_banner(&model.name, model.context_window);
 
-    // If --continue, show restored messages
+    // If --continue, display restored messages
     if cli.r#continue {
         if let Ok(ctx) = context::build_context(&conn, &session_id) {
             for msg in &ctx.messages {
-                let lines = chat::render_message(msg);
-                for line in &lines {
-                    println!("{line}");
-                }
+                display_message(msg, &model.id);
             }
         }
     }
 
-    // If initial prompt provided, run it
+    // If initial prompt, run it
     if !cli.messages.is_empty() {
         let prompt = cli.messages.join(" ");
         run_turn(
-            &conn,
-            &session_id,
-            &prompt,
-            &system_prompt,
-            &model,
-            &*provider,
-            &api_key,
-            &base_url,
-            &tools,
-            &tool_defs,
-            &tool_ctx,
-            cli.thinking.as_deref(),
+            &conn, &session_id, &prompt, &system_prompt, &model,
+            &*provider, &api_key, &base_url, &tools, &tool_defs,
+            &tool_ctx, cli.thinking.as_deref(),
         )
         .await?;
     }
 
     // ── Main loop ──
     loop {
-        // Show status bar before editor
-        let ctx_usage = context::build_context(&conn, &session_id).ok();
-        let total_tokens = ctx_usage.as_ref().map(|c| {
-            c.messages
-                .iter()
-                .map(|m| {
-                    let s = serde_json::to_string(m).unwrap_or_default();
-                    (s.len() as u64) / 4
-                })
-                .sum::<u64>()
-        });
-        let status_line = status::render_status(
-            Some(&model.name),
-            total_tokens,
-            Some(model.context_window),
-        );
-        if !status_line.is_empty() {
-            println!("{status_line}");
-        }
+        // Status bar
+        print_status(&conn, &session_id, &model);
 
-        // Read input (blocking, raw mode inside)
+        // Read input
         let input = match editor.read_line() {
             Some(text) => text,
-            None => break, // Ctrl+D / Ctrl+C on empty
+            None => break,
         };
 
         let input = input.trim().to_string();
@@ -217,120 +249,128 @@ pub async fn run_interactive(cli: Cli) -> Result<()> {
             continue;
         }
 
-        // ── Bash shortcut ──
+        // Bash shortcut
         if input.starts_with('!') {
-            let cmd = input.strip_prefix("!!").or_else(|| input.strip_prefix('!'));
-            if let Some(cmd) = cmd {
-                let cmd = cmd.trim();
-                if !cmd.is_empty() {
-                    println!("  {} {}", "$".with(Color::DarkGrey), cmd);
-                    let output = std::process::Command::new("bash")
-                        .arg("-c")
-                        .arg(cmd)
-                        .current_dir(&cwd)
-                        .output()?;
-                    print!("{}", String::from_utf8_lossy(&output.stdout));
-                    if !output.stderr.is_empty() {
-                        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
-                    println!();
-                }
+            handle_bash(&input, &cwd);
+            continue;
+        }
+
+        // Slash commands
+        if input.starts_with('/') {
+            let done = handle_slash(&input, &conn, &session_id, cwd_str).await?;
+            if done {
+                break;
             }
             continue;
         }
 
-        // ── Slash commands ──
-        if input.starts_with('/') {
-            match slash::handle_slash_command(&input) {
-                SlashResult::Exit => break,
-                SlashResult::Handled => continue,
-                SlashResult::NewSession => {
-                    // Can't rebind conn easily, just inform
-                    println!("  Start a new `bb` session to get a fresh context.");
-                    continue;
-                }
-                SlashResult::Compact(_instructions) => {
-                    println!("  {} Compacting...", "📦".with(Color::DarkGrey));
-                    // TODO: wire to real compaction
-                    println!("  (manual compaction not yet wired)");
-                    continue;
-                }
-                SlashResult::ModelSelect(_search) => {
-                    crate::models::list_models(None);
-                    continue;
-                }
-                SlashResult::Resume => {
-                    let sessions = store::list_sessions(&conn, cwd_str)?;
-                    if sessions.is_empty() {
-                        println!("  No sessions to resume.");
-                    } else {
-                        for (i, s) in sessions.iter().take(10).enumerate() {
-                            let name = s.name.as_deref().unwrap_or("(unnamed)");
-                            println!(
-                                "  {}. {} {} ({} entries)",
-                                i + 1,
-                                &s.session_id[..8],
-                                name,
-                                s.entry_count
-                            );
-                        }
-                    }
-                    continue;
-                }
-                SlashResult::Tree | SlashResult::Fork => {
-                    println!("  (not yet implemented in interactive mode)");
-                    continue;
-                }
-                SlashResult::Login => {
-                    login::handle_login(None).await?;
-                    continue;
-                }
-                SlashResult::Logout => {
-                    login::handle_logout(None).await?;
-                    continue;
-                }
-                SlashResult::SetName(name) => {
-                    println!("  Session named: {name}");
-                    continue;
-                }
-                SlashResult::SessionInfo => {
-                    if let Some(session) = store::get_session(&conn, &session_id)? {
-                        println!("  Session: {}", &session.session_id[..8]);
-                        println!("  Name:    {}", session.name.unwrap_or("(unnamed)".into()));
-                        println!("  CWD:     {}", session.cwd);
-                        println!("  Entries: {}", session.entry_count);
-                    }
-                    continue;
-                }
-                SlashResult::NotCommand => {
-                    // Not a command — fall through and send to LLM
-                }
-            }
-        }
-
-        // ── Send to agent ──
+        // Send to agent
         run_turn(
-            &conn,
-            &session_id,
-            &input,
-            &system_prompt,
-            &model,
-            &*provider,
-            &api_key,
-            &base_url,
-            &tools,
-            &tool_defs,
-            &tool_ctx,
-            cli.thinking.as_deref(),
+            &conn, &session_id, &input, &system_prompt, &model,
+            &*provider, &api_key, &base_url, &tools, &tool_defs,
+            &tool_ctx, cli.thinking.as_deref(),
         )
         .await?;
     }
 
-    println!("\n  {}\n", "Goodbye!".with(Color::DarkGrey));
+    println!("\n {}\n", "Goodbye!".with(Color::DarkGrey));
     Ok(())
 }
 
-/// Run one user prompt through the full agent loop with streaming display.
+// ── Display a stored message (for session restore) ──────────────────
+
+fn display_message(msg: &AgentMessage, model_id: &str) {
+    match msg {
+        AgentMessage::User(u) => {
+            println!(" {}", style_role_user());
+            for block in &u.content {
+                if let ContentBlock::Text { text } = block {
+                    for line in text.lines() {
+                        println!("  {line}");
+                    }
+                }
+            }
+            println!();
+        }
+        AgentMessage::Assistant(a) => {
+            println!(" {}", style_role_assistant(model_id));
+            for block in &a.content {
+                match block {
+                    AssistantContent::Text { text } => {
+                        for line in text.lines() {
+                            println!("  {line}");
+                        }
+                    }
+                    AssistantContent::Thinking { .. } => {
+                        println!("  {}", style_dim("[thinking]"));
+                    }
+                    AssistantContent::ToolCall { name, .. } => {
+                        println!("{}", style_tool_call(name));
+                    }
+                }
+            }
+            println!();
+        }
+        AgentMessage::ToolResult(t) => {
+            let status = if t.is_error { style_tool_err() } else { style_tool_ok() };
+            println!("  {} {} result:", status, t.tool_name.clone().with(Color::Cyan));
+            for block in &t.content {
+                if let ContentBlock::Text { text } = block {
+                    for line in text.lines().take(5) {
+                        println!("    {}", style_dim(line));
+                    }
+                    let total = text.lines().count();
+                    if total > 5 {
+                        println!("    {}", style_dim(&format!("[{} more lines]", total - 5)));
+                    }
+                }
+            }
+            println!();
+        }
+        AgentMessage::CompactionSummary(c) => {
+            println!(
+                " {} {}",
+                "📦".with(Color::DarkGrey),
+                format!("[compaction: {} tokens summarized]", c.tokens_before).with(Color::DarkGrey),
+            );
+            println!();
+        }
+        AgentMessage::BranchSummary(b) => {
+            println!(
+                " {} {}",
+                "🌿".with(Color::DarkGrey),
+                format!("[branch summary from {}]", b.from_id).with(Color::DarkGrey),
+            );
+            println!();
+        }
+        _ => {}
+    }
+}
+
+// ── Print status bar ────────────────────────────────────────────────
+
+fn print_status(conn: &rusqlite::Connection, session_id: &str, model: &bb_provider::registry::Model) {
+    let tokens = context::build_context(conn, session_id)
+        .ok()
+        .map(|c| {
+            c.messages
+                .iter()
+                .map(|m| serde_json::to_string(m).unwrap_or_default().len() as u64 / 4)
+                .sum::<u64>()
+        });
+
+    let line = status::render_status(
+        Some(&model.name),
+        tokens,
+        Some(model.context_window),
+    );
+    if !line.is_empty() {
+        println!("{line}");
+    }
+}
+
+// ── Agent turn with streaming ───────────────────────────────────────
+
 async fn run_turn(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -345,7 +385,7 @@ async fn run_turn(
     tool_ctx: &ToolContext,
     thinking: Option<&str>,
 ) -> Result<()> {
-    // ── Append + display user message ──
+    // Append + display user message
     let user_entry = SessionEntry::Message {
         base: EntryBase {
             id: EntryId::generate(),
@@ -353,29 +393,20 @@ async fn run_turn(
             timestamp: Utc::now(),
         },
         message: AgentMessage::User(UserMessage {
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
+            content: vec![ContentBlock::Text { text: prompt.to_string() }],
             timestamp: Utc::now().timestamp_millis(),
         }),
     };
     store::append_entry(conn, session_id, &user_entry)?;
 
-    // Display user message
-    println!(
-        "\n {} {}",
-        "You".with(Color::Blue).bold(),
-        "".with(Color::DarkGrey),
-    );
+    println!("\n {}", style_role_user());
     println!("  {}\n", prompt);
 
-    // ── Agent loop ──
+    // Agent loop
     loop {
-        // Build context
         let ctx = context::build_context(conn, session_id)?;
         let provider_messages = crate::run::messages_to_provider(&ctx.messages);
 
-        // Build request
         let request = CompletionRequest {
             system_prompt: system_prompt.to_string(),
             messages: provider_messages,
@@ -392,28 +423,17 @@ async fn run_turn(
             cancel: CancellationToken::new(),
         };
 
-        // Stream response with real-time display
+        // Stream
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        // Print assistant header
-        print!(
-            " {}{}",
-            "Assistant".with(Color::Green).bold(),
-            format!(" ({})", model.id).with(Color::DarkGrey),
-        );
-        println!();
+        println!(" {}", style_role_assistant(&model.id));
 
-        // Spawn streaming request
         let stream_result = provider.stream(request, options, tx).await;
         if let Err(e) = stream_result {
-            println!(
-                "  {}",
-                format!("Error: {e}").with(Color::Red)
-            );
+            println!("  {}", style_error(&format!("Error: {e}")));
             break;
         }
 
-        // Collect events while displaying
         let mut all_events = Vec::new();
         let mut text_started = false;
 
@@ -429,87 +449,53 @@ async fn run_turn(
                 }
                 StreamEvent::ThinkingDelta { .. } => {
                     if !text_started {
-                        print!(
-                            "  {}",
-                            "[thinking...] ".with(Color::DarkGrey),
-                        );
+                        print!("  {}", style_dim("[thinking...] "));
                         std::io::stdout().flush().ok();
                     }
                 }
                 StreamEvent::ToolCallStart { name, .. } => {
                     if text_started {
                         println!();
+                        text_started = false;
                     }
-                    print!(
-                        "  {} {}",
-                        "⚡".with(Color::Yellow),
-                        name.clone().bold(),
-                    );
-                    std::io::stdout().flush().ok();
-                }
-                StreamEvent::ToolCallEnd { .. } => {
-                    println!();
+                    println!("{}", style_tool_call(name));
                 }
                 StreamEvent::Error { message } => {
-                    println!();
-                    println!(
-                        "  {}",
-                        format!("Error: {message}").with(Color::Red)
-                    );
+                    if text_started {
+                        println!();
+                    }
+                    println!("  {}", style_error(&format!("Error: {message}")));
                 }
-                StreamEvent::Done | StreamEvent::Usage(_) | StreamEvent::ToolCallDelta { .. } => {}
+                _ => {}
             }
             all_events.push(event);
         }
 
-        // Ensure newline after output
         if text_started {
             println!();
         }
         println!();
 
-        // Collect final response
+        // Collect response
         let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
 
-        // Build and store assistant message
-        let mut assistant_content = Vec::new();
+        // Build assistant message
+        let mut content = Vec::new();
         if !collected.thinking.is_empty() {
-            assistant_content.push(AssistantContent::Thinking {
-                thinking: collected.thinking,
-            });
+            content.push(AssistantContent::Thinking { thinking: collected.thinking });
         }
         if !collected.text.is_empty() {
-            assistant_content.push(AssistantContent::Text {
-                text: collected.text,
-            });
+            content.push(AssistantContent::Text { text: collected.text });
         }
         for tc in &collected.tool_calls {
             let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-            assistant_content.push(AssistantContent::ToolCall {
+            content.push(AssistantContent::ToolCall {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
                 arguments: args,
             });
         }
-
-        let assistant_msg = AgentMessage::Assistant(AssistantMessage {
-            content: assistant_content,
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            usage: Usage {
-                input: collected.input_tokens,
-                output: collected.output_tokens,
-                ..Default::default()
-            },
-            stop_reason: if collected.tool_calls.is_empty() {
-                StopReason::Stop
-            } else {
-                StopReason::ToolUse
-            },
-            error_message: None,
-            timestamp: Utc::now().timestamp_millis(),
-        });
 
         let asst_entry = SessionEntry::Message {
             base: EntryBase {
@@ -517,74 +503,65 @@ async fn run_turn(
                 parent_id: get_leaf(conn, session_id),
                 timestamp: Utc::now(),
             },
-            message: assistant_msg,
+            message: AgentMessage::Assistant(AssistantMessage {
+                content,
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                usage: Usage {
+                    input: collected.input_tokens,
+                    output: collected.output_tokens,
+                    ..Default::default()
+                },
+                stop_reason: if collected.tool_calls.is_empty() { StopReason::Stop } else { StopReason::ToolUse },
+                error_message: None,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
         };
         store::append_entry(conn, session_id, &asst_entry)?;
 
-        // No tool calls → done
         if collected.tool_calls.is_empty() {
             break;
         }
 
-        // ── Execute tool calls ──
+        // Execute tools
         let cancel = CancellationToken::new();
         for tc in &collected.tool_calls {
             let args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
 
-            print!(
-                "  {} {} ",
-                "⏳",
-                tc.name.clone().with(Color::Cyan),
-            );
+            print!("{}", style_tool_running(&tc.name));
             std::io::stdout().flush().ok();
 
             let tool = tools.iter().find(|t| t.name() == tc.name);
             let result = match tool {
                 Some(t) => t.execute(args, tool_ctx, cancel.clone()).await,
-                None => Err(bb_core::error::BbError::Tool(format!(
-                    "Unknown tool: {}",
-                    tc.name
-                ))),
+                None => Err(bb_core::error::BbError::Tool(format!("Unknown tool: {}", tc.name))),
             };
 
             let (content, is_error) = match result {
                 Ok(r) => {
-                    println!("{}", "✓".with(Color::Green));
-                    // Show brief preview
+                    println!("{}", style_tool_ok());
                     for block in &r.content {
                         if let ContentBlock::Text { text } = block {
-                            let preview: Vec<&str> = text.lines().take(5).collect();
-                            for line in &preview {
-                                println!(
-                                    "    {}",
-                                    line.with(Color::DarkGrey)
-                                );
+                            for line in text.lines().take(5) {
+                                println!("    {}", style_dim(line));
                             }
                             let total = text.lines().count();
                             if total > 5 {
-                                println!(
-                                    "    {}",
-                                    format!("[{} more lines]", total - 5)
-                                        .with(Color::DarkGrey)
-                                );
+                                println!("    {}", style_dim(&format!("[{} more lines]", total - 5)));
                             }
                         }
                     }
                     (r.content, r.is_error)
                 }
                 Err(e) => {
-                    println!("{}", "✗".with(Color::Red));
+                    println!("{}", style_tool_err());
                     let msg = format!("Error: {e}");
-                    println!("    {}", msg.clone().with(Color::Red));
-                    (
-                        vec![ContentBlock::Text { text: msg }],
-                        true,
-                    )
+                    println!("    {}", style_error(&msg));
+                    (vec![ContentBlock::Text { text: msg }], true)
                 }
             };
 
-            // Store tool result
             let tr_entry = SessionEntry::Message {
                 base: EntryBase {
                     id: EntryId::generate(),
@@ -604,10 +581,108 @@ async fn run_turn(
         }
 
         println!();
-        // Continue loop — next LLM call will see tool results
     }
 
     Ok(())
+}
+
+// ── Bash shortcut ───────────────────────────────────────────────────
+
+fn handle_bash(input: &str, cwd: &std::path::Path) {
+    let cmd = input
+        .strip_prefix("!!")
+        .or_else(|| input.strip_prefix('!'))
+        .unwrap_or("")
+        .trim();
+    if cmd.is_empty() {
+        return;
+    }
+    println!("  {} {}", "$".with(Color::DarkGrey), cmd);
+    match std::process::Command::new("bash")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(cwd)
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
+        }
+        Err(e) => {
+            println!("  {}", style_error(&format!("bash error: {e}")));
+        }
+    }
+    println!();
+}
+
+// ── Slash command handling ──────────────────────────────────────────
+
+async fn handle_slash(
+    input: &str,
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    cwd_str: &str,
+) -> Result<bool> {
+    match slash::handle_slash_command(input) {
+        SlashResult::Exit => return Ok(true),
+        SlashResult::Handled => {}
+        SlashResult::NewSession => {
+            println!("  Start a new `bb` to get a fresh session.");
+        }
+        SlashResult::Compact(_) => {
+            println!("  {}", style_dim("(manual compaction not yet wired)"));
+        }
+        SlashResult::ModelSelect(_) => {
+            crate::models::list_models(None);
+        }
+        SlashResult::Resume => {
+            let sessions = store::list_sessions(conn, cwd_str)?;
+            if sessions.is_empty() {
+                println!("  No sessions to resume.");
+            } else {
+                println!("  {}", "Recent sessions:".bold());
+                for (i, s) in sessions.iter().take(10).enumerate() {
+                    let name = s.name.as_deref().unwrap_or("(unnamed)");
+                    println!(
+                        "  {}. {} {} ({} entries)",
+                        i + 1,
+                        &s.session_id[..8],
+                        name.with(Color::Cyan),
+                        s.entry_count,
+                    );
+                }
+            }
+        }
+        SlashResult::Tree | SlashResult::Fork => {
+            println!("  {}", style_dim("(not yet implemented)"));
+        }
+        SlashResult::Login => {
+            login::handle_login(None).await?;
+        }
+        SlashResult::Logout => {
+            login::handle_logout(None).await?;
+        }
+        SlashResult::SetName(name) => {
+            println!("  Session named: {}", name.with(Color::Cyan));
+        }
+        SlashResult::SessionInfo => {
+            if let Ok(Some(session)) = store::get_session(conn, session_id) {
+                println!("  Session:  {}", &session.session_id[..8]);
+                println!("  Name:     {}", session.name.unwrap_or("(unnamed)".into()));
+                println!("  CWD:      {}", session.cwd);
+                println!("  Entries:  {}", session.entry_count);
+                println!("  Updated:  {}", session.updated_at);
+            }
+        }
+        SlashResult::NotCommand => {}
+    }
+    Ok(false)
 }
 
 fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {

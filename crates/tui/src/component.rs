@@ -1,18 +1,22 @@
-use crossterm::event::KeyEvent;
+//! Component trait and Container — the building blocks of the TUI.
+//!
+//! Matches pi-tui's Component/Container model:
+//! - Component renders to lines given a width
+//! - Container holds children and renders them vertically
 
-/// A renderable UI component.
-pub trait Component: Send {
-    /// Render this component into lines for the given terminal width.
+/// A renderable TUI component.
+pub trait Component {
+    /// Render to terminal lines for the given width.
     fn render(&self, width: u16) -> Vec<String>;
 
-    /// Handle a key input event.
-    fn handle_input(&mut self, _event: &KeyEvent) {}
+    /// Handle keyboard input (when focused). Called with raw crossterm data.
+    fn handle_input(&mut self, _key: &crossterm::event::KeyEvent) {}
 
-    /// Mark this component as needing re-render.
+    /// Invalidate cached rendering state (e.g., on theme/width change).
     fn invalidate(&mut self) {}
 }
 
-/// A vertical container that renders children top-to-bottom.
+/// A container that renders children vertically.
 pub struct Container {
     pub children: Vec<Box<dyn Component>>,
 }
@@ -26,6 +30,10 @@ impl Container {
 
     pub fn add(&mut self, child: Box<dyn Component>) {
         self.children.push(child);
+    }
+
+    pub fn clear(&mut self) {
+        self.children.clear();
     }
 }
 
@@ -42,12 +50,6 @@ impl Component for Container {
             lines.extend(child.render(width));
         }
         lines
-    }
-
-    fn handle_input(&mut self, event: &KeyEvent) {
-        for child in &mut self.children {
-            child.handle_input(event);
-        }
     }
 
     fn invalidate(&mut self) {
