@@ -1,4 +1,5 @@
 pub mod registry;
+pub mod resolver;
 pub mod openai;
 pub mod anthropic;
 pub mod streaming;

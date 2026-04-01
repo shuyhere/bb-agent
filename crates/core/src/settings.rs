@@ -1,0 +1,377 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+
+// =============================================================================
+// Helper defaults for serde
+// =============================================================================
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_reserve() -> u64 {
+    16384
+}
+
+fn default_keep() -> u64 {
+    20000
+}
+
+// =============================================================================
+// Settings
+// =============================================================================
+
+/// Layered settings: global (`~/.bb-agent/settings.json`) merged with
+/// project (`.bb-agent/settings.json`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_thinking: Option<String>,
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub models: Option<Vec<ModelOverride>>,
+    #[serde(default)]
+    pub providers: Option<Vec<ProviderOverride>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_reserve")]
+    pub reserve_tokens: u64,
+    #[serde(default = "default_keep")]
+    pub keep_recent_tokens: u64,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            reserve_tokens: default_reserve(),
+            keep_recent_tokens: default_keep(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelOverride {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub provider: String,
+    #[serde(default)]
+    pub api: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    #[serde(default)]
+    pub reasoning: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderOverride {
+    pub name: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub api: Option<String>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+}
+
+impl Settings {
+    /// Load the global settings from `~/.bb-agent/settings.json`.
+    pub fn load_global() -> Self {
+        let dir = crate::config::global_dir();
+        let path = dir.join("settings.json");
+        Self::load_from_file(&path)
+    }
+
+    /// Load project-local settings by walking up from `cwd` looking for
+    /// `.bb-agent/settings.json`.
+    pub fn load_project(cwd: &Path) -> Self {
+        let path = cwd.join(".bb-agent").join("settings.json");
+        Self::load_from_file(&path)
+    }
+
+    /// Load settings from a specific file path, returning defaults if the
+    /// file doesn't exist or can't be parsed.
+    pub fn load_from_file(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Merge project settings on top of global settings.
+    /// Project values override global when present (non-None / non-default).
+    pub fn merge(global: &Self, project: &Self) -> Self {
+        Self {
+            compaction: merge_compaction(&global.compaction, &project.compaction),
+            default_provider: project
+                .default_provider
+                .clone()
+                .or_else(|| global.default_provider.clone()),
+            default_model: project
+                .default_model
+                .clone()
+                .or_else(|| global.default_model.clone()),
+            default_thinking: project
+                .default_thinking
+                .clone()
+                .or_else(|| global.default_thinking.clone()),
+            tools: project
+                .tools
+                .clone()
+                .or_else(|| global.tools.clone()),
+            models: merge_optional_vec(&global.models, &project.models),
+            providers: merge_optional_vec_providers(&global.providers, &project.providers),
+        }
+    }
+
+    /// Convenience: load global + project and merge.
+    pub fn load_merged(cwd: &Path) -> Self {
+        let global = Self::load_global();
+        let project = Self::load_project(cwd);
+        Self::merge(&global, &project)
+    }
+
+    /// Convert compaction config to the core CompactionSettings type.
+    pub fn compaction_settings(&self) -> crate::types::CompactionSettings {
+        crate::types::CompactionSettings {
+            enabled: self.compaction.enabled,
+            reserve_tokens: self.compaction.reserve_tokens,
+            keep_recent_tokens: self.compaction.keep_recent_tokens,
+        }
+    }
+}
+
+// =============================================================================
+// Merge helpers
+// =============================================================================
+
+fn merge_compaction(global: &CompactionConfig, project: &CompactionConfig) -> CompactionConfig {
+    let defaults = CompactionConfig::default();
+    CompactionConfig {
+        enabled: if !project.enabled && defaults.enabled {
+            // Project explicitly disabled
+            false
+        } else {
+            project.enabled
+        },
+        reserve_tokens: if project.reserve_tokens != defaults.reserve_tokens {
+            project.reserve_tokens
+        } else {
+            global.reserve_tokens
+        },
+        keep_recent_tokens: if project.keep_recent_tokens != defaults.keep_recent_tokens {
+            project.keep_recent_tokens
+        } else {
+            global.keep_recent_tokens
+        },
+    }
+}
+
+/// Merge model overrides: project models override global models with the
+/// same id, and any new project models are appended.
+fn merge_optional_vec(
+    global: &Option<Vec<ModelOverride>>,
+    project: &Option<Vec<ModelOverride>>,
+) -> Option<Vec<ModelOverride>> {
+    match (global, project) {
+        (None, None) => None,
+        (Some(g), None) => Some(g.clone()),
+        (None, Some(p)) => Some(p.clone()),
+        (Some(g), Some(p)) => {
+            let mut merged = g.clone();
+            for pm in p {
+                if let Some(pos) = merged.iter().position(|m| m.id == pm.id) {
+                    merged[pos] = pm.clone();
+                } else {
+                    merged.push(pm.clone());
+                }
+            }
+            Some(merged)
+        }
+    }
+}
+
+/// Merge provider overrides similarly.
+fn merge_optional_vec_providers(
+    global: &Option<Vec<ProviderOverride>>,
+    project: &Option<Vec<ProviderOverride>>,
+) -> Option<Vec<ProviderOverride>> {
+    match (global, project) {
+        (None, None) => None,
+        (Some(g), None) => Some(g.clone()),
+        (None, Some(p)) => Some(p.clone()),
+        (Some(g), Some(p)) => {
+            let mut merged = g.clone();
+            for pp in p {
+                if let Some(pos) = merged.iter().position(|pr| pr.name == pp.name) {
+                    merged[pos] = pp.clone();
+                } else {
+                    merged.push(pp.clone());
+                }
+            }
+            Some(merged)
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_default() {
+        let s = Settings::default();
+        assert!(s.compaction.enabled);
+        assert_eq!(s.compaction.reserve_tokens, 16384);
+        assert_eq!(s.compaction.keep_recent_tokens, 20000);
+        assert!(s.default_provider.is_none());
+        assert!(s.default_model.is_none());
+    }
+
+    #[test]
+    fn test_settings_deserialize() {
+        let json = r#"{
+            "default_provider": "anthropic",
+            "default_model": "sonnet",
+            "compaction": {
+                "enabled": false,
+                "reserve_tokens": 8000
+            },
+            "models": [
+                {
+                    "id": "my-model",
+                    "provider": "custom",
+                    "context_window": 32000
+                }
+            ]
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.default_provider.as_deref(), Some("anthropic"));
+        assert!(!s.compaction.enabled);
+        assert_eq!(s.compaction.reserve_tokens, 8000);
+        assert_eq!(s.compaction.keep_recent_tokens, 20000); // default
+        assert_eq!(s.models.as_ref().unwrap().len(), 1);
+        assert_eq!(s.models.as_ref().unwrap()[0].id, "my-model");
+    }
+
+    #[test]
+    fn test_settings_merge() {
+        let global = Settings {
+            default_provider: Some("openai".into()),
+            default_model: Some("gpt-4o".into()),
+            compaction: CompactionConfig {
+                enabled: true,
+                reserve_tokens: 8192,
+                keep_recent_tokens: 20000,
+            },
+            models: Some(vec![ModelOverride {
+                id: "custom-1".into(),
+                name: Some("Custom 1".into()),
+                provider: "custom".into(),
+                api: None,
+                base_url: None,
+                context_window: Some(32000),
+                max_tokens: None,
+                reasoning: None,
+            }]),
+            ..Default::default()
+        };
+
+        let project = Settings {
+            default_provider: Some("anthropic".into()),
+            // default_model left as None — global should win
+            models: Some(vec![ModelOverride {
+                id: "custom-2".into(),
+                name: Some("Custom 2".into()),
+                provider: "local".into(),
+                api: None,
+                base_url: Some("http://localhost:8080".into()),
+                context_window: Some(16000),
+                max_tokens: None,
+                reasoning: None,
+            }]),
+            ..Default::default()
+        };
+
+        let merged = Settings::merge(&global, &project);
+
+        // Project overrides provider
+        assert_eq!(merged.default_provider.as_deref(), Some("anthropic"));
+        // Global model preserved since project is None
+        assert_eq!(merged.default_model.as_deref(), Some("gpt-4o"));
+        // Global reserve_tokens preserved (project is default)
+        assert_eq!(merged.compaction.reserve_tokens, 8192);
+        // Both models present
+        let models = merged.models.unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "custom-1");
+        assert_eq!(models[1].id, "custom-2");
+    }
+
+    #[test]
+    fn test_settings_merge_model_override() {
+        let global = Settings {
+            models: Some(vec![ModelOverride {
+                id: "my-model".into(),
+                name: Some("Old Name".into()),
+                provider: "openai".into(),
+                api: None,
+                base_url: None,
+                context_window: Some(32000),
+                max_tokens: None,
+                reasoning: None,
+            }]),
+            ..Default::default()
+        };
+
+        let project = Settings {
+            models: Some(vec![ModelOverride {
+                id: "my-model".into(),
+                name: Some("New Name".into()),
+                provider: "openai".into(),
+                api: None,
+                base_url: Some("http://localhost".into()),
+                context_window: Some(64000),
+                max_tokens: None,
+                reasoning: None,
+            }]),
+            ..Default::default()
+        };
+
+        let merged = Settings::merge(&global, &project);
+        let models = merged.models.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name.as_deref(), Some("New Name"));
+        assert_eq!(models[0].context_window, Some(64000));
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let s = Settings::load_from_file(Path::new("/nonexistent/path/settings.json"));
+        assert!(s.compaction.enabled);
+        assert!(s.default_provider.is_none());
+    }
+}
