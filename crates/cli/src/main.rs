@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod agent_loop;
-#[path = "interactive/mod.rs"]
+#[path = "interactive.rs"]
 mod interactive;
 mod login;
 mod models;
