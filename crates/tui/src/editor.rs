@@ -19,11 +19,39 @@ use crate::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
+/// Simple base64 encoder for OSC 52 clipboard support.
+fn base64_encode(input: &str) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut result = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
 /// Editor state.
 struct EditorState {
     lines: Vec<String>,
     cursor_line: usize,
     cursor_col: usize,
+    /// Anchor point for text selection (line, col). When set, selection extends from anchor to cursor.
+    selection_anchor: Option<(usize, usize)>,
 }
 
 /// Snapshot for undo/redo.
@@ -84,6 +112,7 @@ impl Editor {
                 lines: vec![String::new()],
                 cursor_line: 0,
                 cursor_col: 0,
+                selection_anchor: None,
             },
             focused: false,
             terminal_rows: 24,
@@ -131,6 +160,7 @@ impl Editor {
         self.state.lines = vec![String::new()];
         self.state.cursor_line = 0;
         self.state.cursor_col = 0;
+        self.state.selection_anchor = None;
         self.scroll_offset = 0;
         self.history_index = -1;
         self.slash_menu = None;
@@ -158,6 +188,85 @@ impl Editor {
         // This is called from the event loop after handle_input
         // We use a separate channel for this
         None
+    }
+
+    // ── Selection helpers ──
+
+    fn has_selection(&self) -> bool {
+        if let Some((al, ac)) = self.state.selection_anchor {
+            al != self.state.cursor_line || ac != self.state.cursor_col
+        } else {
+            false
+        }
+    }
+
+    /// Returns ordered (start, end) positions of the selection.
+    fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (al, ac) = self.state.selection_anchor?;
+        let (cl, cc) = (self.state.cursor_line, self.state.cursor_col);
+        if al == cl && ac == cc {
+            return None;
+        }
+        let start = if al < cl || (al == cl && ac < cc) { (al, ac) } else { (cl, cc) };
+        let end = if al < cl || (al == cl && ac < cc) { (cl, cc) } else { (al, ac) };
+        Some((start, end))
+    }
+
+    /// Get the selected text.
+    fn selected_text(&self) -> Option<String> {
+        let ((sl, sc), (el, ec)) = self.selection_range()?;
+        if sl == el {
+            return Some(self.state.lines[sl][sc..ec].to_string());
+        }
+        let mut result = String::new();
+        result.push_str(&self.state.lines[sl][sc..]);
+        for i in (sl + 1)..el {
+            result.push('\n');
+            result.push_str(&self.state.lines[i]);
+        }
+        result.push('\n');
+        result.push_str(&self.state.lines[el][..ec]);
+        Some(result)
+    }
+
+    /// Delete the selected text and collapse cursor to start of selection.
+    fn delete_selection(&mut self) {
+        let Some(((sl, sc), (el, ec))) = self.selection_range() else { return };
+        if sl == el {
+            let line = &self.state.lines[sl];
+            let new_line = format!("{}{}", &line[..sc], &line[ec..]);
+            self.state.lines[sl] = new_line;
+        } else {
+            let before = self.state.lines[sl][..sc].to_string();
+            let after = self.state.lines[el][ec..].to_string();
+            self.state.lines[sl] = format!("{}{}", before, after);
+            // Remove lines sl+1..=el
+            for _ in (sl + 1)..=el {
+                self.state.lines.remove(sl + 1);
+            }
+        }
+        self.state.cursor_line = sl;
+        self.state.cursor_col = sc;
+        self.state.selection_anchor = None;
+    }
+
+    fn clear_selection(&mut self) {
+        self.state.selection_anchor = None;
+    }
+
+    /// Select all text in the editor.
+    fn select_all(&mut self) {
+        self.state.selection_anchor = Some((0, 0));
+        let last = self.state.lines.len() - 1;
+        self.state.cursor_line = last;
+        self.state.cursor_col = self.state.lines[last].len();
+    }
+
+    /// Set the anchor if starting a new selection, or keep existing anchor.
+    fn ensure_anchor(&mut self) {
+        if self.state.selection_anchor.is_none() {
+            self.state.selection_anchor = Some((self.state.cursor_line, self.state.cursor_col));
+        }
     }
 
     fn is_on_first_visual_line(&self) -> bool {
@@ -326,6 +435,64 @@ impl Editor {
         self.file_menu = None;
     }
 
+    /// Render a line with both selection highlighting and cursor marker.
+    fn render_line_with_selection_and_cursor(
+        text: &str, cursor_pos: usize, hl_start: usize, hl_end: usize, marker: &str,
+    ) -> String {
+        // Split the text into regions: before-sel, sel, after-sel
+        // The cursor is at cursor_pos bytes into text
+        let result;
+
+        // We have up to 5 segments depending on cursor position relative to selection
+        let cp = cursor_pos.min(text.len());
+
+        if cp < hl_start {
+            // cursor before selection
+            let before_cursor = &text[..cp];
+            let cursor_to_hl = &text[cp..hl_start];
+            let sel = &text[hl_start..hl_end];
+            let after_hl = &text[hl_end..];
+            let cursor_char: String = cursor_to_hl.chars().next().map(|c| c.to_string()).unwrap_or_default();
+            let rest_before = &cursor_to_hl[cursor_char.len()..];
+            result = format!(
+                "{}{}\x1b[7m{}\x1b[0m{}\x1b[7m{}\x1b[0m{}",
+                before_cursor, marker, cursor_char, rest_before, sel, after_hl
+            );
+        } else if cp >= hl_end {
+            // cursor after selection
+            let before_hl = &text[..hl_start];
+            let sel = &text[hl_start..hl_end];
+            let hl_to_cursor = &text[hl_end..cp];
+            let after_cursor = &text[cp..];
+            if !after_cursor.is_empty() {
+                let cursor_char: String = after_cursor.chars().next().map(|c| c.to_string()).unwrap_or_default();
+                let rest = &after_cursor[cursor_char.len()..];
+                result = format!(
+                    "{}\x1b[7m{}\x1b[0m{}{}\x1b[7m{}\x1b[0m{}",
+                    before_hl, sel, hl_to_cursor, marker, cursor_char, rest
+                );
+            } else {
+                result = format!(
+                    "{}\x1b[7m{}\x1b[0m{}{}\x1b[7m \x1b[0m",
+                    before_hl, sel, hl_to_cursor, marker
+                );
+            }
+        } else {
+            // cursor inside selection
+            let before_hl = &text[..hl_start];
+            let sel_before_cursor = &text[hl_start..cp];
+            let sel_after_cursor = &text[cp..hl_end];
+            let after_hl = &text[hl_end..];
+            // Show entire selection highlighted, cursor marker inside
+            result = format!(
+                "{}\x1b[7m{}\x1b[0m{}\x1b[7m{}\x1b[0m{}",
+                before_hl, sel_before_cursor, marker, sel_after_cursor, after_hl
+            );
+        }
+
+        result
+    }
+
     /// Word-wrap a line into chunks for display.
     fn word_wrap_line(line: &str, max_width: usize) -> Vec<(String, usize, usize)> {
         if max_width == 0 {
@@ -389,6 +556,9 @@ impl Editor {
                 text: String::new(),
                 has_cursor: true,
                 cursor_pos: Some(0),
+                line_index: 0,
+                byte_start: 0,
+                byte_end: 0,
             });
             return layout;
         }
@@ -414,12 +584,18 @@ impl Editor {
                             text: text.clone(),
                             has_cursor: true,
                             cursor_pos: Some(adjusted.min(text.len())),
+                            line_index: i,
+                            byte_start: *start_byte,
+                            byte_end: *end_byte,
                         });
                     } else {
                         layout.push(LayoutLine {
                             text: text.clone(),
                             has_cursor: false,
                             cursor_pos: None,
+                            line_index: i,
+                            byte_start: *start_byte,
+                            byte_end: *end_byte,
                         });
                     }
                 } else {
@@ -427,6 +603,9 @@ impl Editor {
                         text: text.clone(),
                         has_cursor: false,
                         cursor_pos: None,
+                        line_index: i,
+                        byte_start: *start_byte,
+                        byte_end: *end_byte,
                     });
                 }
             }
@@ -439,6 +618,9 @@ impl Editor {
 
     fn insert_char(&mut self, c: char) {
         self.history_index = -1;
+        if self.has_selection() {
+            self.delete_selection();
+        }
         let line = &mut self.state.lines[self.state.cursor_line];
         line.insert(self.state.cursor_col, c);
         self.state.cursor_col += c.len_utf8();
@@ -446,13 +628,22 @@ impl Editor {
 
     fn insert_str(&mut self, s: &str) {
         self.history_index = -1;
+        if self.has_selection() {
+            self.delete_selection();
+        }
         for c in s.chars() {
-            self.insert_char(c);
+            let line = &mut self.state.lines[self.state.cursor_line];
+            line.insert(self.state.cursor_col, c);
+            self.state.cursor_col += c.len_utf8();
         }
     }
 
     fn backspace(&mut self) {
         self.history_index = -1;
+        if self.has_selection() {
+            self.delete_selection();
+            return;
+        }
         if self.state.cursor_col > 0 {
             let line = &self.state.lines[self.state.cursor_line];
             // Find the char that ends at cursor_col
@@ -479,6 +670,10 @@ impl Editor {
     }
 
     fn delete(&mut self) {
+        if self.has_selection() {
+            self.delete_selection();
+            return;
+        }
         let line = &self.state.lines[self.state.cursor_line];
         if self.state.cursor_col < line.len() {
             let chars: Vec<char> = line.chars().collect();
@@ -507,6 +702,9 @@ impl Editor {
 
     fn new_line(&mut self) {
         self.history_index = -1;
+        if self.has_selection() {
+            self.delete_selection();
+        }
         let line = &self.state.lines[self.state.cursor_line];
         let rest = line[self.state.cursor_col..].to_string();
         self.state.lines[self.state.cursor_line] = line[..self.state.cursor_col].to_string();
@@ -766,6 +964,13 @@ struct LayoutLine {
     text: String,
     has_cursor: bool,
     cursor_pos: Option<usize>,
+    /// Which logical line index this layout line comes from.
+    line_index: usize,
+    /// Byte offset in the original line where this chunk starts.
+    byte_start: usize,
+    /// Byte offset in the original line where this chunk ends.
+    #[allow(dead_code)]
+    byte_end: usize,
 }
 
 fn default_slash_commands() -> Vec<SelectItem> {
@@ -844,30 +1049,101 @@ impl Component for Editor {
             result.push(border.clone());
         }
 
+        // Compute selection range for highlighting
+        let sel_range = self.selection_range();
+
         // Content lines
         let emit_cursor = self.focused;
         for ll in visible {
             let mut display = ll.text.clone();
 
+            // Apply selection highlighting
+            if let Some(((sl, sc), (el, ec))) = sel_range {
+                let li = ll.line_index;
+                // Check if this layout line overlaps the selection
+                if li >= sl && li <= el {
+                    // Compute selection byte range within this chunk
+                    let chunk_start = ll.byte_start;
+                        let sel_start_in_line = if li == sl { sc } else { 0 };
+                    let sel_end_in_line = if li == el { ec } else { self.state.lines[li].len() };
+
+                    // Clamp to this chunk
+                    let hl_start = sel_start_in_line.max(chunk_start).saturating_sub(chunk_start);
+                    let hl_end = sel_end_in_line.min(chunk_start + ll.text.len()).saturating_sub(chunk_start);
+
+                    if hl_start < hl_end && hl_end <= ll.text.len() {
+                        let before_sel = &ll.text[..hl_start];
+                        let sel_part = &ll.text[hl_start..hl_end];
+                        let after_sel = &ll.text[hl_end..];
+                        display = format!(
+                            "{}\x1b[7m{}\x1b[0m{}",
+                            before_sel, sel_part, after_sel
+                        );
+                    }
+                }
+            }
+
             if ll.has_cursor && emit_cursor {
                 if let Some(pos) = ll.cursor_pos {
-                    let before = &ll.text[..pos.min(ll.text.len())];
-                    let after = &ll.text[pos.min(ll.text.len())..];
+                    // Re-render with cursor marker (on top of any selection)
+                    // We need to work from the raw text for cursor positioning
+                    let raw_before = &ll.text[..pos.min(ll.text.len())];
+                    let raw_after = &ll.text[pos.min(ll.text.len())..];
 
                     let marker = CURSOR_MARKER;
-                    if !after.is_empty() {
-                        // Cursor on a character — highlight it
-                        let first_char: String = after.chars().next().map(|c| c.to_string()).unwrap_or_default();
-                        let rest = &after[first_char.len()..];
+
+                    // Build display with both selection highlight and cursor
+                    if let Some(((sl, sc), (el, ec))) = sel_range {
+                        let li = ll.line_index;
+                        if li >= sl && li <= el {
+                            let chunk_start = ll.byte_start;
+                            let sel_start_in_line = if li == sl { sc } else { 0 };
+                            let sel_end_in_line = if li == el { ec } else { self.state.lines[li].len() };
+                            let hl_start = sel_start_in_line.max(chunk_start).saturating_sub(chunk_start);
+                            let hl_end = sel_end_in_line.min(chunk_start + ll.text.len()).saturating_sub(chunk_start);
+
+                            if hl_start < hl_end && hl_end <= ll.text.len() {
+                                // Build the line char by char with selection and cursor
+                                display = Self::render_line_with_selection_and_cursor(
+                                    &ll.text, pos, hl_start, hl_end, marker,
+                                );
+                            } else if !raw_after.is_empty() {
+                                let first_char: String = raw_after.chars().next().map(|c| c.to_string()).unwrap_or_default();
+                                let rest = &raw_after[first_char.len()..];
+                                display = format!(
+                                    "{}{}\x1b[7m{}\x1b[0m{}",
+                                    raw_before, marker, first_char, rest
+                                );
+                            } else {
+                                display = format!(
+                                    "{}{}\x1b[7m \x1b[0m",
+                                    raw_before, marker
+                                );
+                            }
+                        } else if !raw_after.is_empty() {
+                            let first_char: String = raw_after.chars().next().map(|c| c.to_string()).unwrap_or_default();
+                            let rest = &raw_after[first_char.len()..];
+                            display = format!(
+                                "{}{}\x1b[7m{}\x1b[0m{}",
+                                raw_before, marker, first_char, rest
+                            );
+                        } else {
+                            display = format!(
+                                "{}{}\x1b[7m \x1b[0m",
+                                raw_before, marker
+                            );
+                        }
+                    } else if !raw_after.is_empty() {
+                        let first_char: String = raw_after.chars().next().map(|c| c.to_string()).unwrap_or_default();
+                        let rest = &raw_after[first_char.len()..];
                         display = format!(
                             "{}{}\x1b[7m{}\x1b[0m{}",
-                            before, marker, first_char, rest
+                            raw_before, marker, first_char, rest
                         );
                     } else {
-                        // Cursor at end — show highlighted space
                         display = format!(
                             "{}{}\x1b[7m \x1b[0m",
-                            before, marker
+                            raw_before, marker
                         );
                     }
                 }
@@ -958,6 +1234,11 @@ impl Component for Editor {
         }
 
         let old_action = std::mem::replace(&mut self.last_action, LastAction::Other);
+// Helper: check if shift is held (for selection extension)
+        let shift = modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let _alt = modifiers.contains(KeyModifiers::ALT);
+        let ctrl_shift = ctrl && shift;
 
         match (code, modifiers) {
             // Submit (Enter, no modifiers)
@@ -969,13 +1250,86 @@ impl Component for Editor {
             (KeyCode::Enter, KeyModifiers::ALT) |
             (KeyCode::Enter, KeyModifiers::SHIFT) => {
                 self.push_undo();
+self.clear_selection();
                 self.new_line();
             }
 
-            // Cursor movement
-            (KeyCode::Left, KeyModifiers::NONE) => self.move_left(),
-            (KeyCode::Right, KeyModifiers::NONE) => self.move_right(),
+            // Select all (Ctrl+A)
+            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                self.select_all();
+            }
+
+            // Copy (Ctrl+C)
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                if self.has_selection() {
+                    if let Some(text) = self.selected_text() {
+                        // Try to copy to system clipboard via OSC 52
+                        let encoded = base64_encode(&text);
+                        let osc = format!("\x1b]52;c;{}\x07", encoded);
+                        let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    }
+                }
+            }
+
+            // Cut (Ctrl+X)
+            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                if self.has_selection() {
+                    if let Some(text) = self.selected_text() {
+                        let encoded = base64_encode(&text);
+                        let osc = format!("\x1b]52;c;{}\x07", encoded);
+                        let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    }
+                    self.delete_selection();
+                }
+            }
+
+            // Shift+arrow selection
+            (KeyCode::Left, _) if ctrl_shift => {
+                self.ensure_anchor();
+                self.word_left();
+            }
+            (KeyCode::Right, _) if ctrl_shift => {
+                self.ensure_anchor();
+                self.word_right();
+            }
+            (KeyCode::Left, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_left();
+            }
+            (KeyCode::Right, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_right();
+            }
+            (KeyCode::Up, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_up();
+            }
+            (KeyCode::Down, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_down();
+            }
+            (KeyCode::Home, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_to_line_start();
+            }
+            (KeyCode::End, KeyModifiers::SHIFT) => {
+                self.ensure_anchor();
+                self.move_to_line_end();
+            }
+
+            // Cursor movement (clear selection)
+            (KeyCode::Left, KeyModifiers::NONE) => {
+                self.clear_selection();
+                self.move_left();
+            }
+            (KeyCode::Right, KeyModifiers::NONE) => {
+                self.clear_selection();
+                self.move_right();
+            }
             (KeyCode::Up, KeyModifiers::NONE) => {
+                self.clear_selection();
                 if self.is_empty() || self.is_on_first_visual_line() {
                     self.navigate_history(-1);
                 } else {
@@ -983,6 +1337,7 @@ impl Component for Editor {
                 }
             }
             (KeyCode::Down, KeyModifiers::NONE) => {
+                self.clear_selection();
                 if self.history_index > -1 && self.is_on_last_visual_line() {
                     self.navigate_history(1);
                 } else {
@@ -991,20 +1346,25 @@ impl Component for Editor {
             }
 
             // Home/End
-            (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+            (KeyCode::Home, KeyModifiers::NONE) => {
+                self.clear_selection();
                 self.move_to_line_start();
             }
-            (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('e'), KeyModifiers::CONTROL) |
+            (KeyCode::End, KeyModifiers::NONE) => {
+                self.clear_selection();
                 self.move_to_line_end();
             }
 
             // Word jump
             (KeyCode::Left, KeyModifiers::CONTROL) |
             (KeyCode::Left, KeyModifiers::ALT) => {
+                self.clear_selection();
                 self.word_left();
             }
             (KeyCode::Right, KeyModifiers::CONTROL) |
             (KeyCode::Right, KeyModifiers::ALT) => {
+                self.clear_selection();
                 self.word_right();
             }
 
@@ -1053,6 +1413,7 @@ impl Component for Editor {
                 self.undo();
             }
             // Redo (Ctrl+Shift+Z)
+            // Redo (Ctrl+Shift+Z)
             (KeyCode::Char('Z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
                 self.redo();
             }
@@ -1061,13 +1422,23 @@ impl Component for Editor {
             (KeyCode::Char(c), KeyModifiers::NONE) |
             (KeyCode::Char(c), KeyModifiers::SHIFT) => {
                 self.push_undo();
+                self.delete_selection();
                 self.insert_char(c);
             }
 
-            // Tab → 4 spaces
+            // Tab -> 4 spaces
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 self.push_undo();
+                self.delete_selection();
                 self.insert_str("    ");
+            }
+
+            // Select all
+            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                self.state.selection_anchor = Some((0, 0));
+                let last_line = self.state.lines.len() - 1;
+                self.state.cursor_line = last_line;
+                self.state.cursor_col = self.state.lines[last_line].len();
             }
 
             _ => {}
