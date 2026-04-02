@@ -19,7 +19,7 @@ impl InteractiveMode {
         if key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT) {
             let text = self.editor_text();
             let outcome = self.handle_submitted_text(text).await?;
-            self.refresh_ui();
+            self.render_editor_frame();
             return match outcome {
                 SubmitOutcome::Ignored | SubmitOutcome::Handled => Ok(None),
                 SubmitOutcome::Submitted => Ok(Some(self.take_last_submitted_text())),
