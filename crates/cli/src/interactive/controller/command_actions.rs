@@ -1,5 +1,94 @@
 use super::*;
 
+/// Flatten a tree into display entries with connectors.
+fn flatten_tree(
+    nodes: &[bb_session::tree::TreeNode],
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    depth: usize,
+    prefix: &str,
+    leaf_id: &Option<String>,
+    out: &mut Vec<FlatTreeEntry>,
+    leaf_idx: &mut Option<usize>,
+) {
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == nodes.len() - 1;
+        let connector = if depth == 0 {
+            String::new()
+        } else {
+            let branch = if is_last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+            format!("{prefix}{branch}")
+        };
+
+        // Get message preview
+        let (entry_type, preview) = get_entry_preview(conn, session_id, &node.entry_id);
+
+        let is_leaf = leaf_id.as_deref() == Some(&node.entry_id);
+        let is_branch_point = node.children.len() > 1;
+
+        if is_leaf {
+            *leaf_idx = Some(out.len());
+        }
+
+        out.push(FlatTreeEntry {
+            entry_id: node.entry_id.clone(),
+            entry_type,
+            preview,
+            timestamp: node.timestamp.clone(),
+            indent: depth,
+            is_leaf,
+            is_branch_point,
+            connector,
+        });
+
+        let child_prefix = if depth == 0 {
+            String::new()
+        } else {
+            let cont = if is_last { "   " } else { "\u{2502}  " };
+            format!("{prefix}{cont}")
+        };
+
+        flatten_tree(&node.children, conn, session_id, depth + 1, &child_prefix, leaf_id, out, leaf_idx);
+    }
+}
+
+/// Get entry type and a preview string for a tree node.
+fn get_entry_preview(conn: &rusqlite::Connection, session_id: &str, entry_id: &str) -> (String, String) {
+    let row = match store::get_entry(conn, session_id, entry_id) {
+        Ok(Some(r)) => r,
+        _ => return ("unknown".into(), "(missing)".into()),
+    };
+    let entry = match store::parse_entry(&row) {
+        Ok(e) => e,
+        Err(_) => return ("unknown".into(), "(parse error)".into()),
+    };
+    match entry {
+        bb_core::types::SessionEntry::Message { message, .. } => match &message {
+            bb_core::types::AgentMessage::User(u) => {
+                let text: String = u.content.iter().filter_map(|b| match b {
+                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join(" ");
+                let line = text.trim().replace('\n', " ");
+                ("user".into(), if line.is_empty() { "(empty)".into() } else { line })
+            }
+            bb_core::types::AgentMessage::Assistant(a) => {
+                let text = bb_core::agent::extract_text(&a.content);
+                let line = text.trim().replace('\n', " ");
+                ("assistant".into(), if line.is_empty() { "(empty)".into() } else { line })
+            }
+            bb_core::types::AgentMessage::ToolResult(t) => {
+                ("tool_result".into(), format!("{}: ...", t.tool_name))
+            }
+            bb_core::types::AgentMessage::CompactionSummary(_) => {
+                ("compaction".into(), "[compaction summary]".into())
+            }
+            _ => ("other".into(), "...".into()),
+        },
+        _ => ("other".into(), "...".into()),
+    }
+}
+
 /// Load the first user message and concatenated message text for a session.
 fn load_session_message_preview(conn: &rusqlite::Connection, session_id: &str) -> (String, String) {
     let rows = match store::get_entries(conn, session_id) {
@@ -200,11 +289,33 @@ impl InteractiveMode {
     }
 
     pub(super) fn show_tree_selector(&mut self) {
-        let _ = self.controller.commands.open_placeholder_selector(
-            SelectorKind::Tree,
-            "Session Tree",
+        let tree = bb_session::tree::get_tree(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
         );
-        self.show_placeholder("session tree selector");
+        let tree = match tree {
+            Ok(t) => t,
+            Err(e) => {
+                self.show_warning(format!("Failed to load tree: {e}"));
+                return;
+            }
+        };
+
+        if tree.is_empty() {
+            self.show_status("No entries in session");
+            return;
+        }
+
+        let leaf_id = self.get_session_leaf().map(|id| id.0);
+
+        // Flatten tree into display entries
+        let mut flat: Vec<FlatTreeEntry> = Vec::new();
+        let mut leaf_idx = None;
+        flatten_tree(&tree, &self.session_setup.conn, &self.session_setup.session_id,
+            0, "", &leaf_id, &mut flat, &mut leaf_idx);
+
+        let overlay = Box::new(TreeSelectorOverlay::new(flat, leaf_idx));
+        self.ui.tui.show_overlay(overlay);
     }
 
     pub(super) fn handle_clear_command(&mut self) {
@@ -467,6 +578,92 @@ impl InteractiveMode {
         self.render_state_mut().add_message_to_chat(
             super::super::events::InteractiveMessage::System {
                 text: "Resumed session".to_string(),
+            },
+        );
+        self.rebuild_chat_container();
+        self.refresh_ui();
+    }
+
+    pub(super) fn handle_tree_navigate(&mut self, entry_id: &str) {
+        let leaf_id = self.get_session_leaf().map(|id| id.0);
+        if leaf_id.as_deref() == Some(entry_id) {
+            self.show_status("Already at this point");
+            return;
+        }
+
+        // Move the leaf pointer to the selected entry
+        if let Err(e) = store::set_leaf(&self.session_setup.conn, &self.session_setup.session_id, Some(entry_id)) {
+            self.show_warning(format!("Failed to navigate: {e}"));
+            return;
+        }
+
+        // Clear and re-render from the new position
+        self.render_state_mut().chat_items.clear();
+        self.render_state_mut().pending_items.clear();
+        self.render_state_mut().streaming_component = None;
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+        self.streaming.is_streaming = false;
+        self.queues.steering_queue.clear();
+        self.queues.follow_up_queue.clear();
+
+        // Re-render messages from root to new leaf
+        if let Ok(path) = bb_session::tree::active_path(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
+            for row in &path {
+                if let Ok(entry) = store::parse_entry(row) {
+                    match entry {
+                        bb_core::types::SessionEntry::Message { message, .. } => match message {
+                            bb_core::types::AgentMessage::User(u) => {
+                                let text: String = u.content.iter().filter_map(|b| match b {
+                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                }).collect::<Vec<_>>().join("\n");
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::User { text },
+                                );
+                            }
+                            bb_core::types::AgentMessage::Assistant(a) => {
+                                use super::super::components::assistant_message::{
+                                    AssistantMessage as AMsg, AssistantMessageContent,
+                                };
+                                let mut content = Vec::new();
+                                for c in &a.content {
+                                    match c {
+                                        bb_core::types::AssistantContent::Text { text } => {
+                                            content.push(AssistantMessageContent::Text(text.clone()));
+                                        }
+                                        bb_core::types::AssistantContent::Thinking { thinking } => {
+                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::Assistant {
+                                        message: msg, tool_calls: vec![],
+                                    },
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_footer();
+
+        self.render_state_mut().add_message_to_chat(
+            super::super::events::InteractiveMessage::System {
+                text: "Navigated to tree entry".to_string(),
             },
         );
         self.rebuild_chat_container();

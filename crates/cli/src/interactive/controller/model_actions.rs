@@ -159,6 +159,25 @@ impl InteractiveMode {
             }
             _ => {}
         }
+
+        // Check tree selector overlay
+        let tree_action = self
+            .ui
+            .tui
+            .topmost_overlay_as_mut::<TreeSelectorOverlay>()
+            .map(|overlay| overlay.action().clone());
+
+        match tree_action {
+            Some(TreeSelectorAction::Selected(entry_id)) => {
+                self.ui.tui.hide_overlay();
+                self.handle_tree_navigate(&entry_id);
+            }
+            Some(TreeSelectorAction::Cancelled) => {
+                self.ui.tui.hide_overlay();
+                self.show_status("Canceled");
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn show_auth_selector(&mut self, mode: AuthSelectorMode) {

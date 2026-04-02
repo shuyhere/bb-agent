@@ -12,6 +12,7 @@ mod model_selector_overlay;
 mod session_selector_overlay;
 mod state;
 mod status_loader;
+mod tree_selector_overlay;
 
 pub use api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
 pub use controller::{InteractiveMode, run_interactive};
