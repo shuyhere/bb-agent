@@ -702,15 +702,13 @@ impl InteractiveMode {
         }
 
         // Show compaction summary in chat
-        self.render_state_mut().add_message_to_chat(
-            super::super::events::InteractiveMessage::CompactionSummary {
-                summary: format!(
-                    "Context compacted: {}k → {}k tokens",
-                    tokens_before / 1000,
-                    tokens_after_estimate / 1000,
-                ),
-            },
-        );
+        self.add_chat_message(super::super::events::InteractiveMessage::CompactionSummary {
+            summary: format!(
+                "Context compacted: {}k → {}k tokens",
+                tokens_before / 1000,
+                tokens_after_estimate / 1000,
+            ),
+        });
         self.show_status(format!(
             "Context compacted: {}k → ~{}k tokens",
             tokens_before / 1000,

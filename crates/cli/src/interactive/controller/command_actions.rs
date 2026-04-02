@@ -158,6 +158,146 @@ fn load_session_message_preview(conn: &rusqlite::Connection, session_id: &str) -
 }
 
 impl InteractiveMode {
+    fn text_from_blocks(blocks: &[bb_core::types::ContentBlock], separator: &str) -> String {
+        blocks
+            .iter()
+            .filter_map(|block| match block {
+                bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+
+    fn interactive_session_context_from_core(
+        context: bb_core::types::SessionContext,
+    ) -> super::super::events::SessionContext {
+        use super::super::components::assistant_message::{
+            AssistantMessage as UiAssistantMessage, AssistantMessageContent, AssistantStopReason,
+        };
+        use super::super::components::tool_execution::{ToolExecutionResult, ToolResultBlock};
+        use super::super::events::{InteractiveMessage, SessionContext, ToolCallContent};
+
+        let messages = context
+            .messages
+            .into_iter()
+            .filter_map(|message| match message {
+                bb_core::types::AgentMessage::User(user) => Some(InteractiveMessage::User {
+                    text: Self::text_from_blocks(&user.content, "\n"),
+                }),
+                bb_core::types::AgentMessage::Assistant(message) => {
+                    let mut content = Vec::new();
+                    let mut tool_calls = Vec::new();
+                    for block in message.content {
+                        match block {
+                            bb_core::types::AssistantContent::Text { text } => {
+                                content.push(AssistantMessageContent::Text(text));
+                            }
+                            bb_core::types::AssistantContent::Thinking { thinking } => {
+                                content.push(AssistantMessageContent::Thinking(thinking));
+                            }
+                            bb_core::types::AssistantContent::ToolCall { id, name, arguments } => {
+                                tool_calls.push(ToolCallContent {
+                                    id,
+                                    name,
+                                    arguments,
+                                });
+                                content.push(AssistantMessageContent::ToolCall);
+                            }
+                        }
+                    }
+                    let stop_reason = Some(match message.stop_reason {
+                        bb_core::types::StopReason::Aborted => AssistantStopReason::Aborted,
+                        bb_core::types::StopReason::Error => AssistantStopReason::Error,
+                        _ => AssistantStopReason::Other,
+                    });
+                    Some(InteractiveMessage::Assistant {
+                        message: UiAssistantMessage {
+                            content,
+                            stop_reason,
+                            error_message: message.error_message,
+                        },
+                        tool_calls,
+                    })
+                }
+                bb_core::types::AgentMessage::ToolResult(result) => Some(InteractiveMessage::ToolResult {
+                    tool_call_id: result.tool_call_id,
+                    result: ToolExecutionResult {
+                        content: result
+                            .content
+                            .into_iter()
+                            .map(|block| match block {
+                                bb_core::types::ContentBlock::Text { text } => ToolResultBlock {
+                                    r#type: "text".to_string(),
+                                    text: Some(text),
+                                    data: None,
+                                    mime_type: None,
+                                },
+                                bb_core::types::ContentBlock::Image { data, mime_type } => ToolResultBlock {
+                                    r#type: "image".to_string(),
+                                    text: None,
+                                    data: Some(data),
+                                    mime_type: Some(mime_type),
+                                },
+                            })
+                            .collect(),
+                        is_error: result.is_error,
+                        details: result.details,
+                    },
+                }),
+                bb_core::types::AgentMessage::BashExecution(message) => Some(InteractiveMessage::BashExecution {
+                    command: message.command,
+                    output: Some(message.output),
+                    exit_code: message.exit_code,
+                    cancelled: message.cancelled,
+                    truncated: message.truncated,
+                    full_output_path: message.full_output_path,
+                    exclude_from_context: false,
+                }),
+                bb_core::types::AgentMessage::Custom(message) => Some(InteractiveMessage::Custom {
+                    custom_type: message.custom_type,
+                    text: Self::text_from_blocks(&message.content, "\n"),
+                    display: message.display,
+                }),
+                bb_core::types::AgentMessage::BranchSummary(message) => {
+                    Some(InteractiveMessage::BranchSummary { summary: message.summary })
+                }
+                bb_core::types::AgentMessage::CompactionSummary(message) => {
+                    Some(InteractiveMessage::CompactionSummary { summary: message.summary })
+                }
+            })
+            .collect();
+
+        SessionContext { messages }
+    }
+
+    fn reset_rendered_session_state(&mut self) {
+        self.clear_chat_items();
+        self.invalidate_chat_cache();
+        self.render_state_mut().pending_items.clear();
+        self.render_state_mut().streaming_component = None;
+        self.render_state_mut().streaming_message = None;
+        self.render_state_mut().pending_tools.clear();
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+        self.streaming.is_streaming = false;
+        self.queues.steering_queue.clear();
+        self.queues.follow_up_queue.clear();
+        self.queues.compaction_queued_messages.clear();
+        self.queues.pending_bash_components.clear();
+    }
+
+    fn render_current_session_state(&mut self) {
+        match bb_session::context::build_context(&self.session_setup.conn, &self.session_setup.session_id) {
+            Ok(context) => {
+                let context = Self::interactive_session_context_from_core(context);
+                self.render_chat_from_session_context(&context);
+            }
+            Err(_) => self.clear_chat_items(),
+        }
+    }
+
     pub(super) fn handle_export_command(&mut self, text: &str) {
         let path = text.strip_prefix("/export").unwrap_or("").trim();
         let file_path = if path.is_empty() {
@@ -290,65 +430,8 @@ impl InteractiveMode {
         self.session_setup.session_created = true;
         self.options.session_id = Some(new_id);
 
-        // Clear and re-render
-        self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
-        self.render_state_mut().pending_items.clear();
-        self.render_state_mut().streaming_component = None;
-        self.streaming.streaming_text.clear();
-        self.streaming.streaming_thinking.clear();
-        self.streaming.streaming_tool_calls.clear();
-
-        // Re-render messages
-        if let Ok(path_entries) = bb_session::tree::active_path(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        ) {
-            for row in &path_entries {
-                if let Ok(entry) = store::parse_entry(row) {
-                    match entry {
-                        bb_core::types::SessionEntry::Message { message, .. } => match message {
-                            bb_core::types::AgentMessage::User(u) => {
-                                let txt: String = u.content.iter().filter_map(|b| match b {
-                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                }).collect::<Vec<_>>().join("\n");
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::User { text: txt },
-                                );
-                            }
-                            bb_core::types::AgentMessage::Assistant(a) => {
-                                use super::super::components::assistant_message::{
-                                    AssistantMessage as AMsg, AssistantMessageContent,
-                                };
-                                let mut content = Vec::new();
-                                for c in &a.content {
-                                    match c {
-                                        bb_core::types::AssistantContent::Text { text } => {
-                                            content.push(AssistantMessageContent::Text(text.clone()));
-                                        }
-                                        bb_core::types::AssistantContent::Thinking { thinking } => {
-                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::Assistant {
-                                        message: msg, tool_calls: vec![],
-                                    },
-                                );
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        self.rebuild_chat_container();
+        self.reset_rendered_session_state();
+        self.render_current_session_state();
         self.rebuild_pending_container();
         self.rebuild_footer();
         self.show_status(format!("Imported {imported} entries from {path}"));
@@ -394,12 +477,9 @@ impl InteractiveMode {
             ).ok().flatten().and_then(|r| r.name);
             match current {
                 Some(n) => {
-                    self.render_state_mut().add_message_to_chat(
-                        super::super::events::InteractiveMessage::System {
-                            text: format!("Session name: {n}"),
-                        },
-                    );
-                    self.rebuild_chat_container();
+                    self.add_chat_message(super::super::events::InteractiveMessage::System {
+                        text: format!("Session name: {n}"),
+                    });
                     self.snapshot_chat_cache();
                     self.refresh_ui();
                 }
@@ -413,12 +493,9 @@ impl InteractiveMode {
             Some(name),
         ) {
             Ok(_) => {
-                self.render_state_mut().add_message_to_chat(
-                    super::super::events::InteractiveMessage::System {
-                        text: format!("Session name set: {name}"),
-                    },
-                );
-                self.rebuild_chat_container();
+                self.add_chat_message(super::super::events::InteractiveMessage::System {
+                    text: format!("Session name set: {name}"),
+                });
                 self.rebuild_footer();
                 self.snapshot_chat_cache();
                 self.refresh_ui();
@@ -512,25 +589,20 @@ impl InteractiveMode {
             info.push_str(&format!("{dim}Total:{reset} ${total_cost:.4}"));
         }
 
-        self.render_state_mut()
-            .add_message_to_chat(super::super::events::InteractiveMessage::System {
-                text: info,
-            });
-        self.rebuild_chat_container();
+        self.add_chat_message(super::super::events::InteractiveMessage::System {
+            text: info,
+        });
         self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
     pub(super) fn handle_changelog_command(&mut self) {
-        self.render_state_mut().add_message_to_chat(
-            super::super::events::InteractiveMessage::System {
-                text: format!(
-                    "BB-Agent v{}\n\nNo changelog entries yet.",
-                    env!("CARGO_PKG_VERSION")
-                ),
-            },
-        );
-        self.rebuild_chat_container();
+        self.add_chat_message(super::super::events::InteractiveMessage::System {
+            text: format!(
+                "BB-Agent v{}\n\nNo changelog entries yet.",
+                env!("CARGO_PKG_VERSION")
+            ),
+        });
         self.snapshot_chat_cache();
         self.refresh_ui();
     }
@@ -646,65 +718,8 @@ impl InteractiveMode {
         }
 
         // Clear and re-render from the new position.
-        self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
-        self.render_state_mut().pending_items.clear();
-        self.render_state_mut().streaming_component = None;
-        self.streaming.streaming_text.clear();
-        self.streaming.streaming_thinking.clear();
-        self.streaming.streaming_tool_calls.clear();
-        self.streaming.is_streaming = false;
-
-        // Re-render from root to new leaf.
-        if let Ok(path) = bb_session::tree::active_path(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        ) {
-            for row in &path {
-                if let Ok(entry) = store::parse_entry(row) {
-                    match entry {
-                        bb_core::types::SessionEntry::Message { message, .. } => match message {
-                            bb_core::types::AgentMessage::User(u) => {
-                                let text: String = u.content.iter().filter_map(|b| match b {
-                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                }).collect::<Vec<_>>().join("\n");
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::User { text },
-                                );
-                            }
-                            bb_core::types::AgentMessage::Assistant(a) => {
-                                use super::super::components::assistant_message::{
-                                    AssistantMessage as AMsg, AssistantMessageContent,
-                                };
-                                let mut content = Vec::new();
-                                for c in &a.content {
-                                    match c {
-                                        bb_core::types::AssistantContent::Text { text } => {
-                                            content.push(AssistantMessageContent::Text(text.clone()));
-                                        }
-                                        bb_core::types::AssistantContent::Thinking { thinking } => {
-                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::Assistant {
-                                        message: msg, tool_calls: vec![],
-                                    },
-                                );
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        self.rebuild_chat_container();
+        self.reset_rendered_session_state();
+        self.render_current_session_state();
         self.rebuild_pending_container();
         self.rebuild_footer();
 
@@ -755,8 +770,8 @@ impl InteractiveMode {
         self.queues.steering_queue.clear();
         self.queues.follow_up_queue.clear();
         self.queues.compaction_queued_messages.clear();
-        self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
+        self.clear_chat_items();
+        self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.show_status("Started a fresh interactive session shell around the core session");
     }
@@ -772,30 +787,14 @@ impl InteractiveMode {
                 let _ = self.controller.runtime_host.session_mut().clear_queue();
 
                 // Clear all chat/pending/streaming state (match pi's renderCurrentSessionState)
-                self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
-                self.render_state_mut().pending_items.clear();
-                self.render_state_mut().streaming_component = None;
-                self.streaming.streaming_text.clear();
-                self.streaming.streaming_thinking.clear();
-                self.streaming.streaming_tool_calls.clear();
-                self.streaming.is_streaming = false;
-                self.queues.steering_queue.clear();
-                self.queues.follow_up_queue.clear();
-                self.queues.compaction_queued_messages.clear();
-                self.queues.pending_bash_components.clear();
-
-                // Rebuild containers from scratch so TUI matches cleared state
-                self.rebuild_chat_container();
+                self.reset_rendered_session_state();
                 self.rebuild_pending_container();
                 self.rebuild_footer();
 
                 // Show confirmation (like pi's "New session started")
-                self.render_state_mut()
-                    .add_message_to_chat(super::super::events::InteractiveMessage::System {
-                        text: "New session started".to_string(),
-                    });
-                self.rebuild_chat_container();
+                self.add_chat_message(super::super::events::InteractiveMessage::System {
+                    text: "New session started".to_string(),
+                });
                 self.snapshot_chat_cache();
                 self.refresh_ui();
         }
@@ -834,10 +833,7 @@ impl InteractiveMode {
             "  @               File autocomplete",
         ]
         .join("\n");
-        self.render_state_mut().add_message_to_chat(
-            super::super::events::InteractiveMessage::System { text: help },
-        );
-        self.rebuild_chat_container();
+        self.add_chat_message(super::super::events::InteractiveMessage::System { text: help });
         self.snapshot_chat_cache();
         self.refresh_ui();
     }
@@ -924,11 +920,10 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_armin_says_hi(&mut self) {
-        self.render_state_mut()
-            .add_message_to_chat(InteractiveMessage::Assistant {
-                message: assistant_message_from_parts("hi armin 👋", None, false),
-                tool_calls: Vec::new(),
-            });
+        self.add_chat_message(InteractiveMessage::Assistant {
+            message: assistant_message_from_parts("hi armin 👋", None, false),
+            tool_calls: Vec::new(),
+        });
     }
 
     pub(super) fn show_session_selector(&mut self) {
@@ -972,72 +967,9 @@ impl InteractiveMode {
         self.options.session_id = Some(session_id.to_string());
         let _ = self.controller.runtime_host.session_mut().clear_queue();
 
-        // Clear all chat/streaming state (like /new).
-        self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
-        self.render_state_mut().pending_items.clear();
-        self.render_state_mut().streaming_component = None;
-        self.streaming.streaming_text.clear();
-        self.streaming.streaming_thinking.clear();
-        self.streaming.streaming_tool_calls.clear();
-        self.streaming.is_streaming = false;
-        self.queues.steering_queue.clear();
-        self.queues.follow_up_queue.clear();
-        self.queues.compaction_queued_messages.clear();
-        self.queues.pending_bash_components.clear();
-
-        // Re-render session messages from the DB.
-        if let Ok(rows) = store::get_entries(&self.session_setup.conn, session_id) {
-            for row in rows {
-                if let Ok(entry) = store::parse_entry(&row) {
-                    match entry {
-                        bb_core::types::SessionEntry::Message { message, .. } => match message {
-                            bb_core::types::AgentMessage::User(u) => {
-                                let text = u.content.iter().filter_map(|b| match b {
-                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                }).collect::<Vec<_>>().join("\n");
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::User { text },
-                                );
-                            }
-                            bb_core::types::AgentMessage::Assistant(a) => {
-                                use super::super::events::InteractiveMessage;
-                                use super::super::components::assistant_message::{
-                                    AssistantMessage as AMsg,
-                                    AssistantMessageContent,
-                                };
-                                let mut content = Vec::new();
-                                for c in &a.content {
-                                    match c {
-                                        bb_core::types::AssistantContent::Text { text } => {
-                                            content.push(AssistantMessageContent::Text(text.clone()));
-                                        }
-                                        bb_core::types::AssistantContent::Thinking { thinking } => {
-                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                let msg = AMsg {
-                                    content,
-                                    stop_reason: None,
-                                    error_message: a.error_message.clone(),
-                                };
-                                self.render_state_mut().add_message_to_chat(
-                                    InteractiveMessage::Assistant {
-                                        message: msg,
-                                        tool_calls: vec![],
-                                    },
-                                );
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                }
-            }
-        }
+        // Clear all chat/streaming state (like /new), then rebuild from session context.
+        self.reset_rendered_session_state();
+        self.render_current_session_state();
 
         // Match pi more closely: render history, then append a status line.
         self.show_status("Resumed session");
@@ -1059,76 +991,14 @@ impl InteractiveMode {
         }
 
         // Clear and re-render from the new position
-        self.render_state_mut().chat_items.clear();
-                self.invalidate_chat_cache();
-        self.render_state_mut().pending_items.clear();
-        self.render_state_mut().streaming_component = None;
-        self.streaming.streaming_text.clear();
-        self.streaming.streaming_thinking.clear();
-        self.streaming.streaming_tool_calls.clear();
-        self.streaming.is_streaming = false;
-        self.queues.steering_queue.clear();
-        self.queues.follow_up_queue.clear();
-
-        // Re-render messages from root to new leaf
-        if let Ok(path) = bb_session::tree::active_path(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        ) {
-            for row in &path {
-                if let Ok(entry) = store::parse_entry(row) {
-                    match entry {
-                        bb_core::types::SessionEntry::Message { message, .. } => match message {
-                            bb_core::types::AgentMessage::User(u) => {
-                                let text: String = u.content.iter().filter_map(|b| match b {
-                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                                    _ => None,
-                                }).collect::<Vec<_>>().join("\n");
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::User { text },
-                                );
-                            }
-                            bb_core::types::AgentMessage::Assistant(a) => {
-                                use super::super::components::assistant_message::{
-                                    AssistantMessage as AMsg, AssistantMessageContent,
-                                };
-                                let mut content = Vec::new();
-                                for c in &a.content {
-                                    match c {
-                                        bb_core::types::AssistantContent::Text { text } => {
-                                            content.push(AssistantMessageContent::Text(text.clone()));
-                                        }
-                                        bb_core::types::AssistantContent::Thinking { thinking } => {
-                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
-                                self.render_state_mut().add_message_to_chat(
-                                    super::super::events::InteractiveMessage::Assistant {
-                                        message: msg, tool_calls: vec![],
-                                    },
-                                );
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        self.rebuild_chat_container();
+        self.reset_rendered_session_state();
+        self.render_current_session_state();
         self.rebuild_pending_container();
         self.rebuild_footer();
 
-        self.render_state_mut().add_message_to_chat(
-            super::super::events::InteractiveMessage::System {
-                text: "Navigated to tree entry".to_string(),
-            },
-        );
-        self.rebuild_chat_container();
+        self.add_chat_message(super::super::events::InteractiveMessage::System {
+            text: "Navigated to tree entry".to_string(),
+        });
         self.snapshot_chat_cache();
         self.refresh_ui();
     }

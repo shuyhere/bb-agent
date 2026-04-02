@@ -177,8 +177,7 @@ impl InteractiveMode {
             "collapsed"
         };
         self.show_status(format!("tool output expansion {state_label}"));
-        // Re-render chat to reflect new expansion state
-        self.rebuild_chat_container();
+        self.set_chat_tools_expanded(self.interaction.tool_output_expanded);
         self.rebuild_pending_container();
     }
 
@@ -193,18 +192,12 @@ impl InteractiveMode {
 
         let hide_thinking_block = self.streaming.hide_thinking_block;
         let hidden_thinking_label = self.streaming.hidden_thinking_label.clone();
-        for item in &mut self.render_state_mut().chat_items {
-            if let ChatItem::AssistantMessage(component) = item {
-                component.set_hide_thinking_block(hide_thinking_block);
-                component.set_hidden_thinking_label(hidden_thinking_label.clone());
-            }
-        }
+        self.set_chat_hide_thinking_block(hide_thinking_block, &hidden_thinking_label);
         if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
             component.set_hide_thinking_block(hide_thinking_block);
             component.set_hidden_thinking_label(hidden_thinking_label);
         }
 
-        self.rebuild_chat_container();
         self.rebuild_pending_container();
     }
 

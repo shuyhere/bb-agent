@@ -15,12 +15,11 @@ impl InteractiveMode {
     }
 
     pub(super) fn refresh_ui(&mut self) {
-        self.rebuild_chat_container();
         self.rebuild_pending_container();
         self.rebuild_status_container();
         self.rebuild_footer();
-        // When an overlay is open, force full redraw to avoid stale content
-        // from differential rendering artifacts.
+        // Mounted chat components are now the source of truth.
+        // Only rebuild chat explicitly on full session-state reloads.
         if self.ui.tui.has_overlay() {
             self.ui.tui.force_render();
         } else {
@@ -137,6 +136,50 @@ impl InteractiveMode {
         self.ui.tui.invalidate_root();
     }
 
+    pub(super) fn append_chat_items_from(&mut self, start: usize) {
+        let new_components: Vec<Box<dyn Component>> = self
+            .controller
+            .session
+            .render_state
+            .chat_items
+            .iter()
+            .skip(start)
+            .map(|item| self.chat_component_for_item(item))
+            .collect();
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            for component in new_components {
+                container.add(component);
+            }
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn add_chat_message(&mut self, message: InteractiveMessage) {
+        let start = self.controller.session.render_state.chat_items.len();
+        self.controller.session.render_state.add_message_to_chat(message);
+        self.append_chat_items_from(start);
+    }
+
+    pub(super) fn clear_chat_items(&mut self) {
+        self.controller.session.render_state.chat_items.clear();
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            container.clear();
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn render_chat_from_session_context(
+        &mut self,
+        session_context: &super::super::events::SessionContext,
+    ) {
+        self.clear_chat_items();
+        self.controller
+            .session
+            .render_state
+            .render_session_context(session_context);
+        self.append_chat_items_from(0);
+    }
+
     pub(super) fn replace_chat_item(&mut self, index: usize, item: ChatItem) {
         let component = self.chat_component_for_item(&item);
         if let Some(slot) = self.controller.session.render_state.chat_items.get_mut(index) {
@@ -154,6 +197,48 @@ impl InteractiveMode {
         self.controller.session.render_state.chat_items.truncate(len);
         if let Ok(mut container) = self.ui.chat_container.lock() {
             container.children.truncate(len);
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn set_chat_tools_expanded(&mut self, expanded: bool) {
+        for item in &mut self.controller.session.render_state.chat_items {
+            match item {
+                ChatItem::ToolExecution(component) => component.set_expanded(expanded),
+                ChatItem::BashExecution(component) => component.set_expanded(expanded),
+                _ => {}
+            }
+        }
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            for child in &mut container.children {
+                if let Some(component) = child.as_any_mut().downcast_mut::<super::super::components::tool_execution::ToolExecutionComponent>() {
+                    component.set_expanded(expanded);
+                } else if let Some(component) = child.as_any_mut().downcast_mut::<super::super::components::bash_execution::BashExecutionComponent>() {
+                    component.set_expanded(expanded);
+                } else if let Some(component) = child.as_any_mut().downcast_mut::<super::super::components::compaction_message::CompactionSummaryMessageComponent>() {
+                    component.set_expanded(expanded);
+                } else if let Some(component) = child.as_any_mut().downcast_mut::<super::super::components::branch_summary::BranchSummaryMessageComponent>() {
+                    component.set_expanded(expanded);
+                }
+            }
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn set_chat_hide_thinking_block(&mut self, hide: bool, label: &str) {
+        for item in &mut self.controller.session.render_state.chat_items {
+            if let ChatItem::AssistantMessage(component) = item {
+                component.set_hide_thinking_block(hide);
+                component.set_hidden_thinking_label(label.to_string());
+            }
+        }
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            for child in &mut container.children {
+                if let Some(component) = child.as_any_mut().downcast_mut::<super::super::components::assistant_message::AssistantMessageComponent>() {
+                    component.set_hide_thinking_block(hide);
+                    component.set_hidden_thinking_label(label.to_string());
+                }
+            }
         }
         self.ui.tui.invalidate_root();
     }

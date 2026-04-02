@@ -201,24 +201,21 @@ impl InteractiveMode {
             .map_err(|err| -> Box<dyn Error + Send + Sync> { Box::new(err) })?;
 
         // Show user message IMMEDIATELY with background color (pi-style)
-        self.render_state_mut()
-            .add_message_to_chat(InteractiveMessage::User {
-                text: user_input.clone(),
-            });
+        self.add_chat_message(InteractiveMessage::User {
+            text: user_input.clone(),
+        });
         // Render now so user sees their message before streaming starts.
-        // Only rebuild chat (we just added a message) — skip pending/status/footer.
-        self.rebuild_chat_container();
+        // Only redraw after appending the mounted user component.
         self.ui.tui.render();
 
         // Check if we have credentials before starting.
         if self.session_setup.api_key.trim().is_empty() {
             let provider = self.session_setup.model.provider.clone();
-            self.render_state_mut()
-                .add_message_to_chat(InteractiveMessage::System {
-                    text: format!(
-                        "No API key for provider '{provider}'. Use /login to authenticate, or /model to switch to an authenticated provider."
-                    ),
-                });
+            self.add_chat_message(InteractiveMessage::System {
+                text: format!(
+                    "No API key for provider '{provider}'. Use /login to authenticate, or /model to switch to an authenticated provider."
+                ),
+            });
             self.refresh_ui();
             return Ok(());
         }

@@ -335,7 +335,7 @@ impl InteractiveMode {
             }
             "tool-expand" => {
                 self.interaction.tool_output_expanded = value == "true";
-                self.rebuild_chat_container();
+                self.set_chat_tools_expanded(self.interaction.tool_output_expanded);
                 self.rebuild_pending_container();
                 format!("Tool output expansion: {value}")
             }
@@ -343,13 +343,11 @@ impl InteractiveMode {
                 self.streaming.hide_thinking_block = value == "true";
                 let hide = self.streaming.hide_thinking_block;
                 let label = self.streaming.hidden_thinking_label.clone();
-                for item in &mut self.render_state_mut().chat_items {
-                    if let ChatItem::AssistantMessage(c) = item {
-                        c.set_hide_thinking_block(hide);
-                        c.set_hidden_thinking_label(label.clone());
-                    }
+                self.set_chat_hide_thinking_block(hide, &label);
+                if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
+                    component.set_hide_thinking_block(hide);
+                    component.set_hidden_thinking_label(label);
                 }
-                self.rebuild_chat_container();
                 self.rebuild_pending_container();
                 format!("Hide thinking blocks: {value}")
             }
