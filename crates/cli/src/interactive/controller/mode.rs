@@ -72,6 +72,8 @@ pub struct InteractiveMode {
     pub(super) submit_routes: Vec<SubmitRoute>,
     pub(super) agent_events: Option<mpsc::UnboundedReceiver<AgentLoopEvent>>,
     pub(super) events: Option<UnboundedReceiver<TerminalEvent>>,
+    /// Shared cancellation token for the current streaming turn. Cancel from Esc/Ctrl-C.
+    pub(super) abort_token: tokio_util::sync::CancellationToken,
 }
 
 impl InteractiveMode {
@@ -149,6 +151,7 @@ impl InteractiveMode {
             submit_routes: Vec::new(),
             agent_events: None,
             events: None,
+            abort_token: tokio_util::sync::CancellationToken::new(),
         };
         this.render_widgets();
         this.rebuild_footer();

@@ -1,4 +1,5 @@
 use bb_provider::Provider;
+use std::sync::Arc;
 use bb_tools::{Tool, ToolContext};
 use std::error::Error;
 
@@ -22,7 +23,7 @@ pub struct InteractiveModeOptions {
 pub struct InteractiveSessionSetup {
     pub conn: rusqlite::Connection,
     pub session_id: String,
-    pub provider: Box<dyn Provider>,
+    pub provider: Arc<dyn Provider>,
     pub model: bb_provider::registry::Model,
     pub api_key: String,
     pub base_url: String,

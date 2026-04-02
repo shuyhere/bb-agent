@@ -120,10 +120,10 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
     // Create provider
-    let provider: Box<dyn Provider> = match model.api {
-        ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
-        ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
-        _ => Box::new(OpenAiProvider::new()),
+    let provider: std::sync::Arc<dyn Provider> = match model.api {
+        ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
+        ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
+        _ => std::sync::Arc::new(OpenAiProvider::new()),
     };
 
     // Select tools and build definitions

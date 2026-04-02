@@ -161,9 +161,13 @@ impl InteractiveMode {
     }
 
     /// Run the full streaming turn loop: stream from provider, execute tools, loop until done.
+    /// Processes terminal events (Esc/Ctrl-C) during streaming so user can abort.
     pub(super) async fn run_streaming_turn_loop(&mut self) -> InteractiveResult<()> {
         let (tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
         self.agent_events = Some(rx);
+
+        // Fresh cancellation token for this turn sequence
+        self.abort_token = tokio_util::sync::CancellationToken::new();
 
         let mut turn_index: u32 = 0;
 
@@ -171,6 +175,12 @@ impl InteractiveMode {
             let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
             self.drain_pending_agent_events();
             self.refresh_ui();
+
+            if self.abort_token.is_cancelled() {
+                let _ = tx.send(AgentLoopEvent::AssistantDone);
+                self.drain_pending_agent_events();
+                break;
+            }
 
             // Build context from session
             let ctx = bb_session::context::build_context(
@@ -190,63 +200,98 @@ impl InteractiveMode {
                 thinking: if self.session_setup.thinking_level == "off" { None } else { Some(self.session_setup.thinking_level.clone()) },
             };
 
+            let cancel_token = self.abort_token.clone();
             let options = bb_provider::RequestOptions {
                 api_key: self.session_setup.api_key.clone(),
                 base_url: self.session_setup.base_url.clone(),
                 headers: std::collections::HashMap::new(),
-                cancel: tokio_util::sync::CancellationToken::new(),
+                cancel: cancel_token.clone(),
             };
 
-            // Spawn provider streaming in background so tokens arrive while we render
+            // Spawn provider streaming in a background task so we can select on terminal events
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
-            let provider_tx = tx.clone();
-            let provider = &self.session_setup.provider;
-            
-            // We can't move provider into spawn, so run stream inline but 
-            // forward events through the agent channel for the main loop
-            let stream_result = provider.stream(request, options, stream_tx).await;
+            let provider = self.session_setup.provider.clone();
+            let stream_cancel = cancel_token.clone();
+            let stream_handle = tokio::spawn(async move {
+                let result = provider.stream(request, options, stream_tx).await;
+                if let Err(e) = result {
+                    if !stream_cancel.is_cancelled() {
+                        return Err(e);
+                    }
+                }
+                Ok(())
+            });
 
-            if let Err(e) = stream_result {
-                let raw = format!("{e}");
-                let clean = raw.lines().next().unwrap_or(&raw).to_string();
-                let _ = tx.send(AgentLoopEvent::Error { message: clean });
+            // Process stream events while also handling terminal input (Esc to abort)
+            let mut all_events = Vec::new();
+            let mut stream_done = false;
+            let mut aborted = false;
+
+            while !stream_done && !aborted {
+                tokio::select! {
+                    stream_event = stream_rx.recv() => {
+                        let Some(event) = stream_event else {
+                            stream_done = true;
+                            break;
+                        };
+                        match &event {
+                            bb_provider::StreamEvent::TextDelta { text } => {
+                                let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
+                            }
+                            bb_provider::StreamEvent::ThinkingDelta { text } => {
+                                let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
+                            }
+                            bb_provider::StreamEvent::ToolCallStart { id, name } => {
+                                let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
+                            }
+                            bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
+                                let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
+                            }
+                            bb_provider::StreamEvent::Error { message } => {
+                                let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
+                            }
+                            _ => {}
+                        }
+                        all_events.push(event);
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
+                    }
+                    terminal_event = async {
+                        match self.events.as_mut() {
+                            Some(events) => events.recv().await,
+                            None => std::future::pending::<Option<TerminalEvent>>().await,
+                        }
+                    } => {
+                        if let Some(event) = terminal_event {
+                            match event {
+                                TerminalEvent::Key(key) => {
+                                    if key.code == KeyCode::Esc || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
+                                        // Abort streaming
+                                        self.abort_token.cancel();
+                                        aborted = true;
+                                        self.show_warning("Aborted");
+                                    }
+                                }
+                                TerminalEvent::Resize(_, _) => {
+                                    self.ui.tui.force_render();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Wait for stream task to finish (it should stop quickly after cancel)
+            let _ = stream_handle.await;
+
+            if aborted {
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
+                self.drain_pending_agent_events();
+                self.refresh_ui();
                 break;
             }
 
-            // Process stream events, forwarding as agent events with live rendering
-            let mut all_events = Vec::new();
-            while let Some(event) = stream_rx.recv().await {
-                match &event {
-                    bb_provider::StreamEvent::TextDelta { text } => {
-                        let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                    }
-                    bb_provider::StreamEvent::ThinkingDelta { text } => {
-                        let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                    }
-                    bb_provider::StreamEvent::ToolCallStart { id, name } => {
-                        let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                    }
-                    bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
-                        let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                    }
-                    bb_provider::StreamEvent::Error { message } => {
-                        let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                    }
-                    _ => {}
-                }
-                all_events.push(event);
-            }
             // Final render after stream ends
             self.refresh_ui();
 
@@ -307,8 +352,13 @@ impl InteractiveMode {
                 break;
             }
 
-            // Execute tool calls
-            let cancel = tokio_util::sync::CancellationToken::new();
+            // Execute tool calls (using the shared abort token so Esc cancels tools too)
+            if self.abort_token.is_cancelled() {
+                let _ = tx.send(AgentLoopEvent::AssistantDone);
+                self.drain_pending_agent_events();
+                break;
+            }
+            let cancel = self.abort_token.clone();
             for tc in &collected.tool_calls {
                 let args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));

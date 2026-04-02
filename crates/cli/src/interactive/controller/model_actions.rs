@@ -63,10 +63,10 @@ impl InteractiveMode {
             ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
             _ => "https://api.openai.com/v1".to_string(),
         });
-        let new_provider: Box<dyn bb_provider::Provider> = match model.api {
-            ApiType::AnthropicMessages => Box::new(bb_provider::anthropic::AnthropicProvider::new()),
-            ApiType::GoogleGenerative => Box::new(bb_provider::google::GoogleProvider::new()),
-            _ => Box::new(bb_provider::openai::OpenAiProvider::new()),
+        let new_provider: std::sync::Arc<dyn bb_provider::Provider> = match model.api {
+            ApiType::AnthropicMessages => std::sync::Arc::new(bb_provider::anthropic::AnthropicProvider::new()),
+            ApiType::GoogleGenerative => std::sync::Arc::new(bb_provider::google::GoogleProvider::new()),
+            _ => std::sync::Arc::new(bb_provider::openai::OpenAiProvider::new()),
         };
         let display = format!("{}/{}", model.provider, model.id);
 
