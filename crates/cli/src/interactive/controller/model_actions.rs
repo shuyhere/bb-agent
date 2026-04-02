@@ -263,11 +263,16 @@ impl InteractiveMode {
         };
         match rx.try_recv() {
             Ok(Ok(creds)) => {
-                let provider = self
-                    .streaming
-                    .pending_auth_provider
-                    .take()
-                    .unwrap_or_default();
+                let provider = match self.streaming.pending_auth_provider.take() {
+                    Some(p) if !p.is_empty() => p,
+                    _ => {
+                        // Provider name was lost — should not happen.
+                        self.streaming.pending_oauth_result_rx = None;
+                        self.streaming.pending_oauth_manual_tx = None;
+                        self.show_warning("OAuth completed but provider name was lost.");
+                        return;
+                    }
+                };
                 self.streaming.pending_oauth_result_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
 
@@ -383,7 +388,16 @@ impl InteractiveMode {
     fn handle_auth_logout(&mut self, provider: &str) {
         match crate::login::remove_auth(provider) {
             Ok(true) => {
-                self.show_status(format!("Logged out from {provider}"));
+                // Clear the live session key if it matches the logged-out provider.
+                let model_provider = &self.session_setup.model.provider;
+                let matches = model_provider == provider
+                    || (provider == "openai-codex" && model_provider == "openai")
+                    || (provider == "openai" && model_provider == "openai-codex")
+                    || (provider == "anthropic" && model_provider == "anthropic");
+                if matches {
+                    self.session_setup.api_key.clear();
+                }
+                self.show_status(format!("Logged out from {provider}. API key cleared."));
                 self.rebuild_footer();
             }
             Ok(false) => {
