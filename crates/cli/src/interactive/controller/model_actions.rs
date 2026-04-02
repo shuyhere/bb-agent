@@ -343,11 +343,15 @@ impl InteractiveMode {
                 self.streaming.hide_thinking_block = value == "true";
                 let hide = self.streaming.hide_thinking_block;
                 let label = self.streaming.hidden_thinking_label.clone();
-                self.set_chat_hide_thinking_block(hide, &label);
+                let tools_expanded = self.interaction.tool_output_expanded;
                 if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
                     component.set_hide_thinking_block(hide);
-                    component.set_hidden_thinking_label(label);
+                    component.set_hidden_thinking_label(label.clone());
                 }
+                for component in self.render_state_mut().pending_tools.values_mut() {
+                    component.set_expanded(tools_expanded);
+                }
+                self.rebuild_chat_from_session_with_live_components();
                 self.rebuild_pending_container();
                 format!("Hide thinking blocks: {value}")
             }

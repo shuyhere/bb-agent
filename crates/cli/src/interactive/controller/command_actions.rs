@@ -288,13 +288,32 @@ impl InteractiveMode {
         self.queues.pending_bash_components.clear();
     }
 
-    fn render_current_session_state(&mut self) {
+    pub(super) fn render_current_session_state(&mut self) {
+        self.render_state_mut().tool_output_expanded = self.interaction.tool_output_expanded;
+        self.render_state_mut().hide_thinking_block = self.streaming.hide_thinking_block;
+        self.render_state_mut().hidden_thinking_label = self.streaming.hidden_thinking_label.clone();
         match bb_session::context::build_context(&self.session_setup.conn, &self.session_setup.session_id) {
             Ok(context) => {
                 let context = Self::interactive_session_context_from_core(context);
                 self.render_chat_from_session_context(&context);
             }
             Err(_) => self.clear_chat_items(),
+        }
+    }
+
+    pub(super) fn rebuild_chat_from_session_with_live_components(&mut self) {
+        let streaming_component = self.render_state().streaming_component.clone();
+        let pending_tools = self.render_state().pending_tools.clone();
+
+        self.render_current_session_state();
+
+        self.render_state_mut().pending_tools = pending_tools.clone();
+
+        if let Some(component) = streaming_component {
+            self.append_chat_item(super::super::events::ChatItem::AssistantMessage(component));
+        }
+        for component in pending_tools.into_values() {
+            self.append_chat_item(super::super::events::ChatItem::ToolExecution(component));
         }
     }
 
@@ -996,9 +1015,7 @@ impl InteractiveMode {
         self.rebuild_pending_container();
         self.rebuild_footer();
 
-        self.add_chat_message(super::super::events::InteractiveMessage::System {
-            text: "Navigated to tree entry".to_string(),
-        });
+        self.show_status("Navigated to selected point");
         self.snapshot_chat_cache();
         self.refresh_ui();
     }

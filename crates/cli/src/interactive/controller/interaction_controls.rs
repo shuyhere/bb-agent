@@ -183,21 +183,24 @@ impl InteractiveMode {
 
     pub(super) fn toggle_thinking_block_visibility(&mut self) {
         self.streaming.hide_thinking_block = !self.streaming.hide_thinking_block;
-        let state_label = if self.streaming.hide_thinking_block {
-            "hidden"
-        } else {
-            "expanded"
-        };
-        self.show_status(format!("thinking block {state_label}"));
 
+        // Match pi: clear mounted chat, rebuild from session messages, then re-add
+        // the live streaming component/tool state and finally append the status.
         let hide_thinking_block = self.streaming.hide_thinking_block;
         let hidden_thinking_label = self.streaming.hidden_thinking_label.clone();
-        self.set_chat_hide_thinking_block(hide_thinking_block, &hidden_thinking_label);
+        let tools_expanded = self.interaction.tool_output_expanded;
         if let Some(component) = self.render_state_mut().streaming_component.as_mut() {
             component.set_hide_thinking_block(hide_thinking_block);
-            component.set_hidden_thinking_label(hidden_thinking_label);
+            component.set_hidden_thinking_label(hidden_thinking_label.clone());
         }
-
+        for component in self.render_state_mut().pending_tools.values_mut() {
+            component.set_expanded(tools_expanded);
+        }
+        self.rebuild_chat_from_session_with_live_components();
+        self.show_status(format!(
+            "Thinking blocks: {}",
+            if self.streaming.hide_thinking_block { "hidden" } else { "visible" }
+        ));
         self.rebuild_pending_container();
     }
 

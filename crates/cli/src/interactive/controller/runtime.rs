@@ -547,7 +547,6 @@ impl InteractiveMode {
         } else if context_overflow {
             // Handle context overflow: auto-compact and retry
             if self.handle_context_overflow().await {
-                self.rebuild_chat_container();
                 self.refresh_ui();
                 // Retry the entire turn loop (boxed to avoid infinite-size future)
                 return Box::pin(self.run_streaming_turn_loop()).await;
@@ -678,7 +677,6 @@ impl InteractiveMode {
         };
 
         // Save compaction entry to session
-        let tokens_after_estimate = compaction::estimate_tokens_text(&compaction_result.summary);
         let compaction_entry = bb_core::types::SessionEntry::Compaction {
             base: bb_core::types::EntryBase {
                 id: bb_core::types::EntryId::generate(),
@@ -701,19 +699,11 @@ impl InteractiveMode {
             return false;
         }
 
-        // Show compaction summary in chat
-        self.add_chat_message(super::super::events::InteractiveMessage::CompactionSummary {
-            summary: format!(
-                "Context compacted: {}k → {}k tokens",
-                tokens_before / 1000,
-                tokens_after_estimate / 1000,
-            ),
-        });
-        self.show_status(format!(
-            "Context compacted: {}k → ~{}k tokens",
-            tokens_before / 1000,
-            tokens_after_estimate / 1000,
-        ));
+        // Match pi compaction_end ordering: clear/rebuild chat from the updated
+        // session state, then refresh footer. BB's session context already carries
+        // the compaction summary message, so we do not append a second summary line.
+        self.render_current_session_state();
+        self.rebuild_footer();
         self.refresh_ui();
 
         true
