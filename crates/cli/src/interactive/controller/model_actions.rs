@@ -376,10 +376,13 @@ impl InteractiveMode {
     }
 
     fn handle_auth_login(&mut self, provider: &str) {
-        use super::super::auth_selector_overlay::{auth_method_for, AuthMethod};
+        use super::super::auth_selector_overlay::{
+            auth_display_name_for, auth_method_for, AuthMethod,
+        };
         use crate::login::auth_source;
 
         let method = auth_method_for(provider);
+        let display_name = auth_display_name_for(provider).to_string();
         let source = auth_source(provider);
         let verb = if source.is_some() { "Re-auth" } else { "Login" };
         let source_note = match source {
@@ -389,13 +392,16 @@ impl InteractiveMode {
 
         match method {
             AuthMethod::OAuth => {
-                self.start_oauth_flow(provider, verb, &source_note);
+                self.start_oauth_flow(provider, &display_name, verb, &source_note);
             }
             AuthMethod::ApiKey => {
-                self.show_status(format!(
-                    "{verb} {provider}{source_note} -- paste API key and press Enter (Esc to cancel)"
-                ));
                 self.streaming.pending_auth_provider = Some(provider.to_string());
+                self.streaming.pending_auth_display_name = Some(display_name.clone());
+                self.streaming.pending_auth_url = None;
+                self.streaming.pending_auth_message = Some(format!(
+                    "{verb} {display_name}{source_note}\nPaste API key below and press Enter.\nPress Esc to cancel."
+                ));
+                self.show_status(format!("{verb} {display_name}{source_note}"));
             }
         }
     }
@@ -404,13 +410,15 @@ impl InteractiveMode {
     ///
     /// Opens browser, starts callback server, and also allows manual code paste.
     /// The editor is used for manual paste input. Results arrive via poll_oauth_result.
-    fn start_oauth_flow(&mut self, provider: &str, verb: &str, source_note: &str) {
+    fn start_oauth_flow(&mut self, provider: &str, display_name: &str, verb: &str, source_note: &str) {
         use crate::oauth::{self, OAuthCallbacks};
 
         // Oneshot so the user can paste the code/URL manually.
         let (manual_tx, manual_rx) = tokio::sync::oneshot::channel::<String>();
 
         self.streaming.pending_auth_provider = Some(provider.to_string());
+        self.streaming.pending_auth_display_name = Some(display_name.to_string());
+        self.streaming.pending_auth_url = None;
         self.streaming.pending_oauth_manual_tx = Some(manual_tx);
 
         let provider_for_task = provider.to_string();
@@ -461,19 +469,17 @@ impl InteractiveMode {
         // Show the auth URL in the TUI so headless users can copy it.
         // Use a short timeout — the on_auth callback fires almost immediately.
         if let Ok(url) = url_rx.recv_timeout(std::time::Duration::from_secs(3)) {
-            self.show_status(format!(
-                "{verb} {provider}{source_note}\n\
-                 Open this URL in a browser:\n\
-                 \n\
-                   {url}\n\
-                 \n\
-                 Then paste the redirect URL or code here and press Enter.\n\
-                 Press Esc to cancel."
-            ));
+            self.streaming.pending_auth_url = Some(url);
+            self.streaming.pending_auth_message = Some(
+                "Open this URL in a browser.\nThen paste the redirect URL or code below and press Enter.\nPress Esc to cancel."
+                    .to_string(),
+            );
+            self.show_status(format!("{verb} {display_name}{source_note}"));
         } else {
-            self.show_status(format!(
-                "{verb} {provider}{source_note} — starting OAuth flow… (Esc to cancel)"
+            self.streaming.pending_auth_message = Some(format!(
+                "Starting OAuth flow for {display_name}…\nPress Esc to cancel."
             ));
+            self.show_status(format!("{verb} {display_name}{source_note}"));
         }
     }
 
@@ -492,12 +498,21 @@ impl InteractiveMode {
                         // Provider name was lost — should not happen.
                         self.streaming.pending_oauth_result_rx = None;
                         self.streaming.pending_oauth_manual_tx = None;
+                        self.streaming.pending_auth_url = None;
+                        self.streaming.pending_auth_message = None;
+                        self.streaming.pending_auth_display_name = None;
                         self.show_warning("OAuth completed but provider name was lost.");
                         return;
                     }
                 };
+                let display_name = self
+                    .streaming
+                    .pending_auth_display_name
+                    .clone()
+                    .unwrap_or_else(|| provider.clone());
                 self.streaming.pending_oauth_result_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
+                self.streaming.pending_auth_url = None;
 
                 match crate::login::save_oauth_credentials(&provider, &creds) {
                     Ok(()) => {
@@ -508,8 +523,10 @@ impl InteractiveMode {
                         if matches {
                             self.session_setup.api_key = creds.access.clone();
                         }
+                        self.streaming.pending_auth_message = None;
+                        self.streaming.pending_auth_display_name = None;
                         self.show_status(format!(
-                            "Logged in to {provider}. Credentials saved to {}. Verifying…",
+                            "Logged in to {display_name}. Credentials saved to {}. Verifying…",
                             crate::login::auth_path().display()
                         ));
                         // Queue a verification prompt so user sees the login works.
@@ -517,6 +534,8 @@ impl InteractiveMode {
                             Some(provider.clone());
                     }
                     Err(e) => {
+                        self.streaming.pending_auth_message = None;
+                        self.streaming.pending_auth_display_name = None;
                         self.show_warning(format!(
                             "OAuth succeeded but failed to save tokens: {e}"
                         ));
@@ -528,6 +547,9 @@ impl InteractiveMode {
                 self.streaming.pending_auth_provider = None;
                 self.streaming.pending_oauth_result_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
+                self.streaming.pending_auth_url = None;
+                self.streaming.pending_auth_message = None;
+                self.streaming.pending_auth_display_name = None;
                 self.show_warning(format!("Login failed: {err}"));
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
@@ -537,6 +559,9 @@ impl InteractiveMode {
                 self.streaming.pending_auth_provider = None;
                 self.streaming.pending_oauth_result_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
+                self.streaming.pending_auth_url = None;
+                self.streaming.pending_auth_message = None;
+                self.streaming.pending_auth_display_name = None;
                 // Don't show warning — the flow may have completed normally
                 // and the channel was dropped after sending.
             }
@@ -552,6 +577,11 @@ impl InteractiveMode {
             Some(p) => p.clone(),
             None => return,
         };
+        let display_name = self
+            .streaming
+            .pending_auth_display_name
+            .clone()
+            .unwrap_or_else(|| provider.clone());
 
         let key = key_text.trim();
 
@@ -566,7 +596,8 @@ impl InteractiveMode {
         // to the OAuth flow which will parse the code from it.
         if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
             if tx.send(key.to_string()).is_ok() {
-                self.show_status(format!("Exchanging tokens for {provider}…"));
+                self.streaming.pending_auth_message = Some(format!("Exchanging tokens for {display_name}…"));
+                self.show_status(format!("Exchanging tokens for {display_name}…"));
                 // Result will arrive via poll_oauth_result.
                 return;
             }
@@ -574,6 +605,7 @@ impl InteractiveMode {
             // Fall through to check if it was an error.
             if self.streaming.pending_oauth_result_rx.is_some() {
                 // Let poll_oauth_result handle it on next tick.
+                self.streaming.pending_auth_message = Some("Processing…".to_string());
                 self.show_status("Processing…");
                 return;
             }
@@ -581,10 +613,13 @@ impl InteractiveMode {
 
         // No OAuth channel — this is a plain API-key paste.
         self.streaming.pending_auth_provider = None;
+        self.streaming.pending_auth_display_name = None;
+        self.streaming.pending_auth_url = None;
+        self.streaming.pending_auth_message = None;
 
         match crate::login::save_api_key(&provider, key) {
             Ok(()) => {
-                self.show_status(format!("Saved API key for {provider}"));
+                self.show_status(format!("Saved API key for {display_name}"));
                 if self.session_setup.provider.name() == provider
                     || (provider == "openai-codex"
                         && self.session_setup.provider.name() == "openai")
@@ -602,6 +637,9 @@ impl InteractiveMode {
     /// Cancel any pending auth flow (OAuth or API key).
     pub(super) fn cancel_pending_auth(&mut self) {
         self.streaming.pending_auth_provider = None;
+        self.streaming.pending_auth_display_name = None;
+        self.streaming.pending_auth_url = None;
+        self.streaming.pending_auth_message = None;
         if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
             // Dropping tx cancels the manual input in the OAuth flow.
             drop(tx);
@@ -610,6 +648,7 @@ impl InteractiveMode {
     }
 
     fn handle_auth_logout(&mut self, provider: &str) {
+        let display_name = super::super::auth_selector_overlay::auth_display_name_for(provider);
         match crate::login::remove_auth(provider) {
             Ok(true) => {
                 // Clear the live session key if it matches the logged-out provider.
@@ -621,7 +660,7 @@ impl InteractiveMode {
                 if matches {
                     self.session_setup.api_key.clear();
                 }
-                self.show_status(format!("Logged out of {provider}"));
+                self.show_status(format!("Logged out of {display_name}"));
                 self.rebuild_footer();
             }
             Ok(false) => {
@@ -629,11 +668,11 @@ impl InteractiveMode {
                 match source {
                     Some(crate::login::AuthSource::EnvVar) => {
                         self.show_warning(format!(
-                            "{provider}: credentials come from environment variable. Unset it in your shell."
+                            "{display_name}: credentials come from environment variable. Unset it in your shell."
                         ));
                     }
                     _ => {
-                        self.show_status(format!("{provider}: not logged in"));
+                        self.show_status(format!("{display_name}: not logged in"));
                     }
                 }
             }

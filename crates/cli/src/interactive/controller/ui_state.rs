@@ -11,12 +11,14 @@ impl InteractiveMode {
         self.rebuild_chat_container();
         self.rebuild_pending_container();
         self.rebuild_status_container();
+        self.render_widgets();
         self.rebuild_footer();
     }
 
     pub(super) fn refresh_ui(&mut self) {
         self.rebuild_pending_container();
         self.rebuild_status_container();
+        self.render_widgets();
         self.rebuild_footer();
         // Mounted chat components are now the source of truth.
         // Only rebuild chat explicitly on full session-state reloads.
@@ -30,8 +32,9 @@ impl InteractiveMode {
     /// Lightweight render that skips rebuilding the chat container.
     /// Use for typing in the editor where chat content hasn't changed.
     pub(super) fn render_editor_frame(&mut self) {
-        // Only rebuild status (cheap), skip chat + pending + footer (expensive).
+        // Only rebuild lightweight regions, skip chat + pending + footer.
         self.rebuild_status_container();
+        self.render_widgets();
         // Mark root dirty since status/editor changed.
         self.ui.tui.invalidate_root();
         self.ui.tui.render();
@@ -435,9 +438,39 @@ impl InteractiveMode {
     }
 
     pub(super) fn render_widgets(&mut self) {
-        // No extra spacing around editor — pi doesn't have it
-        self.render_cache.widgets_above_lines = vec![];
-        self.render_cache.widgets_below_lines = vec![];
+        let t = bb_tui::theme::theme();
+        self.render_cache.widgets_above_lines.clear();
+        self.render_cache.widgets_below_lines.clear();
+
+        if self.streaming.pending_auth_provider.is_some() {
+            let width = self.ui.tui.columns().max(20) as usize;
+            let inner = width.saturating_sub(2);
+            let border = format!("{}{}{}", t.accent, "─".repeat(width), t.reset);
+            let title = self
+                .streaming
+                .pending_auth_display_name
+                .as_deref()
+                .map(|name| format!("Login to {name}"))
+                .unwrap_or_else(|| "Login".to_string());
+            self.render_cache.widgets_above_lines.push(border.clone());
+            self.render_cache.widgets_above_lines.push(format!(" {}{}{}", t.yellow, title, t.reset));
+            if let Some(url) = self.streaming.pending_auth_url.as_deref() {
+                self.render_cache.widgets_above_lines.push(String::new());
+                self.render_cache.widgets_above_lines.push(format!(" {}{}{}", t.accent, url, t.reset));
+            }
+            if let Some(message) = self.streaming.pending_auth_message.as_deref() {
+                self.render_cache.widgets_above_lines.push(String::new());
+                for line in message.lines() {
+                    let mut line = line.to_string();
+                    if bb_tui::utils::visible_width(&line) > inner {
+                        line = line.chars().take(inner).collect();
+                    }
+                    self.render_cache.widgets_above_lines.push(format!(" {}{}{}", t.dim, line, t.reset));
+                }
+            }
+            self.render_cache.widgets_above_lines.push(border);
+        }
+
         Self::replace_container_lines(&self.ui.widget_container_above, &self.render_cache.widgets_above_lines);
         Self::replace_container_lines(&self.ui.widget_container_below, &self.render_cache.widgets_below_lines);
     }

@@ -13,7 +13,7 @@ impl InteractiveMode {
                 || key_text == "/logout"
             {
                 self.cancel_pending_auth();
-                self.show_status("Login canceled.");
+                self.refresh_ui();
             } else {
                 self.finish_auth_login(&key_text);
             }

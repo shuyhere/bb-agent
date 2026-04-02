@@ -104,6 +104,15 @@ pub fn auth_method_for(provider: &str) -> AuthMethod {
         .unwrap_or(AuthMethod::ApiKey)
 }
 
+/// Human-friendly provider display name.
+pub fn auth_display_name_for(provider: &str) -> &str {
+    PROVIDERS
+        .iter()
+        .find(|(id, _, _)| *id == provider)
+        .map(|(_, display, _)| *display)
+        .unwrap_or(provider)
+}
+
 impl Component for AuthSelectorOverlay {
     fn render(&self, width: u16) -> Vec<String> {
         let w = width as usize;

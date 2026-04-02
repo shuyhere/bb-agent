@@ -32,6 +32,10 @@ pub(super) struct StreamingState {
     pub(super) pending_oauth_result_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::oauth::OAuthCredentials, String>>>,
     /// Provider that just completed OAuth login and needs verification.
     pub(super) pending_oauth_verify_provider: Option<String>,
+    /// Pi-like login panel state rendered above the editor.
+    pub(super) pending_auth_display_name: Option<String>,
+    pub(super) pending_auth_url: Option<String>,
+    pub(super) pending_auth_message: Option<String>,
     pub(super) retry_in_progress: bool,
 }
 
@@ -135,6 +139,9 @@ impl InteractiveMode {
                 pending_oauth_manual_tx: None,
                 pending_oauth_result_rx: None,
                 pending_oauth_verify_provider: None,
+                pending_auth_display_name: None,
+                pending_auth_url: None,
+                pending_auth_message: None,
                 retry_in_progress: false,
             },
             queues: QueueState {
