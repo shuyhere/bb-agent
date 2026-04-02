@@ -19,8 +19,13 @@ impl InteractiveMode {
         self.rebuild_pending_container();
         self.rebuild_status_container();
         self.rebuild_footer();
-        // Always use differential render — never clear scrollback
-        self.ui.tui.render();
+        // When an overlay is open, force full redraw to avoid stale content
+        // from differential rendering artifacts.
+        if self.ui.tui.has_overlay() {
+            self.ui.tui.force_render();
+        } else {
+            self.ui.tui.render();
+        }
     }
 
     pub(super) fn rebuild_header(&mut self) {
