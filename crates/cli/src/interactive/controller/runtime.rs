@@ -182,7 +182,13 @@ impl InteractiveMode {
                 }
                 // Periodic tick so background work (OAuth polling, etc) runs
                 // even when no terminal/agent events arrive.
-                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                // 80ms tick for spinner animation + background polling.
+                _ = tokio::time::sleep(std::time::Duration::from_millis(80)) => {
+                    // Spinner: rebuild status if loader is active.
+                    if self.streaming.status_loader.is_some() {
+                        self.rebuild_status_container();
+                        self.ui.tui.render();
+                    }
                     // poll_oauth_result runs at loop top on next iteration.
                 }
             }
@@ -393,6 +399,9 @@ impl InteractiveMode {
         let mut aborted = false;
         let mut context_overflow = false;
 
+        let mut spinner_interval = tokio::time::interval(std::time::Duration::from_millis(80));
+        spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 turn_event = turn_event_rx.recv() => {
@@ -462,6 +471,13 @@ impl InteractiveMode {
                                 self.refresh_ui();
                             }
                         }
+                    }
+                }
+                // 80ms tick for spinner animation (matches pi's Loader interval).
+                _ = spinner_interval.tick() => {
+                    if self.streaming.status_loader.is_some() {
+                        self.rebuild_status_container();
+                        self.ui.tui.render();
                     }
                 }
             }
