@@ -5,13 +5,14 @@ impl InteractiveMode {
         // Priority 1: dismiss overlay
         if self.ui.tui.has_overlay() {
             self.ui.tui.hide_overlay();
-                self.clear_status();
+            self.clear_status();
+            self.refresh_ui();
             return;
         }
         // Priority 2: cancel any pending auth flow (OAuth or API key)
         if self.streaming.pending_auth_provider.is_some() {
             self.cancel_pending_auth();
-            self.show_status("Login canceled.");
+            self.refresh_ui();
             return;
         }
         // Priority 3: cancel in-progress retry (matching pi: Esc aborts retry)

@@ -16,6 +16,7 @@ fn persist_retry_settings(
 
 impl InteractiveMode {
     pub(super) fn show_settings_selector(&mut self) {
+        self.clear_status();
         let thinking = &self.session_setup.thinking_level;
         let items = vec![
             SettingItem {
@@ -78,6 +79,7 @@ impl InteractiveMode {
 
         let overlay = Box::new(SettingsOverlay::new(items));
         self.ui.tui.show_overlay(overlay);
+        self.ui.tui.force_render();
     }
 
     pub(super) fn handle_model_command(&mut self, search: Option<&str>) {
@@ -216,7 +218,7 @@ impl InteractiveMode {
             Some(AuthSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
                 self.clear_status();
-                self.show_status("Canceled");
+                self.refresh_ui();
             }
             _ => {}
         }
@@ -264,7 +266,7 @@ impl InteractiveMode {
             Some(TreeSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
                 self.clear_status();
-                self.show_status("Canceled");
+                self.refresh_ui();
             }
             _ => {}
         }
@@ -283,6 +285,7 @@ impl InteractiveMode {
             Some(SettingsAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
                 self.clear_status();
+                self.refresh_ui();
             }
             _ => {}
         }
@@ -367,12 +370,9 @@ impl InteractiveMode {
 
     pub(super) fn show_auth_selector(&mut self, mode: AuthSelectorMode) {
         let overlay = Box::new(AuthSelectorOverlay::new(mode));
+        self.clear_status();
         self.ui.tui.show_overlay(overlay);
-        let label = match mode {
-            AuthSelectorMode::Login => "login / re-auth",
-            AuthSelectorMode::Logout => "logout",
-        };
-        self.show_status(format!("Select provider to {label}"));
+        self.ui.tui.force_render();
     }
 
     fn handle_auth_login(&mut self, provider: &str) {
@@ -509,7 +509,8 @@ impl InteractiveMode {
                             self.session_setup.api_key = creds.access.clone();
                         }
                         self.show_status(format!(
-                            "Logged in to {provider}. Verifying…"
+                            "Logged in to {provider}. Credentials saved to {}. Verifying…",
+                            crate::login::auth_path().display()
                         ));
                         // Queue a verification prompt so user sees the login works.
                         self.streaming.pending_oauth_verify_provider =
@@ -557,7 +558,7 @@ impl InteractiveMode {
         // Empty or just "/" — cancel.
         if key.is_empty() || key == "/" {
             self.cancel_pending_auth();
-            self.show_status("Login canceled.");
+            self.refresh_ui();
             return;
         }
 
@@ -620,7 +621,7 @@ impl InteractiveMode {
                 if matches {
                     self.session_setup.api_key.clear();
                 }
-                self.show_status(format!("Logged out from {provider}. API key cleared."));
+                self.show_status(format!("Logged out of {provider}"));
                 self.rebuild_footer();
             }
             Ok(false) => {

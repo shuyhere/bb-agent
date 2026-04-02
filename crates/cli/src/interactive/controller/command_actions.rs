@@ -694,6 +694,7 @@ impl InteractiveMode {
         self.interaction.pending_fork = true;
         let overlay = Box::new(SessionSelectorOverlay::new(items));
         self.ui.tui.show_overlay(overlay);
+        self.ui.tui.force_render();
         self.show_status("Select a user message to fork from");
     }
 
@@ -779,7 +780,9 @@ impl InteractiveMode {
         flatten_tree(&tree, &previews, 0, "", &leaf_id, &mut flat, &mut leaf_idx);
 
         let overlay = Box::new(TreeSelectorOverlay::new(flat, leaf_idx));
+        self.clear_status();
         self.ui.tui.show_overlay(overlay);
+        self.ui.tui.force_render();
     }
 
     pub(super) fn handle_clear_command(&mut self) {
@@ -977,6 +980,7 @@ impl InteractiveMode {
         let overlay = Box::new(SessionSelectorOverlay::new(sessions));
         self.clear_status();
         self.ui.tui.show_overlay(overlay);
+        self.ui.tui.force_render();
     }
 
     pub(super) fn handle_resume_session(&mut self, session_id: &str) {
@@ -1109,6 +1113,7 @@ impl InteractiveMode {
         ));
         self.clear_status();
         self.ui.tui.show_overlay(component);
+        self.ui.tui.force_render();
     }
 
     pub(super) fn show_placeholder(&mut self, label: &str) {
