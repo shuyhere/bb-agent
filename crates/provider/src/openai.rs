@@ -106,6 +106,7 @@ impl Provider for OpenAiProvider {
         let response = with_retry(
             options.max_retries,
             options.retry_base_delay_ms,
+            options.max_retry_delay_ms,
             options.cancel.clone(),
             options.retry_callback.clone(),
             || {
@@ -236,6 +237,7 @@ impl OpenAiProvider {
         let response = with_retry(
             options.max_retries,
             options.retry_base_delay_ms,
+            options.max_retry_delay_ms,
             options.cancel.clone(),
             options.retry_callback.clone(),
             || {

@@ -117,6 +117,7 @@ pub async fn compact(
         retry_callback: None,
         max_retries: 1,
         retry_base_delay_ms: 1_000,
+        max_retry_delay_ms: 60_000,
     };
 
     // 7. Call provider

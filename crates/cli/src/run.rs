@@ -111,6 +111,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         retry_enabled: settings.retry.enabled,
         retry_max_retries: settings.retry.max_retries,
         retry_base_delay_ms: settings.retry.base_delay_ms,
+        retry_max_delay_ms: settings.retry.max_delay_ms,
         cancel: CancellationToken::new(),
     };
 

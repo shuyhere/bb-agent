@@ -42,6 +42,7 @@ pub struct RequestOptions {
     pub retry_callback: Option<RetryCallback>,
     pub max_retries: u32,
     pub retry_base_delay_ms: u64,
+    pub max_retry_delay_ms: u64,
 }
 
 /// A streaming event from the provider.

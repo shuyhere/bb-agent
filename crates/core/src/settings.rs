@@ -26,6 +26,10 @@ fn default_retry_delay() -> u64 {
     2000
 }
 
+fn default_retry_max_delay() -> u64 {
+    60000
+}
+
 // =============================================================================
 // Settings
 // =============================================================================
@@ -80,6 +84,8 @@ pub struct RetryConfig {
     pub max_retries: u32,
     #[serde(default = "default_retry_delay")]
     pub base_delay_ms: u64,
+    #[serde(default = "default_retry_max_delay")]
+    pub max_delay_ms: u64,
 }
 
 impl Default for RetryConfig {
@@ -88,6 +94,7 @@ impl Default for RetryConfig {
             enabled: default_true(),
             max_retries: default_retry_max(),
             base_delay_ms: default_retry_delay(),
+            max_delay_ms: default_retry_max_delay(),
         }
     }
 }
@@ -252,6 +259,11 @@ fn merge_retry(global: &RetryConfig, project: &RetryConfig) -> RetryConfig {
             project.base_delay_ms
         } else {
             global.base_delay_ms
+        },
+        max_delay_ms: if project.max_delay_ms != defaults.max_delay_ms {
+            project.max_delay_ms
+        } else {
+            global.max_delay_ms
         },
     }
 }

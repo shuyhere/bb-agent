@@ -986,11 +986,6 @@ impl InteractiveMode {
         self.queues.compaction_queued_messages.clear();
         self.queues.pending_bash_components.clear();
 
-        // Show immediate feedback before the expensive render.
-        self.show_status("Resuming session...");
-        self.rebuild_status_container();
-        self.ui.tui.render();
-
         // Re-render session messages from the DB.
         if let Ok(rows) = store::get_entries(&self.session_setup.conn, session_id) {
             for row in rows {
@@ -1044,15 +1039,8 @@ impl InteractiveMode {
             }
         }
 
-        // Add system message, then rebuild everything ONCE.
-        self.render_state_mut().add_message_to_chat(
-            super::super::events::InteractiveMessage::System {
-                text: "Resumed session".to_string(),
-            },
-        );
-        self.rebuild_chat_container();
-        self.rebuild_pending_container();
-        self.rebuild_footer();
+        // Match pi more closely: render history, then append a status line.
+        self.show_status("Resumed session");
         self.snapshot_chat_cache();
         self.refresh_ui();
     }

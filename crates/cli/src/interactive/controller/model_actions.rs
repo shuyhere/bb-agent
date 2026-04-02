@@ -1,10 +1,16 @@
 use super::*;
 
-fn persist_retry_settings(enabled: bool, max_retries: u32, base_delay_ms: u64) -> Result<(), String> {
+fn persist_retry_settings(
+    enabled: bool,
+    max_retries: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+) -> Result<(), String> {
     let mut settings = bb_core::settings::Settings::load_global();
     settings.retry.enabled = enabled;
     settings.retry.max_retries = max_retries.max(1);
     settings.retry.base_delay_ms = base_delay_ms.max(1_000);
+    settings.retry.max_delay_ms = max_delay_ms.max(settings.retry.base_delay_ms);
     settings.save_global().map_err(|e| e.to_string())
 }
 
@@ -46,6 +52,13 @@ impl InteractiveMode {
                 description: "Initial retry backoff delay".into(),
                 current_value: format!("{}s", self.session_setup.retry_base_delay_ms / 1000),
                 values: vec!["1s".into(), "2s".into(), "5s".into(), "10s".into()],
+            },
+            SettingItem {
+                id: "retry-max-delay".into(),
+                label: "Retry max delay".into(),
+                description: "Maximum allowed server-requested retry delay".into(),
+                current_value: format!("{}s", self.session_setup.retry_max_delay_ms / 1000),
+                values: vec!["10s".into(), "30s".into(), "60s".into(), "120s".into()],
             },
             SettingItem {
                 id: "tool-expand".into(),
@@ -307,7 +320,18 @@ impl InteractiveMode {
             "retry-delay" => {
                 let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(1);
                 self.session_setup.retry_base_delay_ms = secs.max(1) * 1000;
+                if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
+                    self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
+                }
                 format!("Retry base delay: {}s", self.session_setup.retry_base_delay_ms / 1000)
+            }
+            "retry-max-delay" => {
+                let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(60);
+                self.session_setup.retry_max_delay_ms = secs.max(1) * 1000;
+                if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
+                    self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
+                }
+                format!("Retry max delay: {}s", self.session_setup.retry_max_delay_ms / 1000)
             }
             "tool-expand" => {
                 self.interaction.tool_output_expanded = value == "true";
@@ -332,11 +356,12 @@ impl InteractiveMode {
             _ => return,
         };
 
-        if matches!(id, "retry-enabled" | "retry-max" | "retry-delay") {
+        if matches!(id, "retry-enabled" | "retry-max" | "retry-delay" | "retry-max-delay") {
             if let Err(e) = persist_retry_settings(
                 self.session_setup.retry_enabled,
                 self.session_setup.retry_max_retries,
                 self.session_setup.retry_base_delay_ms,
+                self.session_setup.retry_max_delay_ms,
             ) {
                 self.show_error(format!("Failed to persist retry settings: {e}"));
                 self.refresh_ui();

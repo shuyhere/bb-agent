@@ -77,6 +77,7 @@ fn extract_retry_delay_ms(message: &str) -> Option<u64> {
 pub async fn with_retry<F, Fut, T>(
     max_retries: u32,
     base_delay_ms: u64,
+    max_retry_delay_ms: u64,
     cancel: CancellationToken,
     retry_callback: Option<RetryCallback>,
     f: F,
@@ -111,7 +112,26 @@ where
                     return Err(last_err);
                 }
                 if attempt < max_retries - 1 {
-                    let delay_ms = extract_retry_delay_ms(&last_message)
+                    let server_delay_ms = extract_retry_delay_ms(&last_message);
+                    if let Some(server_delay_ms) = server_delay_ms {
+                        if max_retry_delay_ms > 0 && server_delay_ms > max_retry_delay_ms {
+                            let final_error = format!(
+                                "Server requested {}s retry delay (max: {}s). {}",
+                                server_delay_ms.div_ceil(1000),
+                                max_retry_delay_ms.div_ceil(1000),
+                                last_message
+                            );
+                            if let Some(callback) = &retry_callback {
+                                callback(ProviderRetryEvent::End {
+                                    success: false,
+                                    attempt: used_attempts,
+                                    final_error: Some(final_error.clone()),
+                                });
+                            }
+                            return Err(BbError::Provider(final_error));
+                        }
+                    }
+                    let delay_ms = server_delay_ms
                         .unwrap_or_else(|| base_delay_ms.saturating_mul(2u64.pow(attempt)));
                     let delay = Duration::from_millis(delay_ms);
                     tracing::warn!(
@@ -166,7 +186,7 @@ mod tests {
     async fn test_retry_succeeds_on_second_attempt() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let result = with_retry(3, 1_000, CancellationToken::new(), None, || {
+        let result = with_retry(3, 1_000, 60_000, CancellationToken::new(), None, || {
             let c = c.clone();
             async move {
                 let attempt = c.fetch_add(1, Ordering::SeqCst);
@@ -185,7 +205,7 @@ mod tests {
     async fn test_retry_all_fail() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let result: BbResult<i32> = with_retry(3, 1_000, CancellationToken::new(), None, || {
+        let result: BbResult<i32> = with_retry(3, 1_000, 60_000, CancellationToken::new(), None, || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -200,7 +220,7 @@ mod tests {
     async fn test_non_retryable_error_stops_immediately() {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
-        let result: BbResult<i32> = with_retry(3, 1_000, CancellationToken::new(), None, || {
+        let result: BbResult<i32> = with_retry(3, 1_000, 60_000, CancellationToken::new(), None, || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -213,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_succeeds_first_try() {
-        let result = with_retry(3, 1_000, CancellationToken::new(), None, || async {
+        let result = with_retry(3, 1_000, 60_000, CancellationToken::new(), None, || async {
             Ok::<_, BbError>(99)
         }).await;
         assert_eq!(result.unwrap(), 99);

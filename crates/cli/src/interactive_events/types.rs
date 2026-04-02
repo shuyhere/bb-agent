@@ -58,6 +58,8 @@ pub enum ChatItem {
     BranchSummary(String),
     PendingMessageLine(String),
     SystemMessage(String),
+    StatusMessage(String),
+    WarningMessage(String),
     ErrorMessage(String),
 }
 

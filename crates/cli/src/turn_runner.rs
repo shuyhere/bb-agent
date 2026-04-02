@@ -41,6 +41,7 @@ pub struct TurnConfig {
     pub retry_enabled: bool,
     pub retry_max_retries: u32,
     pub retry_base_delay_ms: u64,
+    pub retry_max_delay_ms: u64,
     pub cancel: CancellationToken,
 }
 
@@ -162,6 +163,7 @@ pub(crate) async fn run_turn_inner(
             retry_callback: Some(retry_callback),
             max_retries: if config.retry_enabled { config.retry_max_retries.max(1) } else { 1 },
             retry_base_delay_ms: config.retry_base_delay_ms,
+            max_retry_delay_ms: config.retry_max_delay_ms,
         };
 
         // Spawn provider streaming in a background task

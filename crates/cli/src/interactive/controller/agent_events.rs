@@ -489,17 +489,17 @@ impl InteractiveMode {
         self.streaming.status_loader = None;
         self.render_state_mut().chat_items.push(ChatItem::Spacer);
         self.render_state_mut().chat_items.push(ChatItem::ErrorMessage(message));
+        self.render_cache.status_lines.clear();
         self.rebuild_chat_container();
     }
 
     pub(super) fn show_warning(&mut self, message: impl Into<String>) {
         let message = message.into();
-        let dim = "\x1b[90m";
-        let yellow = "\x1b[33m";
-        let reset = "\x1b[0m";
         self.streaming.status_loader = None;
-        self.render_state_mut().last_status = Some(format!("{yellow}[!]{reset} {dim}{message}{reset}"));
-        self.render_cache.status_lines = vec![format!("{yellow}[!]{reset} {dim}{message}{reset}")];
+        self.render_state_mut().chat_items.push(ChatItem::Spacer);
+        self.render_state_mut().chat_items.push(ChatItem::WarningMessage(message));
+        self.render_cache.status_lines.clear();
+        self.rebuild_chat_container();
     }
 
     pub(super) fn clear_status(&mut self) {
@@ -508,10 +508,15 @@ impl InteractiveMode {
 
     pub(super) fn show_status(&mut self, message: impl Into<String>) {
         let message = message.into();
-        let dim = "\x1b[90m";
-        let reset = "\x1b[0m";
         self.streaming.status_loader = None;
-        self.render_state_mut().last_status = Some(format!("{dim}{message}{reset}"));
-        self.render_cache.status_lines = vec![format!("{dim}{message}{reset}")];
+        let chat_items = &mut self.render_state_mut().chat_items;
+        if let [.., ChatItem::Spacer, ChatItem::StatusMessage(existing)] = chat_items.as_mut_slice() {
+            *existing = message;
+        } else {
+            chat_items.push(ChatItem::Spacer);
+            chat_items.push(ChatItem::StatusMessage(message));
+        }
+        self.render_cache.status_lines.clear();
+        self.rebuild_chat_container();
     }
 }

@@ -69,8 +69,14 @@ impl InteractiveMode {
                     let yellow = &t.yellow;
                     word_wrap(&format!("{yellow} {text}{reset}"), width.max(1) as usize)
                 }
+                ChatItem::StatusMessage(text) => {
+                    word_wrap(&format!("{dim}{text}{reset}"), width.max(1) as usize)
+                }
+                ChatItem::WarningMessage(text) => {
+                    word_wrap(&format!("{}Warning: {text}{}", t.yellow, reset), width.max(1) as usize)
+                }
                 ChatItem::ErrorMessage(text) => {
-                    word_wrap(&format!("{} Error: {text}{}", t.error, reset), width.max(1) as usize)
+                    word_wrap(&format!("{}Error: {text}{}", t.error, reset), width.max(1) as usize)
                 }
             })
             .collect()

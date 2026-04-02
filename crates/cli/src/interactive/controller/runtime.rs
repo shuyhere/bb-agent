@@ -269,6 +269,7 @@ impl InteractiveMode {
             retry_callback: None,
             max_retries: 1,
             retry_base_delay_ms: 1_000,
+            max_retry_delay_ms: 60_000,
         };
 
         match test_provider.complete(request, options).await {
@@ -392,6 +393,7 @@ impl InteractiveMode {
             retry_enabled: self.session_setup.retry_enabled,
             retry_max_retries: self.session_setup.retry_max_retries,
             retry_base_delay_ms: self.session_setup.retry_base_delay_ms,
+            retry_max_delay_ms: self.session_setup.retry_max_delay_ms,
             cancel: self.abort_token.clone(),
         })
     }
