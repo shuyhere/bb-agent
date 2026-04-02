@@ -115,6 +115,8 @@ pub async fn compact(
         headers: std::collections::HashMap::new(),
         cancel,
         retry_callback: None,
+        max_retries: 1,
+        retry_base_delay_ms: 1_000,
     };
 
     // 7. Call provider

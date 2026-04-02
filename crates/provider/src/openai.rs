@@ -103,7 +103,12 @@ impl Provider for OpenAiProvider {
             body["reasoning_effort"] = json!(effort);
         }
 
-        let response = with_retry(3, options.cancel.clone(), options.retry_callback.clone(), || {
+        let response = with_retry(
+            options.max_retries,
+            options.retry_base_delay_ms,
+            options.cancel.clone(),
+            options.retry_callback.clone(),
+            || {
             let mut r = self.client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", options.api_key))
@@ -228,7 +233,12 @@ impl OpenAiProvider {
             body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
         }
 
-        let response = with_retry(3, options.cancel.clone(), options.retry_callback.clone(), || {
+        let response = with_retry(
+            options.max_retries,
+            options.retry_base_delay_ms,
+            options.cancel.clone(),
+            options.retry_callback.clone(),
+            || {
             let mut r = self
                 .client
                 .post(&url)

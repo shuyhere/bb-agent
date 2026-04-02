@@ -374,11 +374,11 @@ impl InteractiveMode {
                 error_message: _,
             } => {
                 self.streaming.retry_in_progress = true;
-                let delay_seconds = ((delay_ms + 999) / 1000).max(1);
+                let delay_seconds = ((delay_ms + 500) / 1000).max(1);
                 self.streaming.status_loader = Some((
                     StatusLoaderStyle::Warning,
                     format!(
-                        "Retrying ({attempt}/{max_attempts}) in {delay_seconds}s... (Esc to cancel)"
+                        "Retrying ({attempt}/{max_attempts}) in {delay_seconds}s... (Esc/Ctrl-C to cancel)"
                     ),
                 ));
                 self.rebuild_status_container();
@@ -391,10 +391,7 @@ impl InteractiveMode {
             } => {
                 self.streaming.retry_in_progress = false;
                 if success {
-                    self.streaming.status_loader = Some((
-                        StatusLoaderStyle::Accent,
-                        self.streaming.default_working_message.to_string(),
-                    ));
+                    self.streaming.status_loader = None;
                     self.rebuild_status_container();
                 } else {
                     self.streaming.status_loader = None;

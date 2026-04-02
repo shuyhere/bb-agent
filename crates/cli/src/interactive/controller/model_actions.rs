@@ -19,6 +19,27 @@ impl InteractiveMode {
                 values: vec!["true".into(), "false".into()],
             },
             SettingItem {
+                id: "retry-enabled".into(),
+                label: "Auto-retry".into(),
+                description: "Retry retryable provider errors automatically".into(),
+                current_value: if self.session_setup.retry_enabled { "true".into() } else { "false".into() },
+                values: vec!["true".into(), "false".into()],
+            },
+            SettingItem {
+                id: "retry-max".into(),
+                label: "Retry attempts".into(),
+                description: "Maximum number of automatic retry attempts".into(),
+                current_value: self.session_setup.retry_max_retries.to_string(),
+                values: vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
+            },
+            SettingItem {
+                id: "retry-delay".into(),
+                label: "Retry base delay".into(),
+                description: "Initial retry backoff delay".into(),
+                current_value: format!("{}s", self.session_setup.retry_base_delay_ms / 1000),
+                values: vec!["1s".into(), "2s".into(), "5s".into(), "10s".into()],
+            },
+            SettingItem {
                 id: "tool-expand".into(),
                 label: "Expand tool output".into(),
                 description: "Show full tool output by default".into(),
@@ -264,6 +285,21 @@ impl InteractiveMode {
             }
             "autocompact" => {
                 format!("Auto-compact: {value}")
+            }
+            "retry-enabled" => {
+                self.session_setup.retry_enabled = value == "true";
+                format!("Auto-retry: {value}")
+            }
+            "retry-max" => {
+                if let Ok(parsed) = value.parse::<u32>() {
+                    self.session_setup.retry_max_retries = parsed.max(1);
+                }
+                format!("Retry attempts: {}", self.session_setup.retry_max_retries)
+            }
+            "retry-delay" => {
+                let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(1);
+                self.session_setup.retry_base_delay_ms = secs.max(1) * 1000;
+                format!("Retry base delay: {}s", self.session_setup.retry_base_delay_ms / 1000)
             }
             "tool-expand" => {
                 self.interaction.tool_output_expanded = value == "true";

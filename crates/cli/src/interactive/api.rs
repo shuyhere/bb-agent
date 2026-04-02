@@ -32,6 +32,9 @@ pub struct InteractiveSessionSetup {
     pub tool_ctx: ToolContext,
     pub system_prompt: String,
     pub thinking_level: String,
+    pub retry_enabled: bool,
+    pub retry_max_retries: u32,
+    pub retry_base_delay_ms: u64,
     /// Whether the session row has been created in the DB yet.
     pub session_created: bool,
     /// Cached sibling DB connection for the turn runner (avoid opening a new one each turn).
