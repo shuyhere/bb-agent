@@ -5,6 +5,7 @@ impl InteractiveMode {
         // Priority 1: dismiss overlay
         if self.ui.tui.has_overlay() {
             self.ui.tui.hide_overlay();
+                self.clear_status();
             return;
         }
         // Priority 2: cancel any pending auth flow (OAuth or API key)

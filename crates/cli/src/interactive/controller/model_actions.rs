@@ -127,6 +127,7 @@ impl InteractiveMode {
         match model_action {
             Some(ModelSelectorOverlayAction::Selected(selection)) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 if let Some(model) = self
                     .get_model_candidates()
                     .into_iter()
@@ -145,6 +146,7 @@ impl InteractiveMode {
             }
             Some(ModelSelectorOverlayAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.show_status("Canceled model selector");
                 return;
             }
@@ -161,14 +163,17 @@ impl InteractiveMode {
         match auth_action {
             Some(AuthSelectorAction::Login(provider)) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.handle_auth_login(&provider);
             }
             Some(AuthSelectorAction::Logout(provider)) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.handle_auth_logout(&provider);
             }
             Some(AuthSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.show_status("Canceled");
             }
             _ => {}
@@ -184,6 +189,7 @@ impl InteractiveMode {
         match session_action {
             Some(SessionSelectorAction::Selected(id)) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 if self.interaction.pending_fork {
                     self.interaction.pending_fork = false;
                     self.handle_fork_from_entry(&id);
@@ -193,6 +199,7 @@ impl InteractiveMode {
             }
             Some(SessionSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.interaction.pending_fork = false;
                 self.show_status("Canceled");
             }
@@ -209,10 +216,12 @@ impl InteractiveMode {
         match tree_action {
             Some(TreeSelectorAction::Selected(entry_id)) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.handle_tree_navigate(&entry_id);
             }
             Some(TreeSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
                 self.show_status("Canceled");
             }
             _ => {}
@@ -231,6 +240,7 @@ impl InteractiveMode {
             }
             Some(SettingsAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.clear_status();
             }
             _ => {}
         }
