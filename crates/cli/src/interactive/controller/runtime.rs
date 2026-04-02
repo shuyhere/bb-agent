@@ -284,9 +284,6 @@ impl InteractiveMode {
         self.abort_token = tokio_util::sync::CancellationToken::new();
 
         let mut turn_index: u32 = 0;
-        let mut retry_count: u32 = 0;
-        const MAX_RETRIES: u32 = 5;
-        const BASE_DELAY_MS: u64 = 2000;
 
         loop {
             let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
@@ -343,6 +340,7 @@ impl InteractiveMode {
             let mut all_events = Vec::new();
             let mut stream_done = false;
             let mut aborted = false;
+            let mut context_overflow_error: Option<String> = None;
 
             while !stream_done && !aborted {
                 tokio::select! {
@@ -365,6 +363,9 @@ impl InteractiveMode {
                                 let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
                             }
                             bb_provider::StreamEvent::Error { message } => {
+                                if bb_core::agent_loop::compat::is_context_overflow(message) {
+                                    context_overflow_error = Some(message.clone());
+                                }
                                 let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
                             }
                             _ => {}
@@ -392,14 +393,34 @@ impl InteractiveMode {
                                         self.abort_token.cancel();
                                         aborted = true;
                                         self.show_warning("Aborted");
+                                    } else {
+                                        // Forward to TUI so the editor receives input during streaming.
+                                        self.ui.tui.handle_key(&key);
+
+                                        // If Enter was pressed, queue the editor text as a steer message.
+                                        if key.code == KeyCode::Enter
+                                            && !key.modifiers.contains(KeyModifiers::SHIFT)
+                                        {
+                                            let submitted = self.ui.editor.lock()
+                                                .ok()
+                                                .and_then(|mut e| e.try_submit());
+                                            if let Some(text) = submitted {
+                                                self.push_editor_history(&text);
+                                                self.queues.steering_queue.push_back(text);
+                                                self.sync_pending_render_state();
+                                            }
+                                        }
+                                        self.sync_bash_mode_from_editor();
+                                        self.refresh_ui();
                                     }
-                                    // All other keys are silently consumed during streaming
                                 }
                                 TerminalEvent::Resize(_, _) => {
                                     self.ui.tui.force_render();
                                 }
-                                _ => {
-                                    // Silently consume paste/raw events during streaming
+                                TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
+                                    self.ui.tui.handle_raw_input(&data);
+                                    self.sync_bash_mode_from_editor();
+                                    self.refresh_ui();
                                 }
                             }
                         }
@@ -408,7 +429,7 @@ impl InteractiveMode {
             }
 
             // Wait for stream task to finish (it should stop quickly after cancel)
-            let stream_result = stream_handle.await;
+            let _ = stream_handle.await;
 
             if aborted {
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
@@ -417,60 +438,20 @@ impl InteractiveMode {
                 break;
             }
 
-            // Check for retryable provider errors
-            let provider_error = match &stream_result {
-                Ok(Err(e)) => Some(e.to_string()),
-                Err(e) => Some(e.to_string()),
-                Ok(Ok(())) => {
-                    // Also check for error events in the stream
-                    all_events.iter().find_map(|ev| {
-                        if let bb_provider::StreamEvent::Error { message } = ev {
-                            Some(message.clone())
-                        } else {
-                            None
-                        }
-                    })
-                }
-            };
-
-            if let Some(ref error_msg) = provider_error {
-                if is_retryable_error(error_msg) && retry_count < MAX_RETRIES {
-                    let delay_ms = BASE_DELAY_MS * 2u64.pow(retry_count);
-                    let delay_secs = delay_ms / 1000;
-                    retry_count += 1;
-                    self.show_warning(format!(
-                        "Rate limited, retrying in {}s ({}/{})",
-                        delay_secs, retry_count, MAX_RETRIES
-                    ));
+            // Handle context overflow: auto-compact and retry this turn
+            if let Some(ref _overflow_msg) = context_overflow_error {
+                if self.handle_context_overflow().await {
+                    // Compaction succeeded — retry this turn
+                    self.rebuild_chat_container();
                     self.refresh_ui();
-
-                    // Sleep with abort support (Esc cancels)
-                    let retry_aborted = self.abortable_sleep(
-                        std::time::Duration::from_millis(delay_ms),
-                    ).await;
-
-                    if retry_aborted {
-                        self.show_warning(format!("Retry cancelled: {}", error_msg));
-                        let _ = tx.send(AgentLoopEvent::AssistantDone);
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
-                        break;
-                    }
-
-                    // Don't append failed assistant message; loop back to retry
-                    continue;
+                    // context_overflow_error is re-initialized at loop top
+                    continue; // retry the loop iteration
+                } else {
+                    // Compaction failed or was cancelled — stop
+                    let _ = tx.send(AgentLoopEvent::AssistantDone);
+                    self.drain_pending_agent_events();
+                    break;
                 }
-                // Max retries exceeded or non-retryable: fall through to normal handling
-                if retry_count >= MAX_RETRIES {
-                    self.show_warning(format!(
-                        "Max retries ({}) exceeded: {}",
-                        MAX_RETRIES, error_msg
-                    ));
-                }
-            } else if retry_count > 0 {
-                // Success after retries
-                self.show_status(format!("Retry succeeded (attempt {})", retry_count + 1));
-                retry_count = 0;
             }
 
             // Final render after stream ends
@@ -540,6 +521,22 @@ impl InteractiveMode {
             self.drain_pending_agent_events();
             self.refresh_ui();
 
+            // Check if auto-compaction is needed based on token usage
+            if !collected.tool_calls.is_empty() || !collected.text.is_empty() {
+                let total_tokens = collected.input_tokens + collected.output_tokens
+                    + collected.cache_read_tokens + collected.cache_write_tokens;
+                let context_window = self.session_setup.model.context_window;
+                let threshold = (context_window as f64 * 0.85) as u64;
+                if total_tokens > threshold {
+                    if self.run_auto_compaction().await {
+                        // Compaction succeeded; context is now smaller.
+                        // Show compaction summary in chat.
+                        self.rebuild_chat_container();
+                        self.refresh_ui();
+                    }
+                }
+            }
+
             // If no tool calls, we're done
             if collected.tool_calls.is_empty() {
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
@@ -548,6 +545,7 @@ impl InteractiveMode {
             }
 
             // Execute tool calls (using the shared abort token so Esc cancels tools too)
+            // (auto-compaction may have been cancelled via Esc above)
             if self.abort_token.is_cancelled() {
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
                 self.drain_pending_agent_events();
@@ -634,14 +632,79 @@ impl InteractiveMode {
         Ok(())
     }
 
-    /// Sleep for the given duration, but abort early if the user presses Esc or Ctrl-C.
-    /// Returns `true` if aborted by user, `false` if sleep completed normally.
-    async fn abortable_sleep(&mut self, duration: std::time::Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + duration;
-        loop {
+    /// Run auto-compaction: summarize older messages to reclaim context space.
+    /// Returns true if compaction was performed successfully.
+    pub(super) async fn run_auto_compaction(&mut self) -> bool {
+        // Don't compact if already compacted recently (last entry is compaction)
+        let entries = match bb_session::tree::active_path(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+        if entries.is_empty() {
+            return false;
+        }
+        // Check if the last entry is already a compaction
+        if entries.last().map(|e| e.entry_type.as_str()) == Some("compaction") {
+            return false;
+        }
+
+        let settings = bb_core::types::CompactionSettings::default();
+        let preparation = match compaction::prepare_compaction(&entries, &settings) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let tokens_before = preparation.tokens_before;
+        let to_summarize_count = preparation.messages_to_summarize.len();
+
+        self.show_status(format!(
+            "Auto-compacting context… ({tokens_before} tokens, {to_summarize_count} messages to summarize)"
+        ));
+        self.interaction.is_compacting = true;
+        self.refresh_ui();
+
+        // Use a fresh cancel token so Esc can abort compaction
+        let compact_cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_for_select = compact_cancel.clone();
+
+        // Spawn the compaction LLM call
+        let provider = self.session_setup.provider.clone();
+        let model_id = self.session_setup.model.id.clone();
+        let api_key = self.session_setup.api_key.clone();
+        let base_url = self.session_setup.base_url.clone();
+        let cancel_token = compact_cancel.clone();
+
+        let mut compact_handle = tokio::spawn(async move {
+            compaction::compact(
+                &preparation,
+                provider.as_ref(),
+                &model_id,
+                &api_key,
+                &base_url,
+                None, // no custom instructions for auto-compact
+                cancel_token,
+            )
+            .await
+        });
+
+        // Wait for compaction while allowing Esc to cancel
+        let result = loop {
             tokio::select! {
-                _ = tokio::time::sleep_until(deadline) => {
-                    return false;
+                res = &mut compact_handle => {
+                    break match res {
+                        Ok(Ok(r)) => Some(r),
+                        Ok(Err(e)) => {
+                            self.show_warning(format!("Auto-compaction failed: {e}"));
+                            None
+                        }
+                        Err(e) => {
+                            self.show_warning(format!("Auto-compaction task failed: {e}"));
+                            None
+                        }
+                    };
                 }
                 terminal_event = async {
                     match self.events.as_mut() {
@@ -657,7 +720,11 @@ impl InteractiveMode {
                                 let is_ctrl_c = key.code == KeyCode::Char('c')
                                     && key.modifiers == KeyModifiers::CONTROL;
                                 if is_esc || is_ctrl_c {
-                                    return true;
+                                    cancel_for_select.cancel();
+                                    self.show_warning("Auto-compaction cancelled");
+                                    self.interaction.is_compacting = false;
+                                    self.refresh_ui();
+                                    return false;
                                 }
                             }
                             TerminalEvent::Resize(_, _) => {
@@ -668,45 +735,63 @@ impl InteractiveMode {
                     }
                 }
             }
+        };
+
+        self.interaction.is_compacting = false;
+
+        let Some(compaction_result) = result else {
+            return false;
+        };
+
+        // Save compaction entry to session
+        let tokens_after_estimate = compaction::estimate_tokens_text(&compaction_result.summary);
+        let compaction_entry = bb_core::types::SessionEntry::Compaction {
+            base: bb_core::types::EntryBase {
+                id: bb_core::types::EntryId::generate(),
+                parent_id: self.get_session_leaf(),
+                timestamp: chrono::Utc::now(),
+            },
+            summary: compaction_result.summary.clone(),
+            first_kept_entry_id: bb_core::types::EntryId(compaction_result.first_kept_entry_id.clone()),
+            tokens_before: compaction_result.tokens_before,
+            details: None,
+            from_plugin: false,
+        };
+
+        if let Err(e) = store::append_entry(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &compaction_entry,
+        ) {
+            self.show_warning(format!("Failed to save compaction: {e}"));
+            return false;
         }
+
+        // Show compaction summary in chat
+        self.render_state_mut().add_message_to_chat(
+            super::super::events::InteractiveMessage::CompactionSummary {
+                summary: format!(
+                    "Context compacted: {}k → {}k tokens",
+                    tokens_before / 1000,
+                    tokens_after_estimate / 1000,
+                ),
+            },
+        );
+        self.show_status(format!(
+            "Context compacted: {}k → ~{}k tokens",
+            tokens_before / 1000,
+            tokens_after_estimate / 1000,
+        ));
+        self.refresh_ui();
+
+        true
     }
-}
 
-/// Check if an error message indicates a retryable provider error.
-fn is_retryable_error(message: &str) -> bool {
-    let lower = message.to_lowercase();
-
-    // Non-retryable patterns (check first)
-    if lower.contains("401 unauthorized")
-        || lower.contains("400 bad request")
-        || lower.contains("context length")
-        || lower.contains("context window")
-        || lower.contains("maximum context")
-        || lower.contains("token limit")
-    {
-        return false;
+    /// Attempt to handle a context overflow error by compacting and signalling retry.
+    /// Returns true if compaction succeeded and the caller should retry.
+    pub(super) async fn handle_context_overflow(&mut self) -> bool {
+        self.show_warning("Context overflow detected — auto-compacting…");
+        self.refresh_ui();
+        self.run_auto_compaction().await
     }
-
-    // Retryable patterns
-    let retryable_patterns = [
-        "overloaded",
-        "rate limit",
-        "too many requests",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "service unavailable",
-        "server error",
-        "internal error",
-        "network error",
-        "connection error",
-        "connection refused",
-        "fetch failed",
-        "timed out",
-        "timeout",
-    ];
-
-    retryable_patterns.iter().any(|p| lower.contains(p))
 }

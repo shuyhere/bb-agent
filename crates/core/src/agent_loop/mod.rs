@@ -1,4 +1,4 @@
-mod compat;
+pub mod compat;
 mod runner;
 mod streaming;
 mod tool_execution;
