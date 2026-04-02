@@ -114,6 +114,7 @@ pub async fn compact(
         base_url: base_url.to_string(),
         headers: std::collections::HashMap::new(),
         cancel,
+        retry_callback: None,
     };
 
     // 7. Call provider

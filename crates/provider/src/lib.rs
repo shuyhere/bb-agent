@@ -11,4 +11,6 @@ pub mod transforms;
 pub mod types;
 
 pub use traits::Provider;
-pub use types::{CompletionRequest, RequestOptions, StreamEvent, UsageInfo};
+pub use types::{
+    CompletionRequest, ProviderRetryEvent, RequestOptions, RetryCallback, StreamEvent, UsageInfo,
+};

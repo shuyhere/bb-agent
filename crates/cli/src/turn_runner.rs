@@ -14,7 +14,9 @@ use bb_core::agent_session::messages_to_provider;
 use bb_core::types::*;
 use bb_provider::registry::Model;
 use bb_provider::streaming::CollectedResponse;
-use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
+use bb_provider::{
+    CompletionRequest, Provider, ProviderRetryEvent, RequestOptions, RetryCallback, StreamEvent,
+};
 use bb_session::{context, store};
 use bb_tools::{Tool, ToolContext};
 use chrono::Utc;
@@ -58,6 +60,17 @@ pub enum TurnEvent {
     },
     TurnEnd { turn_index: u32 },
     ContextOverflow { message: String },
+    AutoRetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    AutoRetryEnd {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
     Done { text: String },
     Error(String),
 }
@@ -111,11 +124,39 @@ pub(crate) async fn run_turn_inner(
             thinking: config.thinking.clone(),
         };
 
+        let retry_tx = event_tx.clone();
+        let retry_callback: RetryCallback = std::sync::Arc::new(move |event| {
+            let turn_event = match event {
+                ProviderRetryEvent::Start {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error_message,
+                } => TurnEvent::AutoRetryStart {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error_message,
+                },
+                ProviderRetryEvent::End {
+                    success,
+                    attempt,
+                    final_error,
+                } => TurnEvent::AutoRetryEnd {
+                    success,
+                    attempt,
+                    final_error,
+                },
+            };
+            let _ = retry_tx.send(turn_event);
+        });
+
         let options = RequestOptions {
             api_key: config.api_key.clone(),
             base_url: config.base_url.clone(),
             headers: std::collections::HashMap::new(),
             cancel: config.cancel.clone(),
+            retry_callback: Some(retry_callback),
         };
 
         // Spawn provider streaming in a background task

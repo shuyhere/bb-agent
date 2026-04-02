@@ -14,19 +14,24 @@ impl InteractiveMode {
             self.show_status("Login canceled.");
             return;
         }
-        // Priority 3: abort loading animation
-        if self.streaming.status_loader.is_some() {
+        // Priority 3: cancel in-progress retry (matching pi: Esc aborts retry)
+        if self.streaming.retry_in_progress {
+            self.abort_token.cancel();
+            return;
+        }
+        // Priority 4: abort non-agent loading animation
+        if self.streaming.status_loader.is_some() && !self.streaming.is_streaming {
             self.streaming.status_loader = None;
             self.show_status("Aborted loading");
             return;
         }
-        // Priority 3: cancel bash run
+        // Priority 5: cancel bash run
         if self.interaction.is_bash_running {
             self.interaction.is_bash_running = false;
             self.show_warning("Canceled bash placeholder run");
             return;
         }
-        // Priority 4: exit bash mode
+        // Priority 6: exit bash mode
         if self
             .interaction.is_bash_mode
             .lock()
@@ -38,20 +43,20 @@ impl InteractiveMode {
             self.show_status("Exited bash mode");
             return;
         }
-        // Priority 5: abort streaming (only via the select! loop in runtime.rs now)
+        // Priority 7: abort streaming (only via the select! loop in runtime.rs now)
         // The streaming turn loop handles Esc internally via tokio::select!.
         // If is_streaming is still true here it means we're between turns — just cancel the token.
         if self.streaming.is_streaming {
             self.abort_token.cancel();
             return;
         }
-        // Priority 6: clear editor if it has text
+        // Priority 8: clear editor if it has text
         if !self.editor_text().trim().is_empty() {
             self.clear_editor();
             self.show_status("Editor cleared");
             return;
         }
-        // Priority 7: double-escape -> tree selector
+        // Priority 9: double-escape -> tree selector
         let now = Instant::now();
         let activate = self
             .interaction.last_escape_time
@@ -66,6 +71,12 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_ctrl_c(&mut self) {
+        // If auto-retry is waiting, cancel the retry like pi.
+        if self.streaming.retry_in_progress {
+            self.abort_token.cancel();
+            self.interaction.last_sigint_time = Some(Instant::now());
+            return;
+        }
         // If streaming, cancel via token (the select! loop in runtime.rs shows the warning)
         if self.streaming.is_streaming {
             self.abort_token.cancel();

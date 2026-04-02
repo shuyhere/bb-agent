@@ -211,6 +211,7 @@ impl InteractiveMode {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
                 self.streaming.is_streaming = true;
+                self.streaming.retry_in_progress = false;
                 let loader_message = self
                     .streaming.pending_working_message
                     .take()
@@ -366,6 +367,44 @@ impl InteractiveMode {
                 self.rebuild_chat_container();
                 self.ui.tui.render();
             }
+            AgentLoopEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message: _,
+            } => {
+                self.streaming.retry_in_progress = true;
+                let delay_seconds = ((delay_ms + 999) / 1000).max(1);
+                self.streaming.status_loader = Some((
+                    StatusLoaderStyle::Warning,
+                    format!(
+                        "Retrying ({attempt}/{max_attempts}) in {delay_seconds}s... (Esc to cancel)"
+                    ),
+                ));
+                self.rebuild_status_container();
+                self.ui.tui.render();
+            }
+            AgentLoopEvent::AutoRetryEnd {
+                success,
+                attempt,
+                final_error,
+            } => {
+                self.streaming.retry_in_progress = false;
+                if success {
+                    self.streaming.status_loader = Some((
+                        StatusLoaderStyle::Accent,
+                        self.streaming.default_working_message.to_string(),
+                    ));
+                    self.rebuild_status_container();
+                } else {
+                    self.streaming.status_loader = None;
+                    let message = final_error.unwrap_or_else(|| {
+                        format!("Retry failed after {attempt} attempts: Unknown error")
+                    });
+                    self.show_warning(message);
+                }
+                self.ui.tui.render();
+            }
             AgentLoopEvent::TurnEnd { .. } => {
                 // Finalize the assistant message but keep the loader running.
                 // The loader stays until AssistantDone (matching pi's agent_end).
@@ -398,6 +437,7 @@ impl InteractiveMode {
             }
             AgentLoopEvent::AssistantDone => {
                 self.streaming.is_streaming = false;
+                self.streaming.retry_in_progress = false;
                 self.streaming.status_loader = None;
                 self.streaming.streaming_text.clear();
                 self.streaming.streaming_thinking.clear();
@@ -416,6 +456,7 @@ impl InteractiveMode {
             }
             AgentLoopEvent::Error { message } => {
                 self.streaming.is_streaming = false;
+                self.streaming.retry_in_progress = false;
                 self.streaming.status_loader = None;
                 self.finalize_streaming_assistant_message(
                     Some(components::assistant_message::AssistantStopReason::Error),

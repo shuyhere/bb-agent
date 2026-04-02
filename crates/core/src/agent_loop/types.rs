@@ -25,6 +25,17 @@ pub enum AgentLoopEvent {
         is_error: bool,
     },
     TurnEnd { turn_index: u32 },
+    AutoRetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    AutoRetryEnd {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
     AssistantDone,
     Error { message: String },
 }

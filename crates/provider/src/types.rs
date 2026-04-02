@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// A completion request to send to a provider.
@@ -15,12 +16,30 @@ pub struct CompletionRequest {
     pub thinking: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub enum ProviderRetryEvent {
+    Start {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    End {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
+}
+
+pub type RetryCallback = Arc<dyn Fn(ProviderRetryEvent) + Send + Sync>;
+
 /// Options for a provider request.
 pub struct RequestOptions {
     pub api_key: String,
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,
     pub cancel: CancellationToken,
+    pub retry_callback: Option<RetryCallback>,
 }
 
 /// A streaming event from the provider.

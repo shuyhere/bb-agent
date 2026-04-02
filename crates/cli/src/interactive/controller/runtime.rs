@@ -266,6 +266,7 @@ impl InteractiveMode {
             base_url,
             headers: std::collections::HashMap::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            retry_callback: None,
         };
 
         match test_provider.complete(request, options).await {
@@ -337,6 +338,12 @@ impl InteractiveMode {
             TurnEvent::ContextOverflow { .. } => {
                 // Handled specially by the caller, not forwarded as an agent event.
                 None
+            }
+            TurnEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => {
+                Some(AgentLoopEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message })
+            }
+            TurnEvent::AutoRetryEnd { success, attempt, final_error } => {
+                Some(AgentLoopEvent::AutoRetryEnd { success, attempt, final_error })
             }
         }
     }
@@ -448,7 +455,9 @@ impl InteractiveMode {
                                 if is_esc || is_ctrl_c {
                                     self.abort_token.cancel();
                                     aborted = true;
-                                    self.show_warning("Aborted");
+                                    if !self.streaming.retry_in_progress {
+                                        self.show_warning("Aborted");
+                                    }
                                 } else {
                                     // Forward to TUI so the editor receives input during streaming.
                                     self.ui.tui.handle_key(&key);
@@ -487,7 +496,9 @@ impl InteractiveMode {
                     if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
                         self.abort_token.cancel();
                         aborted = true;
-                        self.show_warning("Aborted");
+                        if !self.streaming.retry_in_progress {
+                            self.show_warning("Aborted");
+                        }
                     }
                     if self.streaming.status_loader.is_some() {
                         self.rebuild_status_container();
@@ -543,10 +554,7 @@ impl InteractiveMode {
             self.refresh_ui();
         }
 
-        if let Err(e) = turn_result {
-            self.show_warning(format!("Turn error: {e}"));
-        }
-
+        let _ = turn_result;
         self.streaming.is_streaming = false;
         Ok(())
     }

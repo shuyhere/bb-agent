@@ -32,6 +32,7 @@ pub(super) struct StreamingState {
     pub(super) pending_oauth_result_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::oauth::OAuthCredentials, String>>>,
     /// Provider that just completed OAuth login and needs verification.
     pub(super) pending_oauth_verify_provider: Option<String>,
+    pub(super) retry_in_progress: bool,
 }
 
 pub(super) struct QueueState {
@@ -134,6 +135,7 @@ impl InteractiveMode {
                 pending_oauth_manual_tx: None,
                 pending_oauth_result_rx: None,
                 pending_oauth_verify_provider: None,
+                retry_in_progress: false,
             },
             queues: QueueState {
                 steering_queue: VecDeque::new(),

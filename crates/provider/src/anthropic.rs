@@ -127,7 +127,7 @@ impl Provider for AnthropicProvider {
             }
         }
 
-        let response = with_retry(3, || {
+        let response = with_retry(3, options.cancel.clone(), options.retry_callback.clone(), || {
             let mut r = self.client
                 .post(&url)
                 .header("anthropic-version", "2023-06-01")
