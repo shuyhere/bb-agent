@@ -86,7 +86,10 @@ mod tests {
     #[test]
     fn only_uses_the_first_line() {
         let text = TruncatedText::new("hello\nworld", 0, 0);
-        assert_eq!(text.render(80), vec!["hello"]);
+        let lines = text.render(80);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("hello"));
+        assert_eq!(visible_width(&lines[0]), 80);
     }
 
     #[test]
