@@ -9,6 +9,7 @@ pub mod events;
 pub mod interactive_commands;
 mod auth_selector_overlay;
 mod model_selector_overlay;
+mod session_selector_overlay;
 mod state;
 mod status_loader;
 

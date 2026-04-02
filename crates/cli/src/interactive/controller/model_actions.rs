@@ -140,6 +140,25 @@ impl InteractiveMode {
             }
             _ => {}
         }
+
+        // Check session selector overlay
+        let session_action = self
+            .ui
+            .tui
+            .topmost_overlay_as_mut::<SessionSelectorOverlay>()
+            .map(|overlay| overlay.action().clone());
+
+        match session_action {
+            Some(SessionSelectorAction::Selected(session_id)) => {
+                self.ui.tui.hide_overlay();
+                self.handle_resume_session(&session_id);
+            }
+            Some(SessionSelectorAction::Cancelled) => {
+                self.ui.tui.hide_overlay();
+                self.show_status("Canceled");
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn show_auth_selector(&mut self, mode: AuthSelectorMode) {

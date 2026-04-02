@@ -312,11 +312,115 @@ impl InteractiveMode {
     }
 
     pub(super) fn show_session_selector(&mut self) {
-        let _ = self.controller.commands.open_placeholder_selector(
-            SelectorKind::Session,
-            "Session Selector",
+        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+        let current_id = self.session_setup.session_id.clone();
+
+        let sessions: Vec<SessionListItem> = store::list_sessions(&self.session_setup.conn, &cwd)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| SessionListItem {
+                is_current: row.session_id == current_id,
+                session_id: row.session_id,
+                name: row.name,
+                cwd: row.cwd,
+                updated_at: row.updated_at,
+                entry_count: row.entry_count,
+            })
+            .collect();
+
+        if sessions.is_empty() {
+            self.show_status("No sessions found in this directory.");
+            return;
+        }
+
+        let overlay = Box::new(SessionSelectorOverlay::new(sessions));
+        self.ui.tui.show_overlay(overlay);
+        self.show_status("Select session to resume");
+    }
+
+    pub(super) fn handle_resume_session(&mut self, session_id: &str) {
+        // Switch the active session.
+        self.session_setup.session_id = session_id.to_string();
+        self.options.session_id = Some(session_id.to_string());
+        let _ = self.controller.runtime_host.session_mut().clear_queue();
+
+        // Clear all chat/streaming state (like /new).
+        self.render_state_mut().chat_items.clear();
+        self.render_state_mut().pending_items.clear();
+        self.render_state_mut().streaming_component = None;
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+        self.streaming.is_streaming = false;
+        self.queues.steering_queue.clear();
+        self.queues.follow_up_queue.clear();
+        self.queues.compaction_queued_messages.clear();
+        self.queues.pending_bash_components.clear();
+
+        // Re-render session messages from the DB.
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    match entry {
+                        bb_core::types::SessionEntry::Message { message, .. } => match message {
+                            bb_core::types::AgentMessage::User(u) => {
+                                let text = u.content.iter().filter_map(|b| match b {
+                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                }).collect::<Vec<_>>().join("\n");
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::User { text },
+                                );
+                            }
+                            bb_core::types::AgentMessage::Assistant(a) => {
+                                use super::super::events::InteractiveMessage;
+                                use super::super::components::assistant_message::{
+                                    AssistantMessage as AMsg,
+                                    AssistantMessageContent,
+                                };
+                                let mut content = Vec::new();
+                                for c in &a.content {
+                                    match c {
+                                        bb_core::types::AssistantContent::Text { text } => {
+                                            content.push(AssistantMessageContent::Text(text.clone()));
+                                        }
+                                        bb_core::types::AssistantContent::Thinking { thinking } => {
+                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                let msg = AMsg {
+                                    content,
+                                    stop_reason: None,
+                                    error_message: a.error_message.clone(),
+                                };
+                                self.render_state_mut().add_message_to_chat(
+                                    InteractiveMessage::Assistant {
+                                        message: msg,
+                                        tool_calls: vec![],
+                                    },
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_footer();
+
+        self.render_state_mut().add_message_to_chat(
+            super::super::events::InteractiveMessage::System {
+                text: "Resumed session".to_string(),
+            },
         );
-        self.show_placeholder("session selector");
+        self.rebuild_chat_container();
+        self.refresh_ui();
     }
 
     pub(super) fn shutdown(&mut self) {
