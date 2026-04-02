@@ -1,4 +1,5 @@
 use bb_tui::component::{Component, Focusable};
+use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::any::Any;
@@ -112,32 +113,27 @@ fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-const BORDER_COLOR: &str = "\x1b[38;2;178;148;187m";
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const GREEN: &str = "\x1b[32m";
-
 impl Component for SessionSelectorOverlay {
     fn render(&self, width: u16) -> Vec<String> {
+        let t = theme();
         let w = width as usize;
         let mut lines = Vec::new();
-        let border = format!("{BORDER_COLOR}{}{RESET}", "\u{2500}".repeat(w));
+        let border = format!("{}{}{}", t.accent, "\u{2500}".repeat(w), t.reset);
 
         lines.push(border.clone());
-        lines.push(format!("  {BOLD}Resume Session{RESET}"));
+        lines.push(format!("  {}Resume Session{}", t.bold, t.reset));
 
         if !self.search.is_empty() {
-            lines.push(format!("  {DIM}Search: {RESET}{}", self.search));
+            lines.push(format!("  {}Search: {}{}", t.dim, t.reset, self.search));
         }
         lines.push(String::new());
 
         let filtered = self.filtered();
         if filtered.is_empty() {
             if self.sessions.is_empty() {
-                lines.push(format!("  {DIM}No sessions found{RESET}"));
+                lines.push(format!("  {}No sessions found{}", t.dim, t.reset));
             } else {
-                lines.push(format!("  {DIM}No matching sessions{RESET}"));
+                lines.push(format!("  {}No matching sessions{}", t.dim, t.reset));
             }
         } else {
             // Show max 15 items
@@ -152,7 +148,7 @@ impl Component for SessionSelectorOverlay {
                 let actual_idx = start + display_idx;
                 let is_selected = actual_idx == self.selected;
                 let current_marker = if item.is_current {
-                    format!(" {GREEN}(current){RESET}")
+                    format!(" {}(current){}", t.green, t.reset)
                 } else {
                     String::new()
                 };
@@ -181,11 +177,13 @@ impl Component for SessionSelectorOverlay {
 
                 let line = if is_selected {
                     format!(
-                        "  {BORDER_COLOR}>{RESET} {BOLD}{display_name}{RESET}{current_marker}  {DIM}{age}  {msgs} msgs{RESET}"
+                        "  {}>{} {}{display_name}{}{current_marker}  {}{age}  {msgs} msgs{}",
+                        t.accent, t.reset, t.bold, t.reset, t.dim, t.reset
                     )
                 } else {
                     format!(
-                        "    {display_name}{current_marker}  {DIM}{age}  {msgs} msgs{RESET}"
+                        "    {display_name}{current_marker}  {}{age}  {msgs} msgs{}",
+                        t.dim, t.reset
                     )
                 };
 
@@ -196,15 +194,16 @@ impl Component for SessionSelectorOverlay {
 
             if filtered.len() > max_show {
                 lines.push(format!(
-                    "  {DIM}... {} more sessions{RESET}",
-                    filtered.len() - max_show
+                    "  {}... {} more sessions{}",
+                    t.dim, filtered.len() - max_show, t.reset
                 ));
             }
         }
 
         lines.push(String::new());
         lines.push(format!(
-            "{DIM}  Enter: resume  Esc: cancel  Type to search{RESET}"
+            "{}  Enter: resume  Esc: cancel  Type to search{}",
+            t.dim, t.reset
         ));
         lines.push(border);
         lines

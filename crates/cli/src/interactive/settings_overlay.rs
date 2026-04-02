@@ -1,4 +1,5 @@
 use bb_tui::component::{Component, Focusable};
+use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::any::Any;
@@ -25,12 +26,6 @@ pub struct SettingsOverlay {
     action: SettingsAction,
     focused: bool,
 }
-
-const BORDER_COLOR: &str = "\x1b[38;2;178;148;187m";
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const ACCENT: &str = "\x1b[38;2;138;190;183m";
 
 impl SettingsOverlay {
     pub fn new(items: Vec<SettingItem>) -> Self {
@@ -68,22 +63,23 @@ impl SettingsOverlay {
 
 impl Component for SettingsOverlay {
     fn render(&self, width: u16) -> Vec<String> {
+        let t = theme();
         let w = width as usize;
         let mut lines = Vec::new();
-        let border = format!("{BORDER_COLOR}{}{RESET}", "\u{2500}".repeat(w));
+        let border = format!("{}{}{}", t.accent, "\u{2500}".repeat(w), t.reset);
 
         lines.push(border.clone());
-        lines.push(format!("  {BOLD}Settings{RESET}  {DIM}(Enter/Space: cycle, Esc: close){RESET}"));
+        lines.push(format!("  {}Settings{}  {}(Enter/Space: cycle, Esc: close){}", t.bold, t.reset, t.dim, t.reset));
         lines.push(String::new());
 
         for (i, item) in self.items.iter().enumerate() {
             let is_selected = i == self.selected;
-            let cursor = if is_selected { format!("{ACCENT}>{RESET} ") } else { "  ".to_string() };
+            let cursor = if is_selected { format!("{}>{} ", t.accent, t.reset) } else { "  ".to_string() };
 
-            let value_display = format!("{ACCENT}{}{RESET}", item.current_value);
+            let value_display = format!("{}{}{}", t.accent, item.current_value, t.reset);
 
-            let label_style = if is_selected { BOLD } else { "" };
-            let label_end = if is_selected { RESET } else { "" };
+            let label_style = if is_selected { t.bold.as_str() } else { "" };
+            let label_end = if is_selected { t.reset.as_str() } else { "" };
 
             let line = format!(
                 "  {cursor}{label_style}{}{label_end}  {value_display}",
@@ -96,12 +92,12 @@ impl Component for SettingsOverlay {
 
             // Show description for selected item
             if is_selected {
-                lines.push(format!("      {DIM}{}{RESET}", item.description));
+                lines.push(format!("      {}{}{}", t.dim, item.description, t.reset));
             }
         }
 
         lines.push(String::new());
-        lines.push(format!("{DIM}  Up/Down: navigate  Enter/Space/Right: next value  Left: prev value  Esc: close{RESET}"));
+        lines.push(format!("{}  Up/Down: navigate  Enter/Space/Right: next value  Left: prev value  Esc: close{}", t.dim, t.reset));
         lines.push(border);
         lines
     }

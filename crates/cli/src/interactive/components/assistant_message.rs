@@ -1,9 +1,5 @@
 use bb_tui::markdown::MarkdownRenderer;
-
-const RESET: &str = "\x1b[0m";
-const ITALIC: &str = "\x1b[3m";
-const THINKING_COLOR: &str = "\x1b[38;2;148;163;184m";
-const ERROR_COLOR: &str = "\x1b[31m";
+use bb_tui::theme::theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantMessageContent {
@@ -106,13 +102,15 @@ impl AssistantMessageComponent {
                     });
 
                     if self.hide_thinking_block {
-                        lines.push(apply_line_style(&self.hidden_thinking_label, &[ITALIC, THINKING_COLOR]));
+                        let t = theme();
+                        lines.push(apply_line_style(&self.hidden_thinking_label, &[&t.italic, &t.thinking_text]));
                     } else {
+                        let t = theme();
                         let thinking_lines = render_markdown_lines(thinking.trim(), width);
                         lines.extend(
                             thinking_lines
                                 .into_iter()
-                                .map(|line| apply_line_style(&line, &[ITALIC, THINKING_COLOR])),
+                                .map(|line| apply_line_style(&line, &[&t.italic, &t.thinking_text])),
                         );
                     }
 
@@ -127,17 +125,19 @@ impl AssistantMessageComponent {
         if !message.has_tool_calls() {
             match message.stop_reason {
                 Some(AssistantStopReason::Aborted) => {
+                    let t = theme();
                     let abort_message = match message.error_message.as_deref() {
                         Some(message) if message != "Request was aborted" => message.to_string(),
                         _ => "Operation aborted".to_string(),
                     };
                     lines.push(String::new());
-                    lines.push(apply_line_style(&abort_message, &[ERROR_COLOR]));
+                    lines.push(apply_line_style(&abort_message, &[&t.error]));
                 }
                 Some(AssistantStopReason::Error) => {
+                    let t = theme();
                     let error_message = message.error_message.as_deref().unwrap_or("Unknown error");
                     lines.push(String::new());
-                    lines.push(apply_line_style(&format!("Error: {error_message}"), &[ERROR_COLOR]));
+                    lines.push(apply_line_style(&format!("Error: {error_message}"), &[&t.error]));
                 }
                 _ => {}
             }
@@ -157,10 +157,12 @@ fn render_markdown_lines(text: &str, width: u16) -> Vec<String> {
 }
 
 fn apply_line_style(line: &str, styles: &[&str]) -> String {
+    let t = theme();
     let style_prefix = styles.join("");
     if line.is_empty() {
-        return style_prefix + RESET;
+        return style_prefix + &t.reset;
     }
-    let reapplied = line.replace(RESET, &format!("{RESET}{style_prefix}"));
-    format!("{style_prefix}{reapplied}{RESET}")
+    let reset = &t.reset;
+    let reapplied = line.replace(reset.as_str(), &format!("{reset}{style_prefix}"));
+    format!("{style_prefix}{reapplied}{reset}")
 }

@@ -1,4 +1,5 @@
 use bb_tui::component::{Component, Focusable};
+use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::any::Any;
@@ -48,36 +49,29 @@ impl TreeSelectorOverlay {
     }
 }
 
-const BORDER_COLOR: &str = "\x1b[38;2;178;148;187m";
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const GREEN: &str = "\x1b[32m";
-const CYAN: &str = "\x1b[36m";
-const YELLOW: &str = "\x1b[33m";
-
-fn role_indicator(entry_type: &str) -> (&str, &str) {
+fn role_indicator<'a>(entry_type: &str, t: &'a bb_tui::theme::Theme) -> (&'static str, &'a str) {
     match entry_type {
-        "user" => ("U", CYAN),
-        "assistant" => ("A", GREEN),
-        "tool_result" => ("T", YELLOW),
-        "compaction" => ("C", DIM),
-        _ => ("?", DIM),
+        "user" => ("U", &t.cyan),
+        "assistant" => ("A", &t.green),
+        "tool_result" => ("T", &t.yellow),
+        "compaction" => ("C", &t.dim),
+        _ => ("?", &t.dim),
     }
 }
 
 impl Component for TreeSelectorOverlay {
     fn render(&self, width: u16) -> Vec<String> {
+        let t = theme();
         let w = width as usize;
         let mut lines = Vec::new();
-        let border = format!("{BORDER_COLOR}{}{RESET}", "\u{2500}".repeat(w));
+        let border = format!("{}{}{}", t.accent, "\u{2500}".repeat(w), t.reset);
 
         lines.push(border.clone());
-        lines.push(format!("  {BOLD}Session Tree{RESET}  {DIM}(Enter: navigate, Esc: cancel){RESET}"));
+        lines.push(format!("  {}Session Tree{}  {}(Enter: navigate, Esc: cancel){}", t.bold, t.reset, t.dim, t.reset));
         lines.push(String::new());
 
         if self.entries.is_empty() {
-            lines.push(format!("  {DIM}No entries in session{RESET}"));
+            lines.push(format!("  {}No entries in session{}", t.dim, t.reset));
         } else {
             let max_visible = 20;
             // Keep selected in view
@@ -92,16 +86,16 @@ impl Component for TreeSelectorOverlay {
             for i in start..(start + max_visible).min(self.entries.len()) {
                 let entry = &self.entries[i];
                 let is_selected = i == self.selected;
-                let (role_char, role_color) = role_indicator(&entry.entry_type);
+                let (role_char, role_color) = role_indicator(&entry.entry_type, t);
 
                 let leaf_marker = if entry.is_leaf {
-                    format!(" {GREEN}<--{RESET}")
+                    format!(" {}<--{}", t.green, t.reset)
                 } else {
                     String::new()
                 };
 
                 let branch_marker = if entry.is_branch_point {
-                    format!(" {YELLOW}*{RESET}")
+                    format!(" {}*{}", t.yellow, t.reset)
                 } else {
                     String::new()
                 };
@@ -119,17 +113,17 @@ impl Component for TreeSelectorOverlay {
                 };
 
                 let cursor = if is_selected {
-                    format!("{BORDER_COLOR}>{RESET} ")
+                    format!("{}>{} ", t.accent, t.reset)
                 } else {
                     "  ".to_string()
                 };
 
-                let text_style = if is_selected { BOLD } else { "" };
-                let text_reset = if is_selected { RESET } else { "" };
+                let text_style = if is_selected { t.bold.as_str() } else { "" };
+                let text_reset = if is_selected { t.reset.as_str() } else { "" };
 
                 let line = format!(
-                    "  {cursor}{}{role_color}[{role_char}]{RESET} {text_style}{preview}{text_reset}{leaf_marker}{branch_marker}",
-                    entry.connector,
+                    "  {cursor}{}{role_color}[{role_char}]{} {text_style}{preview}{text_reset}{leaf_marker}{branch_marker}",
+                    entry.connector, t.reset,
                 );
 
                 let vis = visible_width(&line);
@@ -140,15 +134,16 @@ impl Component for TreeSelectorOverlay {
             if self.entries.len() > max_visible {
                 let showing = max_visible.min(self.entries.len());
                 lines.push(format!(
-                    "  {DIM}{}/{} entries{RESET}",
-                    showing, self.entries.len()
+                    "  {}{}/{} entries{}",
+                    t.dim, showing, self.entries.len(), t.reset
                 ));
             }
         }
 
         lines.push(String::new());
         lines.push(format!(
-            "{DIM}  Up/Down: navigate  Enter: switch to entry  Esc: cancel{RESET}"
+            "{}  Up/Down: navigate  Enter: switch to entry  Esc: cancel{}",
+            t.dim, t.reset
         ));
         lines.push(border);
         lines

@@ -1,4 +1,5 @@
 pub mod error;
+pub mod theme;
 pub mod terminal;
 pub mod component;
 pub mod renderer;

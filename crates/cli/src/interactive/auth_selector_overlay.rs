@@ -1,5 +1,6 @@
 use crate::login::{self, AuthSource};
 use bb_tui::component::{Component, Focusable};
+use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::any::Any;
@@ -108,12 +109,13 @@ impl Component for AuthSelectorOverlay {
         let w = width as usize;
         let mut lines = Vec::new();
 
-        let border_color = "\x1b[38;2;178;148;187m";
-        let reset = "\x1b[0m";
-        let dim = "\x1b[2m";
-        let bold = "\x1b[1m";
-        let green = "\x1b[32m";
-        let yellow = "\x1b[33m";
+        let t = theme();
+        let border_color = &t.accent;
+        let reset = &t.reset;
+        let dim = &t.dim;
+        let bold = &t.bold;
+        let green = &t.green;
+        let yellow = &t.yellow;
         let border = format!("{border_color}{}{reset}", "\u{2500}".repeat(w));
 
         lines.push(border.clone());

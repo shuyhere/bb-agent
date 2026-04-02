@@ -1,19 +1,8 @@
+use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use serde_json::Value;
 
 use super::diff_display::render_diff_lines;
-
-const RESET: &str = "\x1b[0m";
-const DIM: &str = "\x1b[90m";
-const BOLD: &str = "\x1b[1m";
-const ACCENT: &str = "\x1b[38;2;178;148;187m";
-const SUCCESS: &str = "\x1b[32m";
-const ERROR: &str = "\x1b[31m";
-const MUTED: &str = "\x1b[38;2;148;163;184m";
-const TOOL_OUTPUT: &str = "\x1b[38;2;128;128;128m"; // gray #808080 — pi's toolOutput color
-const TOOL_PENDING_BG: &str = "\x1b[48;2;40;40;50m";
-const TOOL_SUCCESS_BG: &str = "\x1b[48;2;40;50;40m";
-const TOOL_ERROR_BG: &str = "\x1b[48;2;60;40;40m";
 
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionOptions {
@@ -126,19 +115,20 @@ impl ToolExecutionComponent {
     }
 
     pub fn render_lines(&self, width: u16) -> Vec<String> {
+        let t = theme();
         let (status_mark, bg) = if let Some(result) = &self.result {
             if result.is_error {
-                (format!("{ERROR}x{RESET}"), TOOL_ERROR_BG)
+                (format!("{}x{}", t.error, t.reset), t.tool_error_bg.as_str())
             } else {
-                (format!("{SUCCESS}*{RESET}"), TOOL_SUCCESS_BG)
+                (format!("{}*{}", t.success, t.reset), t.tool_success_bg.as_str())
             }
         } else if self.execution_started {
-            (format!("{DIM}..{RESET}"), TOOL_PENDING_BG)
+            (format!("{}..{}", t.dim, t.reset), t.tool_pending_bg.as_str())
         } else {
-            (format!("{DIM}>{RESET}"), TOOL_PENDING_BG)
+            (format!("{}>{}", t.dim, t.reset), t.tool_pending_bg.as_str())
         };
 
-        let title = format!("{status_mark} {BOLD}{}{RESET}", self.render_call_title());
+        let title = format!("{status_mark} {}{}{}", t.bold, self.render_call_title(), t.reset);
         let mut content = vec![title];
         content.extend(self.render_call_body());
 
@@ -176,9 +166,10 @@ impl ToolExecutionComponent {
     }
 
     fn render_result_body(&self) -> Vec<String> {
+        let t = theme();
         let Some(result) = &self.result else {
             return if self.execution_started {
-                vec![format!("{DIM}executing...{RESET}")]
+                vec![format!("{}executing...{}", t.dim, t.reset)]
             } else {
                 Vec::new()
             };
@@ -189,7 +180,7 @@ impl ToolExecutionComponent {
             if !output.trim().is_empty() {
                 return output
                     .lines()
-                    .map(|line| format!("{ERROR}{line}{RESET}"))
+                    .map(|line| format!("{}{line}{}", t.error, t.reset))
                     .collect();
             }
         }
@@ -251,6 +242,7 @@ fn shorten_path(path: &str) -> String {
 }
 
 fn format_read_call(args: &Value) -> String {
+    let t = theme();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
     let offset = args.get("offset").and_then(|v| v.as_u64());
     let limit = args.get("limit").and_then(|v| v.as_u64());
@@ -264,17 +256,19 @@ fn format_read_call(args: &Value) -> String {
             line_suffix = format!(":{start}");
         }
     }
-    format!("read {ACCENT}{path}{RESET}{MUTED}{line_suffix}{RESET}")
+    format!("read {}{path}{}{}{line_suffix}{}", t.accent, t.reset, t.muted, t.reset)
 }
 
 fn format_write_call_title(args: &Value) -> String {
+    let t = theme();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
-    format!("write {ACCENT}{path}{RESET}")
+    format!("write {}{path}{}", t.accent, t.reset)
 }
 
 fn format_edit_call_title(args: &Value) -> String {
+    let t = theme();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or(""));
-    format!("edit {ACCENT}{path}{RESET}")
+    format!("edit {}{path}{}", t.accent, t.reset)
 }
 
 fn format_bash_call_title(args: &Value) -> String {
@@ -287,80 +281,87 @@ fn format_bash_call_title(args: &Value) -> String {
 }
 
 fn format_ls_call(args: &Value) -> String {
+    let t = theme();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
     if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
-        format!("ls {ACCENT}{path}{RESET}{DIM} (limit {limit}){RESET}")
+        format!("ls {}{path}{}{} (limit {limit}){}", t.accent, t.reset, t.dim, t.reset)
     } else {
-        format!("ls {ACCENT}{path}{RESET}")
+        format!("ls {}{path}{}", t.accent, t.reset)
     }
 }
 
 fn format_grep_call(args: &Value) -> String {
+    let t = theme();
     let pattern = arg_str(args, "pattern").unwrap_or_default();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
-    let mut text = format!("grep {ACCENT}/{pattern}/{RESET}{DIM} in {path}{RESET}");
+    let mut text = format!("grep {}/{pattern}/{}{} in {path}{}", t.accent, t.reset, t.dim, t.reset);
     if let Some(glob) = arg_str(args, "glob") {
-        text.push_str(&format!("{DIM} ({glob}){RESET}"));
+        text.push_str(&format!("{} ({glob}){}", t.dim, t.reset));
     }
     text
 }
 
 fn format_find_call(args: &Value) -> String {
+    let t = theme();
     let pattern = arg_str(args, "pattern").unwrap_or_default();
     let path = shorten_path(arg_str(args, "path").as_deref().unwrap_or("."));
-    format!("find {ACCENT}{pattern}{RESET}{DIM} in {path}{RESET}")
+    format!("find {}{pattern}{}{} in {path}{}", t.accent, t.reset, t.dim, t.reset)
 }
 
 fn render_generic_call_body(tool_name: &str, args: &Value, execution_started: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     match tool_name {
         "read" | "ls" | "grep" | "find" => {
             let rendered = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
             if rendered != "null" && rendered != "{}" {
-                lines.extend(rendered.lines().map(|line| format!("{DIM}{line}{RESET}")));
+                lines.extend(rendered.lines().map(|line| format!("{}{line}{}", t.dim, t.reset)));
             }
         }
         _ => {
             let rendered = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
             if rendered != "null" && rendered != "{}" {
-                lines.extend(rendered.lines().map(|line| format!("{DIM}{line}{RESET}")));
+                lines.extend(rendered.lines().map(|line| format!("{}{line}{}", t.dim, t.reset)));
             }
         }
     }
     if lines.is_empty() && execution_started {
-        lines.push(format!("{DIM}running...{RESET}"));
+        lines.push(format!("{}running...{}", t.dim, t.reset));
     }
     lines
 }
 
 fn render_bash_call_body(args: &Value) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(timeout) = args.get("timeout").and_then(|v| v.as_f64()) {
-        lines.push(format!("{DIM}timeout {timeout}s{RESET}"));
+        lines.push(format!("{}timeout {timeout}s{}", t.dim, t.reset));
     }
     lines
 }
 
 fn render_edit_call_body(args: &Value) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
-        lines.push(format!("{DIM}{} edit block(s){RESET}", edits.len()));
+        lines.push(format!("{}{} edit block(s){}", t.dim, edits.len(), t.reset));
         for (index, edit) in edits.iter().take(3).enumerate() {
             let old_text = edit.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
             let new_text = edit.get("newText").and_then(|v| v.as_str()).unwrap_or("");
             let old_preview = summarize_inline(old_text, 60);
             let new_preview = summarize_inline(new_text, 60);
-            lines.push(format!("{DIM}{}.{RESET} - {old_preview}", index + 1));
-            lines.push(format!("{DIM}   +{RESET} {new_preview}"));
+            lines.push(format!("{}{}.{} - {old_preview}", t.dim, index + 1, t.reset));
+            lines.push(format!("{}   +{} {new_preview}", t.dim, t.reset));
         }
         if edits.len() > 3 {
-            lines.push(format!("{DIM}... ({} more edit block(s)){RESET}", edits.len() - 3));
+            lines.push(format!("{}... ({} more edit block(s)){}", t.dim, edits.len() - 3, t.reset));
         }
     }
     lines
 }
 
 fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(content) = arg_str(args, "content") {
         let preview_lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
@@ -369,16 +370,17 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
             preview_lines
                 .iter()
                 .take(max_lines)
-                .map(|line| format!("{DIM}{}{RESET}", replace_tabs(line))),
+                .map(|line| format!("{}{}{}", t.dim, replace_tabs(line), t.reset)),
         );
         if preview_lines.len() > max_lines {
-            lines.push(format!("{DIM}... ({} more lines){RESET}", preview_lines.len() - max_lines));
+            lines.push(format!("{}... ({} more lines){}", t.dim, preview_lines.len() - max_lines, t.reset));
         }
     }
     lines
 }
 
 fn render_read_result(args: &Value, result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let path = details
@@ -391,7 +393,7 @@ fn render_read_result(args: &Value, result: &ToolExecutionResult, show_images: b
         let end = details.get("endLine").and_then(|v| v.as_u64()).unwrap_or(start);
         let total = details.get("totalLines").and_then(|v| v.as_u64()).unwrap_or(end);
         if !path.is_empty() {
-            lines.push(format!("{DIM}read {} lines {start}-{end} / {total}{RESET}", shorten_path(&path)));
+            lines.push(format!("{}read {} lines {start}-{end} / {total}{}", t.dim, shorten_path(&path), t.reset));
         }
     }
     lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 10 }));
@@ -399,22 +401,24 @@ fn render_read_result(args: &Value, result: &ToolExecutionResult, show_images: b
 }
 
 fn render_write_result(result: &ToolExecutionResult) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let bytes = details.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-        lines.push(format!("{DIM}wrote {bytes} bytes to {}{RESET}", shorten_path(path)));
+        lines.push(format!("{}wrote {bytes} bytes to {}{}", t.dim, shorten_path(path), t.reset));
     }
     lines
 }
 
 fn render_edit_result(result: &ToolExecutionResult) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let path = details.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let applied = details.get("applied").and_then(|v| v.as_u64()).unwrap_or(0);
         let total = details.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-        lines.push(format!("{DIM}applied {applied}/{total} edit(s) to {}{RESET}", shorten_path(path)));
+        lines.push(format!("{}applied {applied}/{total} edit(s) to {}{}", t.dim, shorten_path(path), t.reset));
         if let Some(diff) = details.get("diff").and_then(|v| v.as_str()) {
             lines.extend(render_diff_lines(diff));
             return lines;
@@ -425,6 +429,7 @@ fn render_edit_result(result: &ToolExecutionResult) -> Vec<String> {
 }
 
 fn render_bash_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let exit = details.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
@@ -442,39 +447,42 @@ fn render_bash_result(result: &ToolExecutionResult, show_images: bool, expanded:
         } else {
             format!(" [{}]", flags.join(", "))
         };
-        lines.push(format!("{DIM}exit code: {exit}{suffix}{RESET}"));
+        lines.push(format!("{}exit code: {exit}{suffix}{}", t.dim, t.reset));
     }
     lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 12 }));
     lines
 }
 
 fn render_list_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let count = details.get("entryCount").and_then(|v| v.as_u64()).unwrap_or(0);
         let truncated = details.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
         let suffix = if truncated { " (truncated)" } else { "" };
-        lines.push(format!("{DIM}{count} entr{} shown{suffix}{RESET}", if count == 1 { "y" } else { "ies" }));
+        lines.push(format!("{}{count} entr{} shown{suffix}{}", t.dim, if count == 1 { "y" } else { "ies" }, t.reset));
     }
     lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 20 }));
     lines
 }
 
 fn render_grep_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
-        lines.push(format!("{DIM}{count} match(es){RESET}"));
+        lines.push(format!("{}{count} match(es){}", t.dim, t.reset));
     }
     lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 15 }));
     lines
 }
 
 fn render_find_result(result: &ToolExecutionResult, show_images: bool, expanded: bool) -> Vec<String> {
+    let t = theme();
     let mut lines = Vec::new();
     if let Some(details) = &result.details {
         let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
-        lines.push(format!("{DIM}{count} file(s){RESET}"));
+        lines.push(format!("{}{count} file(s){}", t.dim, t.reset));
     }
     lines.extend(preview_text_lines(&text_output(result, show_images), if expanded { 120 } else { 20 }));
     lines
@@ -485,6 +493,7 @@ fn render_default_result(result: &ToolExecutionResult, show_images: bool, expand
 }
 
 fn preview_text_lines(text: &str, max_lines: usize) -> Vec<String> {
+    let t = theme();
     if text.trim().is_empty() {
         return Vec::new();
     }
@@ -492,10 +501,10 @@ fn preview_text_lines(text: &str, max_lines: usize) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     for line in lines.iter().take(max_lines) {
-        out.push(format!("{TOOL_OUTPUT}{}{RESET}", replace_tabs(line)));
+        out.push(format!("{}{}{}", t.tool_output, replace_tabs(line), t.reset));
     }
     if lines.len() > max_lines {
-        out.push(format!("{DIM}... ({} more lines){RESET}", lines.len() - max_lines));
+        out.push(format!("{}... ({} more lines){}", t.dim, lines.len() - max_lines, t.reset));
     }
     out
 }
@@ -536,13 +545,14 @@ fn render_box_lines(content: &[String], width: u16, bg: &str) -> Vec<String> {
 }
 
 fn apply_bg_line(content: &str, total_width: usize, bg: &str) -> String {
+    let t = theme();
     let visible = visible_width(content);
     let inner_width = total_width.saturating_sub(2);
     let pad = inner_width.saturating_sub(visible);
     // Re-apply bg after every RESET inside content so the background
     // fills the entire line (not just up to the first RESET).
-    let content_with_bg = content.replace(RESET, &format!("{RESET}{bg}"));
-    format!("{bg} {content_with_bg}{} {RESET}", " ".repeat(pad))
+    let content_with_bg = content.replace(&t.reset, &format!("{}{bg}", t.reset));
+    format!("{bg} {content_with_bg}{} {}", " ".repeat(pad), t.reset)
 }
 
 fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {

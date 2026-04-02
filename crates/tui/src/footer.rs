@@ -7,6 +7,7 @@
 use std::process::{Command, Stdio};
 
 use crate::component::Component;
+use crate::theme::theme;
 use crate::utils::{truncate_to_width, visible_width};
 
 pub use crate::footer_data::{FooterDataProvider, ReadonlyFooterDataProvider};
@@ -105,11 +106,6 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
-const RED: &str = "\x1b[31m";
-const YELLOW: &str = "\x1b[33m";
-
 impl Component for Footer {
     crate::impl_as_any!();
 
@@ -130,7 +126,8 @@ impl Component for Footer {
             pwd = format!("{pwd} • {session_name}");
         }
 
-        let pwd_line = truncate_to_width(&format!("{DIM}{pwd}{RESET}"), width);
+        let t = theme();
+        let pwd_line = truncate_to_width(&format!("{}{pwd}{}", t.dim, t.reset), width);
 
         let mut stats_parts = Vec::new();
         if data.input_tokens > 0 {
@@ -161,9 +158,9 @@ impl Component for Footer {
             None => format!("?/{}{}", format_tokens(data.context_window), auto_indicator),
         };
         let context_percent_str = if context_percent_value > 90.0 {
-            format!("{RED}{context_display}{RESET}")
+            format!("{}{context_display}{}", t.red, t.reset)
         } else if context_percent_value > 70.0 {
-            format!("{YELLOW}{context_display}{RESET}")
+            format!("{}{context_display}{}", t.yellow, t.reset)
         } else {
             context_display
         };
@@ -213,8 +210,8 @@ impl Component for Footer {
         };
 
         let remainder = &stats_line[stats_left.len()..];
-        let dim_stats_left = format!("{DIM}{stats_left}{RESET}");
-        let dim_remainder = format!("{DIM}{remainder}{RESET}");
+        let dim_stats_left = format!("{}{stats_left}{}", t.dim, t.reset);
+        let dim_remainder = format!("{}{remainder}{}", t.dim, t.reset);
 
         vec![pwd_line, format!("{dim_stats_left}{dim_remainder}")]
     }

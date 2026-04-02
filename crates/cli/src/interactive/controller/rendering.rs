@@ -1,3 +1,5 @@
+use bb_tui::theme::theme;
+
 use super::*;
 
 impl InteractiveMode {
@@ -22,8 +24,9 @@ impl InteractiveMode {
     }
 
     pub(super) fn render_items_to_lines(items: &[ChatItem], width: u16) -> Vec<String> {
-        let dim = "\x1b[90m";
-        let reset = "\x1b[0m";
+        let t = theme();
+        let dim = &t.dim;
+        let reset = &t.reset;
         let content_width = width.saturating_sub(1).max(1) as usize;
         let wrap_prefixed = |line: &str| -> Vec<String> {
             if line.is_empty() {
@@ -41,7 +44,7 @@ impl InteractiveMode {
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
                 ChatItem::UserMessage(text) => {
-                    let user_bg = "\x1b[48;2;52;53;65m";
+                    let user_bg = &t.user_msg_bg;
                     vec![String::new(), format!("{user_bg} {text}\x1b[K{reset}"), String::new()]
                 }
                 ChatItem::AssistantMessage(component) => component
@@ -63,7 +66,7 @@ impl InteractiveMode {
                 ChatItem::BranchSummary(summary) => word_wrap(&format!("{dim} [b] {summary}{reset}"), width.max(1) as usize),
                 ChatItem::PendingMessageLine(line) => wrap_prefixed(line),
                 ChatItem::SystemMessage(text) => {
-                    let yellow = "\x1b[33m";
+                    let yellow = &t.yellow;
                     word_wrap(&format!("{yellow} {text}{reset}"), width.max(1) as usize)
                 }
             })
