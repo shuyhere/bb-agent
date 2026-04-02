@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+use crate::oauth::OAuthCredentials;
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct AuthStore {
     #[serde(flatten)]
@@ -18,9 +20,11 @@ enum AuthEntry {
     ApiKey { key: String },
     #[serde(rename = "oauth")]
     OAuth {
-        access_token: String,
-        refresh_token: Option<String>,
-        expires_at: Option<i64>,
+        access: String,
+        refresh: String,
+        expires: i64,
+        #[serde(flatten)]
+        extra: serde_json::Value,
     },
 }
 
@@ -268,7 +272,7 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
     if let Some(entry) = store.providers.get(provider) {
         let has = match entry {
             AuthEntry::ApiKey { key } => !key.trim().is_empty(),
-            AuthEntry::OAuth { access_token, .. } => !access_token.trim().is_empty(),
+            AuthEntry::OAuth { access, .. } => !access.trim().is_empty(),
         };
         if has {
             return Some(AuthSource::BbAuth);
@@ -307,13 +311,42 @@ pub fn authenticated_providers() -> Vec<String> {
         .collect()
 }
 
+/// Save OAuth credentials for a provider into auth.json.
+pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Result<()> {
+    let mut store = load_auth();
+    store.providers.insert(
+        provider.to_string(),
+        AuthEntry::OAuth {
+            access: creds.access.clone(),
+            refresh: creds.refresh.clone(),
+            expires: creds.expires,
+            extra: creds.extra.clone(),
+        },
+    );
+    save_auth(&store)
+}
+
 pub fn resolve_api_key(provider: &str) -> Option<String> {
     // 1. Check BB's own auth.json
     let store = load_auth();
     if let Some(entry) = store.providers.get(provider) {
         match entry {
             AuthEntry::ApiKey { key } => return Some(key.clone()),
-            AuthEntry::OAuth { access_token, .. } => return Some(access_token.clone()),
+            AuthEntry::OAuth { access, refresh, expires, .. } => {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                // If token is still valid (with 60s buffer), return it.
+                if *expires > now_ms + 60_000 {
+                    return Some(access.clone());
+                }
+                // Try to auto-refresh.
+                if !refresh.is_empty() {
+                    if let Some(creds) = try_refresh_sync(provider, refresh) {
+                        return Some(creds);
+                    }
+                }
+                // Return stale token as last resort (server will reject).
+                return Some(access.clone());
+            }
         }
     }
 
@@ -337,6 +370,48 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Best-effort synchronous token refresh.
+///
+/// Tries to enter the tokio runtime; if we're already inside one we
+/// spawn a blocking thread with its own single-threaded runtime.
+fn try_refresh_sync(provider: &str, refresh_token: &str) -> Option<String> {
+    let rt = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're inside a runtime – run on a blocking thread.
+            let provider = provider.to_string();
+            let refresh_token = refresh_token.to_string();
+            let result = std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().ok()?;
+                rt.block_on(do_refresh(&provider, &refresh_token))
+            })
+            .join()
+            .ok()
+            .flatten();
+            return result;
+        }
+        Err(_) => tokio::runtime::Runtime::new().ok()?,
+    };
+    rt.block_on(do_refresh(provider, refresh_token))
+}
+
+async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
+    use crate::oauth;
+
+    let creds = match provider {
+        "anthropic" => oauth::anthropic::refresh_anthropic_token(refresh_token)
+            .await
+            .ok()?,
+        "openai" | "openai-codex" => oauth::openai_codex::refresh_openai_codex_token(refresh_token)
+            .await
+            .ok()?,
+        _ => return None,
+    };
+
+    // Persist the refreshed credentials.
+    let _ = save_oauth_credentials(provider, &creds);
+    Some(creds.access)
 }
 
 

@@ -35,6 +35,9 @@ futures = "0.3"
 tokio-util = "0.7"
 similar = "2"
 regex = "1"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
 
 # Internal crates
 bb-core = { path = "crates/core" }

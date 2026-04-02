@@ -6,6 +6,7 @@ mod error;
 #[path = "interactive.rs"]
 mod interactive;
 mod login;
+mod oauth;
 mod models;
 mod run;
 mod slash;
