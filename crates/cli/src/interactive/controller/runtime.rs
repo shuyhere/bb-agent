@@ -35,7 +35,7 @@ impl InteractiveMode {
         )));
         self.ui.tui
             .root
-            .add(Box::new(SharedEditorWrapper::new(self.ui.editor.clone())));
+            .add(Box::new(SharedComponentWrapper::new(self.ui.editor_component.clone())));
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.widget_container_below.clone(),
         )));
@@ -161,7 +161,11 @@ impl InteractiveMode {
                         }
                         TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
                             self.ui.tui.handle_raw_input(&data);
-                            self.sync_bash_mode_from_editor();
+                            if self.is_login_dialog_active() {
+                                self.process_login_dialog_action();
+                            } else {
+                                self.sync_bash_mode_from_editor();
+                            }
                             self.render_editor_frame();
                         }
                         TerminalEvent::Key(key) => {

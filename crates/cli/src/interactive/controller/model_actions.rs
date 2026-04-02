@@ -15,6 +15,62 @@ fn persist_retry_settings(
 }
 
 impl InteractiveMode {
+    fn mount_editor_component(&mut self, component: Box<dyn Component>) {
+        if let Ok(mut slot) = self.ui.editor_component.lock() {
+            *slot = component;
+        }
+        self.ui.tui.set_focus(Some(5));
+    }
+
+    fn restore_default_editor_component(&mut self) {
+        self.mount_editor_component(Box::new(SharedEditorWrapper::new(self.ui.editor.clone())));
+    }
+
+    fn show_login_dialog_component(&mut self, provider_name: &str) {
+        self.mount_editor_component(Box::new(components::LoginDialogComponent::new(provider_name)));
+    }
+
+    fn with_login_dialog_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut components::LoginDialogComponent) -> R,
+    ) -> Option<R> {
+        let mut slot = self.ui.editor_component.lock().ok()?;
+        let dialog = slot
+            .as_any_mut()
+            .downcast_mut::<components::LoginDialogComponent>()?;
+        Some(f(dialog))
+    }
+
+    pub(super) fn is_login_dialog_active(&self) -> bool {
+        self.ui
+            .editor_component
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_any().downcast_ref::<components::LoginDialogComponent>().map(|_| ()))
+            .is_some()
+    }
+
+    pub(super) fn process_login_dialog_action(&mut self) {
+        let action = self.with_login_dialog_mut(|dialog| dialog.take_action()).flatten();
+        match action {
+            Some(components::LoginDialogAction::Cancelled) => {
+                self.cancel_pending_auth();
+                self.restore_default_editor_component();
+                self.refresh_ui();
+            }
+            Some(components::LoginDialogAction::Submit(text)) => {
+                self.finish_auth_login(&text);
+                if self.streaming.pending_auth_provider.is_none() {
+                    self.restore_default_editor_component();
+                } else {
+                    let _ = self.with_login_dialog_mut(|dialog| dialog.clear_input());
+                }
+                self.refresh_ui();
+            }
+            None => {}
+        }
+    }
+
     pub(super) fn show_settings_selector(&mut self) {
         self.clear_status();
         let thinking = &self.session_setup.thinking_level;
@@ -392,6 +448,10 @@ impl InteractiveMode {
 
         match method {
             AuthMethod::OAuth => {
+                self.show_login_dialog_component(&display_name);
+                let _ = self.with_login_dialog_mut(|dialog| {
+                    dialog.set_message(Some(format!("{verb} {display_name}{source_note}")));
+                });
                 self.start_oauth_flow(provider, &display_name, verb, &source_note);
             }
             AuthMethod::ApiKey => {
@@ -401,6 +461,11 @@ impl InteractiveMode {
                 self.streaming.pending_auth_message = Some(format!(
                     "{verb} {display_name}{source_note}\nPaste API key below and press Enter.\nPress Esc to cancel."
                 ));
+                self.show_login_dialog_component(&display_name);
+                let message = self.streaming.pending_auth_message.clone();
+                let _ = self.with_login_dialog_mut(|dialog| {
+                    dialog.set_message(message);
+                });
                 self.show_status(format!("{verb} {display_name}{source_note}"));
             }
         }
@@ -469,16 +534,26 @@ impl InteractiveMode {
         // Show the auth URL in the TUI so headless users can copy it.
         // Use a short timeout — the on_auth callback fires almost immediately.
         if let Ok(url) = url_rx.recv_timeout(std::time::Duration::from_secs(3)) {
-            self.streaming.pending_auth_url = Some(url);
+            self.streaming.pending_auth_url = Some(url.clone());
             self.streaming.pending_auth_message = Some(
                 "Open this URL in a browser.\nThen paste the redirect URL or code below and press Enter.\nPress Esc to cancel."
                     .to_string(),
             );
+            let message = self.streaming.pending_auth_message.clone();
+            let _ = self.with_login_dialog_mut(|dialog| {
+                dialog.set_url(Some(url));
+                dialog.set_message(message);
+            });
             self.show_status(format!("{verb} {display_name}{source_note}"));
         } else {
             self.streaming.pending_auth_message = Some(format!(
                 "Starting OAuth flow for {display_name}…\nPress Esc to cancel."
             ));
+            let message = self.streaming.pending_auth_message.clone();
+            let _ = self.with_login_dialog_mut(|dialog| {
+                dialog.set_url(None);
+                dialog.set_message(message);
+            });
             self.show_status(format!("{verb} {display_name}{source_note}"));
         }
     }
@@ -525,6 +600,7 @@ impl InteractiveMode {
                         }
                         self.streaming.pending_auth_message = None;
                         self.streaming.pending_auth_display_name = None;
+                        self.restore_default_editor_component();
                         self.show_status(format!(
                             "Logged in to {display_name}. Credentials saved to {}. Verifying…",
                             crate::login::auth_path().display()
@@ -536,6 +612,7 @@ impl InteractiveMode {
                     Err(e) => {
                         self.streaming.pending_auth_message = None;
                         self.streaming.pending_auth_display_name = None;
+                        self.restore_default_editor_component();
                         self.show_warning(format!(
                             "OAuth succeeded but failed to save tokens: {e}"
                         ));
@@ -550,6 +627,7 @@ impl InteractiveMode {
                 self.streaming.pending_auth_url = None;
                 self.streaming.pending_auth_message = None;
                 self.streaming.pending_auth_display_name = None;
+                self.restore_default_editor_component();
                 self.show_warning(format!("Login failed: {err}"));
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
@@ -562,6 +640,7 @@ impl InteractiveMode {
                 self.streaming.pending_auth_url = None;
                 self.streaming.pending_auth_message = None;
                 self.streaming.pending_auth_display_name = None;
+                self.restore_default_editor_component();
                 // Don't show warning — the flow may have completed normally
                 // and the channel was dropped after sending.
             }
@@ -597,6 +676,8 @@ impl InteractiveMode {
         if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
             if tx.send(key.to_string()).is_ok() {
                 self.streaming.pending_auth_message = Some(format!("Exchanging tokens for {display_name}…"));
+                let message = self.streaming.pending_auth_message.clone();
+                let _ = self.with_login_dialog_mut(|dialog| dialog.set_message(message));
                 self.show_status(format!("Exchanging tokens for {display_name}…"));
                 // Result will arrive via poll_oauth_result.
                 return;
@@ -606,6 +687,8 @@ impl InteractiveMode {
             if self.streaming.pending_oauth_result_rx.is_some() {
                 // Let poll_oauth_result handle it on next tick.
                 self.streaming.pending_auth_message = Some("Processing…".to_string());
+                let message = self.streaming.pending_auth_message.clone();
+                let _ = self.with_login_dialog_mut(|dialog| dialog.set_message(message));
                 self.show_status("Processing…");
                 return;
             }

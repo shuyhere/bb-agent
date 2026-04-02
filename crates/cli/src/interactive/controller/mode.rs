@@ -11,6 +11,7 @@ pub(super) struct UIContainers {
     pub(super) footer_container: Arc<Mutex<Container>>,
     pub(super) footer_data_provider: FooterDataProvider,
     pub(super) editor: Arc<Mutex<Editor>>,
+    pub(super) editor_component: Arc<Mutex<Box<dyn Component>>>,
 }
 
 pub(super) struct StreamingState {
@@ -106,6 +107,9 @@ impl InteractiveMode {
             bb_tui::component::Focusable::set_focused(&mut e, true);
             Arc::new(Mutex::new(e))
         };
+        let editor_component: Arc<Mutex<Box<dyn Component>>> = Arc::new(Mutex::new(Box::new(
+            super::shared::SharedEditorWrapper::new(editor.clone()),
+        )));
         let is_bash_mode = Arc::new(Mutex::new(false));
         let footer_cwd = runtime_host.cwd().to_path_buf();
 
@@ -123,6 +127,7 @@ impl InteractiveMode {
                 footer_container: Arc::new(Mutex::new(Container::new())),
                 footer_data_provider: FooterDataProvider::new(footer_cwd),
                 editor,
+                editor_component,
             },
             streaming: StreamingState {
                 is_streaming: false,

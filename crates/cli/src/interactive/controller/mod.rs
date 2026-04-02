@@ -54,5 +54,5 @@ mod ui_state;
 pub use mode::{InteractiveMode, run_interactive};
 
 use mode::{UIContainers, StreamingState, QueueState, RenderCache, InteractionState};
-use shared::{SharedContainer, SharedEditorWrapper};
+use shared::{SharedComponentWrapper, SharedContainer, SharedEditorWrapper};
 

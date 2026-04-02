@@ -10,6 +10,14 @@ impl InteractiveMode {
             return Ok(None);
         }
 
+        // Dedicated login dialog mounted in the editor area owns input while active.
+        if self.is_login_dialog_active() {
+            self.ui.tui.handle_key(&key);
+            self.process_login_dialog_action();
+            self.render_editor_frame();
+            return Ok(None);
+        }
+
         if let Some(action) = self.lookup_key_action(&key) {
             self.handle_key_action(action).await?;
             // Most key actions only change status/footer, not chat.
