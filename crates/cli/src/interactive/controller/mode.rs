@@ -60,6 +60,8 @@ pub(super) struct InteractionState {
     pub(super) shutdown_requested: bool,
     pub(super) is_initialized: bool,
     pub(super) tool_output_expanded: bool,
+    /// When true, the session selector is being used for /fork (not /resume).
+    pub(super) pending_fork: bool,
 }
 
 pub struct InteractiveMode {
@@ -151,6 +153,7 @@ impl InteractiveMode {
                 shutdown_requested: false,
                 is_initialized: false,
                 tool_output_expanded: true,
+                pending_fork: false,
             },
             version: env!("CARGO_PKG_VERSION").to_string(),
             options,

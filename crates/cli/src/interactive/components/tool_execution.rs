@@ -10,6 +10,7 @@ const ACCENT: &str = "\x1b[38;2;178;148;187m";
 const SUCCESS: &str = "\x1b[32m";
 const ERROR: &str = "\x1b[31m";
 const MUTED: &str = "\x1b[38;2;148;163;184m";
+const TOOL_OUTPUT: &str = "\x1b[38;2;128;128;128m"; // gray #808080 — pi's toolOutput color
 const TOOL_PENDING_BG: &str = "\x1b[48;2;40;40;50m";
 const TOOL_SUCCESS_BG: &str = "\x1b[48;2;40;50;40m";
 const TOOL_ERROR_BG: &str = "\x1b[48;2;60;40;40m";
@@ -491,7 +492,7 @@ fn preview_text_lines(text: &str, max_lines: usize) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     for line in lines.iter().take(max_lines) {
-        out.push(replace_tabs(line));
+        out.push(format!("{TOOL_OUTPUT}{}{RESET}", replace_tabs(line)));
     }
     if lines.len() > max_lines {
         out.push(format!("{DIM}... ({} more lines){RESET}", lines.len() - max_lines));

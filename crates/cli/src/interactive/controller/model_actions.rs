@@ -149,12 +149,18 @@ impl InteractiveMode {
             .map(|overlay| overlay.action().clone());
 
         match session_action {
-            Some(SessionSelectorAction::Selected(session_id)) => {
+            Some(SessionSelectorAction::Selected(id)) => {
                 self.ui.tui.hide_overlay();
-                self.handle_resume_session(&session_id);
+                if self.interaction.pending_fork {
+                    self.interaction.pending_fork = false;
+                    self.handle_fork_from_entry(&id);
+                } else {
+                    self.handle_resume_session(&id);
+                }
             }
             Some(SessionSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
+                self.interaction.pending_fork = false;
                 self.show_status("Canceled");
             }
             _ => {}

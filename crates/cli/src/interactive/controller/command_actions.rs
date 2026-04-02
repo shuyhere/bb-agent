@@ -152,15 +152,41 @@ impl InteractiveMode {
     pub(super) fn handle_name_command(&mut self, text: &str) {
         let name = text.strip_prefix("/name").unwrap_or(text).trim();
         if name.is_empty() {
-            self.show_status("Usage: /name <session name>");
+            // Show current name if called without args.
+            let current = store::get_session(
+                &self.session_setup.conn,
+                &self.session_setup.session_id,
+            ).ok().flatten().and_then(|r| r.name);
+            match current {
+                Some(n) => {
+                    self.render_state_mut().add_message_to_chat(
+                        super::super::events::InteractiveMessage::System {
+                            text: format!("Session name: {n}"),
+                        },
+                    );
+                    self.rebuild_chat_container();
+                    self.refresh_ui();
+                }
+                None => self.show_status("Usage: /name <name>"),
+            }
             return;
         }
-        match self.session_setup.conn.execute(
-            "UPDATE sessions SET name = ?1, updated_at = datetime('now') WHERE session_id = ?2",
-            params![name, self.session_setup.session_id],
+        match store::set_session_name(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            Some(name),
         ) {
-            Ok(_) => self.show_status(format!("Session renamed to: {name}")),
-            Err(e) => self.show_status(format!("Failed to rename session: {e}")),
+            Ok(_) => {
+                self.render_state_mut().add_message_to_chat(
+                    super::super::events::InteractiveMessage::System {
+                        text: format!("Session name set: {name}"),
+                    },
+                );
+                self.rebuild_chat_container();
+                self.rebuild_footer();
+                self.refresh_ui();
+            }
+            Err(e) => self.show_warning(format!("Failed to rename session: {e}")),
         }
     }
 
@@ -284,8 +310,161 @@ impl InteractiveMode {
     }
 
     pub(super) fn show_user_message_selector(&mut self) {
-        let _ = self.controller.commands.show_user_message_selector();
-        self.show_placeholder("user message selector");
+        // Collect user messages for forking.
+        let mut user_msgs: Vec<(String, String)> = Vec::new(); // (entry_id, text)
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    if let bb_core::types::SessionEntry::Message {
+                        base, message: bb_core::types::AgentMessage::User(u), ..
+                    } = entry {
+                        let text: String = u.content.iter().filter_map(|b| match b {
+                            bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        }).collect::<Vec<_>>().join(" ");
+                        let text = text.trim().replace('\n', " ");
+                        if !text.is_empty() {
+                            user_msgs.push((base.id.0, text));
+                        }
+                    }
+                }
+            }
+        }
+
+        if user_msgs.is_empty() {
+            self.show_status("No messages to fork from");
+            return;
+        }
+
+        // Build session list items to reuse the session selector overlay.
+        let items: Vec<SessionListItem> = user_msgs.iter().enumerate().map(|(i, (id, text))| {
+            SessionListItem {
+                session_id: id.clone(), // reuse session_id field for entry_id
+                name: None,
+                cwd: String::new(),
+                updated_at: String::new(),
+                entry_count: (i + 1) as i64,
+                is_current: false,
+                first_message: text.clone(),
+                all_messages_text: text.clone(),
+            }
+        }).collect();
+
+        // We'll use a simple overlay — store the fork intent so process_overlay_actions
+        // knows to handle it as a fork rather than a resume.
+        self.interaction.pending_fork = true;
+        let overlay = Box::new(SessionSelectorOverlay::new(items));
+        self.ui.tui.show_overlay(overlay);
+        self.show_status("Select a user message to fork from");
+    }
+
+    pub(super) fn handle_fork_from_entry(&mut self, entry_id: &str) {
+        // Fork = move the leaf to the parent of the selected user message,
+        // so the next prompt creates a new branch.
+        // Also put the selected message text back in the editor.
+
+        // Get the entry to find parent and text.
+        let (parent_id, editor_text) = match store::get_entry(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            entry_id,
+        ) {
+            Ok(Some(row)) => {
+                let text = match store::parse_entry(&row) {
+                    Ok(bb_core::types::SessionEntry::Message {
+                        message: bb_core::types::AgentMessage::User(u), ..
+                    }) => u.content.iter().filter_map(|b| match b {
+                        bb_core::types::ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    }).collect::<Vec<_>>().join("\n"),
+                    _ => String::new(),
+                };
+                (row.parent_id, text)
+            }
+            _ => {
+                self.show_warning("Entry not found");
+                return;
+            }
+        };
+
+        // Set leaf to the parent of the user message (the branch point).
+        if let Err(e) = store::set_leaf(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            parent_id.as_deref(),
+        ) {
+            self.show_warning(format!("Failed to fork: {e}"));
+            return;
+        }
+
+        // Clear and re-render from the new position.
+        self.render_state_mut().chat_items.clear();
+        self.render_state_mut().pending_items.clear();
+        self.render_state_mut().streaming_component = None;
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+        self.streaming.is_streaming = false;
+
+        // Re-render from root to new leaf.
+        if let Ok(path) = bb_session::tree::active_path(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
+            for row in &path {
+                if let Ok(entry) = store::parse_entry(row) {
+                    match entry {
+                        bb_core::types::SessionEntry::Message { message, .. } => match message {
+                            bb_core::types::AgentMessage::User(u) => {
+                                let text: String = u.content.iter().filter_map(|b| match b {
+                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                }).collect::<Vec<_>>().join("\n");
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::User { text },
+                                );
+                            }
+                            bb_core::types::AgentMessage::Assistant(a) => {
+                                use super::super::components::assistant_message::{
+                                    AssistantMessage as AMsg, AssistantMessageContent,
+                                };
+                                let mut content = Vec::new();
+                                for c in &a.content {
+                                    match c {
+                                        bb_core::types::AssistantContent::Text { text } => {
+                                            content.push(AssistantMessageContent::Text(text.clone()));
+                                        }
+                                        bb_core::types::AssistantContent::Thinking { thinking } => {
+                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::Assistant {
+                                        message: msg, tool_calls: vec![],
+                                    },
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_footer();
+
+        // Put the user message text back in editor for editing.
+        if !editor_text.trim().is_empty() {
+            self.set_editor_text(&editor_text);
+        }
+
+        self.show_status("Forked — edit and send to create a new branch");
     }
 
     pub(super) fn show_tree_selector(&mut self) {
