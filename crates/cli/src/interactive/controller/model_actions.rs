@@ -90,12 +90,13 @@ impl InteractiveMode {
     }
 
     pub(super) fn process_overlay_actions(&mut self) {
-        let action = self
+        // Check model selector overlay
+        let model_action = self
             .ui.tui
             .topmost_overlay_as_mut::<ModelSelectorOverlay>()
             .and_then(|overlay| overlay.take_action());
 
-        match action {
+        match model_action {
             Some(ModelSelectorOverlayAction::Selected(selection)) => {
                 self.ui.tui.hide_overlay();
                 if let Some(model) = self
@@ -110,12 +111,51 @@ impl InteractiveMode {
                         selection.provider, selection.model_id
                     ));
                 }
+                return;
             }
             Some(ModelSelectorOverlayAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
                 self.show_status("Canceled model selector");
+                return;
             }
             None => {}
+        }
+
+        // Check auth selector overlay
+        let auth_action = self
+            .ui.tui
+            .topmost_overlay_as_mut::<AuthSelectorOverlay>()
+            .map(|overlay| overlay.action().clone());
+
+        match auth_action {
+            Some(AuthSelectorAction::Selected(provider)) => {
+                self.ui.tui.hide_overlay();
+                self.handle_auth_provider_selected(&provider);
+            }
+            Some(AuthSelectorAction::Cancelled) => {
+                self.ui.tui.hide_overlay();
+                self.show_status("Canceled");
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn show_auth_selector(&mut self, mode: AuthSelectorMode) {
+        let overlay = Box::new(AuthSelectorOverlay::new(mode));
+        self.ui.tui.show_overlay(overlay);
+        let label = match mode {
+            AuthSelectorMode::Login => "login",
+            AuthSelectorMode::Logout => "logout",
+        };
+        self.show_status(format!("Select provider to {label}"));
+    }
+
+    fn handle_auth_provider_selected(&mut self, provider: &str) {
+        let has_auth = crate::login::provider_has_auth(provider);
+        if has_auth {
+            self.show_status(format!("{provider}: already authenticated"));
+        } else {
+            self.show_status(format!("{provider}: use `bb login {provider}` from shell to add credentials"));
         }
     }
 }

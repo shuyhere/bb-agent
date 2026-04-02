@@ -74,11 +74,11 @@ impl InteractiveMode {
                     self.clear_editor();
                 }
                 SubmitAction::Login => {
-                    self.show_placeholder("oauth login selector");
+                    self.show_auth_selector(AuthSelectorMode::Login);
                     self.clear_editor();
                 }
                 SubmitAction::Logout => {
-                    self.show_placeholder("oauth logout selector");
+                    self.show_auth_selector(AuthSelectorMode::Logout);
                     self.clear_editor();
                 }
                 SubmitAction::New => {

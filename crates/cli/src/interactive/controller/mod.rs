@@ -5,6 +5,7 @@ use super::events::{
     assistant_message_from_parts,
 };
 use super::interactive_commands::SelectorKind;
+use super::auth_selector_overlay::{AuthSelectorAction, AuthSelectorMode, AuthSelectorOverlay};
 use super::model_selector_overlay::{ModelSelectorOverlay, ModelSelectorOverlayAction};
 use super::api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
 use super::state::{
