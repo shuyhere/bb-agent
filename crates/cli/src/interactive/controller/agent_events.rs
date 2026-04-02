@@ -59,7 +59,10 @@ impl InteractiveMode {
 
     pub(super) fn update_streaming_display(&mut self) {
         self.sync_streaming_assistant_component(None, None);
-        self.refresh_ui();
+        // Only rebuild chat (streaming content changed) + render.
+        // Skip footer/pending rebuild for streaming perf.
+        self.rebuild_chat_container();
+        self.ui.tui.render();
     }
 
     pub(super) fn finalize_streaming_assistant_message(
@@ -351,6 +354,8 @@ impl InteractiveMode {
                 self.refresh_ui();
             }
             AgentLoopEvent::TurnEnd { .. } => {
+                // Finalize the assistant message but keep the loader running.
+                // The loader stays until AssistantDone (matching pi's agent_end).
                 for component in self.render_state_mut().pending_tools.values_mut() {
                     component.set_args_complete();
                 }
@@ -368,7 +373,10 @@ impl InteractiveMode {
                     }
                 }
                 self.finalize_streaming_assistant_message(None, None);
-                self.refresh_ui();
+                // Don't clear is_streaming or status_loader here — tool execution follows.
+                self.rebuild_chat_container();
+                self.rebuild_footer();
+                self.render_editor_frame();
             }
             AgentLoopEvent::AssistantDone => {
                 self.streaming.is_streaming = false;
