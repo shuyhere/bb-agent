@@ -2,6 +2,18 @@ use super::*;
 
 impl InteractiveMode {
     pub(super) async fn handle_submitted_text(&mut self, text: String) -> InteractiveResult<SubmitOutcome> {
+        // If we're waiting for an API key, redirect the submit to the auth flow.
+        if self.streaming.pending_auth_provider.is_some() {
+            let key_text = text.trim().to_string();
+            if key_text.is_empty() || key_text == "/login" || key_text == "/logout" {
+                self.streaming.pending_auth_provider = None;
+                self.show_status("Login canceled.");
+            } else {
+                self.finish_auth_login(&key_text);
+            }
+            return Ok(SubmitOutcome::Handled);
+        }
+
         let text = text.trim().to_string();
         if text.is_empty() {
             return Ok(SubmitOutcome::Ignored);

@@ -7,7 +7,13 @@ impl InteractiveMode {
             self.ui.tui.hide_overlay();
             return;
         }
-        // Priority 2: abort loading animation
+        // Priority 2: cancel pending auth key entry
+        if self.streaming.pending_auth_provider.is_some() {
+            self.streaming.pending_auth_provider = None;
+            self.show_status("Login canceled.");
+            return;
+        }
+        // Priority 3: abort loading animation
         if self.streaming.status_loader.is_some() {
             self.streaming.status_loader = None;
             self.show_status("Aborted loading");

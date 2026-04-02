@@ -128,9 +128,13 @@ impl InteractiveMode {
             .map(|overlay| overlay.action().clone());
 
         match auth_action {
-            Some(AuthSelectorAction::Selected(provider)) => {
+            Some(AuthSelectorAction::Login(provider)) => {
                 self.ui.tui.hide_overlay();
-                self.handle_auth_provider_selected(&provider);
+                self.handle_auth_login(&provider);
+            }
+            Some(AuthSelectorAction::Logout(provider)) => {
+                self.ui.tui.hide_overlay();
+                self.handle_auth_logout(&provider);
             }
             Some(AuthSelectorAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
@@ -144,18 +148,91 @@ impl InteractiveMode {
         let overlay = Box::new(AuthSelectorOverlay::new(mode));
         self.ui.tui.show_overlay(overlay);
         let label = match mode {
-            AuthSelectorMode::Login => "login",
+            AuthSelectorMode::Login => "login / re-auth",
             AuthSelectorMode::Logout => "logout",
         };
         self.show_status(format!("Select provider to {label}"));
     }
 
-    fn handle_auth_provider_selected(&mut self, provider: &str) {
-        let has_auth = crate::login::provider_has_auth(provider);
-        if has_auth {
-            self.show_status(format!("{provider}: already authenticated"));
-        } else {
-            self.show_status(format!("{provider}: use `bb login {provider}` from shell to add credentials"));
+    fn handle_auth_login(&mut self, provider: &str) {
+        use crate::login::{auth_source, AuthSource};
+
+        // Put the editor into "api key input" mode.
+        // We stash the provider name and switch the submit route so that
+        // the next Enter delivers the text to save_api_key instead of
+        // sending it as a chat prompt.
+        let source = auth_source(provider);
+        let verb = if source.is_some() { "Re-auth" } else { "Login" };
+        let source_note = match source {
+            Some(s) => format!(" (current: via {})", s.label()),
+            None => String::new(),
+        };
+
+        // Show instructions in status and pre-fill editor hint
+        self.show_status(format!(
+            "{verb} {provider}{source_note} -- paste API key and press Enter (Esc to cancel)"
+        ));
+
+        // Store provider for the pending key entry
+        self.streaming.pending_auth_provider = Some(provider.to_string());
+    }
+
+    /// Called when user submits text while pending_auth_provider is set.
+    pub(super) fn finish_auth_login(&mut self, key_text: &str) {
+        let provider = match self.streaming.pending_auth_provider.take() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let key = key_text.trim();
+        if key.is_empty() {
+            self.show_status("No key entered, login canceled.");
+            return;
+        }
+
+        match crate::login::save_api_key(&provider, key) {
+            Ok(()) => {
+                self.show_status(format!("Saved API key for {provider}"));
+                // If this provider matches our current model's provider, update the live key
+                if self.session_setup.provider.name() == provider {
+                    self.session_setup.api_key = key.to_string();
+                }
+                self.rebuild_footer();
+            }
+            Err(e) => {
+                self.show_warning(format!("Failed to save key: {e}"));
+            }
+        }
+    }
+
+    fn handle_auth_logout(&mut self, provider: &str) {
+        match crate::login::remove_auth(provider) {
+            Ok(true) => {
+                self.show_status(format!("Logged out from {provider}"));
+                self.rebuild_footer();
+            }
+            Ok(false) => {
+                // Not in BB's store -- maybe it's from pi or env
+                let source = crate::login::auth_source(provider);
+                match source {
+                    Some(crate::login::AuthSource::PiAuth) => {
+                        self.show_warning(format!(
+                            "{provider}: credentials come from pi (~/.pi/agent/auth.json). Use `pi logout` to remove."
+                        ));
+                    }
+                    Some(crate::login::AuthSource::EnvVar) => {
+                        self.show_warning(format!(
+                            "{provider}: credentials come from environment variable. Unset it in your shell."
+                        ));
+                    }
+                    _ => {
+                        self.show_status(format!("{provider}: not logged in"));
+                    }
+                }
+            }
+            Err(e) => {
+                self.show_warning(format!("Logout failed: {e}"));
+            }
         }
     }
 }

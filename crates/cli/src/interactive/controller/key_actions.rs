@@ -21,7 +21,7 @@ impl InteractiveMode {
             let outcome = self.handle_submitted_text(text).await?;
             self.refresh_ui();
             return match outcome {
-                SubmitOutcome::Ignored => Ok(None),
+                SubmitOutcome::Ignored | SubmitOutcome::Handled => Ok(None),
                 SubmitOutcome::Submitted => Ok(Some(self.take_last_submitted_text())),
                 SubmitOutcome::Shutdown => Ok(None),
             };

@@ -246,6 +246,56 @@ fn get_provider_status(name: &str) -> &'static str {
     }
 }
 
+/// Where a credential comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    BbAuth,
+    PiAuth,
+    EnvVar,
+}
+
+impl AuthSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthSource::BbAuth => "bb",
+            AuthSource::PiAuth => "pi",
+            AuthSource::EnvVar => "env",
+        }
+    }
+}
+
+/// Resolve which source provides auth for a provider, if any.
+pub fn auth_source(provider: &str) -> Option<AuthSource> {
+    let store = load_auth();
+    if let Some(entry) = store.providers.get(provider) {
+        let has = match entry {
+            AuthEntry::ApiKey { key } => !key.trim().is_empty(),
+            AuthEntry::OAuth { access_token, .. } => !access_token.trim().is_empty(),
+        };
+        if has {
+            return Some(AuthSource::BbAuth);
+        }
+    }
+    if resolve_from_pi_auth(provider).is_some() {
+        return Some(AuthSource::PiAuth);
+    }
+    let env_keys: &[&str] = match provider {
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "openai" | "openai-codex" => &["OPENAI_API_KEY"],
+        "google" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "groq" => &["GROQ_API_KEY"],
+        "xai" => &["XAI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        _ => &[],
+    };
+    for key in env_keys {
+        if std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false) {
+            return Some(AuthSource::EnvVar);
+        }
+    }
+    None
+}
+
 /// Resolve API key for a provider: auth.json first, then env var.
 pub fn provider_has_auth(provider: &str) -> bool {
     resolve_api_key(provider)

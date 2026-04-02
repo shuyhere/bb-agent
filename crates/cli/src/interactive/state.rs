@@ -95,6 +95,7 @@ pub(super) struct SubmitRoute {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SubmitOutcome {
     Ignored,
+    Handled,
     Submitted,
     Shutdown,
 }

@@ -1,4 +1,4 @@
-use crate::login;
+use crate::login::{self, AuthSource};
 use bb_tui::component::{Component, Focusable};
 use bb_tui::utils::visible_width;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,7 +7,10 @@ use std::any::Any;
 /// Result from the auth selector overlay.
 #[derive(Debug, Clone)]
 pub enum AuthSelectorAction {
-    Selected(String), // provider name
+    /// User selected a provider to login/re-auth.
+    Login(String),
+    /// User selected a provider to logout / remove credentials.
+    Logout(String),
     Cancelled,
     Pending,
 }
@@ -31,7 +34,7 @@ pub struct AuthSelectorOverlay {
 struct ProviderEntry {
     name: String,
     display: String,
-    has_auth: bool,
+    source: Option<AuthSource>,
 }
 
 const PROVIDERS: &[(&str, &str)] = &[
@@ -47,13 +50,10 @@ impl AuthSelectorOverlay {
     pub fn new(mode: AuthSelectorMode) -> Self {
         let providers: Vec<ProviderEntry> = PROVIDERS
             .iter()
-            .map(|(id, display)| {
-                let has_auth = login::provider_has_auth(id);
-                ProviderEntry {
-                    name: id.to_string(),
-                    display: display.to_string(),
-                    has_auth,
-                }
+            .map(|(id, display)| ProviderEntry {
+                name: id.to_string(),
+                display: display.to_string(),
+                source: login::auth_source(id),
             })
             .collect();
 
@@ -76,62 +76,70 @@ impl Component for AuthSelectorOverlay {
         let w = width as usize;
         let mut lines = Vec::new();
 
-        // Border
         let border_color = "\x1b[38;2;178;148;187m";
         let reset = "\x1b[0m";
+        let dim = "\x1b[2m";
+        let bold = "\x1b[1m";
+        let green = "\x1b[32m";
+        let yellow = "\x1b[33m";
         let border = format!("{border_color}{}{reset}", "\u{2500}".repeat(w));
+
         lines.push(border.clone());
 
         // Title
         let title = match self.mode {
-            AuthSelectorMode::Login => "Select provider to login:",
+            AuthSelectorMode::Login => "Select provider to login / re-auth:",
             AuthSelectorMode::Logout => "Select provider to logout:",
         };
-        let title_line = format!("  \x1b[1m{title}\x1b[0m");
-        lines.push(title_line);
+        lines.push(format!("  {bold}{title}{reset}"));
         lines.push(String::new());
 
         // Provider list
-        if self.providers.is_empty() {
-            let msg = match self.mode {
-                AuthSelectorMode::Login => "  No providers available",
-                AuthSelectorMode::Logout => "  No providers logged in. Use /login first.",
+        for (i, entry) in self.providers.iter().enumerate() {
+            let is_selected = i == self.selected;
+
+            let status = match entry.source {
+                Some(src) => format!(
+                    " {green}[via {}]{reset}",
+                    src.label()
+                ),
+                None => format!(" {dim}[not authenticated]{reset}"),
             };
-            lines.push(format!("\x1b[2m{msg}\x1b[0m"));
-        } else {
-            for (i, entry) in self.providers.iter().enumerate() {
-                let is_selected = i == self.selected;
-                let status = if entry.has_auth {
-                    "\x1b[32m [authenticated]\x1b[0m"
-                } else {
-                    ""
-                };
 
-                let line = if is_selected {
-                    format!(
-                        "  {border_color}> \x1b[1m{}\x1b[0m{status}",
-                        entry.display
-                    )
-                } else {
-                    format!("    {}{status}", entry.display)
-                };
+            let reauth_hint = if is_selected && entry.source.is_some() && self.mode == AuthSelectorMode::Login {
+                format!("  {yellow}(Enter to re-auth){reset}")
+            } else {
+                String::new()
+            };
 
-                // Pad to width
-                let vis = visible_width(&line);
-                let pad = w.saturating_sub(vis);
-                lines.push(format!("{line}{}", " ".repeat(pad)));
-            }
+            let line = if is_selected {
+                format!(
+                    "  {border_color}>{reset} {bold}{}{reset}{status}{reauth_hint}",
+                    entry.display
+                )
+            } else {
+                format!("    {}{status}", entry.display)
+            };
+
+            let vis = visible_width(&line);
+            let pad = w.saturating_sub(vis);
+            lines.push(format!("{line}{}", " ".repeat(pad)));
         }
 
         lines.push(String::new());
 
-        // Hint
-        let hint = "\x1b[2m  Enter: select  Esc: cancel\x1b[0m";
-        lines.push(hint.to_string());
+        // Hints
+        let hint = match self.mode {
+            AuthSelectorMode::Login => {
+                format!("{dim}  Enter: login/re-auth  Esc: cancel{reset}")
+            }
+            AuthSelectorMode::Logout => {
+                format!("{dim}  Enter: logout  Esc: cancel{reset}")
+            }
+        };
+        lines.push(hint);
 
-        // Bottom border
         lines.push(border);
-
         lines
     }
 
@@ -149,7 +157,14 @@ impl Component for AuthSelectorOverlay {
             }
             (KeyCode::Enter, _) => {
                 if let Some(entry) = self.providers.get(self.selected) {
-                    self.action = AuthSelectorAction::Selected(entry.name.clone());
+                    self.action = match self.mode {
+                        AuthSelectorMode::Login => {
+                            AuthSelectorAction::Login(entry.name.clone())
+                        }
+                        AuthSelectorMode::Logout => {
+                            AuthSelectorAction::Logout(entry.name.clone())
+                        }
+                    };
                 }
             }
             (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {

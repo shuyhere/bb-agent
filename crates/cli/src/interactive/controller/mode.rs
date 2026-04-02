@@ -24,6 +24,8 @@ pub(super) struct StreamingState {
     pub(super) hidden_thinking_label: String,
     pub(super) default_working_message: &'static str,
     pub(super) default_hidden_thinking_label: &'static str,
+    /// When set, the next editor submit saves an API key instead of sending a prompt.
+    pub(super) pending_auth_provider: Option<String>,
 }
 
 pub(super) struct QueueState {
@@ -112,6 +114,7 @@ impl InteractiveMode {
                 streaming_text: String::new(),
                 streaming_thinking: String::new(),
                 streaming_tool_calls: Vec::new(),
+                pending_auth_provider: None,
             },
             queues: QueueState {
                 steering_queue: VecDeque::new(),
