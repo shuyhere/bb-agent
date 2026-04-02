@@ -138,7 +138,7 @@ impl InteractiveMode {
                         TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
                             self.ui.tui.handle_raw_input(&data);
                             self.sync_bash_mode_from_editor();
-                            self.refresh_ui();
+                            self.render_editor_frame();
                         }
                         TerminalEvent::Key(key) => {
                             if let Some(submitted) = self.handle_key_event(key).await? {

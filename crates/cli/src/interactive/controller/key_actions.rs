@@ -29,7 +29,8 @@ impl InteractiveMode {
 
         self.ui.tui.handle_key(&key);
         self.sync_bash_mode_from_editor();
-        self.refresh_ui();
+        // Lightweight render — only editor/status, skip full chat rebuild.
+        self.render_editor_frame();
         Ok(None)
     }
 
