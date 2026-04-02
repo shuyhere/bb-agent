@@ -9,10 +9,14 @@
 
 use crate::component::CURSOR_MARKER;
 use crate::terminal::Terminal;
+use crate::utils::visible_width;
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
+/// OSC 133;A — shell prompt marker re-used as a line-boundary reset.
+#[allow(dead_code)]
+const LINE_RESET_MARKER: &str = "\x1b]133;A\x07";
 
 pub struct Renderer {
     prev_lines: Vec<String>,
@@ -23,6 +27,11 @@ pub struct Renderer {
     /// Which scrollback row is at the top of the visible terminal.
     prev_viewport_top: usize,
     max_lines_rendered: usize,
+    /// When true, do a full clear+render when content shrinks (fewer lines
+    /// than the previous high-water mark).
+    pub clear_on_shrink: bool,
+    /// When true, show the terminal cursor and position it at CURSOR_MARKER.
+    pub show_hardware_cursor: bool,
 }
 
 impl Renderer {
@@ -34,7 +43,19 @@ impl Renderer {
             hw_cursor_row: 0,
             prev_viewport_top: 0,
             max_lines_rendered: 0,
+            clear_on_shrink: false,
+            show_hardware_cursor: false,
         }
+    }
+
+    /// Enable/disable clearing leftover rows when content shrinks.
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) {
+        self.clear_on_shrink = enabled;
+    }
+
+    /// Enable/disable hardware cursor positioning at CURSOR_MARKER.
+    pub fn set_show_hardware_cursor(&mut self, enabled: bool) {
+        self.show_hardware_cursor = enabled;
     }
 
     pub fn invalidate(&mut self) {
@@ -49,10 +70,26 @@ impl Renderer {
         let width_changed = self.prev_width != 0 && self.prev_width != width;
         let height_changed = self.prev_height != 0 && self.prev_height != height;
 
-        // Apply line resets
+        // Apply line resets (SEGMENT_RESET prevents colour bleed across lines)
+        let new_lines: Vec<String> = Self::apply_line_resets(new_lines);
+
+        // Width overflow protection — truncate lines exceeding terminal width
+        let width_usize = width as usize;
         let new_lines: Vec<String> = new_lines
-            .iter()
-            .map(|l| format!("{l}{SEGMENT_RESET}"))
+            .into_iter()
+            .map(|l| {
+                if visible_width(&l) > width_usize {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[renderer] line exceeds terminal width ({} > {}), truncating",
+                        visible_width(&l),
+                        width_usize
+                    );
+                    crate::utils::truncate_to_width(&l, width_usize)
+                } else {
+                    l
+                }
+            })
             .collect();
 
         // Extract cursor position
@@ -66,10 +103,15 @@ impl Renderer {
 
         // --- Full render cases ---
 
+        // clear_on_shrink: content shrunk below the high-water mark
+        let needs_shrink_clear = self.clear_on_shrink
+            && new_lines.len() < self.max_lines_rendered
+            && !self.prev_lines.is_empty();
+
         // First render
         if self.prev_lines.is_empty() && !width_changed && !height_changed {
             self.full_render(&new_lines, terminal, false);
-            self.position_cursor(cursor_pos, new_lines.len(), terminal);
+            self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
             return;
         }
@@ -77,7 +119,7 @@ impl Renderer {
         // Width changed
         if width_changed {
             self.full_render(&new_lines, terminal, true);
-            self.position_cursor(cursor_pos, new_lines.len(), terminal);
+            self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
             return;
         }
@@ -88,15 +130,32 @@ impl Renderer {
             let prev_buffer_len = self.prev_viewport_top + self.prev_height as usize;
             self.prev_viewport_top = prev_buffer_len.saturating_sub(height_usize);
             self.full_render(&new_lines, terminal, true);
-            self.position_cursor(cursor_pos, new_lines.len(), terminal);
+            self.position_hardware_cursor(cursor_pos, terminal);
+            self.save_state(&new_lines, width, height);
+            return;
+        }
+
+        // Content shrunk and clear_on_shrink is enabled
+        if needs_shrink_clear {
+            self.full_render(&new_lines, terminal, true);
+            self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
             return;
         }
 
         // --- Differential render ---
         self.diff_render(&new_lines, height_usize, terminal);
-        self.position_cursor(cursor_pos, new_lines.len(), terminal);
+        self.position_hardware_cursor(cursor_pos, terminal);
         self.save_state(&new_lines, width, height);
+    }
+
+    /// Append SEGMENT_RESET (ANSI reset + hyperlink close) to each line to
+    /// prevent colour/style bleed across line boundaries.
+    fn apply_line_resets(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| format!("{l}{SEGMENT_RESET}"))
+            .collect()
     }
 
     fn full_render(&mut self, lines: &[String], terminal: &mut dyn Terminal, clear: bool) {
@@ -251,10 +310,12 @@ impl Renderer {
         None
     }
 
-    fn position_cursor(
+    /// Position the hardware terminal cursor at the CURSOR_MARKER location.
+    /// When `show_hardware_cursor` is enabled (e.g. for IME support) the
+    /// blinking cursor is made visible; otherwise it is hidden.
+    fn position_hardware_cursor(
         &mut self,
         cursor_pos: Option<(usize, usize)>,
-        line_count: usize,
         terminal: &mut dyn Terminal,
     ) {
         if let Some((row, col)) = cursor_pos {
@@ -266,7 +327,11 @@ impl Renderer {
                 buf.push_str(&format!("\x1b[{}B", row - current));
             }
             buf.push_str(&format!("\r\x1b[{}C", col));
-            buf.push_str("\x1b[?25h"); // show cursor
+            if self.show_hardware_cursor {
+                buf.push_str("\x1b[?25h"); // show cursor for IME
+            } else {
+                buf.push_str("\x1b[?25l"); // keep cursor hidden
+            }
             terminal.write(&buf);
             self.hw_cursor_row = row;
         } else {

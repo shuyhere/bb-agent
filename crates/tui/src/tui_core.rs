@@ -9,6 +9,40 @@ use crate::terminal::{ProcessTerminal, Terminal, TerminalEvent};
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
+/// Result of an input listener intercepting input.
+pub enum InputResult {
+    /// Input was consumed; stop propagation.
+    Consumed,
+    /// Input was transformed; continue with the new value.
+    Transformed(String),
+    /// Input was not handled; continue with original value.
+    Ignored,
+}
+
+/// How an overlay is anchored on screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlayAnchor {
+    /// Overlay replaces the bottom N lines of base content (current behaviour).
+    #[default]
+    Bottom,
+    /// Overlay is centred vertically in the terminal.
+    Center,
+}
+
+/// Options controlling overlay presentation.
+#[derive(Clone, Debug)]
+pub struct OverlayOptions {
+    pub anchor: OverlayAnchor,
+}
+
+impl Default for OverlayOptions {
+    fn default() -> Self {
+        Self {
+            anchor: OverlayAnchor::Bottom,
+        }
+    }
+}
+
 /// An overlay entry on the overlay stack.
 pub struct OverlayEntry {
     /// The overlay component.
@@ -17,6 +51,8 @@ pub struct OverlayEntry {
     pub pre_focus: Option<usize>,
     /// Whether this overlay is temporarily hidden.
     pub hidden: bool,
+    /// Positioning options for this overlay.
+    pub options: OverlayOptions,
 }
 
 /// The main TUI engine. Holds the component tree and renders differentially.
@@ -30,6 +66,10 @@ pub struct TUI {
     stopped: bool,
     /// Stack of overlay components composited on top of base content.
     overlay_stack: Vec<OverlayEntry>,
+    /// Render-batching flag: set by `request_render()`, cleared by `flush_render()`.
+    render_requested: bool,
+    /// Input middleware — listeners run before input reaches the focused component.
+    input_listeners: Vec<Box<dyn Fn(&str) -> InputResult + Send>>,
 }
 
 impl TUI {
@@ -41,6 +81,8 @@ impl TUI {
             focus_index: None,
             stopped: false,
             overlay_stack: Vec::new(),
+            render_requested: false,
+            input_listeners: Vec::new(),
         }
     }
 
@@ -68,15 +110,32 @@ impl TUI {
         self.terminal.stop();
     }
 
+    /// Mark that a render is needed. Call `flush_render()` to actually render.
+    /// This prevents redundant renders when multiple state changes occur in a
+    /// single event handler.
+    pub fn request_render(&mut self) {
+        self.render_requested = true;
+    }
+
+    /// If a render was requested, perform it and clear the flag.
+    pub fn flush_render(&mut self) {
+        if self.render_requested {
+            self.render_requested = false;
+            self.render();
+        }
+    }
+
     /// Render the component tree to the terminal, compositing visible overlays on top.
     pub fn render(&mut self) {
         if self.stopped {
             return;
         }
+        self.render_requested = false;
         let width = self.terminal.columns();
+        let height = self.terminal.rows();
         let mut lines = self.root.render(width);
 
-        // Composite visible overlays on top (bottom-anchored)
+        // Composite visible overlays on top
         for entry in &self.overlay_stack {
             if entry.hidden {
                 continue;
@@ -86,15 +145,38 @@ impl TUI {
             if overlay_len == 0 {
                 continue;
             }
-            // Ensure base has enough lines for overlay to replace
-            while lines.len() < overlay_len {
-                lines.push(String::new());
-            }
-            // Replace the bottom N lines of output with overlay lines
-            let base_len = lines.len();
-            let start = base_len - overlay_len;
-            for (i, overlay_line) in overlay_lines.into_iter().enumerate() {
-                lines[start + i] = overlay_line;
+
+            match entry.options.anchor {
+                OverlayAnchor::Bottom => {
+                    // Ensure base has enough lines for overlay to replace
+                    while lines.len() < overlay_len {
+                        lines.push(String::new());
+                    }
+                    // Replace the bottom N lines of output with overlay lines
+                    let base_len = lines.len();
+                    let start = base_len - overlay_len;
+                    for (i, overlay_line) in overlay_lines.into_iter().enumerate() {
+                        lines[start + i] = overlay_line;
+                    }
+                }
+                OverlayAnchor::Center => {
+                    let h = height as usize;
+                    // Ensure base has at least `h` lines so centering maths work
+                    while lines.len() < h {
+                        lines.push(String::new());
+                    }
+                    let start = if h > overlay_len {
+                        (h - overlay_len) / 2
+                    } else {
+                        0
+                    };
+                    for (i, overlay_line) in overlay_lines.into_iter().enumerate() {
+                        let idx = start + i;
+                        if idx < lines.len() {
+                            lines[idx] = overlay_line;
+                        }
+                    }
+                }
             }
         }
 
@@ -117,15 +199,26 @@ impl TUI {
         self.focus_index
     }
 
-    /// Show an overlay component, pushing it onto the overlay stack.
-    /// Focus switches to the overlay. Returns the overlay's handle ID (stack index at push time).
+    /// Show an overlay component with default (Bottom) anchor.
+    /// Focus switches to the overlay. Returns the overlay's handle ID.
     pub fn show_overlay(&mut self, component: Box<dyn Component>) -> usize {
+        self.show_overlay_with(component, OverlayOptions::default())
+    }
+
+    /// Show an overlay component with explicit positioning options.
+    /// Focus switches to the overlay. Returns the overlay's handle ID (stack index at push time).
+    pub fn show_overlay_with(
+        &mut self,
+        component: Box<dyn Component>,
+        options: OverlayOptions,
+    ) -> usize {
         let pre_focus = self.focus_index;
         let id = self.overlay_stack.len();
         self.overlay_stack.push(OverlayEntry {
             component,
             pre_focus,
             hidden: false,
+            options,
         });
         // Focus is now on the overlay (set focus_index to None to indicate overlay has focus)
         self.focus_index = None;
@@ -161,8 +254,24 @@ impl TUI {
         }
     }
 
+    /// Add an input listener that can intercept/transform input before it
+    /// reaches the focused component.
+    pub fn add_input_listener(&mut self, listener: Box<dyn Fn(&str) -> InputResult + Send>) {
+        self.input_listeners.push(listener);
+    }
+
     /// Dispatch a key event to the focused component (overlay or root child).
+    /// Input listeners run first; if any returns `Consumed` dispatch is skipped.
     pub fn handle_key(&mut self, key: &KeyEvent) {
+        // Run input listeners with a descriptive key string
+        let key_str = format!("{key:?}");
+        for listener in &self.input_listeners {
+            match listener(&key_str) {
+                InputResult::Consumed => return,
+                InputResult::Transformed(_) | InputResult::Ignored => {}
+            }
+        }
+
         // If there's a visible overlay on top, send input to it
         if let Some(entry) = self.topmost_visible_overlay_mut() {
             entry.component.handle_input(key);
@@ -177,15 +286,25 @@ impl TUI {
     }
 
     /// Dispatch raw input (e.g. paste) to the focused component.
+    /// Input listeners run first and may consume or transform the input.
     pub fn handle_raw_input(&mut self, data: &str) {
+        let mut current = data.to_string();
+        for listener in &self.input_listeners {
+            match listener(&current) {
+                InputResult::Consumed => return,
+                InputResult::Transformed(new) => current = new,
+                InputResult::Ignored => {}
+            }
+        }
+
         // If there's a visible overlay on top, send input to it
         if let Some(entry) = self.topmost_visible_overlay_mut() {
-            entry.component.handle_raw_input(data);
+            entry.component.handle_raw_input(&current);
             return;
         }
         if let Some(idx) = self.focus_index {
             if let Some(child) = self.root.children.get_mut(idx) {
-                child.handle_raw_input(data);
+                child.handle_raw_input(&current);
             }
         }
     }
