@@ -10,4 +10,4 @@ pub mod agent_session_extensions;
 pub mod session;
 pub mod settings;
 
-pub use agent_session::*;
+// agent_session types are accessed via bb_core::agent_session::
