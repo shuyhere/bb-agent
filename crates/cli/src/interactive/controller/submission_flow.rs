@@ -205,8 +205,10 @@ impl InteractiveMode {
             .add_message_to_chat(InteractiveMessage::User {
                 text: user_input.clone(),
             });
-        // Render now so user sees their message before streaming starts
-        self.refresh_ui();
+        // Render now so user sees their message before streaming starts.
+        // Only rebuild chat (we just added a message) — skip pending/status/footer.
+        self.rebuild_chat_container();
+        self.ui.tui.render();
 
         // Check if we have credentials before starting.
         if self.session_setup.api_key.trim().is_empty() {

@@ -73,25 +73,30 @@ impl InteractiveMode {
     pub(super) fn chat_render_lines(&self) -> Vec<String> {
         let width = self.ui.tui.columns();
         let items = &self.render_state().chat_items;
-
-        // Optimization: only re-render the last few items if total is large.
-        // Completed items don't change, so we can cache their output.
         let cached_count = self.render_cache.cached_chat_line_count;
         let cached_width = self.render_cache.cached_chat_width;
-
-        let mut lines = if cached_count > 0
+        let cache_valid = cached_count > 0
             && cached_count <= items.len()
             && cached_width == width
-            && !self.render_cache.cached_chat_lines_prefix.is_empty()
-        {
-            // Reuse cached prefix, only re-render items from cached_count onward
-            let mut prefix = self.render_cache.cached_chat_lines_prefix.clone();
-            let tail = &items[cached_count..];
-            prefix.extend(Self::render_items_to_lines(tail, width));
-            prefix
+            && !self.render_cache.cached_chat_lines_prefix.is_empty();
+
+        let total_capacity = if cache_valid {
+            self.render_cache.cached_chat_lines_prefix.len() + 50
         } else {
-            Self::render_items_to_lines(items, width)
+            items.len() * 5
         };
+        let mut lines = Vec::with_capacity(total_capacity);
+
+        if cache_valid {
+            // Copy cached prefix and only re-render new/streaming items.
+            lines.extend_from_slice(&self.render_cache.cached_chat_lines_prefix);
+            let tail = &items[cached_count..];
+            if !tail.is_empty() {
+                lines.extend(Self::render_items_to_lines(tail, width));
+            }
+        } else {
+            lines.extend(Self::render_items_to_lines(items, width));
+        }
 
         for line in &self.render_cache.chat_lines {
             lines.extend(word_wrap(line, width.max(1) as usize));
