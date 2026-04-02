@@ -22,7 +22,7 @@ impl InteractiveMode {
         }
 
         let text = text.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() || text == "/" {
             return Ok(SubmitOutcome::Ignored);
         }
 
@@ -276,6 +276,7 @@ impl InteractiveMode {
         self.run_streaming_turn_loop().await?;
 
         self.streaming.pending_working_message = None;
+        self.clear_status();
         self.rebuild_footer();
         self.refresh_ui();
         Ok(())
