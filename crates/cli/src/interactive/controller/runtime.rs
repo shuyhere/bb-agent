@@ -9,37 +9,37 @@ impl InteractiveMode {
     }
 
     pub async fn init(&mut self) -> InteractiveResult<()> {
-        if self.is_initialized {
+        if self.interaction.is_initialized {
             return Ok(());
         }
 
         self.changelog_markdown = self.get_changelog_for_display();
 
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.header_container.clone(),
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.header_container.clone(),
         )));
-        self.ui
+        self.ui.tui
             .root
-            .add(Box::new(SharedContainer::new(self.chat_container.clone())));
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.pending_messages_container.clone(),
+            .add(Box::new(SharedContainer::new(self.ui.chat_container.clone())));
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.pending_messages_container.clone(),
         )));
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.status_container.clone(),
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.status_container.clone(),
         )));
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.widget_container_above.clone(),
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.widget_container_above.clone(),
         )));
-        self.ui
+        self.ui.tui
             .root
-            .add(Box::new(SharedEditorWrapper::new(self.editor.clone())));
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.widget_container_below.clone(),
+            .add(Box::new(SharedEditorWrapper::new(self.ui.editor.clone())));
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.widget_container_below.clone(),
         )));
-        self.ui.root.add(Box::new(SharedContainer::new(
-            self.footer_container.clone(),
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.footer_container.clone(),
         )));
-        self.ui.set_focus(Some(5));
+        self.ui.tui.set_focus(Some(5));
 
         self.rebuild_header();
         self.render_widgets();
@@ -49,8 +49,8 @@ impl InteractiveMode {
         self.setup_key_handlers();
         self.setup_editor_submit_handler();
 
-        self.events = Some(self.ui.start());
-        self.is_initialized = true;
+        self.events = Some(self.ui.tui.start());
+        self.interaction.is_initialized = true;
 
         self.bind_current_session_extensions().await?;
         self.render_initial_messages();
@@ -86,7 +86,7 @@ impl InteractiveMode {
             self.drain_queued_messages().await?;
         }
 
-        while !self.shutdown_requested {
+        while !self.interaction.shutdown_requested {
             let Some(user_input) = self.get_user_input().await? else {
                 break;
             };
@@ -105,7 +105,7 @@ impl InteractiveMode {
 
     pub(super) async fn get_user_input(&mut self) -> InteractiveResult<Option<String>> {
         loop {
-            if self.shutdown_requested {
+            if self.interaction.shutdown_requested {
                 return Ok(None);
             }
 
@@ -118,16 +118,16 @@ impl InteractiveMode {
                     }
                 } => {
                     let Some(event) = terminal_event else {
-                        self.shutdown_requested = true;
+                        self.interaction.shutdown_requested = true;
                         return Ok(None);
                     };
 
                     match event {
                         TerminalEvent::Resize(_, _) => {
-                            self.ui.force_render();
+                            self.ui.tui.force_render();
                         }
                         TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
-                            self.ui.handle_raw_input(&data);
+                            self.ui.tui.handle_raw_input(&data);
                             self.sync_bash_mode_from_editor();
                             self.refresh_ui();
                         }
@@ -385,7 +385,7 @@ impl InteractiveMode {
             turn_index += 1;
         }
 
-        self.is_streaming = false;
+        self.streaming.is_streaming = false;
         Ok(())
     }
 }

@@ -3,25 +3,25 @@ use super::*;
 impl InteractiveMode {
     pub(super) fn handle_escape(&mut self) {
         // Priority 1: dismiss overlay
-        if self.ui.has_overlay() {
-            self.ui.hide_overlay();
+        if self.ui.tui.has_overlay() {
+            self.ui.tui.hide_overlay();
             return;
         }
         // Priority 2: abort loading animation
-        if self.status_loader.is_some() {
-            self.status_loader = None;
+        if self.streaming.status_loader.is_some() {
+            self.streaming.status_loader = None;
             self.show_status("Aborted loading");
             return;
         }
         // Priority 3: cancel bash run
-        if self.is_bash_running {
-            self.is_bash_running = false;
+        if self.interaction.is_bash_running {
+            self.interaction.is_bash_running = false;
             self.show_warning("Canceled bash placeholder run");
             return;
         }
         // Priority 4: exit bash mode
         if self
-            .is_bash_mode
+            .interaction.is_bash_mode
             .lock()
             .map(|value| *value)
             .unwrap_or(false)
@@ -32,8 +32,8 @@ impl InteractiveMode {
             return;
         }
         // Priority 5: abort streaming
-        if self.is_streaming {
-            self.is_streaming = false;
+        if self.streaming.is_streaming {
+            self.streaming.is_streaming = false;
             self.show_warning("Aborted");
             return;
         }
@@ -46,42 +46,42 @@ impl InteractiveMode {
         // Priority 7: double-escape -> tree selector
         let now = Instant::now();
         let activate = self
-            .last_escape_time
+            .interaction.last_escape_time
             .map(|last| now.saturating_duration_since(last) < Duration::from_millis(500))
             .unwrap_or(false);
         if activate {
             self.show_tree_selector();
-            self.last_escape_time = None;
+            self.interaction.last_escape_time = None;
         } else {
-            self.last_escape_time = Some(now);
+            self.interaction.last_escape_time = Some(now);
         }
     }
 
     pub(super) fn handle_ctrl_c(&mut self) {
         // If streaming, abort and show "Aborted"
-        if self.is_streaming {
-            self.is_streaming = false;
+        if self.streaming.is_streaming {
+            self.streaming.is_streaming = false;
             self.show_warning("Aborted");
-            self.last_sigint_time = Some(Instant::now());
+            self.interaction.last_sigint_time = Some(Instant::now());
             return;
         }
         // If editor has text, clear it
         if !self.editor_text().trim().is_empty() {
             self.clear_editor();
             self.show_status("Editor cleared");
-            self.last_sigint_time = Some(Instant::now());
+            self.interaction.last_sigint_time = Some(Instant::now());
             return;
         }
         // Double Ctrl-C -> shutdown
         let now = Instant::now();
         let is_double = self
-            .last_sigint_time
+            .interaction.last_sigint_time
             .map(|last| now.saturating_duration_since(last) < Duration::from_millis(500))
             .unwrap_or(false);
-        self.last_sigint_time = Some(now);
+        self.interaction.last_sigint_time = Some(now);
 
         if is_double {
-            self.shutdown_requested = true;
+            self.interaction.shutdown_requested = true;
             self.show_warning("Exiting interactive mode");
         } else {
             self.show_status("Interrupt requested. Press Ctrl-C again to exit.");
@@ -90,7 +90,7 @@ impl InteractiveMode {
 
     pub(super) fn handle_ctrl_d(&mut self) {
         if self.editor_text().trim().is_empty() {
-            self.shutdown_requested = true;
+            self.interaction.shutdown_requested = true;
             self.show_status("EOF received on empty editor; shutting down");
         }
     }
@@ -152,8 +152,8 @@ impl InteractiveMode {
     }
 
     pub(super) fn toggle_tool_output_expansion(&mut self) {
-        self.tool_output_expanded = !self.tool_output_expanded;
-        let state_label = if self.tool_output_expanded {
+        self.interaction.tool_output_expanded = !self.interaction.tool_output_expanded;
+        let state_label = if self.interaction.tool_output_expanded {
             "enabled"
         } else {
             "collapsed"
@@ -165,16 +165,16 @@ impl InteractiveMode {
     }
 
     pub(super) fn toggle_thinking_block_visibility(&mut self) {
-        self.hide_thinking_block = !self.hide_thinking_block;
-        let state_label = if self.hide_thinking_block {
+        self.streaming.hide_thinking_block = !self.streaming.hide_thinking_block;
+        let state_label = if self.streaming.hide_thinking_block {
             "hidden"
         } else {
             "expanded"
         };
         self.show_status(format!("thinking block {state_label}"));
 
-        let hide_thinking_block = self.hide_thinking_block;
-        let hidden_thinking_label = self.hidden_thinking_label.clone();
+        let hide_thinking_block = self.streaming.hide_thinking_block;
+        let hidden_thinking_label = self.streaming.hidden_thinking_label.clone();
         for item in &mut self.render_state_mut().chat_items {
             if let ChatItem::AssistantMessage(component) = item {
                 component.set_hide_thinking_block(hide_thinking_block);
@@ -198,17 +198,17 @@ impl InteractiveMode {
         }
         self.push_editor_history(&text);
         self.clear_editor();
-        self.follow_up_queue.push_back(text);
+        self.queues.follow_up_queue.push_back(text);
         self.sync_pending_render_state();
         self.show_status("Queued follow-up message");
     }
 
     pub(super) fn handle_dequeue(&mut self) {
         // Pop from follow-up queue first, then steering queue
-        let popped = if let Some(text) = self.follow_up_queue.pop_back() {
+        let popped = if let Some(text) = self.queues.follow_up_queue.pop_back() {
             Some(text)
         } else {
-            self.steering_queue.pop_back()
+            self.queues.steering_queue.pop_back()
         };
         if let Some(text) = popped {
             let current = self.editor_text();

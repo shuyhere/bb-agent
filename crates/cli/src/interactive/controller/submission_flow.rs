@@ -130,7 +130,7 @@ impl InteractiveMode {
                 text[1..].trim()
             };
             if !command.is_empty() {
-                if self.is_bash_running {
+                if self.interaction.is_bash_running {
                     self.show_warning(
                         "A bash command is already running. Press Esc to cancel it first.",
                     );
@@ -145,21 +145,21 @@ impl InteractiveMode {
             }
         }
 
-        if self.is_compacting {
+        if self.interaction.is_compacting {
             if self.is_extension_command(&text) {
                 self.push_editor_history(&text);
                 self.clear_editor();
-                self.chat_lines.push(format!("extension> {text}"));
+                self.render_cache.chat_lines.push(format!("extension> {text}"));
             } else {
                 self.queue_compaction_message(text, QueuedMessageKind::Steer);
             }
             return Ok(SubmitOutcome::Ignored);
         }
 
-        if self.is_streaming {
+        if self.streaming.is_streaming {
             self.push_editor_history(&text);
             self.clear_editor();
-            self.steering_queue.push_back(text);
+            self.queues.steering_queue.push_back(text);
             self.sync_pending_render_state();
             return Ok(SubmitOutcome::Ignored);
         }
@@ -170,7 +170,7 @@ impl InteractiveMode {
         }
         self.push_editor_history(&text);
         self.clear_editor();
-        self.pending_working_message = Some(text);
+        self.streaming.pending_working_message = Some(text);
         Ok(SubmitOutcome::Submitted)
     }
 
@@ -190,10 +190,10 @@ impl InteractiveMode {
         self.refresh_ui();
 
         // Reset streaming accumulators
-        self.streaming_text.clear();
-        self.streaming_thinking.clear();
-        self.streaming_tool_calls.clear();
-        self.is_streaming = true;
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+        self.streaming.is_streaming = true;
 
         // Append user message to session DB
         {
@@ -220,7 +220,7 @@ impl InteractiveMode {
         // Run the streaming turn loop
         self.run_streaming_turn_loop().await?;
 
-        self.pending_working_message = None;
+        self.streaming.pending_working_message = None;
         self.rebuild_footer();
         self.refresh_ui();
         Ok(())
@@ -229,20 +229,20 @@ impl InteractiveMode {
     /// Drain steering queue first, then follow-up queue, dispatching each as a new prompt.
     pub(super) async fn drain_queued_messages(&mut self) -> InteractiveResult<()> {
         // First drain all steering messages
-        while let Some(text) = self.steering_queue.pop_front() {
+        while let Some(text) = self.queues.steering_queue.pop_front() {
             self.sync_pending_render_state();
             self.refresh_ui();
             self.dispatch_prompt(text).await?;
-            if self.shutdown_requested {
+            if self.interaction.shutdown_requested {
                 return Ok(());
             }
         }
         // Then drain all follow-up messages
-        while let Some(text) = self.follow_up_queue.pop_front() {
+        while let Some(text) = self.queues.follow_up_queue.pop_front() {
             self.sync_pending_render_state();
             self.refresh_ui();
             self.dispatch_prompt(text).await?;
-            if self.shutdown_requested {
+            if self.interaction.shutdown_requested {
                 return Ok(());
             }
         }

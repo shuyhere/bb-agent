@@ -36,11 +36,11 @@ impl InteractiveMode {
         let session_id = &self.session_setup.session_id;
         let model = self.options.model_display.as_deref().unwrap_or("unknown");
         let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
-        let msg_count = self.chat_lines.len() + self.render_state().chat_items.len();
-        self.chat_lines.push(format!("Session ID:   {session_id}"));
-        self.chat_lines.push(format!("Model:        {model}"));
-        self.chat_lines.push(format!("Working dir:  {cwd}"));
-        self.chat_lines.push(format!("Messages:     {msg_count}"));
+        let msg_count = self.render_cache.chat_lines.len() + self.render_state().chat_items.len();
+        self.render_cache.chat_lines.push(format!("Session ID:   {session_id}"));
+        self.render_cache.chat_lines.push(format!("Model:        {model}"));
+        self.render_cache.chat_lines.push(format!("Working dir:  {cwd}"));
+        self.render_cache.chat_lines.push(format!("Messages:     {msg_count}"));
     }
 
     pub(super) fn handle_changelog_command(&mut self) {
@@ -65,7 +65,7 @@ impl InteractiveMode {
             "  Esc         - Cancel / back",
         ];
         for line in hotkeys {
-            self.chat_lines.push(line.to_string());
+            self.render_cache.chat_lines.push(line.to_string());
         }
     }
 
@@ -84,11 +84,11 @@ impl InteractiveMode {
 
     pub(super) fn handle_clear_command(&mut self) {
         let _ = self.controller.runtime_host.session_mut().clear_queue();
-        self.chat_lines.clear();
-        self.pending_lines.clear();
-        self.steering_queue.clear();
-        self.follow_up_queue.clear();
-        self.compaction_queued_messages.clear();
+        self.render_cache.chat_lines.clear();
+        self.render_cache.pending_lines.clear();
+        self.queues.steering_queue.clear();
+        self.queues.follow_up_queue.clear();
+        self.queues.compaction_queued_messages.clear();
         self.render_state_mut().chat_items.clear();
         self.render_state_mut().pending_items.clear();
         self.show_status("Started a fresh interactive session shell around the core session");
@@ -101,9 +101,9 @@ impl InteractiveMode {
                 self.session_setup.session_id = new_id.clone();
                 self.options.session_id = Some(new_id.clone());
                 let _ = self.controller.runtime_host.session_mut().clear_queue();
-                self.chat_lines.clear();
-                self.pending_lines.clear();
-                self.compaction_queued_messages.clear();
+                self.render_cache.chat_lines.clear();
+                self.render_cache.pending_lines.clear();
+                self.queues.compaction_queued_messages.clear();
                 self.render_state_mut().chat_items.clear();
                 self.render_state_mut().pending_items.clear();
                 self.show_status(format!("New session created: {new_id}"));
@@ -136,7 +136,7 @@ impl InteractiveMode {
             "  !!<cmd>      - Execute bash (excluded from context)",
         ];
         for line in commands {
-            self.chat_lines.push(line.to_string());
+            self.render_cache.chat_lines.push(line.to_string());
         }
     }
 
@@ -147,12 +147,12 @@ impl InteractiveMode {
             let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
             let window = self.session_setup.model.context_window;
             if compaction::should_compact(total_tokens, window, &settings) {
-                self.chat_lines.push(format!(
+                self.render_cache.chat_lines.push(format!(
                     "[c] Auto-compaction triggered ({total_tokens} tokens, window {window})"
                 ));
                 // Prepare and note - full async LLM summarization deferred to future wave
                 if let Some(prep) = compaction::prepare_compaction(&entries, &settings) {
-                    self.chat_lines.push(format!(
+                    self.render_cache.chat_lines.push(format!(
                         "[c] {} messages to summarize, {} kept",
                         prep.messages_to_summarize.len(),
                         prep.kept_messages.len()
@@ -163,7 +163,7 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_compact_command(&mut self, instructions: Option<&str>) {
-        self.is_compacting = true;
+        self.interaction.is_compacting = true;
         let session_id = self.session_setup.session_id.clone();
         match store::get_entries(&self.session_setup.conn, &session_id) {
             Ok(entries) => {
@@ -173,11 +173,11 @@ impl InteractiveMode {
                     Some(prep) => {
                         let to_summarize = prep.messages_to_summarize.len();
                         let kept = prep.kept_messages.len();
-                        self.chat_lines.push(format!(
+                        self.render_cache.chat_lines.push(format!(
                             "Compaction: {total_tokens} estimated tokens, {to_summarize} messages to summarize, {kept} kept"
                         ));
                         if let Some(inst) = instructions {
-                            self.chat_lines.push(format!("Instructions: {inst}"));
+                            self.render_cache.chat_lines.push(format!("Instructions: {inst}"));
                         }
                         self.show_status("Compaction prepared (async LLM summarization not wired in interactive mode yet)");
                     }
@@ -190,7 +190,7 @@ impl InteractiveMode {
                 self.show_status(format!("Failed to get entries for compaction: {e}"));
             }
         }
-        self.is_compacting = false;
+        self.interaction.is_compacting = false;
     }
 
     pub(super) fn handle_reload_command(&mut self) {
@@ -218,13 +218,13 @@ impl InteractiveMode {
     }
 
     pub(super) fn shutdown(&mut self) {
-        self.shutdown_requested = true;
+        self.interaction.shutdown_requested = true;
         self.show_status("Shutdown requested");
     }
 
     pub(super) fn handle_bash_command(&mut self, command: &str, excluded_from_context: bool) {
         let label = if excluded_from_context { "bash(excluded)" } else { "bash" };
-        self.chat_lines.push(format!("{label}> {command}"));
+        self.render_cache.chat_lines.push(format!("{label}> {command}"));
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command)
@@ -236,27 +236,27 @@ impl InteractiveMode {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 if !stdout.is_empty() {
                     for line in stdout.lines() {
-                        self.chat_lines.push(line.to_string());
+                        self.render_cache.chat_lines.push(line.to_string());
                     }
                 }
                 if !stderr.is_empty() {
                     for line in stderr.lines() {
-                        self.chat_lines.push(format!("stderr: {line}"));
+                        self.render_cache.chat_lines.push(format!("stderr: {line}"));
                     }
                 }
                 if !out.status.success() {
-                    self.chat_lines.push(format!("exit code: {}", out.status.code().unwrap_or(-1)));
+                    self.render_cache.chat_lines.push(format!("exit code: {}", out.status.code().unwrap_or(-1)));
                 }
             }
             Err(e) => {
-                self.chat_lines.push(format!("Failed to execute command: {e}"));
+                self.render_cache.chat_lines.push(format!("Failed to execute command: {e}"));
             }
         }
     }
 
     pub(super) fn flush_pending_bash_components(&mut self) {
-        while let Some(line) = self.pending_bash_components.pop_front() {
-            self.chat_lines.push(line);
+        while let Some(line) = self.queues.pending_bash_components.pop_front() {
+            self.render_cache.chat_lines.push(line);
         }
     }
 
@@ -265,7 +265,7 @@ impl InteractiveMode {
     }
 
     pub(super) fn queue_compaction_message(&mut self, text: String, kind: QueuedMessageKind) {
-        self.compaction_queued_messages
+        self.queues.compaction_queued_messages
             .push_back(QueuedMessage { text, kind });
         self.show_status("Queued message while compaction is active");
     }
@@ -300,7 +300,7 @@ impl InteractiveMode {
             current_model,
             initial_search.map(|s| s.to_string()),
         ));
-        self.ui.show_overlay(component);
+        self.ui.tui.show_overlay(component);
         self.show_status("Opened model selector");
     }
 

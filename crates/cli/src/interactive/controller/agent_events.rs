@@ -7,13 +7,13 @@ impl InteractiveMode {
         error_message: Option<String>,
     ) -> components::assistant_message::AssistantMessage {
         let mut message = assistant_message_from_parts(
-            &self.streaming_text,
-            if self.streaming_thinking.is_empty() {
+            &self.streaming.streaming_text,
+            if self.streaming.streaming_thinking.is_empty() {
                 None
             } else {
-                Some(self.streaming_thinking.clone())
+                Some(self.streaming.streaming_thinking.clone())
             },
-            !self.streaming_tool_calls.is_empty(),
+            !self.streaming.streaming_tool_calls.is_empty(),
         );
         message.stop_reason = stop_reason.or(Some(components::assistant_message::AssistantStopReason::Other));
         message.error_message = error_message;
@@ -27,8 +27,8 @@ impl InteractiveMode {
     ) {
         let message = self.make_streaming_assistant_message(stop_reason, error_message);
         if self.render_state().streaming_component.is_none() {
-            let hide = self.hide_thinking_block;
-            let label = self.hidden_thinking_label.clone();
+            let hide = self.streaming.hide_thinking_block;
+            let label = self.streaming.hidden_thinking_label.clone();
             let mut comp = components::assistant_message::AssistantMessageComponent::new(
                 Some(message.clone()),
                 hide,
@@ -89,7 +89,7 @@ impl InteractiveMode {
     /// terminal events (keyboard input) and agent events (streaming text,
     /// tool calls, done signals).
     pub(super) async fn process_agent_events_until_done(&mut self) -> InteractiveResult<()> {
-        while self.is_streaming {
+        while self.streaming.is_streaming {
             let terminal_events = self.events.as_mut();
             let agent_events = self.agent_events.as_mut();
             let spinner_tick = tokio::time::sleep(Duration::from_millis(80));
@@ -105,10 +105,10 @@ impl InteractiveMode {
                 } => {
                     match event {
                         TerminalEvent::Resize(_, _) => {
-                            self.ui.force_render();
+                            self.ui.tui.force_render();
                         }
                         TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
-                            self.ui.handle_raw_input(&data);
+                            self.ui.tui.handle_raw_input(&data);
                             self.sync_bash_mode_from_editor();
                             self.refresh_ui();
                         }
@@ -118,8 +118,8 @@ impl InteractiveMode {
                                 && key.modifiers.contains(KeyModifiers::CONTROL)
                             {
                                 self.handle_ctrl_c();
-                                if self.shutdown_requested {
-                                    self.is_streaming = false;
+                                if self.interaction.shutdown_requested {
+                                    self.streaming.is_streaming = false;
                                     break;
                                 }
                             }
@@ -132,7 +132,7 @@ impl InteractiveMode {
                                 if !text.is_empty() {
                                     self.push_editor_history(&text);
                                     self.clear_editor();
-                                    self.steering_queue.push_back(text);
+                                    self.queues.steering_queue.push_back(text);
                                     self.sync_pending_render_state();
                                     self.refresh_ui();
                                 }
@@ -145,7 +145,7 @@ impl InteractiveMode {
                                 if !text.is_empty() {
                                     self.push_editor_history(&text);
                                     self.clear_editor();
-                                    self.follow_up_queue.push_back(text);
+                                    self.queues.follow_up_queue.push_back(text);
                                     self.sync_pending_render_state();
                                     self.refresh_ui();
                                 }
@@ -153,7 +153,7 @@ impl InteractiveMode {
                                 self.handle_dequeue();
                                 self.refresh_ui();
                             } else {
-                                self.ui.handle_key(&key);
+                                self.ui.tui.handle_key(&key);
                                 self.sync_bash_mode_from_editor();
                                 self.refresh_ui();
                             }
@@ -171,13 +171,13 @@ impl InteractiveMode {
                     self.refresh_ui();
                 },
                 _ = &mut spinner_tick => {
-                    if self.status_loader.is_some() {
+                    if self.streaming.status_loader.is_some() {
                         self.refresh_ui();
                     }
                 },
                 // Both channels closed
                 else => {
-                    self.is_streaming = false;
+                    self.streaming.is_streaming = false;
                     break;
                 }
             }
@@ -202,32 +202,32 @@ impl InteractiveMode {
     pub(super) fn handle_agent_event(&mut self, event: AgentLoopEvent) {
         match event {
             AgentLoopEvent::TurnStart { .. } => {
-                self.is_streaming = true;
+                self.streaming.is_streaming = true;
                 let loader_message = self
-                    .pending_working_message
+                    .streaming.pending_working_message
                     .take()
                     .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| self.default_working_message.to_string());
-                self.status_loader = Some((StatusLoaderStyle::Accent, loader_message));
-                self.streaming_text.clear();
-                self.streaming_thinking.clear();
-                self.streaming_tool_calls.clear();
+                    .unwrap_or_else(|| self.streaming.default_working_message.to_string());
+                self.streaming.status_loader = Some((StatusLoaderStyle::Accent, loader_message));
+                self.streaming.streaming_text.clear();
+                self.streaming.streaming_thinking.clear();
+                self.streaming.streaming_tool_calls.clear();
                 self.sync_streaming_assistant_component(None, None);
                 self.refresh_ui();
             }
             AgentLoopEvent::TextDelta { text } => {
-                self.streaming_text.push_str(&text);
+                self.streaming.streaming_text.push_str(&text);
                 self.update_streaming_display();
             }
             AgentLoopEvent::ThinkingDelta { text } => {
-                self.streaming_thinking.push_str(&text);
+                self.streaming.streaming_thinking.push_str(&text);
                 // Match pi better: thinking may arrive before text, so create/update
                 // the streaming assistant component even when text is still empty.
                 self.update_streaming_display();
             }
             AgentLoopEvent::ToolCallStart { id, name } => {
-                if !self.streaming_tool_calls.iter().any(|call| call.id == id) {
-                    self.streaming_tool_calls.push(ToolCallContent {
+                if !self.streaming.streaming_tool_calls.iter().any(|call| call.id == id) {
+                    self.streaming.streaming_tool_calls.push(ToolCallContent {
                         id: id.clone(),
                         name: name.clone(),
                         arguments: serde_json::Value::Null,
@@ -244,13 +244,13 @@ impl InteractiveMode {
                         show_images: self.render_state().show_images,
                     },
                 );
-                component.set_expanded(self.tool_output_expanded);
+                component.set_expanded(self.interaction.tool_output_expanded);
                 self.render_state_mut().chat_items.push(ChatItem::ToolExecution(component.clone()));
                 self.render_state_mut().pending_tools.insert(id, component);
                 self.refresh_ui();
             }
             AgentLoopEvent::ToolCallDelta { id, args_delta } => {
-                if let Some(call) = self.streaming_tool_calls.iter_mut().find(|call| call.id == id) {
+                if let Some(call) = self.streaming.streaming_tool_calls.iter_mut().find(|call| call.id == id) {
                     call.arguments = Self::merge_tool_args_delta(&call.arguments, &args_delta);
                 }
                 if let Some(component) = self.render_state_mut().pending_tools.get_mut(&id) {
@@ -371,26 +371,26 @@ impl InteractiveMode {
                 self.refresh_ui();
             }
             AgentLoopEvent::AssistantDone => {
-                self.is_streaming = false;
-                self.status_loader = None;
-                self.streaming_text.clear();
-                self.streaming_thinking.clear();
-                self.streaming_tool_calls.clear();
-                self.pending_working_message = None;
+                self.streaming.is_streaming = false;
+                self.streaming.status_loader = None;
+                self.streaming.streaming_text.clear();
+                self.streaming.streaming_thinking.clear();
+                self.streaming.streaming_tool_calls.clear();
+                self.streaming.pending_working_message = None;
                 self.render_state_mut().streaming_component = None;
                 self.render_state_mut().streaming_message = None;
                 self.render_state_mut().pending_tools.clear();
                 self.check_auto_compaction();
-                if let Some(queued) = self.steering_queue.pop_front() {
-                    self.chat_lines.push(format!("queued(steer)> {queued}"));
-                    self.pending_working_message = Some(queued);
+                if let Some(queued) = self.queues.steering_queue.pop_front() {
+                    self.render_cache.chat_lines.push(format!("queued(steer)> {queued}"));
+                    self.streaming.pending_working_message = Some(queued);
                 }
                 self.rebuild_footer();
                 self.refresh_ui();
             }
             AgentLoopEvent::Error { message } => {
-                self.is_streaming = false;
-                self.status_loader = None;
+                self.streaming.is_streaming = false;
+                self.streaming.status_loader = None;
                 self.finalize_streaming_assistant_message(
                     Some(components::assistant_message::AssistantStopReason::Error),
                     Some(message.clone()),
@@ -410,9 +410,9 @@ impl InteractiveMode {
                         false,
                     );
                 }
-                self.streaming_text.clear();
-                self.streaming_thinking.clear();
-                self.streaming_tool_calls.clear();
+                self.streaming.streaming_text.clear();
+                self.streaming.streaming_thinking.clear();
+                self.streaming.streaming_tool_calls.clear();
                 self.render_state_mut().pending_tools.clear();
                 self.rebuild_footer();
                 self.refresh_ui();
@@ -425,17 +425,17 @@ impl InteractiveMode {
         let dim = "\x1b[90m";
         let yellow = "\x1b[33m";
         let reset = "\x1b[0m";
-        self.status_loader = None;
+        self.streaming.status_loader = None;
         self.render_state_mut().last_status = Some(format!("{yellow}[!]{reset} {dim}{message}{reset}"));
-        self.status_lines = vec![format!("{yellow}[!]{reset} {dim}{message}{reset}")];
+        self.render_cache.status_lines = vec![format!("{yellow}[!]{reset} {dim}{message}{reset}")];
     }
 
     pub(super) fn show_status(&mut self, message: impl Into<String>) {
         let message = message.into();
         let dim = "\x1b[90m";
         let reset = "\x1b[0m";
-        self.status_loader = None;
+        self.streaming.status_loader = None;
         self.render_state_mut().last_status = Some(format!("{dim}{message}{reset}"));
-        self.status_lines = vec![format!("{dim}{message}{reset}")];
+        self.render_cache.status_lines = vec![format!("{dim}{message}{reset}")];
     }
 }

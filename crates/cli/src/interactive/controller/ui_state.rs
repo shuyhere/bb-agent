@@ -2,7 +2,7 @@ use super::*;
 
 impl InteractiveMode {
     pub(super) fn take_last_submitted_text(&mut self) -> String {
-        self.pending_working_message
+        self.streaming.pending_working_message
             .take()
             .unwrap_or_else(|| String::new())
     }
@@ -20,29 +20,29 @@ impl InteractiveMode {
         self.rebuild_status_container();
         self.rebuild_footer();
         // Always use differential render — never clear scrollback
-        self.ui.render();
+        self.ui.tui.render();
     }
 
     pub(super) fn rebuild_header(&mut self) {
-        self.header_lines.clear();
+        self.render_cache.header_lines.clear();
         if !self.options.quiet_startup {
             let dim = "\x1b[90m";
             let reset = "\x1b[0m";
             let bold = "\x1b[1m";
             let cyan = "\x1b[36m";
-            self.header_lines.push(format!(
+            self.render_cache.header_lines.push(format!(
                 "{bold}{cyan}BB-Agent{reset} v{}",
                 self.version
             ));
-            self.header_lines.push(format!(
+            self.render_cache.header_lines.push(format!(
                 "{dim}Ctrl-C exit . / commands . ! bash . F2 thinking . /help for more{reset}"
             ));
         }
 
-        if let Ok(mut header) = self.header_container.lock() {
+        if let Ok(mut header) = self.ui.header_container.lock() {
             header.clear();
-            if !self.header_lines.is_empty() {
-                header.add(Box::new(Text::new(&self.header_lines.join("\n"))));
+            if !self.render_cache.header_lines.is_empty() {
+                header.add(Box::new(Text::new(&self.render_cache.header_lines.join("\n"))));
                 header.add(Box::new(Spacer::new(1)));
             }
         }
@@ -50,18 +50,18 @@ impl InteractiveMode {
 
     pub(super) fn rebuild_chat_container(&mut self) {
         let lines = self.chat_render_lines();
-        Self::replace_container_lines(&self.chat_container, &lines);
+        Self::replace_container_lines(&self.ui.chat_container, &lines);
     }
 
     pub(super) fn rebuild_pending_container(&mut self) {
         self.sync_pending_render_state();
         let lines = self.pending_render_lines();
-        Self::replace_container_lines(&self.pending_messages_container, &lines);
+        Self::replace_container_lines(&self.ui.pending_messages_container, &lines);
     }
 
     pub(super) fn rebuild_status_container(&mut self) {
-        if let Ok(mut container) = self.status_container.lock() {
-            if let Some((style, message)) = &self.status_loader {
+        if let Ok(mut container) = self.ui.status_container.lock() {
+            if let Some((style, message)) = &self.streaming.status_loader {
                 let mut reused = false;
                 if container.children.len() == 1 {
                     if let Some(loader) = container.children[0]
@@ -84,7 +84,7 @@ impl InteractiveMode {
             }
 
             let recent = self
-                .status_lines
+                .render_cache.status_lines
                 .iter()
                 .rev()
                 .take(3)
@@ -162,9 +162,9 @@ impl InteractiveMode {
     }
 
     pub(super) fn rebuild_footer(&mut self) {
-        self.footer_data_provider
+        self.ui.footer_data_provider
             .set_cwd(self.controller.runtime_host.cwd().to_path_buf());
-        self.footer_data_provider
+        self.ui.footer_data_provider
             .set_available_provider_count(self.available_provider_count());
 
         let (input_tokens, output_tokens, cache_read, cache_write, cost) = self.footer_usage_totals();
@@ -184,7 +184,7 @@ impl InteractiveMode {
             model_name: self.session_setup.model.id.clone(),
             provider: self.session_setup.model.provider.clone(),
             cwd: self.controller.runtime_host.cwd().display().to_string(),
-            git_branch: self.footer_data_provider.get_git_branch(),
+            git_branch: self.ui.footer_data_provider.get_git_branch(),
             session_name: session_row.and_then(|row| row.name),
             input_tokens,
             output_tokens,
@@ -199,19 +199,19 @@ impl InteractiveMode {
             } else {
                 None
             },
-            available_provider_count: self.footer_data_provider.get_available_provider_count(),
+            available_provider_count: self.ui.footer_data_provider.get_available_provider_count(),
         });
 
-        self.footer_lines = footer.render(self.ui.columns());
-        Self::replace_container_lines(&self.footer_container, &self.footer_lines);
+        self.render_cache.footer_lines = footer.render(self.ui.tui.columns());
+        Self::replace_container_lines(&self.ui.footer_container, &self.render_cache.footer_lines);
     }
 
     pub(super) fn render_widgets(&mut self) {
         // No extra spacing around editor — pi doesn't have it
-        self.widgets_above_lines = vec![];
-        self.widgets_below_lines = vec![];
-        Self::replace_container_lines(&self.widget_container_above, &self.widgets_above_lines);
-        Self::replace_container_lines(&self.widget_container_below, &self.widgets_below_lines);
+        self.render_cache.widgets_above_lines = vec![];
+        self.render_cache.widgets_below_lines = vec![];
+        Self::replace_container_lines(&self.ui.widget_container_above, &self.render_cache.widgets_above_lines);
+        Self::replace_container_lines(&self.ui.widget_container_below, &self.render_cache.widgets_below_lines);
     }
 
     pub(super) fn replace_container_lines(container: &Arc<Mutex<Container>>, lines: &[String]) {

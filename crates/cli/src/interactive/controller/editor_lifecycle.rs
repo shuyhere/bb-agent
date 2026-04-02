@@ -2,34 +2,34 @@ use super::*;
 
 impl InteractiveMode {
     pub(super) fn editor_text(&self) -> String {
-        self.editor
+        self.ui.editor
             .lock()
             .map(|e| e.get_text())
             .unwrap_or_default()
     }
 
     pub(super) fn set_editor_text(&mut self, text: &str) {
-        if let Ok(mut e) = self.editor.lock() {
+        if let Ok(mut e) = self.ui.editor.lock() {
             e.set_text(text);
         }
         self.sync_bash_mode_from_editor();
     }
 
     pub(super) fn clear_editor(&mut self) {
-        if let Ok(mut e) = self.editor.lock() {
+        if let Ok(mut e) = self.ui.editor.lock() {
             e.clear();
         }
         self.sync_bash_mode_from_editor();
     }
 
     pub(super) fn push_editor_history(&mut self, text: &str) {
-        if let Ok(mut e) = self.editor.lock() {
+        if let Ok(mut e) = self.ui.editor.lock() {
             e.add_to_history(text);
         }
     }
 
     pub(super) fn set_bash_mode(&mut self, value: bool) {
-        if let Ok(mut bash_mode) = self.is_bash_mode.lock() {
+        if let Ok(mut bash_mode) = self.interaction.is_bash_mode.lock() {
             *bash_mode = value;
         }
     }
@@ -64,12 +64,12 @@ impl InteractiveMode {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("BB-Agent");
-        self.ui
+        self.ui.tui
             .terminal
             .write(&format!("\x1b]0;BB-Agent interactive - {cwd}\x07"));
     }
 
     pub(super) fn stop_ui(&mut self) {
-        self.ui.stop();
+        self.ui.tui.stop();
     }
 }
