@@ -59,7 +59,9 @@ impl Editor {
                     self.file_menu = None;
                     return;
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Tab, KeyModifiers::NONE) => {
+                (KeyCode::Enter, KeyModifiers::NONE)
+                | (KeyCode::Tab, KeyModifiers::NONE)
+                | (KeyCode::Char(' '), KeyModifiers::NONE) => {
                     match menu.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
                         SelectAction::Selected(value) => {
                             self.accept_file_selection(value);
@@ -87,7 +89,9 @@ impl Editor {
                     self.slash_menu = None;
                     return;
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Tab, KeyModifiers::NONE) => {
+                (KeyCode::Enter, KeyModifiers::NONE)
+                | (KeyCode::Tab, KeyModifiers::NONE)
+                | (KeyCode::Char(' '), KeyModifiers::NONE) => {
                     match menu.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
                         SelectAction::Selected(value) => {
                             self.accept_slash_selection(value);
