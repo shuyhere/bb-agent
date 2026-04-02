@@ -128,41 +128,27 @@ impl Renderer {
         let width_changed = self.prev_width != 0 && self.prev_width != width;
         let height_changed = self.prev_height != 0 && self.prev_height != height;
 
-        // Apply line resets (SEGMENT_RESET prevents colour bleed across lines)
-        let new_lines: Vec<String> = Self::apply_line_resets(new_lines);
+        // Extract cursor position BEFORE stripping marker.
+        let cursor_pos = self.find_cursor(new_lines);
 
-        // Width overflow protection — truncate lines exceeding terminal width
-        // and write debug info to crash log.
-        let width_usize = width as usize;
-        let new_lines: Vec<String> = {
-            let mut overflow_logged = false;
-            new_lines
-                .into_iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    let vw = visible_width(&l);
-                    if vw > width_usize {
-                        if !overflow_logged {
-                            overflow_logged = true;
-                            // The new_lines we have here already had resets applied
-                            // but log anyway for debugging.
-                            write_crash_log(i, vw, width_usize, &[l.clone()]);
-                        }
-                        crate::utils::truncate_to_width(&l, width_usize)
-                    } else {
-                        l
-                    }
-                })
-                .collect()
-        };
-
-        // Extract cursor position
-        let cursor_pos = self.find_cursor(&new_lines);
-
-        // Strip CURSOR_MARKER
+        // Only process lines that are likely to have changed.
+        // For the common case (append one line or update last few), avoid
+        // touching hundreds of unchanged lines.
         let new_lines: Vec<String> = new_lines
             .iter()
-            .map(|l| l.replace(CURSOR_MARKER, ""))
+            .enumerate()
+            .map(|(i, l)| {
+                // Skip expensive processing for lines that match previous exactly.
+                if i < self.prev_lines.len() && *l == self.prev_lines[i] {
+                    return l.clone();
+                }
+                // Strip cursor marker + append line reset.
+                let mut line = l.replace(CURSOR_MARKER, "");
+                if !line.ends_with(SEGMENT_RESET) {
+                    line.push_str(SEGMENT_RESET);
+                }
+                line
+            })
             .collect();
 
         // --- Full render cases ---
