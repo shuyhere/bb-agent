@@ -539,7 +539,10 @@ fn apply_bg_line(content: &str, total_width: usize, bg: &str) -> String {
     let visible = visible_width(content);
     let inner_width = total_width.saturating_sub(2);
     let pad = inner_width.saturating_sub(visible);
-    format!("{bg} {}{} {RESET}", content, " ".repeat(pad))
+    // Re-apply bg after every RESET inside content so the background
+    // fills the entire line (not just up to the first RESET).
+    let content_with_bg = content.replace(RESET, &format!("{RESET}{bg}"));
+    format!("{bg} {content_with_bg}{} {RESET}", " ".repeat(pad))
 }
 
 fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {
