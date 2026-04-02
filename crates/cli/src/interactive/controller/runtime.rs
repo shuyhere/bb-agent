@@ -268,17 +268,25 @@ impl InteractiveMode {
                         if let Some(event) = terminal_event {
                             match event {
                                 TerminalEvent::Key(key) => {
-                                    if key.code == KeyCode::Esc || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
-                                        // Abort streaming
+                                    // Only abort on explicit Esc press or Ctrl-C press.
+                                    // Ignore other keys (including Enter release, arrow keys, etc).
+                                    let is_esc = key.code == KeyCode::Esc
+                                        && key.modifiers == KeyModifiers::NONE;
+                                    let is_ctrl_c = key.code == KeyCode::Char('c')
+                                        && key.modifiers == KeyModifiers::CONTROL;
+                                    if is_esc || is_ctrl_c {
                                         self.abort_token.cancel();
                                         aborted = true;
                                         self.show_warning("Aborted");
                                     }
+                                    // All other keys are silently consumed during streaming
                                 }
                                 TerminalEvent::Resize(_, _) => {
                                     self.ui.tui.force_render();
                                 }
-                                _ => {}
+                                _ => {
+                                    // Silently consume paste/raw events during streaming
+                                }
                             }
                         }
                     }

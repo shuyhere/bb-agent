@@ -37,10 +37,11 @@ impl InteractiveMode {
             self.show_status("Exited bash mode");
             return;
         }
-        // Priority 5: abort streaming
+        // Priority 5: abort streaming (only via the select! loop in runtime.rs now)
+        // The streaming turn loop handles Esc internally via tokio::select!.
+        // If is_streaming is still true here it means we're between turns — just cancel the token.
         if self.streaming.is_streaming {
-            self.streaming.is_streaming = false;
-            self.show_warning("Aborted");
+            self.abort_token.cancel();
             return;
         }
         // Priority 6: clear editor if it has text
@@ -64,10 +65,9 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_ctrl_c(&mut self) {
-        // If streaming, abort and show "Aborted"
+        // If streaming, cancel via token (the select! loop in runtime.rs shows the warning)
         if self.streaming.is_streaming {
-            self.streaming.is_streaming = false;
-            self.show_warning("Aborted");
+            self.abort_token.cancel();
             self.interaction.last_sigint_time = Some(Instant::now());
             return;
         }
