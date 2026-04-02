@@ -133,7 +133,8 @@ impl InteractiveMode {
                 return Ok(None);
             }
 
-            // Check for completed OAuth flows.
+            // Check for OAuth progress / completed flows.
+            self.poll_oauth_progress();
             self.poll_oauth_result();
 
             // If an OAuth flow just completed, run a verification request.

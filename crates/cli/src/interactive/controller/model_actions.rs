@@ -449,24 +449,17 @@ impl InteractiveMode {
         match method {
             AuthMethod::OAuth => {
                 self.show_login_dialog_component(&display_name);
-                let _ = self.with_login_dialog_mut(|dialog| {
-                    dialog.set_message(Some(format!("{verb} {display_name}{source_note}")));
-                });
                 self.start_oauth_flow(provider, &display_name, verb, &source_note);
             }
             AuthMethod::ApiKey => {
                 self.streaming.pending_auth_provider = Some(provider.to_string());
                 self.streaming.pending_auth_display_name = Some(display_name.clone());
                 self.streaming.pending_auth_url = None;
-                self.streaming.pending_auth_message = Some(format!(
-                    "{verb} {display_name}{source_note}\nPaste API key below and press Enter.\nPress Esc to cancel."
-                ));
+                self.streaming.pending_auth_message = Some(format!("{verb} {display_name}{source_note}"));
                 self.show_login_dialog_component(&display_name);
-                let message = self.streaming.pending_auth_message.clone();
                 let _ = self.with_login_dialog_mut(|dialog| {
-                    dialog.set_message(message);
+                    dialog.show_prompt("Paste API key below and press Enter:", None);
                 });
-                self.show_status(format!("{verb} {display_name}{source_note}"));
             }
         }
     }
@@ -490,6 +483,8 @@ impl InteractiveMode {
 
         // Channel so the on_auth callback can send the URL back.
         let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        self.streaming.pending_oauth_progress_rx = Some(progress_rx);
 
         let callbacks = OAuthCallbacks {
             on_auth: Box::new(move |url: String| {
@@ -509,7 +504,9 @@ impl InteractiveMode {
                     .spawn();
             }),
             on_manual_input: Some(manual_rx),
-            on_progress: None,
+            on_progress: Some(Box::new(move |message: String| {
+                let _ = progress_tx.send(message);
+            })),
         };
 
         // Spawn OAuth flow on the runtime.
@@ -535,27 +532,33 @@ impl InteractiveMode {
         // Use a short timeout — the on_auth callback fires almost immediately.
         if let Ok(url) = url_rx.recv_timeout(std::time::Duration::from_secs(3)) {
             self.streaming.pending_auth_url = Some(url.clone());
-            self.streaming.pending_auth_message = Some(
-                "Open this URL in a browser.\nThen paste the redirect URL or code below and press Enter.\nPress Esc to cancel."
-                    .to_string(),
-            );
-            let message = self.streaming.pending_auth_message.clone();
             let _ = self.with_login_dialog_mut(|dialog| {
-                dialog.set_url(Some(url));
-                dialog.set_message(message);
+                dialog.show_auth(&url, None);
+                dialog.show_manual_input("Paste redirect URL below, or complete login in browser:");
             });
-            self.show_status(format!("{verb} {display_name}{source_note}"));
         } else {
-            self.streaming.pending_auth_message = Some(format!(
-                "Starting OAuth flow for {display_name}…\nPress Esc to cancel."
-            ));
-            let message = self.streaming.pending_auth_message.clone();
             let _ = self.with_login_dialog_mut(|dialog| {
-                dialog.set_url(None);
-                dialog.set_message(message);
+                dialog.show_waiting(&format!("Starting OAuth flow for {display_name}…"));
             });
-            self.show_status(format!("{verb} {display_name}{source_note}"));
         }
+    }
+
+    pub(super) fn poll_oauth_progress(&mut self) {
+        let mut messages = Vec::new();
+        if let Some(rx) = self.streaming.pending_oauth_progress_rx.as_mut() {
+            while let Ok(message) = rx.try_recv() {
+                messages.push(message);
+            }
+        }
+        if messages.is_empty() {
+            return;
+        }
+        let _ = self.with_login_dialog_mut(|dialog| {
+            for message in messages {
+                dialog.show_progress(&message);
+            }
+        });
+        self.render_editor_frame();
     }
 
     /// Poll for the result of a pending OAuth flow (non-blocking).
@@ -572,6 +575,7 @@ impl InteractiveMode {
                     _ => {
                         // Provider name was lost — should not happen.
                         self.streaming.pending_oauth_result_rx = None;
+                        self.streaming.pending_oauth_progress_rx = None;
                         self.streaming.pending_oauth_manual_tx = None;
                         self.streaming.pending_auth_url = None;
                         self.streaming.pending_auth_message = None;
@@ -586,6 +590,7 @@ impl InteractiveMode {
                     .clone()
                     .unwrap_or_else(|| provider.clone());
                 self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_progress_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
                 self.streaming.pending_auth_url = None;
 
@@ -623,6 +628,7 @@ impl InteractiveMode {
             Ok(Err(err)) => {
                 self.streaming.pending_auth_provider = None;
                 self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_progress_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
                 self.streaming.pending_auth_url = None;
                 self.streaming.pending_auth_message = None;
@@ -636,6 +642,7 @@ impl InteractiveMode {
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                 self.streaming.pending_auth_provider = None;
                 self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_progress_rx = None;
                 self.streaming.pending_oauth_manual_tx = None;
                 self.streaming.pending_auth_url = None;
                 self.streaming.pending_auth_message = None;
@@ -675,21 +682,14 @@ impl InteractiveMode {
         // to the OAuth flow which will parse the code from it.
         if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
             if tx.send(key.to_string()).is_ok() {
-                self.streaming.pending_auth_message = Some(format!("Exchanging tokens for {display_name}…"));
-                let message = self.streaming.pending_auth_message.clone();
-                let _ = self.with_login_dialog_mut(|dialog| dialog.set_message(message));
-                self.show_status(format!("Exchanging tokens for {display_name}…"));
+                // OAuth helper will emit pi-like progress messages.
                 // Result will arrive via poll_oauth_result.
                 return;
             }
             // Channel closed — OAuth task already finished (maybe callback server got it).
             // Fall through to check if it was an error.
             if self.streaming.pending_oauth_result_rx.is_some() {
-                // Let poll_oauth_result handle it on next tick.
-                self.streaming.pending_auth_message = Some("Processing…".to_string());
-                let message = self.streaming.pending_auth_message.clone();
-                let _ = self.with_login_dialog_mut(|dialog| dialog.set_message(message));
-                self.show_status("Processing…");
+                // Let poll_oauth_result / progress polling handle it on next tick.
                 return;
             }
         }
@@ -699,6 +699,7 @@ impl InteractiveMode {
         self.streaming.pending_auth_display_name = None;
         self.streaming.pending_auth_url = None;
         self.streaming.pending_auth_message = None;
+        self.restore_default_editor_component();
 
         match crate::login::save_api_key(&provider, key) {
             Ok(()) => {
@@ -723,6 +724,7 @@ impl InteractiveMode {
         self.streaming.pending_auth_display_name = None;
         self.streaming.pending_auth_url = None;
         self.streaming.pending_auth_message = None;
+        self.streaming.pending_oauth_progress_rx = None;
         if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
             // Dropping tx cancels the manual input in the OAuth flow.
             drop(tx);
