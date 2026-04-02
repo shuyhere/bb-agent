@@ -48,6 +48,10 @@ pub(super) struct RenderCache {
     pub(super) status_lines: Vec<String>,
     pub(super) footer_lines: Vec<String>,
     pub(super) widgets_above_lines: Vec<String>,
+    /// Cached rendered lines for completed (non-streaming) chat items.
+    pub(super) cached_chat_lines_prefix: Vec<String>,
+    pub(super) cached_chat_line_count: usize,
+    pub(super) cached_chat_width: u16,
     pub(super) widgets_below_lines: Vec<String>,
 }
 
@@ -143,6 +147,9 @@ impl InteractiveMode {
                 footer_lines: Vec::new(),
                 widgets_above_lines: Vec::new(),
                 widgets_below_lines: Vec::new(),
+                cached_chat_lines_prefix: Vec::new(),
+                cached_chat_line_count: 0,
+                cached_chat_width: 0,
             },
             interaction: InteractionState {
                 last_sigint_time: None,

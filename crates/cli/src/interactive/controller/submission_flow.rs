@@ -291,8 +291,12 @@ impl InteractiveMode {
         // Run the streaming turn loop
         self.run_streaming_turn_loop().await?;
 
+        // Ensure all streaming state is fully cleaned up.
         self.streaming.pending_working_message = None;
+        self.streaming.status_loader = None;
+        self.streaming.is_streaming = false;
         self.clear_status();
+        self.invalidate_chat_cache();
         self.rebuild_footer();
         self.refresh_ui();
         Ok(())

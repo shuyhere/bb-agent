@@ -292,6 +292,7 @@ impl InteractiveMode {
 
         // Clear and re-render
         self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.render_state_mut().streaming_component = None;
         self.streaming.streaming_text.clear();
@@ -641,6 +642,7 @@ impl InteractiveMode {
 
         // Clear and re-render from the new position.
         self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.render_state_mut().streaming_component = None;
         self.streaming.streaming_text.clear();
@@ -749,6 +751,7 @@ impl InteractiveMode {
         self.queues.follow_up_queue.clear();
         self.queues.compaction_queued_messages.clear();
         self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.show_status("Started a fresh interactive session shell around the core session");
     }
@@ -765,6 +768,7 @@ impl InteractiveMode {
 
                 // Clear all chat/pending/streaming state (match pi's renderCurrentSessionState)
                 self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
                 self.render_state_mut().pending_items.clear();
                 self.render_state_mut().streaming_component = None;
                 self.streaming.streaming_text.clear();
@@ -963,6 +967,7 @@ impl InteractiveMode {
 
         // Clear all chat/streaming state (like /new).
         self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.render_state_mut().streaming_component = None;
         self.streaming.streaming_text.clear();
@@ -1055,6 +1060,7 @@ impl InteractiveMode {
 
         // Clear and re-render from the new position
         self.render_state_mut().chat_items.clear();
+                self.invalidate_chat_cache();
         self.render_state_mut().pending_items.clear();
         self.render_state_mut().streaming_component = None;
         self.streaming.streaming_text.clear();

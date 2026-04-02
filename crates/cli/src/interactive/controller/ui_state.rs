@@ -70,11 +70,23 @@ impl InteractiveMode {
         Self::replace_container_lines(&self.ui.chat_container, &lines);
     }
 
-    /// Rebuild only the last part of the chat (streaming component).
-    /// Much faster than rebuild_chat_container during streaming.
-    pub(super) fn rebuild_chat_container_streaming(&mut self) {
-        // Re-use the full rebuild for now but mark for future optimization
-        self.rebuild_chat_container();
+    /// Cache rendered lines for all completed chat items.
+    /// Call after adding a finalized message (not during streaming).
+    pub(super) fn snapshot_chat_cache(&mut self) {
+        let width = self.ui.tui.columns();
+        let item_count = self.controller.session.render_state.chat_items.len();
+        let prefix = Self::render_items_to_lines(
+            &self.controller.session.render_state.chat_items, width,
+        );
+        self.render_cache.cached_chat_lines_prefix = prefix;
+        self.render_cache.cached_chat_line_count = item_count;
+        self.render_cache.cached_chat_width = width;
+    }
+
+    /// Invalidate the chat line cache (call when items are removed/replaced).
+    pub(super) fn invalidate_chat_cache(&mut self) {
+        self.render_cache.cached_chat_line_count = 0;
+        self.render_cache.cached_chat_lines_prefix.clear();
     }
 
     pub(super) fn rebuild_pending_container(&mut self) {

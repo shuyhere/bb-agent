@@ -72,7 +72,27 @@ impl InteractiveMode {
 
     pub(super) fn chat_render_lines(&self) -> Vec<String> {
         let width = self.ui.tui.columns();
-        let mut lines = Self::render_items_to_lines(&self.render_state().chat_items, width);
+        let items = &self.render_state().chat_items;
+
+        // Optimization: only re-render the last few items if total is large.
+        // Completed items don't change, so we can cache their output.
+        let cached_count = self.render_cache.cached_chat_line_count;
+        let cached_width = self.render_cache.cached_chat_width;
+
+        let mut lines = if cached_count > 0
+            && cached_count <= items.len()
+            && cached_width == width
+            && !self.render_cache.cached_chat_lines_prefix.is_empty()
+        {
+            // Reuse cached prefix, only re-render items from cached_count onward
+            let mut prefix = self.render_cache.cached_chat_lines_prefix.clone();
+            let tail = &items[cached_count..];
+            prefix.extend(Self::render_items_to_lines(tail, width));
+            prefix
+        } else {
+            Self::render_items_to_lines(items, width)
+        };
+
         for line in &self.render_cache.chat_lines {
             lines.extend(word_wrap(line, width.max(1) as usize));
         }

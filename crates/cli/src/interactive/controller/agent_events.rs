@@ -59,9 +59,10 @@ impl InteractiveMode {
 
     pub(super) fn update_streaming_display(&mut self) {
         self.sync_streaming_assistant_component(None, None);
-        // Only rebuild chat (streaming content changed) + render.
-        // Skip footer/pending/status rebuild for streaming perf.
-        self.rebuild_chat_container_streaming();
+        // During streaming, only the last chat item (streaming component) changes.
+        // Rebuild the chat container and render — but the differential renderer
+        // will only redraw the changed lines.
+        self.rebuild_chat_container();
         self.ui.tui.render();
     }
 
@@ -219,6 +220,9 @@ impl InteractiveMode {
                 self.streaming.streaming_text.clear();
                 self.streaming.streaming_thinking.clear();
                 self.streaming.streaming_tool_calls.clear();
+                // Cache rendered lines for all existing items before streaming starts.
+                // During streaming, only the new streaming component needs re-rendering.
+                self.snapshot_chat_cache();
                 self.sync_streaming_assistant_component(None, None);
                 self.rebuild_status_container();
                 self.ui.tui.render();
