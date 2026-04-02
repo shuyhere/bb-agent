@@ -168,6 +168,7 @@ impl InteractiveMode {
 
 
     /// Send a tiny test request to verify that newly-saved OAuth credentials work.
+    /// Uses the model registry + parse_model_arg to pick the right default model.
     async fn run_oauth_verification(&mut self, provider: String) {
         // Resolve the fresh key we just saved.
         let api_key = match crate::login::resolve_api_key(&provider) {
@@ -178,36 +179,54 @@ impl InteractiveMode {
             }
         };
 
-        // Pick the right provider backend + base URL + model for verification.
-        let (test_provider, base_url, model_id): (
-            std::sync::Arc<dyn bb_provider::Provider>,
-            String,
-            String,
-        ) = match provider.as_str() {
-            "anthropic" => (
-                std::sync::Arc::new(bb_provider::anthropic::AnthropicProvider::new()),
-                "https://api.anthropic.com".into(),
-                "claude-haiku-4-5-20251001".into(),
-            ),
-            "openai-codex" | "openai" => (
-                std::sync::Arc::new(bb_provider::openai::OpenAiProvider::new()),
-                "https://api.openai.com/v1".into(),
-                "gpt-4o-mini".into(),
-            ),
-            _ => {
+        // Use parse_model_arg to get the default model for this provider
+        // (same logic used at startup: anthropic->claude-opus-4-6, openai->gpt-5.4, etc.)
+        let lookup_provider = if provider == "openai-codex" { "openai" } else { &provider };
+        let (_, default_model_id, _) = bb_core::agent_session::parse_model_arg(
+            Some(lookup_provider),
+            None,
+        );
+
+        // Find the model in registry to get api type + base_url.
+        let registry = bb_provider::registry::ModelRegistry::new();
+        let model = registry.find(lookup_provider, &default_model_id);
+
+        let (test_provider, base_url, model_id) = match model {
+            Some(m) => {
+                let p: std::sync::Arc<dyn bb_provider::Provider> = match m.api {
+                    bb_provider::registry::ApiType::AnthropicMessages => {
+                        std::sync::Arc::new(bb_provider::anthropic::AnthropicProvider::new())
+                    }
+                    bb_provider::registry::ApiType::GoogleGenerative => {
+                        std::sync::Arc::new(bb_provider::google::GoogleProvider::new())
+                    }
+                    _ => std::sync::Arc::new(bb_provider::openai::OpenAiProvider::new()),
+                };
+                let url = m.base_url.clone().unwrap_or_else(|| match m.api {
+                    bb_provider::registry::ApiType::AnthropicMessages => {
+                        "https://api.anthropic.com".into()
+                    }
+                    bb_provider::registry::ApiType::GoogleGenerative => {
+                        "https://generativelanguage.googleapis.com".into()
+                    }
+                    _ => "https://api.openai.com/v1".into(),
+                });
+                (p, url, m.id.clone())
+            }
+            None => {
                 self.show_status(format!("Logged in to {provider}."));
                 return;
             }
         };
 
-        self.show_status(format!("Verifying {provider} credentials…"));
+        self.show_status(format!("Verifying {provider} with {model_id}…"));
         self.refresh_ui();
 
         let request = bb_provider::CompletionRequest {
             system_prompt: String::new(),
             messages: vec![serde_json::json!({"role": "user", "content": "Reply with exactly: ok"})],
             tools: vec![],
-            model: model_id,
+            model: model_id.clone(),
             max_tokens: Some(16),
             stream: false,
             thinking: None,
@@ -222,11 +241,11 @@ impl InteractiveMode {
         match test_provider.complete(request, options).await {
             Ok(_events) => {
                 self.show_status(format!(
-                    "Logged in to {provider} -- verified, credentials work."
+                    "Logged in to {provider} -- verified with {model_id}."
                 ));
                 // If this matches the current session provider, update the live key.
-                let model_provider = &self.session_setup.model.provider;
-                let matches = model_provider == &provider
+                let model_provider = self.session_setup.model.provider.clone();
+                let matches = model_provider == provider
                     || (provider == "openai-codex" && model_provider == "openai")
                     || (provider == "openai" && model_provider == "openai-codex");
                 if matches {
@@ -246,6 +265,7 @@ impl InteractiveMode {
         self.rebuild_footer();
         self.refresh_ui();
     }
+
 
     pub(super) fn get_session_leaf(&self) -> Option<bb_core::types::EntryId> {
         store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
