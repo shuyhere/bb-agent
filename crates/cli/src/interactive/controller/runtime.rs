@@ -524,7 +524,7 @@ impl InteractiveMode {
         ).await {
             Ok(Ok((config, result))) => (Some(config), result),
             Ok(Err(e)) => {
-                self.show_warning(format!("Turn runner task panicked: {e}"));
+                self.show_error(format!("Turn runner task panicked: {e}"));
                 (None, Ok(()))
             }
             Err(_) => {

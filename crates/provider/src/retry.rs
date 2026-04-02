@@ -6,6 +6,74 @@ use tokio_util::sync::CancellationToken;
 
 use crate::types::{ProviderRetryEvent, RetryCallback};
 
+fn is_retryable_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    [
+        "overloaded",
+        "provider returned error",
+        "rate limit",
+        "too many requests",
+        "resource exhausted",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "service unavailable",
+        "server error",
+        "internal error",
+        "network error",
+        "connection error",
+        "connection refused",
+        "other side closed",
+        "fetch failed",
+        "upstream connect",
+        "reset before headers",
+        "socket hang up",
+        "timed out",
+        "timeout",
+        "terminated",
+        "retry delay",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
+}
+
+fn extract_retry_delay_ms(message: &str) -> Option<u64> {
+    let normalize = |ms: f64| -> Option<u64> {
+        if ms.is_finite() && ms > 0.0 {
+            Some((ms.ceil() as u64).saturating_add(1_000))
+        } else {
+            None
+        }
+    };
+
+    let lower = message.to_ascii_lowercase();
+
+    if let Some(caps) = regex::Regex::new(r"please retry in ([0-9.]+)(ms|s)").ok()?.captures(&lower) {
+        let value = caps.get(1)?.as_str().parse::<f64>().ok()?;
+        let unit = caps.get(2)?.as_str();
+        let ms = if unit == "ms" { value } else { value * 1000.0 };
+        return normalize(ms);
+    }
+
+    if let Some(caps) = regex::Regex::new(r#"retrydelay"\s*:\s*"([0-9.]+)(ms|s)"#).ok()?.captures(&lower) {
+        let value = caps.get(1)?.as_str().parse::<f64>().ok()?;
+        let unit = caps.get(2)?.as_str();
+        let ms = if unit == "ms" { value } else { value * 1000.0 };
+        return normalize(ms);
+    }
+
+    if let Some(caps) = regex::Regex::new(r"reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s").ok()?.captures(&lower) {
+        let hours = caps.get(1).and_then(|m| m.as_str().parse::<f64>().ok()).unwrap_or(0.0);
+        let mins = caps.get(2).and_then(|m| m.as_str().parse::<f64>().ok()).unwrap_or(0.0);
+        let secs = caps.get(3).and_then(|m| m.as_str().parse::<f64>().ok()).unwrap_or(0.0);
+        return normalize(((hours * 60.0 + mins) * 60.0 + secs) * 1000.0);
+    }
+
+    None
+}
+
 pub async fn with_retry<F, Fut, T>(
     max_retries: u32,
     base_delay_ms: u64,
@@ -37,8 +105,14 @@ where
             }
             Err(e) => {
                 last_err = e;
+                let last_message = last_err.to_string();
+                let retryable = is_retryable_error_message(&last_message);
+                if !retryable {
+                    return Err(last_err);
+                }
                 if attempt < max_retries - 1 {
-                    let delay_ms = base_delay_ms.saturating_mul(2u64.pow(attempt));
+                    let delay_ms = extract_retry_delay_ms(&last_message)
+                        .unwrap_or_else(|| base_delay_ms.saturating_mul(2u64.pow(attempt)));
                     let delay = Duration::from_millis(delay_ms);
                     tracing::warn!(
                         "Provider request failed (attempt {}), retrying in {:?}",
@@ -50,7 +124,7 @@ where
                             attempt: used_attempts,
                             max_attempts: max_retries,
                             delay_ms,
-                            error_message: last_err.to_string(),
+                            error_message: last_message,
                         });
                     }
                     tokio::select! {
@@ -97,7 +171,7 @@ mod tests {
             async move {
                 let attempt = c.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0 {
-                    Err(BbError::Provider("temporary".into()))
+                    Err(BbError::Provider("HTTP 429: temporary".into()))
                 } else {
                     Ok(42)
                 }
@@ -115,11 +189,26 @@ mod tests {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err(BbError::Provider("always fails".into()))
+                Err(BbError::Provider("HTTP 429: always fails".into()))
             }
         }).await;
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_non_retryable_error_stops_immediately() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let result: BbResult<i32> = with_retry(3, 1_000, CancellationToken::new(), None, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(BbError::Provider("HTTP 401: unauthorized".into()))
+            }
+        }).await;
+        assert!(result.is_err());
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

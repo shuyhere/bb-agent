@@ -18,6 +18,14 @@ fn default_keep() -> u64 {
     20000
 }
 
+fn default_retry_max() -> u32 {
+    3
+}
+
+fn default_retry_delay() -> u64 {
+    2000
+}
+
 // =============================================================================
 // Settings
 // =============================================================================
@@ -28,6 +36,8 @@ fn default_keep() -> u64 {
 pub struct Settings {
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub retry: RetryConfig,
     #[serde(default)]
     pub default_provider: Option<String>,
     #[serde(default)]
@@ -58,6 +68,26 @@ impl Default for CompactionConfig {
             enabled: default_true(),
             reserve_tokens: default_reserve(),
             keep_recent_tokens: default_keep(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_retry_max")]
+    pub max_retries: u32,
+    #[serde(default = "default_retry_delay")]
+    pub base_delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            max_retries: default_retry_max(),
+            base_delay_ms: default_retry_delay(),
         }
     }
 }
@@ -107,6 +137,16 @@ impl Settings {
         Self::load_from_file(&path)
     }
 
+    /// Save global settings to `~/.bb-agent/settings.json`.
+    pub fn save_global(&self) -> std::io::Result<()> {
+        let dir = crate::config::global_dir();
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("settings.json");
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, content)
+    }
+
     // IO boundary — should migrate to cli
     /// Load project-local settings by walking up from `cwd` looking for
     /// `.bb-agent/settings.json`.
@@ -130,6 +170,7 @@ impl Settings {
     pub fn merge(global: &Self, project: &Self) -> Self {
         Self {
             compaction: merge_compaction(&global.compaction, &project.compaction),
+            retry: merge_retry(&global.retry, &project.retry),
             default_provider: project
                 .default_provider
                 .clone()
@@ -177,7 +218,6 @@ fn merge_compaction(global: &CompactionConfig, project: &CompactionConfig) -> Co
     let defaults = CompactionConfig::default();
     CompactionConfig {
         enabled: if !project.enabled && defaults.enabled {
-            // Project explicitly disabled
             false
         } else {
             project.enabled
@@ -191,6 +231,27 @@ fn merge_compaction(global: &CompactionConfig, project: &CompactionConfig) -> Co
             project.keep_recent_tokens
         } else {
             global.keep_recent_tokens
+        },
+    }
+}
+
+fn merge_retry(global: &RetryConfig, project: &RetryConfig) -> RetryConfig {
+    let defaults = RetryConfig::default();
+    RetryConfig {
+        enabled: if !project.enabled && defaults.enabled {
+            false
+        } else {
+            project.enabled
+        },
+        max_retries: if project.max_retries != defaults.max_retries {
+            project.max_retries
+        } else {
+            global.max_retries
+        },
+        base_delay_ms: if project.base_delay_ms != defaults.base_delay_ms {
+            project.base_delay_ms
+        } else {
+            global.base_delay_ms
         },
     }
 }

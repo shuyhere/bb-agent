@@ -1,5 +1,13 @@
 use super::*;
 
+fn persist_retry_settings(enabled: bool, max_retries: u32, base_delay_ms: u64) -> Result<(), String> {
+    let mut settings = bb_core::settings::Settings::load_global();
+    settings.retry.enabled = enabled;
+    settings.retry.max_retries = max_retries.max(1);
+    settings.retry.base_delay_ms = base_delay_ms.max(1_000);
+    settings.save_global().map_err(|e| e.to_string())
+}
+
 impl InteractiveMode {
     pub(super) fn show_settings_selector(&mut self) {
         let thinking = &self.session_setup.thinking_level;
@@ -323,6 +331,19 @@ impl InteractiveMode {
             }
             _ => return,
         };
+
+        if matches!(id, "retry-enabled" | "retry-max" | "retry-delay") {
+            if let Err(e) = persist_retry_settings(
+                self.session_setup.retry_enabled,
+                self.session_setup.retry_max_retries,
+                self.session_setup.retry_base_delay_ms,
+            ) {
+                self.show_error(format!("Failed to persist retry settings: {e}"));
+                self.refresh_ui();
+                return;
+            }
+        }
+
         self.show_status(feedback);
         self.refresh_ui();
     }

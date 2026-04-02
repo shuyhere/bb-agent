@@ -16,3 +16,4 @@ futures.workspace = true
 tokio-util.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
+regex.workspace = true

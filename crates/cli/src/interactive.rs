@@ -175,9 +175,9 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         tool_ctx,
         system_prompt,
         thinking_level: thinking_str.to_string(),
-        retry_enabled: true,
-        retry_max_retries: 3,
-        retry_base_delay_ms: 1_000,
+        retry_enabled: settings.retry.enabled,
+        retry_max_retries: settings.retry.max_retries,
+        retry_base_delay_ms: settings.retry.base_delay_ms,
         session_created: false,
         sibling_conn: None,
     };

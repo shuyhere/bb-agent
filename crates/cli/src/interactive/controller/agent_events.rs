@@ -398,7 +398,7 @@ impl InteractiveMode {
                     let message = final_error.unwrap_or_else(|| {
                         format!("Retry failed after {attempt} attempts: Unknown error")
                     });
-                    self.show_warning(message);
+                    self.show_error(message);
                 }
                 self.ui.tui.render();
             }
@@ -482,6 +482,14 @@ impl InteractiveMode {
                 self.refresh_ui();
             }
         }
+    }
+
+    pub(super) fn show_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.streaming.status_loader = None;
+        self.render_state_mut().chat_items.push(ChatItem::Spacer);
+        self.render_state_mut().chat_items.push(ChatItem::ErrorMessage(message));
+        self.rebuild_chat_container();
     }
 
     pub(super) fn show_warning(&mut self, message: impl Into<String>) {

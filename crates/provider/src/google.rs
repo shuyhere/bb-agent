@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
+use crate::{retry::with_retry, CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
 
 /// Google Generative AI (Gemini) provider.
 pub struct GoogleProvider {
@@ -73,25 +73,36 @@ impl Provider for GoogleProvider {
             body["tools"] = json!([{ "functionDeclarations": tools }]);
         }
 
-        let mut req = self.client
-            .post(&url)
-            .header("content-type", "application/json");
+        let response = with_retry(
+            options.max_retries,
+            options.retry_base_delay_ms,
+            options.cancel.clone(),
+            options.retry_callback.clone(),
+            || {
+                let mut req = self.client
+                    .post(&url)
+                    .header("content-type", "application/json");
 
-        for (k, v) in &options.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
+                for (k, v) in &options.headers {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+                let body_clone = body.clone();
+                async move {
+                    let response = req
+                        .json(&body_clone)
+                        .send()
+                        .await
+                        .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
 
-        let response = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BbError::Provider(format!("Request failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(BbError::Provider(format!("HTTP {status}: {body}")));
-        }
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let body = response.text().await.unwrap_or_default();
+                        return Err(BbError::Provider(format!("HTTP {status}: {body}")));
+                    }
+                    Ok(response)
+                }
+            },
+        ).await?;
 
         // Parse SSE stream
         let bytes_stream = response.bytes_stream();
