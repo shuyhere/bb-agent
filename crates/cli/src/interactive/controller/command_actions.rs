@@ -33,14 +33,96 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_session_command(&mut self) {
+        let bold = "\x1b[1m";
+        let dim = "\x1b[2m";
+        let reset = "\x1b[0m";
+
         let session_id = &self.session_setup.session_id;
-        let model = self.options.model_display.as_deref().unwrap_or("unknown");
-        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
-        let msg_count = self.render_cache.chat_lines.len() + self.render_state().chat_items.len();
-        self.render_cache.chat_lines.push(format!("Session ID:   {session_id}"));
-        self.render_cache.chat_lines.push(format!("Model:        {model}"));
-        self.render_cache.chat_lines.push(format!("Working dir:  {cwd}"));
-        self.render_cache.chat_lines.push(format!("Messages:     {msg_count}"));
+        let session_row = store::get_session(&self.session_setup.conn, session_id)
+            .ok()
+            .flatten();
+        let session_name = session_row.as_ref().and_then(|r| r.name.as_deref());
+        let session_file = self.session_setup.conn
+            .path()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "in-memory".into());
+
+        // Count messages by role from session entries
+        let mut user_msgs = 0_u64;
+        let mut asst_msgs = 0_u64;
+        let mut tool_calls = 0_u64;
+        let mut tool_results = 0_u64;
+        let mut total_input = 0_u64;
+        let mut total_output = 0_u64;
+        let mut total_cache_read = 0_u64;
+        let mut total_cache_write = 0_u64;
+        let mut total_cost = 0.0_f64;
+
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    match &entry {
+                        bb_core::types::SessionEntry::Message { message, .. } => match message {
+                            bb_core::types::AgentMessage::User(_) => user_msgs += 1,
+                            bb_core::types::AgentMessage::Assistant(a) => {
+                                asst_msgs += 1;
+                                tool_calls += a.content.iter().filter(|c| {
+                                    matches!(c, bb_core::types::AssistantContent::ToolCall { .. })
+                                }).count() as u64;
+                                total_input += a.usage.input;
+                                total_output += a.usage.output;
+                                total_cache_read += a.usage.cache_read;
+                                total_cache_write += a.usage.cache_write;
+                                total_cost += a.usage.cost.total;
+                            }
+                            bb_core::types::AgentMessage::ToolResult(_) => tool_results += 1,
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let total_msgs = user_msgs + asst_msgs + tool_results;
+        let total_tokens = total_input + total_output + total_cache_read + total_cache_write;
+
+        let mut info = format!("{bold}Session Info{reset}\n\n");
+        if let Some(name) = session_name {
+            info.push_str(&format!("{dim}Name:{reset} {name}\n"));
+        }
+        info.push_str(&format!("{dim}File:{reset} {session_file}\n"));
+        info.push_str(&format!("{dim}ID:{reset} {session_id}\n\n"));
+
+        info.push_str(&format!("{bold}Messages{reset}\n"));
+        info.push_str(&format!("{dim}User:{reset} {user_msgs}\n"));
+        info.push_str(&format!("{dim}Assistant:{reset} {asst_msgs}\n"));
+        info.push_str(&format!("{dim}Tool Calls:{reset} {tool_calls}\n"));
+        info.push_str(&format!("{dim}Tool Results:{reset} {tool_results}\n"));
+        info.push_str(&format!("{dim}Total:{reset} {total_msgs}\n\n"));
+
+        info.push_str(&format!("{bold}Tokens{reset}\n"));
+        info.push_str(&format!("{dim}Input:{reset} {total_input}\n"));
+        info.push_str(&format!("{dim}Output:{reset} {total_output}\n"));
+        if total_cache_read > 0 {
+            info.push_str(&format!("{dim}Cache Read:{reset} {total_cache_read}\n"));
+        }
+        if total_cache_write > 0 {
+            info.push_str(&format!("{dim}Cache Write:{reset} {total_cache_write}\n"));
+        }
+        info.push_str(&format!("{dim}Total:{reset} {total_tokens}\n"));
+
+        if total_cost > 0.0 {
+            info.push_str(&format!("\n{bold}Cost{reset}\n"));
+            info.push_str(&format!("{dim}Total:{reset} ${total_cost:.4}"));
+        }
+
+        self.render_state_mut()
+            .add_message_to_chat(super::super::events::InteractiveMessage::System {
+                text: info,
+            });
+        self.rebuild_chat_container();
+        self.refresh_ui();
     }
 
     pub(super) fn handle_changelog_command(&mut self) {
