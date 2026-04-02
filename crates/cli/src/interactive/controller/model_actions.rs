@@ -203,15 +203,28 @@ impl InteractiveMode {
 
         let provider_for_task = provider.to_string();
 
+        // Channel so the on_auth callback can send the URL back to the TUI.
+        let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+
         // Build UI-agnostic callbacks.
         let callbacks = OAuthCallbacks {
             on_auth: Box::new(move |url: String| {
-                // Best-effort open browser.  Ignore errors — the user can
-                // always paste the URL manually.
+                // Send URL to TUI for display first.
+                let _ = url_tx.send(url.clone());
+                // Best-effort open browser.  Suppress stdout/stderr so
+                // errors from headless servers don't corrupt the TUI.
                 #[cfg(target_os = "macos")]
-                let _ = std::process::Command::new("open").arg(&url).spawn();
+                let _ = std::process::Command::new("open")
+                    .arg(&url)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
                 #[cfg(not(target_os = "macos"))]
-                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&url)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
             }),
             on_manual_input: Some(manual_rx),
             on_progress: None,
@@ -232,6 +245,13 @@ impl InteractiveMode {
             };
             let _ = result_tx.send(result.map_err(|e| e.to_string()));
         });
+
+        // Show the auth URL in the TUI so headless users can copy it.
+        if let Ok(url) = url_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            self.show_status(format!(
+                "Open this URL to login:\n  {url}\nOr paste the redirect URL / code below and press Enter."
+            ));
+        }
     }
 
     /// Poll for the result of a pending OAuth flow (non-blocking).
