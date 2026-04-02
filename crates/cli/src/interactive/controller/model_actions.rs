@@ -155,12 +155,10 @@ impl InteractiveMode {
     }
 
     fn handle_auth_login(&mut self, provider: &str) {
-        use crate::login::{auth_source, AuthSource};
+        use super::super::auth_selector_overlay::{auth_method_for, AuthMethod};
+        use crate::login::auth_source;
 
-        // Put the editor into "api key input" mode.
-        // We stash the provider name and switch the submit route so that
-        // the next Enter delivers the text to save_api_key instead of
-        // sending it as a chat prompt.
+        let method = auth_method_for(provider);
         let source = auth_source(provider);
         let verb = if source.is_some() { "Re-auth" } else { "Login" };
         let source_note = match source {
@@ -168,27 +166,150 @@ impl InteractiveMode {
             None => String::new(),
         };
 
-        // Show instructions in status and pre-fill editor hint
+        match method {
+            AuthMethod::OAuth => {
+                // Launch the OAuth browser flow asynchronously.
+                self.start_oauth_flow(provider, verb, &source_note);
+            }
+            AuthMethod::ApiKey => {
+                // Prompt user to paste an API key (existing behaviour).
+                self.show_status(format!(
+                    "{verb} {provider}{source_note} -- paste API key and press Enter (Esc to cancel)"
+                ));
+                self.streaming.pending_auth_provider = Some(provider.to_string());
+            }
+        }
+    }
+
+    /// Kick off the OAuth authorization-code + PKCE flow for `provider`.
+    ///
+    /// * Opens the user's browser with the authorization URL.
+    /// * Also puts the editor into "manual code paste" mode so headless
+    ///   users can paste the code/URL themselves.
+    /// * Saves tokens to `auth.json` on success.
+    fn start_oauth_flow(&mut self, provider: &str, verb: &str, source_note: &str) {
+        use crate::oauth::{self, OAuthCallbacks};
+
+        // Oneshot so the user can paste the code manually.
+        let (manual_tx, manual_rx) = tokio::sync::oneshot::channel::<String>();
+
+        // We stash the sender so that `finish_auth_login` can forward pasted text.
+        self.streaming.pending_auth_provider = Some(provider.to_string());
+        self.streaming.pending_oauth_manual_tx = Some(manual_tx);
+
         self.show_status(format!(
-            "{verb} {provider}{source_note} -- paste API key and press Enter (Esc to cancel)"
+            "{verb} {provider}{source_note} — opening browser… (or paste code and press Enter)"
         ));
 
-        // Store provider for the pending key entry
-        self.streaming.pending_auth_provider = Some(provider.to_string());
+        let provider_for_task = provider.to_string();
+
+        // Build UI-agnostic callbacks.
+        let callbacks = OAuthCallbacks {
+            on_auth: Box::new(move |url: String| {
+                // Best-effort open browser.  Ignore errors — the user can
+                // always paste the URL manually.
+                #[cfg(target_os = "macos")]
+                let _ = std::process::Command::new("open").arg(&url).spawn();
+                #[cfg(not(target_os = "macos"))]
+                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            }),
+            on_manual_input: Some(manual_rx),
+            on_progress: None,
+        };
+
+        // Spawn the flow on the tokio runtime.
+        let result_tx = {
+            let (tx, rx) = tokio::sync::oneshot::channel::<Result<oauth::OAuthCredentials, String>>();
+            self.streaming.pending_oauth_result_rx = Some(rx);
+            tx
+        };
+
+        tokio::spawn(async move {
+            let result = match provider_for_task.as_str() {
+                "anthropic" => oauth::login_anthropic(callbacks).await,
+                "openai-codex" => oauth::login_openai_codex(callbacks).await,
+                _ => Err(anyhow::anyhow!("No OAuth flow for provider {provider_for_task}")),
+            };
+            let _ = result_tx.send(result.map_err(|e| e.to_string()));
+        });
+    }
+
+    /// Poll for the result of a pending OAuth flow (non-blocking).
+    ///
+    /// Called from the main event loop tick so the TUI stays responsive.
+    pub(super) fn poll_oauth_result(&mut self) {
+        let rx = match self.streaming.pending_oauth_result_rx.as_mut() {
+            Some(rx) => rx,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok(Ok(creds)) => {
+                let provider = self.streaming.pending_auth_provider.take().unwrap_or_default();
+                self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_manual_tx = None;
+
+                match crate::login::save_oauth_credentials(&provider, &creds) {
+                    Ok(()) => {
+                        self.show_status(format!("Logged in to {provider}"));
+                        // Update live key if this is the active provider.
+                        let model_provider = &self.session_setup.model.provider;
+                        let matches = model_provider == &provider
+                            || (provider == "openai-codex" && model_provider == "openai");
+                        if matches {
+                            self.session_setup.api_key = creds.access;
+                        }
+                    }
+                    Err(e) => {
+                        self.show_warning(format!("OAuth succeeded but failed to save tokens: {e}"));
+                    }
+                }
+                self.rebuild_footer();
+            }
+            Ok(Err(err)) => {
+                self.streaming.pending_auth_provider = None;
+                self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_manual_tx = None;
+                self.show_warning(format!("OAuth login failed: {err}"));
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                // Still waiting — nothing to do.
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.streaming.pending_auth_provider = None;
+                self.streaming.pending_oauth_result_rx = None;
+                self.streaming.pending_oauth_manual_tx = None;
+                self.show_warning("OAuth flow was cancelled.".to_string());
+            }
+        }
     }
 
     /// Called when user submits text while pending_auth_provider is set.
     pub(super) fn finish_auth_login(&mut self, key_text: &str) {
-        let provider = match self.streaming.pending_auth_provider.take() {
-            Some(p) => p,
+        let provider = match self.streaming.pending_auth_provider.as_ref() {
+            Some(p) => p.clone(),
             None => return,
         };
 
         let key = key_text.trim();
         if key.is_empty() {
+            self.streaming.pending_auth_provider = None;
+            self.streaming.pending_oauth_manual_tx = None;
+            self.streaming.pending_oauth_result_rx = None;
             self.show_status("No key entered, login canceled.");
             return;
         }
+
+        // If there's a pending OAuth manual-paste channel, forward the text
+        // to the OAuth flow (it races against the browser callback).
+        if let Some(tx) = self.streaming.pending_oauth_manual_tx.take() {
+            let _ = tx.send(key.to_string());
+            self.show_status(format!("Code sent — exchanging tokens for {provider}…"));
+            // The result will arrive via poll_oauth_result.
+            return;
+        }
+
+        // Otherwise this is a plain API-key paste.
+        self.streaming.pending_auth_provider = None;
 
         match crate::login::save_api_key(&provider, key) {
             Ok(()) => {

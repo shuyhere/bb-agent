@@ -30,12 +30,15 @@ enum AuthEntry {
 
 const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
     ("anthropic", "ANTHROPIC_API_KEY", "https://console.anthropic.com/settings/keys"),
-    ("openai", "OPENAI_API_KEY", "https://platform.openai.com/api-keys"),
+    ("openai-codex", "OPENAI_API_KEY", "https://platform.openai.com/api-keys"),
     ("google", "GOOGLE_API_KEY", "https://aistudio.google.com/app/apikey"),
     ("groq", "GROQ_API_KEY", "https://console.groq.com/keys"),
     ("xai", "XAI_API_KEY", "https://console.x.ai/"),
     ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/settings/keys"),
 ];
+
+/// Providers that use OAuth instead of API key paste.
+const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
 pub fn provider_meta(provider: &str) -> (&str, &str) {
     KNOWN_PROVIDERS
@@ -103,8 +106,9 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
             // Show provider selector
             println!("Available providers:");
             for (i, (name, _, url)) in KNOWN_PROVIDERS.iter().enumerate() {
+                let method_label = if OAUTH_PROVIDERS.contains(name) { "OAuth" } else { "API key" };
                 let status = get_provider_status(name);
-                println!("  {}. {} {} ({})", i + 1, name, status, url);
+                println!("  {}. {} ({}) {} ({})", i + 1, name, method_label, status, url);
             }
             println!();
             print!("Select provider (number or name): ");
@@ -127,6 +131,12 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
         }
     };
 
+    // ── OAuth providers ─────────────────────────────────────────────
+    if OAUTH_PROVIDERS.contains(&provider.as_str()) {
+        return handle_oauth_login_cli(&provider).await;
+    }
+
+    // ── API-key providers (unchanged) ───────────────────────────────
     let (_, env_var, url) = KNOWN_PROVIDERS
         .iter()
         .find(|(name, _, _)| *name == provider)
@@ -175,6 +185,38 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
     println!("✓ API key saved for {provider}");
     println!("  Stored in: {}", auth_path().display());
 
+    Ok(())
+}
+
+/// Run the OAuth browser flow from a plain terminal (non-TUI).
+async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
+    use crate::oauth::{self, OAuthCallbacks};
+
+    println!("Starting OAuth login for {provider}…");
+
+    let callbacks = OAuthCallbacks {
+        on_auth: Box::new(|url: String| {
+            println!("\nOpening browser…\nIf the browser does not open, visit:\n  {url}\n");
+            #[cfg(target_os = "macos")]
+            let _handle = std::process::Command::new("open").arg(&url).spawn();
+            #[cfg(not(target_os = "macos"))]
+            let _handle = std::process::Command::new("xdg-open").arg(&url).spawn();
+        }),
+        on_manual_input: None,
+        on_progress: Some(Box::new(|msg: String| {
+            println!("  {msg}");
+        })),
+    };
+
+    let creds = match provider {
+        "anthropic" => oauth::login_anthropic(callbacks).await?,
+        "openai-codex" => oauth::login_openai_codex(callbacks).await?,
+        other => anyhow::bail!("No OAuth flow for provider: {other}"),
+    };
+
+    save_oauth_credentials(provider, &creds)?;
+    println!("✓ Logged in to {provider}");
+    println!("  Stored in: {}", auth_path().display());
     Ok(())
 }
 
@@ -303,12 +345,19 @@ pub fn provider_has_auth(provider: &str) -> bool {
 }
 
 pub fn authenticated_providers() -> Vec<String> {
-    KNOWN_PROVIDERS
+    let mut out: Vec<String> = KNOWN_PROVIDERS
         .iter()
         .map(|(name, _, _)| *name)
         .filter(|provider| provider_has_auth(provider))
         .map(str::to_string)
-        .collect()
+        .collect();
+
+    // When openai-codex is authenticated, also expose "openai" so that
+    // models registered under the "openai" provider are selectable.
+    if out.iter().any(|p| p == "openai-codex") && !out.iter().any(|p| p == "openai") {
+        out.push("openai".to_string());
+    }
+    out
 }
 
 /// Save OAuth credentials for a provider into auth.json.
@@ -327,25 +376,35 @@ pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Resul
 }
 
 pub fn resolve_api_key(provider: &str) -> Option<String> {
-    // 1. Check BB's own auth.json
+    // Determine the list of auth-store keys to probe.  "openai" models should
+    // also pick up "openai-codex" OAuth tokens, and vice-versa.
+    let store_keys: &[&str] = match provider {
+        "openai" => &["openai", "openai-codex"],
+        "openai-codex" => &["openai-codex", "openai"],
+        _ => &[provider],
+    };
+
+    // 1. Check BB's own auth.json (try each alias in order).
     let store = load_auth();
-    if let Some(entry) = store.providers.get(provider) {
-        match entry {
-            AuthEntry::ApiKey { key } => return Some(key.clone()),
-            AuthEntry::OAuth { access, refresh, expires, .. } => {
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                // If token is still valid (with 60s buffer), return it.
-                if *expires > now_ms + 60_000 {
+    for &key_name in store_keys {
+        if let Some(entry) = store.providers.get(key_name) {
+            match entry {
+                AuthEntry::ApiKey { key } => return Some(key.clone()),
+                AuthEntry::OAuth { access, refresh, expires, .. } => {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    // If token is still valid (with 60s buffer), return it.
+                    if *expires > now_ms + 60_000 {
+                        return Some(access.clone());
+                    }
+                    // Try to auto-refresh.
+                    if !refresh.is_empty() {
+                        if let Some(creds) = try_refresh_sync(key_name, refresh) {
+                            return Some(creds);
+                        }
+                    }
+                    // Return stale token as last resort (server will reject).
                     return Some(access.clone());
                 }
-                // Try to auto-refresh.
-                if !refresh.is_empty() {
-                    if let Some(creds) = try_refresh_sync(provider, refresh) {
-                        return Some(creds);
-                    }
-                }
-                // Return stale token as last resort (server will reject).
-                return Some(access.clone());
             }
         }
     }

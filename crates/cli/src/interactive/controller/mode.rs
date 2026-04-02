@@ -26,6 +26,10 @@ pub(super) struct StreamingState {
     pub(super) default_hidden_thinking_label: &'static str,
     /// When set, the next editor submit saves an API key instead of sending a prompt.
     pub(super) pending_auth_provider: Option<String>,
+    /// Sender for the manual-paste fallback during an OAuth flow.
+    pub(super) pending_oauth_manual_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    /// Receiver for the result of a background OAuth flow.
+    pub(super) pending_oauth_result_rx: Option<tokio::sync::oneshot::Receiver<Result<crate::oauth::OAuthCredentials, String>>>,
 }
 
 pub(super) struct QueueState {
@@ -117,6 +121,8 @@ impl InteractiveMode {
                 streaming_thinking: String::new(),
                 streaming_tool_calls: Vec::new(),
                 pending_auth_provider: None,
+                pending_oauth_manual_tx: None,
+                pending_oauth_result_rx: None,
             },
             queues: QueueState {
                 steering_queue: VecDeque::new(),

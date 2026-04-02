@@ -22,6 +22,22 @@ pub enum AuthSelectorMode {
     Logout,
 }
 
+/// Whether a provider authenticates via OAuth or a pasted API key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    OAuth,
+    ApiKey,
+}
+
+impl AuthMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthMethod::OAuth => "OAuth",
+            AuthMethod::ApiKey => "API key",
+        }
+    }
+}
+
 /// An overlay component that shows available providers for login/logout.
 pub struct AuthSelectorOverlay {
     mode: AuthSelectorMode,
@@ -34,25 +50,27 @@ pub struct AuthSelectorOverlay {
 struct ProviderEntry {
     name: String,
     display: String,
+    auth_method: AuthMethod,
     source: Option<AuthSource>,
 }
 
-const PROVIDERS: &[(&str, &str)] = &[
-    ("anthropic", "Anthropic"),
-    ("openai", "OpenAI"),
-    ("google", "Google"),
-    ("groq", "Groq"),
-    ("xai", "xAI"),
-    ("openrouter", "OpenRouter"),
+const PROVIDERS: &[(&str, &str, AuthMethod)] = &[
+    ("anthropic", "Anthropic", AuthMethod::OAuth),
+    ("openai-codex", "OpenAI Codex", AuthMethod::OAuth),
+    ("google", "Google", AuthMethod::ApiKey),
+    ("groq", "Groq", AuthMethod::ApiKey),
+    ("xai", "xAI", AuthMethod::ApiKey),
+    ("openrouter", "OpenRouter", AuthMethod::ApiKey),
 ];
 
 impl AuthSelectorOverlay {
     pub fn new(mode: AuthSelectorMode) -> Self {
         let providers: Vec<ProviderEntry> = PROVIDERS
             .iter()
-            .map(|(id, display)| ProviderEntry {
+            .map(|(id, display, method)| ProviderEntry {
                 name: id.to_string(),
                 display: display.to_string(),
+                auth_method: *method,
                 source: login::auth_source(id),
             })
             .collect();
@@ -69,6 +87,20 @@ impl AuthSelectorOverlay {
     pub fn action(&self) -> &AuthSelectorAction {
         &self.action
     }
+
+    /// Returns the auth method of the currently selected provider.
+    pub fn selected_auth_method(&self) -> Option<AuthMethod> {
+        self.providers.get(self.selected).map(|e| e.auth_method)
+    }
+}
+
+/// Look up the auth method for a provider by its id.
+pub fn auth_method_for(provider: &str) -> AuthMethod {
+    PROVIDERS
+        .iter()
+        .find(|(id, _, _)| *id == provider)
+        .map(|(_, _, m)| *m)
+        .unwrap_or(AuthMethod::ApiKey)
 }
 
 impl Component for AuthSelectorOverlay {
@@ -98,12 +130,14 @@ impl Component for AuthSelectorOverlay {
         for (i, entry) in self.providers.iter().enumerate() {
             let is_selected = i == self.selected;
 
+            let method_tag = format!(" ({})", entry.auth_method.label());
+
             let status = match entry.source {
                 Some(src) => format!(
-                    " {green}[via {}]{reset}",
+                    "{method_tag} {green}[via {}]{reset}",
                     src.label()
                 ),
-                None => format!(" {dim}[not authenticated]{reset}"),
+                None => format!("{method_tag} {dim}[not authenticated]{reset}"),
             };
 
             let reauth_hint = if is_selected && entry.source.is_some() && self.mode == AuthSelectorMode::Login {

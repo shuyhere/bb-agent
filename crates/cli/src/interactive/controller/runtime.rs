@@ -109,6 +109,9 @@ impl InteractiveMode {
                 return Ok(None);
             }
 
+            // Check for completed OAuth flows.
+            self.poll_oauth_result();
+
             // Use tokio::select! to handle both terminal and agent events
             tokio::select! {
                 terminal_event = async {
