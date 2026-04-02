@@ -36,22 +36,20 @@ impl InteractiveMode {
             comp.set_hidden_thinking_label(label);
             self.render_state_mut().streaming_component = Some(comp.clone());
             self.render_state_mut().streaming_message = Some(message);
-            self.render_state_mut().chat_items.push(ChatItem::AssistantMessage(comp));
+            self.append_chat_item(ChatItem::AssistantMessage(comp));
         } else {
             if let Some(comp) = self.render_state_mut().streaming_component.as_mut() {
                 comp.update_content(message.clone());
             }
             self.render_state_mut().streaming_message = Some(message);
-            let updated = self.render_state().streaming_component.clone();
-            if let Some(updated) = updated {
-                if let Some(item) = self
-                    .render_state_mut()
+            if let Some(updated) = self.render_state().streaming_component.clone() {
+                if let Some(index) = self
+                    .render_state()
                     .chat_items
-                    .iter_mut()
-                    .rev()
-                    .find(|i| matches!(i, ChatItem::AssistantMessage(_)))
+                    .iter()
+                    .rposition(|i| matches!(i, ChatItem::AssistantMessage(_)))
                 {
-                    *item = ChatItem::AssistantMessage(updated);
+                    self.replace_chat_item(index, ChatItem::AssistantMessage(updated));
                 }
             }
         }
@@ -59,10 +57,6 @@ impl InteractiveMode {
 
     pub(super) fn update_streaming_display(&mut self) {
         self.sync_streaming_assistant_component(None, None);
-        // During streaming, only the last chat item (streaming component) changes.
-        // Rebuild the chat container and render — but the differential renderer
-        // will only redraw the changed lines.
-        self.rebuild_chat_container();
         self.ui.tui.render();
     }
 
@@ -258,9 +252,8 @@ impl InteractiveMode {
                     },
                 );
                 component.set_expanded(self.interaction.tool_output_expanded);
-                self.render_state_mut().chat_items.push(ChatItem::ToolExecution(component.clone()));
+                self.append_chat_item(ChatItem::ToolExecution(component.clone()));
                 self.render_state_mut().pending_tools.insert(id, component);
-                self.rebuild_chat_container();
                 self.ui.tui.render();
             }
             AgentLoopEvent::ToolCallDelta { id, args_delta } => {
@@ -275,14 +268,11 @@ impl InteractiveMode {
                 let updated = self.render_state().pending_tools.get(&id).cloned();
                 if let Some(updated) = updated {
                     let id_clone = id.clone();
-                    if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                        .find(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone))
-                    {
-                        *chat_item = ChatItem::ToolExecution(updated);
+                    if let Some(index) = self.render_state().chat_items.iter().rposition(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone)) {
+                        self.replace_chat_item(index, ChatItem::ToolExecution(updated));
                     }
                 }
                 self.sync_streaming_assistant_component(None, None);
-                self.rebuild_chat_container();
                 self.ui.tui.render();
             }
             AgentLoopEvent::ToolExecuting { id, .. } => {
@@ -296,13 +286,10 @@ impl InteractiveMode {
                 };
                 if let Some(updated) = updated {
                     let id_clone = id.clone();
-                    if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                        .find(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone))
-                    {
-                        *chat_item = ChatItem::ToolExecution(updated);
+                    if let Some(index) = self.render_state().chat_items.iter().rposition(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone)) {
+                        self.replace_chat_item(index, ChatItem::ToolExecution(updated));
                     }
                 }
-                self.rebuild_chat_container();
                 self.ui.tui.render();
             }
             AgentLoopEvent::ToolResult {
@@ -357,14 +344,11 @@ impl InteractiveMode {
                 };
                 if let Some(updated) = updated {
                     let id_clone = id.clone();
-                    if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                        .find(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone))
-                    {
-                        *chat_item = ChatItem::ToolExecution(updated);
+                    if let Some(index) = self.render_state().chat_items.iter().rposition(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id_clone)) {
+                        self.replace_chat_item(index, ChatItem::ToolExecution(updated));
                     }
                 }
                 self.render_state_mut().pending_tools.remove(&id);
-                self.rebuild_chat_container();
                 self.ui.tui.render();
             }
             AgentLoopEvent::AutoRetryStart {
@@ -415,10 +399,8 @@ impl InteractiveMode {
                     .map(|(id, component)| (id.clone(), component.clone()))
                     .collect::<Vec<_>>();
                 for (id, updated) in updated_pending {
-                    if let Some(chat_item) = self.render_state_mut().chat_items.iter_mut().rev()
-                        .find(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id))
-                    {
-                        *chat_item = ChatItem::ToolExecution(updated);
+                    if let Some(index) = self.render_state().chat_items.iter().rposition(|item| matches!(item, ChatItem::ToolExecution(tc) if tc.tool_call_id() == id)) {
+                        self.replace_chat_item(index, ChatItem::ToolExecution(updated));
                     }
                 }
                 self.finalize_streaming_assistant_message(None, None);
@@ -427,7 +409,6 @@ impl InteractiveMode {
                 if self.render_state().pending_tools.is_empty() {
                     self.streaming.status_loader = None;
                 }
-                self.rebuild_chat_container();
                 self.rebuild_status_container();
                 self.rebuild_footer();
                 self.ui.tui.render();
@@ -487,36 +468,41 @@ impl InteractiveMode {
     pub(super) fn show_error(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.streaming.status_loader = None;
-        self.render_state_mut().chat_items.push(ChatItem::Spacer);
-        self.render_state_mut().chat_items.push(ChatItem::ErrorMessage(message));
+        self.append_chat_item(ChatItem::Spacer);
+        self.append_chat_item(ChatItem::ErrorMessage(message));
         self.render_cache.status_lines.clear();
-        self.rebuild_chat_container();
     }
 
     pub(super) fn show_warning(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.streaming.status_loader = None;
-        self.render_state_mut().chat_items.push(ChatItem::Spacer);
-        self.render_state_mut().chat_items.push(ChatItem::WarningMessage(message));
+        self.append_chat_item(ChatItem::Spacer);
+        self.append_chat_item(ChatItem::WarningMessage(message));
         self.render_cache.status_lines.clear();
-        self.rebuild_chat_container();
     }
 
     pub(super) fn clear_status(&mut self) {
         self.render_cache.status_lines.clear();
+        let len = self.render_state().chat_items.len();
+        if len >= 2
+            && matches!(self.render_state().chat_items.get(len - 1), Some(ChatItem::StatusMessage(_)))
+            && matches!(self.render_state().chat_items.get(len - 2), Some(ChatItem::Spacer))
+        {
+            self.truncate_chat_items(len - 2);
+        }
     }
 
     pub(super) fn show_status(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.streaming.status_loader = None;
-        let chat_items = &mut self.render_state_mut().chat_items;
-        if let [.., ChatItem::Spacer, ChatItem::StatusMessage(existing)] = chat_items.as_mut_slice() {
-            *existing = message;
+        let status_index = self.render_state().chat_items.len().checked_sub(1)
+            .filter(|&idx| matches!(self.render_state().chat_items.get(idx), Some(ChatItem::StatusMessage(_))));
+        if let Some(index) = status_index {
+            self.replace_chat_item(index, ChatItem::StatusMessage(message));
         } else {
-            chat_items.push(ChatItem::Spacer);
-            chat_items.push(ChatItem::StatusMessage(message));
+            self.append_chat_item(ChatItem::Spacer);
+            self.append_chat_item(ChatItem::StatusMessage(message));
         }
         self.render_cache.status_lines.clear();
-        self.rebuild_chat_container();
     }
 }

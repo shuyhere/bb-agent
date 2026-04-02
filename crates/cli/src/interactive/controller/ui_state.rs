@@ -63,75 +63,106 @@ impl InteractiveMode {
         }
     }
 
+    fn chat_component_for_item(&self, item: &ChatItem) -> Box<dyn Component> {
+        match item {
+            ChatItem::Spacer => Box::new(Spacer::new(1)),
+            ChatItem::UserMessage(text) => {
+                Box::new(super::super::components::user_message::UserMessageComponent::new(text.clone()))
+            }
+            ChatItem::AssistantMessage(component) => Box::new(component.clone()),
+            ChatItem::ToolExecution(component) => Box::new(component.clone()),
+            ChatItem::BashExecution(component) => Box::new(component.clone()),
+            ChatItem::CustomMessage { text, .. } => Box::new(bb_tui::components::Text::new(
+                text.clone(), 1, 0, None,
+            )),
+            ChatItem::CompactionSummary(summary) => Box::new(
+                super::super::components::compaction_message::CompactionSummaryMessageComponent::new(
+                    summary.clone(),
+                    0,
+                ),
+            ),
+            ChatItem::BranchSummary(summary) => Box::new(
+                super::super::components::branch_summary::BranchSummaryMessageComponent::new(
+                    summary.clone(),
+                ),
+            ),
+            ChatItem::PendingMessageLine(line) => {
+                Box::new(bb_tui::components::Text::new(line.clone(), 1, 0, None))
+            }
+            ChatItem::SystemMessage(text) => {
+                let t = bb_tui::theme::theme();
+                Box::new(bb_tui::components::Text::new(
+                    format!("{}{}{}", t.yellow, text, t.reset),
+                    1,
+                    0,
+                    None,
+                ))
+            }
+            ChatItem::StatusMessage(text) => {
+                let t = bb_tui::theme::theme();
+                Box::new(bb_tui::components::Text::new(
+                    format!("{}{}{}", t.dim, text, t.reset),
+                    1,
+                    0,
+                    None,
+                ))
+            }
+            ChatItem::WarningMessage(text) => {
+                let t = bb_tui::theme::theme();
+                Box::new(bb_tui::components::Text::new(
+                    format!("{}Warning: {}{}", t.yellow, text, t.reset),
+                    1,
+                    0,
+                    None,
+                ))
+            }
+            ChatItem::ErrorMessage(text) => {
+                let t = bb_tui::theme::theme();
+                Box::new(bb_tui::components::Text::new(
+                    format!("{}Error: {}{}", t.error, text, t.reset),
+                    1,
+                    0,
+                    None,
+                ))
+            }
+        }
+    }
+
+    pub(super) fn append_chat_item(&mut self, item: ChatItem) {
+        let component = self.chat_component_for_item(&item);
+        self.controller.session.render_state.chat_items.push(item);
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            container.add(component);
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn replace_chat_item(&mut self, index: usize, item: ChatItem) {
+        let component = self.chat_component_for_item(&item);
+        if let Some(slot) = self.controller.session.render_state.chat_items.get_mut(index) {
+            *slot = item;
+        }
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            if index < container.children.len() {
+                container.children[index] = component;
+            }
+        }
+        self.ui.tui.invalidate_root();
+    }
+
+    pub(super) fn truncate_chat_items(&mut self, len: usize) {
+        self.controller.session.render_state.chat_items.truncate(len);
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            container.children.truncate(len);
+        }
+        self.ui.tui.invalidate_root();
+    }
+
     pub(super) fn rebuild_chat_container(&mut self) {
         if let Ok(mut container) = self.ui.chat_container.lock() {
             container.clear();
             for item in &self.controller.session.render_state.chat_items {
-                match item {
-                    ChatItem::Spacer => container.add(Box::new(Spacer::new(1))),
-                    ChatItem::UserMessage(text) => {
-                        container.add(Box::new(super::super::components::user_message::UserMessageComponent::new(text.clone())));
-                    }
-                    ChatItem::AssistantMessage(component) => {
-                        container.add(Box::new(component.clone()));
-                    }
-                    ChatItem::ToolExecution(component) => {
-                        container.add(Box::new(component.clone()));
-                    }
-                    ChatItem::BashExecution(component) => {
-                        container.add(Box::new(component.clone()));
-                    }
-                    ChatItem::CustomMessage { text, .. } => {
-                        container.add(Box::new(bb_tui::components::Text::new(
-                            text.clone(), 1, 0, None,
-                        )));
-                    }
-                    ChatItem::CompactionSummary(summary) => {
-                        container.add(Box::new(super::super::components::compaction_message::CompactionSummaryMessageComponent::new(summary.clone(), 0)));
-                    }
-                    ChatItem::BranchSummary(summary) => {
-                        container.add(Box::new(super::super::components::branch_summary::BranchSummaryMessageComponent::new(summary.clone())));
-                    }
-                    ChatItem::PendingMessageLine(line) => {
-                        container.add(Box::new(bb_tui::components::Text::new(line.clone(), 1, 0, None)));
-                    }
-                    ChatItem::SystemMessage(text) => {
-                        let t = bb_tui::theme::theme();
-                        container.add(Box::new(bb_tui::components::Text::new(
-                            format!("{}{}{}", t.yellow, text, t.reset),
-                            1,
-                            0,
-                            None,
-                        )));
-                    }
-                    ChatItem::StatusMessage(text) => {
-                        let t = bb_tui::theme::theme();
-                        container.add(Box::new(bb_tui::components::Text::new(
-                            format!("{}{}{}", t.dim, text, t.reset),
-                            1,
-                            0,
-                            None,
-                        )));
-                    }
-                    ChatItem::WarningMessage(text) => {
-                        let t = bb_tui::theme::theme();
-                        container.add(Box::new(bb_tui::components::Text::new(
-                            format!("{}Warning: {}{}", t.yellow, text, t.reset),
-                            1,
-                            0,
-                            None,
-                        )));
-                    }
-                    ChatItem::ErrorMessage(text) => {
-                        let t = bb_tui::theme::theme();
-                        container.add(Box::new(bb_tui::components::Text::new(
-                            format!("{}Error: {}{}", t.error, text, t.reset),
-                            1,
-                            0,
-                            None,
-                        )));
-                    }
-                }
+                container.add(self.chat_component_for_item(item));
             }
         }
         self.ui.tui.invalidate_root();
