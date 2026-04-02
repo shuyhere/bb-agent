@@ -28,6 +28,11 @@ pub trait Component: Send {
     /// Invalidate cached rendering state (e.g., on theme/width change).
     fn invalidate(&mut self) {}
 
+    /// Called when focus state changes. Components that implement Focusable
+    /// should override this to track focus state and emit CURSOR_MARKER.
+    /// Default is a no-op.
+    fn set_focused(&mut self, _focused: bool) {}
+
     /// Downcast support.
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;

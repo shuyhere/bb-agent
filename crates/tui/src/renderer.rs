@@ -9,7 +9,10 @@
 
 use crate::component::CURSOR_MARKER;
 use crate::terminal::Terminal;
+use crate::tui_core::is_termux;
 use crate::utils::visible_width;
+
+use std::sync::OnceLock;
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
@@ -17,6 +20,61 @@ const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
 /// OSC 133;A — shell prompt marker re-used as a line-boundary reset.
 #[allow(dead_code)]
 const LINE_RESET_MARKER: &str = "\x1b]133;A\x07";
+
+/// Cached check for the `BB_DEBUG_REDRAW` environment variable.
+fn debug_redraw_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("BB_DEBUG_REDRAW").as_deref() == Ok("1"))
+}
+
+/// Cached Termux detection.
+fn in_termux() -> bool {
+    static TERMUX: OnceLock<bool> = OnceLock::new();
+    *TERMUX.get_or_init(is_termux)
+}
+
+/// Append a debug-redraw message to `~/.bb-agent/tui-debug.log`.
+fn log_redraw(reason: &str, prev_len: usize, new_len: usize, height: u16) {
+    if !debug_redraw_enabled() {
+        return;
+    }
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let dir = format!("{home}/.bb-agent");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = format!("{dir}/tui-debug.log");
+    let now = chrono::Utc::now().to_rfc3339();
+    let msg = format!(
+        "[{now}] fullRender: {reason} (prev={prev_len}, new={new_len}, height={height})\n",
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(msg.as_bytes())
+        });
+}
+
+/// Write width-overflow debug info to `~/.bb-agent/tui-crash.log`.
+fn write_crash_log(line_idx: usize, line_width: usize, term_width: usize, all_lines: &[String]) {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let dir = format!("{home}/.bb-agent");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = format!("{dir}/tui-crash.log");
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut data = format!(
+        "Width overflow at {now}\nTerminal width: {term_width}\nLine {line_idx} visible width: {line_width}\n\n=== All rendered lines ===\n"
+    );
+    for (i, l) in all_lines.iter().enumerate() {
+        data.push_str(&format!("[{i}] (w={}) {l}\n", visible_width(l)));
+    }
+    let _ = std::fs::write(&path, data.as_bytes());
+}
 
 pub struct Renderer {
     prev_lines: Vec<String>,
@@ -74,23 +132,29 @@ impl Renderer {
         let new_lines: Vec<String> = Self::apply_line_resets(new_lines);
 
         // Width overflow protection — truncate lines exceeding terminal width
+        // and write debug info to crash log.
         let width_usize = width as usize;
-        let new_lines: Vec<String> = new_lines
-            .into_iter()
-            .map(|l| {
-                if visible_width(&l) > width_usize {
-                    #[cfg(debug_assertions)]
-                    eprintln!(
-                        "[renderer] line exceeds terminal width ({} > {}), truncating",
-                        visible_width(&l),
-                        width_usize
-                    );
-                    crate::utils::truncate_to_width(&l, width_usize)
-                } else {
-                    l
-                }
-            })
-            .collect();
+        let new_lines: Vec<String> = {
+            let mut overflow_logged = false;
+            new_lines
+                .into_iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let vw = visible_width(&l);
+                    if vw > width_usize {
+                        if !overflow_logged {
+                            overflow_logged = true;
+                            // The new_lines we have here already had resets applied
+                            // but log anyway for debugging.
+                            write_crash_log(i, vw, width_usize, &[l.clone()]);
+                        }
+                        crate::utils::truncate_to_width(&l, width_usize)
+                    } else {
+                        l
+                    }
+                })
+                .collect()
+        };
 
         // Extract cursor position
         let cursor_pos = self.find_cursor(&new_lines);
@@ -110,6 +174,7 @@ impl Renderer {
 
         // First render
         if self.prev_lines.is_empty() && !width_changed && !height_changed {
+            log_redraw("first render", 0, new_lines.len(), height);
             self.full_render(&new_lines, terminal, false);
             self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
@@ -118,14 +183,26 @@ impl Renderer {
 
         // Width changed
         if width_changed {
+            log_redraw(
+                &format!("terminal width changed ({} -> {})", self.prev_width, width),
+                self.prev_lines.len(),
+                new_lines.len(),
+                height,
+            );
             self.full_render(&new_lines, terminal, true);
             self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
             return;
         }
 
-        // Height changed
-        if height_changed {
+        // Height changed — skip full redraw in Termux (keyboard show/hide).
+        if height_changed && !in_termux() {
+            log_redraw(
+                &format!("terminal height changed ({} -> {})", self.prev_height, height),
+                self.prev_lines.len(),
+                new_lines.len(),
+                height,
+            );
             // Recalculate viewport top after height change
             let prev_buffer_len = self.prev_viewport_top + self.prev_height as usize;
             self.prev_viewport_top = prev_buffer_len.saturating_sub(height_usize);
@@ -137,6 +214,12 @@ impl Renderer {
 
         // Content shrunk and clear_on_shrink is enabled
         if needs_shrink_clear {
+            log_redraw(
+                &format!("clearOnShrink (maxLinesRendered={})", self.max_lines_rendered),
+                self.prev_lines.len(),
+                new_lines.len(),
+                height,
+            );
             self.full_render(&new_lines, terminal, true);
             self.position_hardware_cursor(cursor_pos, terminal);
             self.save_state(&new_lines, width, height);
@@ -227,18 +310,21 @@ impl Renderer {
         let mut viewport_top = self.prev_viewport_top;
 
         // Pi's computeLineDiff: convert absolute row to relative cursor movement
-        let compute_line_diff = |target: usize, cur_hw: usize, prev_vt: usize, cur_vt: usize| -> isize {
-            let current_screen = cur_hw as isize - prev_vt as isize;
-            let target_screen = target as isize - cur_vt as isize;
-            target_screen - current_screen
-        };
+        let compute_line_diff =
+            |target: usize, cur_hw: usize, prev_vt: usize, cur_vt: usize| -> isize {
+                let current_screen = cur_hw as isize - prev_vt as isize;
+                let target_screen = target as isize - cur_vt as isize;
+                target_screen - current_screen
+            };
 
         let move_target = if append_start { first - 1 } else { first };
 
         // If target is below visible viewport, scroll down
         let prev_viewport_bottom = self.prev_viewport_top + height.saturating_sub(1);
         if move_target > prev_viewport_bottom {
-            let current_screen_row = hw_row.saturating_sub(self.prev_viewport_top).min(height - 1);
+            let current_screen_row = hw_row
+                .saturating_sub(self.prev_viewport_top)
+                .min(height - 1);
             let move_to_bottom = (height - 1).saturating_sub(current_screen_row);
             if move_to_bottom > 0 {
                 buf.push_str(&format!("\x1b[{}B", move_to_bottom));
@@ -252,7 +338,8 @@ impl Renderer {
         }
 
         // Move cursor to target line
-        let line_diff = compute_line_diff(move_target, hw_row, self.prev_viewport_top, viewport_top);
+        let line_diff =
+            compute_line_diff(move_target, hw_row, self.prev_viewport_top, viewport_top);
         if line_diff > 0 {
             buf.push_str(&format!("\x1b[{}B", line_diff));
         } else if line_diff < 0 {
@@ -294,9 +381,8 @@ impl Renderer {
 
         self.hw_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_count);
-        self.prev_viewport_top = viewport_top.max(
-            final_cursor_row.saturating_sub(height.saturating_sub(1))
-        );
+        self.prev_viewport_top = viewport_top
+            .max(final_cursor_row.saturating_sub(height.saturating_sub(1)));
     }
 
     fn find_cursor(&self, lines: &[String]) -> Option<(usize, usize)> {

@@ -27,7 +27,7 @@ pub fn visible_width(s: &str) -> usize {
 }
 
 /// Width of a single character in terminal columns.
-fn char_width(c: char) -> usize {
+pub(crate) fn char_width(c: char) -> usize {
     if c < ' ' {
         return 0; // control chars
     }
@@ -61,7 +61,7 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 /// Determine the length of an ANSI escape sequence starting at `pos`.
-fn ansi_sequence_len(bytes: &[u8], pos: usize) -> Option<usize> {
+pub(crate) fn ansi_sequence_len(bytes: &[u8], pos: usize) -> Option<usize> {
     if pos >= bytes.len() || bytes[pos] != 0x1b {
         return None;
     }
@@ -205,6 +205,86 @@ pub fn word_wrap(s: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
+/// Result of extracting before/after segments from a line for overlay compositing.
+pub struct ExtractedSegments {
+    pub before: String,
+    pub before_width: usize,
+    pub after: String,
+    pub after_width: usize,
+}
+
+/// Extract before and after segments from an ANSI string for overlay compositing.
+///
+/// `before_width`: take the first N visible columns as the "before" segment.
+/// `after_start`: visible column where the "after" segment begins.
+/// `after_width`: max visible columns for the "after" segment.
+///
+/// ANSI escape sequences encountered during traversal are included in the
+/// segment they fall within. This enables overlay compositing: splice overlay
+/// content between the before and after segments.
+pub fn extract_segments(
+    s: &str,
+    before_width: usize,
+    after_start: usize,
+    after_width: usize,
+) -> ExtractedSegments {
+    let mut before = String::new();
+    let mut bw = 0usize;
+    let mut after = String::new();
+    let mut aw = 0usize;
+    let mut col = 0usize;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Handle ANSI escape sequences — include in whichever segment is active
+        if bytes[i] == 0x1b {
+            if let Some(len) = ansi_sequence_len(bytes, i) {
+                let seq = &s[i..i + len];
+                if col < before_width {
+                    before.push_str(seq);
+                } else if col >= after_start && aw < after_width {
+                    after.push_str(seq);
+                }
+                i += len;
+                continue;
+            }
+        }
+
+        let ch = s[i..].chars().next().unwrap();
+        let cw = char_width(ch);
+
+        if cw == 0 {
+            // Zero-width chars go into the active segment
+            if col < before_width {
+                before.push(ch);
+            } else if col >= after_start && aw < after_width {
+                after.push(ch);
+            }
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if col + cw <= before_width {
+            before.push(ch);
+            bw += cw;
+        } else if col >= after_start && aw + cw <= after_width {
+            after.push(ch);
+            aw += cw;
+        }
+
+        col += cw;
+        i += ch.len_utf8();
+    }
+
+    ExtractedSegments {
+        before,
+        before_width: bw,
+        after,
+        after_width: aw,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +341,35 @@ mod tests {
     fn test_word_wrap_long_word() {
         let lines = word_wrap("superlongword", 5);
         assert_eq!(lines.len(), 1); // can't break, stays on one line
+    }
+
+    #[test]
+    fn test_extract_segments_plain() {
+        let s = "Hello World Goodbye";
+        let seg = extract_segments(s, 6, 12, 7);
+        assert_eq!(seg.before, "Hello ");
+        assert_eq!(seg.before_width, 6);
+        assert_eq!(seg.after, "Goodbye");
+        assert_eq!(seg.after_width, 7);
+    }
+
+    #[test]
+    fn test_extract_segments_with_ansi() {
+        let s = "\x1b[31mHello\x1b[0m World";
+        let seg = extract_segments(s, 5, 6, 5);
+        assert!(seg.before.contains("\x1b[31m"));
+        assert_eq!(seg.before_width, 5);
+        assert_eq!(seg.after, "World");
+        assert_eq!(seg.after_width, 5);
+    }
+
+    #[test]
+    fn test_extract_segments_short_string() {
+        let s = "Hi";
+        let seg = extract_segments(s, 5, 10, 5);
+        assert_eq!(seg.before, "Hi");
+        assert_eq!(seg.before_width, 2);
+        assert_eq!(seg.after, "");
+        assert_eq!(seg.after_width, 0);
     }
 }
