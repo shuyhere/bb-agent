@@ -68,6 +68,7 @@ impl InteractiveMode {
         self.bind_current_session_extensions().await?;
         self.render_initial_messages();
         self.update_terminal_title();
+        self.snapshot_chat_cache();
         self.refresh_ui();
 
         Ok(())
@@ -347,10 +348,17 @@ impl InteractiveMode {
         // Take tools out of session_setup (we'll put them back when the task finishes)
         let tools = std::mem::take(&mut self.session_setup.tools);
 
-        let sibling_conn = turn_runner::open_sibling_conn(&self.session_setup.conn)
-            .map_err(|e| -> Box<dyn Error + Send + Sync> {
-                Box::<dyn Error + Send + Sync>::from(e.to_string())
-            })?;
+        // Reuse cached sibling connection (avoid opening new SQLite conn each turn).
+        let sibling_conn = if let Some(conn) = self.session_setup.sibling_conn.clone() {
+            conn
+        } else {
+            let conn = turn_runner::open_sibling_conn(&self.session_setup.conn)
+                .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                    Box::<dyn Error + Send + Sync>::from(e.to_string())
+                })?;
+            self.session_setup.sibling_conn = Some(conn.clone());
+            conn
+        };
 
         Ok(TurnConfig {
             conn: sibling_conn,

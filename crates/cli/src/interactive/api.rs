@@ -34,4 +34,6 @@ pub struct InteractiveSessionSetup {
     pub thinking_level: String,
     /// Whether the session row has been created in the DB yet.
     pub session_created: bool,
+    /// Cached sibling DB connection for the turn runner (avoid opening a new one each turn).
+    pub sibling_conn: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
 }

@@ -352,6 +352,7 @@ impl InteractiveMode {
         self.rebuild_pending_container();
         self.rebuild_footer();
         self.show_status(format!("Imported {imported} entries from {path}"));
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
@@ -399,6 +400,7 @@ impl InteractiveMode {
                         },
                     );
                     self.rebuild_chat_container();
+                    self.snapshot_chat_cache();
                     self.refresh_ui();
                 }
                 None => self.show_status("Usage: /name <name>"),
@@ -418,6 +420,7 @@ impl InteractiveMode {
                 );
                 self.rebuild_chat_container();
                 self.rebuild_footer();
+                self.snapshot_chat_cache();
                 self.refresh_ui();
             }
             Err(e) => self.show_warning(format!("Failed to rename session: {e}")),
@@ -514,6 +517,7 @@ impl InteractiveMode {
                 text: info,
             });
         self.rebuild_chat_container();
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
@@ -527,6 +531,7 @@ impl InteractiveMode {
             },
         );
         self.rebuild_chat_container();
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
@@ -791,6 +796,7 @@ impl InteractiveMode {
                         text: "New session started".to_string(),
                     });
                 self.rebuild_chat_container();
+                self.snapshot_chat_cache();
                 self.refresh_ui();
         }
     }
@@ -832,6 +838,7 @@ impl InteractiveMode {
             super::super::events::InteractiveMessage::System { text: help },
         );
         self.rebuild_chat_container();
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
@@ -1042,6 +1049,8 @@ impl InteractiveMode {
             },
         );
         self.rebuild_chat_container();
+        // Cache all rendered items so subsequent rebuilds (Enter, streaming) are instant.
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 
@@ -1129,6 +1138,7 @@ impl InteractiveMode {
             },
         );
         self.rebuild_chat_container();
+        self.snapshot_chat_cache();
         self.refresh_ui();
     }
 

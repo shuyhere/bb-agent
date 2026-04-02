@@ -176,6 +176,7 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         system_prompt,
         thinking_level: thinking_str.to_string(),
         session_created: false,
+        sibling_conn: None,
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {
