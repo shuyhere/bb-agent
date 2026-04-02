@@ -1,10 +1,63 @@
 use super::*;
 
+/// Pre-computed preview for a session entry.
+struct EntryPreview {
+    entry_type: String,
+    preview: String,
+}
+
+/// Load all entry previews for a session in a single DB query.
+fn load_all_previews(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> std::collections::HashMap<String, EntryPreview> {
+    let mut map = std::collections::HashMap::new();
+    let rows = match store::get_entries(conn, session_id) {
+        Ok(r) => r,
+        Err(_) => return map,
+    };
+    for row in rows {
+        let entry = match store::parse_entry(&row) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let (entry_type, preview) = match &entry {
+            bb_core::types::SessionEntry::Message { message, .. } => match message {
+                bb_core::types::AgentMessage::User(u) => {
+                    let text: String = u.content.iter().filter_map(|b| match b {
+                        bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).collect::<Vec<_>>().join(" ");
+                    let line = text.trim().replace('\n', " ");
+                    ("user", if line.is_empty() { "(empty)".into() } else { line })
+                }
+                bb_core::types::AgentMessage::Assistant(a) => {
+                    let text = bb_core::agent::extract_text(&a.content);
+                    let line = text.trim().replace('\n', " ");
+                    ("assistant", if line.is_empty() { "(empty)".into() } else { line })
+                }
+                bb_core::types::AgentMessage::ToolResult(t) => {
+                    ("tool_result", format!("{}: ...", t.tool_name))
+                }
+                bb_core::types::AgentMessage::CompactionSummary(_) => {
+                    ("compaction", "[compaction summary]".into())
+                }
+                _ => ("other", "...".into()),
+            },
+            _ => ("other", "...".into()),
+        };
+        map.insert(
+            row.entry_id.clone(),
+            EntryPreview { entry_type: entry_type.into(), preview },
+        );
+    }
+    map
+}
+
 /// Flatten a tree into display entries with connectors.
 fn flatten_tree(
     nodes: &[bb_session::tree::TreeNode],
-    conn: &rusqlite::Connection,
-    session_id: &str,
+    previews: &std::collections::HashMap<String, EntryPreview>,
     depth: usize,
     prefix: &str,
     leaf_id: &Option<String>,
@@ -20,8 +73,11 @@ fn flatten_tree(
             format!("{prefix}{branch}")
         };
 
-        // Get message preview
-        let (entry_type, preview) = get_entry_preview(conn, session_id, &node.entry_id);
+        let default_preview = EntryPreview {
+            entry_type: "unknown".into(),
+            preview: "(missing)".into(),
+        };
+        let ep = previews.get(&node.entry_id).unwrap_or(&default_preview);
 
         let is_leaf = leaf_id.as_deref() == Some(&node.entry_id);
         let is_branch_point = node.children.len() > 1;
@@ -32,8 +88,8 @@ fn flatten_tree(
 
         out.push(FlatTreeEntry {
             entry_id: node.entry_id.clone(),
-            entry_type,
-            preview,
+            entry_type: ep.entry_type.clone(),
+            preview: ep.preview.clone(),
             timestamp: node.timestamp.clone(),
             indent: depth,
             is_leaf,
@@ -48,44 +104,7 @@ fn flatten_tree(
             format!("{prefix}{cont}")
         };
 
-        flatten_tree(&node.children, conn, session_id, depth + 1, &child_prefix, leaf_id, out, leaf_idx);
-    }
-}
-
-/// Get entry type and a preview string for a tree node.
-fn get_entry_preview(conn: &rusqlite::Connection, session_id: &str, entry_id: &str) -> (String, String) {
-    let row = match store::get_entry(conn, session_id, entry_id) {
-        Ok(Some(r)) => r,
-        _ => return ("unknown".into(), "(missing)".into()),
-    };
-    let entry = match store::parse_entry(&row) {
-        Ok(e) => e,
-        Err(_) => return ("unknown".into(), "(parse error)".into()),
-    };
-    match entry {
-        bb_core::types::SessionEntry::Message { message, .. } => match &message {
-            bb_core::types::AgentMessage::User(u) => {
-                let text: String = u.content.iter().filter_map(|b| match b {
-                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join(" ");
-                let line = text.trim().replace('\n', " ");
-                ("user".into(), if line.is_empty() { "(empty)".into() } else { line })
-            }
-            bb_core::types::AgentMessage::Assistant(a) => {
-                let text = bb_core::agent::extract_text(&a.content);
-                let line = text.trim().replace('\n', " ");
-                ("assistant".into(), if line.is_empty() { "(empty)".into() } else { line })
-            }
-            bb_core::types::AgentMessage::ToolResult(t) => {
-                ("tool_result".into(), format!("{}: ...", t.tool_name))
-            }
-            bb_core::types::AgentMessage::CompactionSummary(_) => {
-                ("compaction".into(), "[compaction summary]".into())
-            }
-            _ => ("other".into(), "...".into()),
-        },
-        _ => ("other".into(), "...".into()),
+        flatten_tree(&node.children, previews, depth + 1, &child_prefix, leaf_id, out, leaf_idx);
     }
 }
 
@@ -487,11 +506,13 @@ impl InteractiveMode {
 
         let leaf_id = self.get_session_leaf().map(|id| id.0);
 
+        // Load all entry previews in one query (not per-node)
+        let previews = load_all_previews(&self.session_setup.conn, &self.session_setup.session_id);
+
         // Flatten tree into display entries
         let mut flat: Vec<FlatTreeEntry> = Vec::new();
         let mut leaf_idx = None;
-        flatten_tree(&tree, &self.session_setup.conn, &self.session_setup.session_id,
-            0, "", &leaf_id, &mut flat, &mut leaf_idx);
+        flatten_tree(&tree, &previews, 0, "", &leaf_id, &mut flat, &mut leaf_idx);
 
         let overlay = Box::new(TreeSelectorOverlay::new(flat, leaf_idx));
         self.ui.tui.show_overlay(overlay);
