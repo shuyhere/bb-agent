@@ -1,3 +1,7 @@
+use std::any::Any;
+
+use bb_tui::component::Component;
+
 const PREVIEW_LINES: usize = 20;
 const DEFAULT_MAX_LINES: usize = 2_000;
 const DEFAULT_MAX_BYTES: usize = 50 * 1024;
@@ -150,6 +154,20 @@ impl BashExecutionComponent {
 
     pub fn status(&self) -> BashStatus {
         self.status
+    }
+}
+
+impl Component for BashExecutionComponent {
+    fn render(&self, _width: u16) -> Vec<String> {
+        self.render_lines()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

@@ -1,3 +1,7 @@
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+
+use bb_tui::component::Component;
 use bb_tui::markdown::MarkdownRenderer;
 use bb_tui::theme::theme;
 
@@ -36,8 +40,8 @@ pub struct AssistantMessageComponent {
     hidden_thinking_label: String,
     last_message: Option<AssistantMessage>,
     /// Cached rendered lines. Invalidated on content/settings change.
-    cached_lines: Option<Vec<String>>,
-    cached_width: u16,
+    cached_lines: RefCell<Option<Vec<String>>>,
+    cached_width: Cell<u16>,
 }
 
 impl Default for AssistantMessageComponent {
@@ -46,8 +50,8 @@ impl Default for AssistantMessageComponent {
             hide_thinking_block: false,
             hidden_thinking_label: "Thinking...".to_string(),
             last_message: None,
-            cached_lines: None,
-            cached_width: 0,
+            cached_lines: RefCell::new(None),
+            cached_width: Cell::new(0),
         }
     }
 }
@@ -63,33 +67,32 @@ impl AssistantMessageComponent {
 
     pub fn set_hide_thinking_block(&mut self, hide: bool) {
         self.hide_thinking_block = hide;
-        self.cached_lines = None; // invalidate
+        *self.cached_lines.get_mut() = None;
     }
 
     pub fn set_hidden_thinking_label(&mut self, label: impl Into<String>) {
         self.hidden_thinking_label = label.into();
-        self.cached_lines = None; // invalidate
+        *self.cached_lines.get_mut() = None;
     }
 
     pub fn update_content(&mut self, message: AssistantMessage) {
         self.last_message = Some(message);
-        self.cached_lines = None; // invalidate
+        *self.cached_lines.get_mut() = None;
     }
 
     pub fn last_message(&self) -> Option<&AssistantMessage> {
         self.last_message.as_ref()
     }
 
-    pub fn render_lines(&mut self, width: u16) -> Vec<String> {
-        // Return cached output if available and width hasn't changed.
-        if let Some(ref cached) = self.cached_lines {
-            if self.cached_width == width {
+    pub fn render_lines(&self, width: u16) -> Vec<String> {
+        if let Some(ref cached) = *self.cached_lines.borrow() {
+            if self.cached_width.get() == width {
                 return cached.clone();
             }
         }
         let lines = self.render_lines_inner(width);
-        self.cached_lines = Some(lines.clone());
-        self.cached_width = width;
+        *self.cached_lines.borrow_mut() = Some(lines.clone());
+        self.cached_width.set(width);
         lines
     }
 
@@ -169,6 +172,25 @@ impl AssistantMessageComponent {
 
     pub fn render_plain_text(&self) -> String {
         self.render_lines_inner(80).join("\n")
+    }
+}
+
+impl Component for AssistantMessageComponent {
+    fn render(&self, width: u16) -> Vec<String> {
+        self.render_lines(width)
+    }
+
+    fn invalidate(&mut self) {
+        *self.cached_lines.get_mut() = None;
+        self.cached_width.set(0);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

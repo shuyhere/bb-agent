@@ -1,3 +1,7 @@
+use std::any::Any;
+
+use bb_tui::component::Component;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionSummaryMessage {
     pub summary: String,
@@ -48,5 +52,19 @@ impl CompactionSummaryMessageComponent {
 
     pub fn render_plain_text(&self) -> String {
         self.render_lines().join("\n")
+    }
+}
+
+impl Component for CompactionSummaryMessageComponent {
+    fn render(&self, _width: u16) -> Vec<String> {
+        self.render_lines()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }

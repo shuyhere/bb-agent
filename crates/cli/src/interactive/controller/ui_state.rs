@@ -64,29 +64,84 @@ impl InteractiveMode {
     }
 
     pub(super) fn rebuild_chat_container(&mut self) {
-        let lines = self.chat_render_lines();
-        Self::replace_container_lines(&self.ui.chat_container, &lines);
+        if let Ok(mut container) = self.ui.chat_container.lock() {
+            container.clear();
+            for item in &self.controller.session.render_state.chat_items {
+                match item {
+                    ChatItem::Spacer => container.add(Box::new(Spacer::new(1))),
+                    ChatItem::UserMessage(text) => {
+                        container.add(Box::new(super::super::components::user_message::UserMessageComponent::new(text.clone())));
+                    }
+                    ChatItem::AssistantMessage(component) => {
+                        container.add(Box::new(component.clone()));
+                    }
+                    ChatItem::ToolExecution(component) => {
+                        container.add(Box::new(component.clone()));
+                    }
+                    ChatItem::BashExecution(component) => {
+                        container.add(Box::new(component.clone()));
+                    }
+                    ChatItem::CustomMessage { text, .. } => {
+                        container.add(Box::new(bb_tui::components::Text::new(
+                            text.clone(), 1, 0, None,
+                        )));
+                    }
+                    ChatItem::CompactionSummary(summary) => {
+                        container.add(Box::new(super::super::components::compaction_message::CompactionSummaryMessageComponent::new(summary.clone(), 0)));
+                    }
+                    ChatItem::BranchSummary(summary) => {
+                        container.add(Box::new(super::super::components::branch_summary::BranchSummaryMessageComponent::new(summary.clone())));
+                    }
+                    ChatItem::PendingMessageLine(line) => {
+                        container.add(Box::new(bb_tui::components::Text::new(line.clone(), 1, 0, None)));
+                    }
+                    ChatItem::SystemMessage(text) => {
+                        let t = bb_tui::theme::theme();
+                        container.add(Box::new(bb_tui::components::Text::new(
+                            format!("{}{}{}", t.yellow, text, t.reset),
+                            1,
+                            0,
+                            None,
+                        )));
+                    }
+                    ChatItem::StatusMessage(text) => {
+                        let t = bb_tui::theme::theme();
+                        container.add(Box::new(bb_tui::components::Text::new(
+                            format!("{}{}{}", t.dim, text, t.reset),
+                            1,
+                            0,
+                            None,
+                        )));
+                    }
+                    ChatItem::WarningMessage(text) => {
+                        let t = bb_tui::theme::theme();
+                        container.add(Box::new(bb_tui::components::Text::new(
+                            format!("{}Warning: {}{}", t.yellow, text, t.reset),
+                            1,
+                            0,
+                            None,
+                        )));
+                    }
+                    ChatItem::ErrorMessage(text) => {
+                        let t = bb_tui::theme::theme();
+                        container.add(Box::new(bb_tui::components::Text::new(
+                            format!("{}Error: {}{}", t.error, text, t.reset),
+                            1,
+                            0,
+                            None,
+                        )));
+                    }
+                }
+            }
+        }
         self.ui.tui.invalidate_root();
     }
 
-    /// Cache rendered lines for all completed chat items.
-    /// Call after adding a finalized message (not during streaming).
-    pub(super) fn snapshot_chat_cache(&mut self) {
-        let width = self.ui.tui.columns();
-        let item_count = self.controller.session.render_state.chat_items.len();
-        let prefix = Self::render_items_to_lines(
-            &mut self.controller.session.render_state.chat_items, width,
-        );
-        self.render_cache.cached_chat_lines_prefix = prefix;
-        self.render_cache.cached_chat_line_count = item_count;
-        self.render_cache.cached_chat_width = width;
-    }
+    /// Mounted chat components are now the source of truth.
+    pub(super) fn snapshot_chat_cache(&mut self) {}
 
-    /// Invalidate the chat line cache (call when items are removed/replaced).
-    pub(super) fn invalidate_chat_cache(&mut self) {
-        self.render_cache.cached_chat_line_count = 0;
-        self.render_cache.cached_chat_lines_prefix.clear();
-    }
+    /// Mounted chat components are now the source of truth.
+    pub(super) fn invalidate_chat_cache(&mut self) {}
 
     pub(super) fn rebuild_pending_container(&mut self) {
         self.sync_pending_render_state();

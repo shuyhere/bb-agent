@@ -1,3 +1,6 @@
+use std::any::Any;
+
+use bb_tui::component::Component;
 use bb_tui::theme::theme;
 use bb_tui::utils::visible_width;
 use serde_json::Value;
@@ -572,6 +575,20 @@ fn apply_bg_line(content: &str, total_width: usize, bg: &str) -> String {
     // fills the entire line (not just up to the first RESET).
     let content_with_bg = content.replace(&t.reset, &format!("{}{bg}", t.reset));
     format!("{bg} {content_with_bg}{} {}", " ".repeat(pad), t.reset)
+}
+
+impl Component for ToolExecutionComponent {
+    fn render(&self, width: u16) -> Vec<String> {
+        self.render_lines(width)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {
