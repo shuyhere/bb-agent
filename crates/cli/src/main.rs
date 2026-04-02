@@ -10,6 +10,7 @@ mod oauth;
 mod models;
 mod run;
 mod slash;
+mod turn_runner;
 
 #[derive(Parser)]
 #[command(

@@ -1,5 +1,8 @@
 use super::*;
 
+use bb_tools::ToolContext;
+use crate::turn_runner::{self, TurnConfig, TurnEvent};
+
 impl InteractiveMode {
     pub fn set_on_input_callback<F>(&mut self, callback: F)
     where
@@ -288,364 +291,223 @@ impl InteractiveMode {
 
 
     pub(super) fn get_session_leaf(&self) -> Option<bb_core::types::EntryId> {
-        store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
-            .ok()
-            .flatten()
-            .and_then(|s| s.leaf_id.map(bb_core::types::EntryId))
+        turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id)
+    }
+
+    /// Convert a TurnEvent into an AgentLoopEvent for the existing UI event handler.
+    fn turn_event_to_agent_event(event: TurnEvent) -> Option<AgentLoopEvent> {
+        match event {
+            TurnEvent::TurnStart { turn_index } => {
+                Some(AgentLoopEvent::TurnStart { turn_index })
+            }
+            TurnEvent::TextDelta(text) => {
+                Some(AgentLoopEvent::TextDelta { text })
+            }
+            TurnEvent::ThinkingDelta(text) => {
+                Some(AgentLoopEvent::ThinkingDelta { text })
+            }
+            TurnEvent::ToolCallStart { id, name } => {
+                Some(AgentLoopEvent::ToolCallStart { id, name })
+            }
+            TurnEvent::ToolCallDelta { id, args } => {
+                Some(AgentLoopEvent::ToolCallDelta { id, args_delta: args })
+            }
+            TurnEvent::ToolExecuting { id, name } => {
+                Some(AgentLoopEvent::ToolExecuting { id, name })
+            }
+            TurnEvent::ToolResult { id, name, content, details, artifact_path, is_error } => {
+                Some(AgentLoopEvent::ToolResult { id, name, content, details, artifact_path, is_error })
+            }
+            TurnEvent::TurnEnd { turn_index } => {
+                Some(AgentLoopEvent::TurnEnd { turn_index })
+            }
+            TurnEvent::Done { .. } => {
+                Some(AgentLoopEvent::AssistantDone)
+            }
+            TurnEvent::Error(message) => {
+                Some(AgentLoopEvent::Error { message })
+            }
+            TurnEvent::ContextOverflow { .. } => {
+                // Handled specially by the caller, not forwarded as an agent event.
+                None
+            }
+        }
+    }
+
+    /// Build a TurnConfig by temporarily taking ownership of session resources.
+    /// Opens a sibling DB connection for the spawned turn-runner task
+    /// (rusqlite::Connection is Send but not Clone).
+    fn build_turn_config(&mut self) -> Result<TurnConfig, Box<dyn Error + Send + Sync>> {
+        // Take tools out of session_setup (we'll put them back when the task finishes)
+        let tools = std::mem::take(&mut self.session_setup.tools);
+
+        let sibling_conn = turn_runner::open_sibling_conn(&self.session_setup.conn)
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                Box::<dyn Error + Send + Sync>::from(e.to_string())
+            })?;
+
+        Ok(TurnConfig {
+            conn: sibling_conn,
+            session_id: self.session_setup.session_id.clone(),
+            system_prompt: self.session_setup.system_prompt.clone(),
+            model: self.session_setup.model.clone(),
+            provider: self.session_setup.provider.clone(),
+            api_key: self.session_setup.api_key.clone(),
+            base_url: self.session_setup.base_url.clone(),
+            tools,
+            tool_defs: self.session_setup.tool_defs.clone(),
+            tool_ctx: ToolContext {
+                cwd: self.session_setup.tool_ctx.cwd.clone(),
+                artifacts_dir: self.session_setup.tool_ctx.artifacts_dir.clone(),
+                on_output: None,
+            },
+            thinking: if self.session_setup.thinking_level == "off" {
+                None
+            } else {
+                Some(self.session_setup.thinking_level.clone())
+            },
+            cancel: self.abort_token.clone(),
+        })
     }
 
     /// Run the full streaming turn loop: stream from provider, execute tools, loop until done.
     /// Processes terminal events (Esc/Ctrl-C) during streaming so user can abort.
     pub(super) async fn run_streaming_turn_loop(&mut self) -> InteractiveResult<()> {
-        let (tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
+        let (agent_tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
         self.agent_events = Some(rx);
 
         // Fresh cancellation token for this turn sequence
         self.abort_token = tokio_util::sync::CancellationToken::new();
 
-        let mut turn_index: u32 = 0;
+        let turn_config = self.build_turn_config()?;
+
+        // Spawn the turn runner in a background task.
+        // run_turn takes ownership of TurnConfig and returns it when done,
+        // so we can recover the tools.
+        let (turn_event_tx, mut turn_event_rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let turn_handle = tokio::spawn(async move {
+            turn_runner::run_turn(turn_config, turn_event_tx).await
+        });
+
+        // Process turn events and terminal events concurrently
+        let mut aborted = false;
+        let mut context_overflow = false;
 
         loop {
-            let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
-            self.drain_pending_agent_events();
-            self.refresh_ui();
+            tokio::select! {
+                turn_event = turn_event_rx.recv() => {
+                    let Some(event) = turn_event else {
+                        // Channel closed, turn runner finished
+                        break;
+                    };
 
-            if self.abort_token.is_cancelled() {
-                let _ = tx.send(AgentLoopEvent::AssistantDone);
-                self.drain_pending_agent_events();
-                break;
-            }
-
-            // Build context from session
-            let ctx = bb_session::context::build_context(
-                &self.session_setup.conn,
-                &self.session_setup.session_id,
-            ).map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
-
-            let provider_messages = bb_core::agent_session::messages_to_provider(&ctx.messages);
-
-            let request = bb_provider::CompletionRequest {
-                system_prompt: self.session_setup.system_prompt.clone(),
-                messages: provider_messages,
-                tools: self.session_setup.tool_defs.clone(),
-                model: self.session_setup.model.id.clone(),
-                max_tokens: Some(self.session_setup.model.max_tokens as u32),
-                stream: true,
-                thinking: if self.session_setup.thinking_level == "off" { None } else { Some(self.session_setup.thinking_level.clone()) },
-            };
-
-            let cancel_token = self.abort_token.clone();
-            let options = bb_provider::RequestOptions {
-                api_key: self.session_setup.api_key.clone(),
-                base_url: self.session_setup.base_url.clone(),
-                headers: std::collections::HashMap::new(),
-                cancel: cancel_token.clone(),
-            };
-
-            // Spawn provider streaming in a background task so we can select on terminal events
-            let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
-            let provider = self.session_setup.provider.clone();
-            let stream_cancel = cancel_token.clone();
-            let stream_handle = tokio::spawn(async move {
-                let result = provider.stream(request, options, stream_tx).await;
-                if let Err(e) = result {
-                    if !stream_cancel.is_cancelled() {
-                        return Err(e);
+                    // Check for context overflow
+                    if matches!(&event, TurnEvent::ContextOverflow { .. }) {
+                        context_overflow = true;
+                        break;
                     }
+
+                    // Convert to AgentLoopEvent and forward
+                    if let Some(agent_event) = Self::turn_event_to_agent_event(event) {
+                        let _ = agent_tx.send(agent_event);
+                    }
+                    self.drain_pending_agent_events();
+                    self.refresh_ui();
                 }
-                Ok(())
-            });
-
-            // Process stream events while also handling terminal input (Esc to abort)
-            let mut all_events = Vec::new();
-            let mut stream_done = false;
-            let mut aborted = false;
-            let mut context_overflow_error: Option<String> = None;
-
-            while !stream_done && !aborted {
-                tokio::select! {
-                    stream_event = stream_rx.recv() => {
-                        let Some(event) = stream_event else {
-                            stream_done = true;
-                            break;
-                        };
-                        match &event {
-                            bb_provider::StreamEvent::TextDelta { text } => {
-                                let _ = tx.send(AgentLoopEvent::TextDelta { text: text.clone() });
-                            }
-                            bb_provider::StreamEvent::ThinkingDelta { text } => {
-                                let _ = tx.send(AgentLoopEvent::ThinkingDelta { text: text.clone() });
-                            }
-                            bb_provider::StreamEvent::ToolCallStart { id, name } => {
-                                let _ = tx.send(AgentLoopEvent::ToolCallStart { id: id.clone(), name: name.clone() });
-                            }
-                            bb_provider::StreamEvent::ToolCallDelta { id, arguments_delta } => {
-                                let _ = tx.send(AgentLoopEvent::ToolCallDelta { id: id.clone(), args_delta: arguments_delta.clone() });
-                            }
-                            bb_provider::StreamEvent::Error { message } => {
-                                if bb_core::agent_loop::compat::is_context_overflow(message) {
-                                    context_overflow_error = Some(message.clone());
-                                }
-                                let _ = tx.send(AgentLoopEvent::Error { message: message.clone() });
-                            }
-                            _ => {}
-                        }
-                        all_events.push(event);
-                        self.drain_pending_agent_events();
-                        self.refresh_ui();
+                terminal_event = async {
+                    match self.events.as_mut() {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending::<Option<TerminalEvent>>().await,
                     }
-                    terminal_event = async {
-                        match self.events.as_mut() {
-                            Some(events) => events.recv().await,
-                            None => std::future::pending::<Option<TerminalEvent>>().await,
-                        }
-                    } => {
-                        if let Some(event) = terminal_event {
-                            match event {
-                                TerminalEvent::Key(key) => {
-                                    // Only abort on explicit Esc press or Ctrl-C press.
-                                    // Ignore other keys (including Enter release, arrow keys, etc).
-                                    let is_esc = key.code == KeyCode::Esc
-                                        && key.modifiers == KeyModifiers::NONE;
-                                    let is_ctrl_c = key.code == KeyCode::Char('c')
-                                        && key.modifiers == KeyModifiers::CONTROL;
-                                    if is_esc || is_ctrl_c {
-                                        self.abort_token.cancel();
-                                        aborted = true;
-                                        self.show_warning("Aborted");
-                                    } else {
-                                        // Forward to TUI so the editor receives input during streaming.
-                                        self.ui.tui.handle_key(&key);
+                } => {
+                    if let Some(event) = terminal_event {
+                        match event {
+                            TerminalEvent::Key(key) => {
+                                // Only abort on explicit Esc press or Ctrl-C press.
+                                let is_esc = key.code == KeyCode::Esc
+                                    && key.modifiers == KeyModifiers::NONE;
+                                let is_ctrl_c = key.code == KeyCode::Char('c')
+                                    && key.modifiers == KeyModifiers::CONTROL;
+                                if is_esc || is_ctrl_c {
+                                    self.abort_token.cancel();
+                                    aborted = true;
+                                    self.show_warning("Aborted");
+                                } else {
+                                    // Forward to TUI so the editor receives input during streaming.
+                                    self.ui.tui.handle_key(&key);
 
-                                        // If Enter was pressed, queue the editor text as a steer message.
-                                        if key.code == KeyCode::Enter
-                                            && !key.modifiers.contains(KeyModifiers::SHIFT)
-                                        {
-                                            let submitted = self.ui.editor.lock()
-                                                .ok()
-                                                .and_then(|mut e| e.try_submit());
-                                            if let Some(text) = submitted {
-                                                self.push_editor_history(&text);
-                                                self.queues.steering_queue.push_back(text);
-                                                self.sync_pending_render_state();
-                                            }
+                                    // If Enter was pressed, queue the editor text as a steer message.
+                                    if key.code == KeyCode::Enter
+                                        && !key.modifiers.contains(KeyModifiers::SHIFT)
+                                    {
+                                        let submitted = self.ui.editor.lock()
+                                            .ok()
+                                            .and_then(|mut e| e.try_submit());
+                                        if let Some(text) = submitted {
+                                            self.push_editor_history(&text);
+                                            self.queues.steering_queue.push_back(text);
+                                            self.sync_pending_render_state();
                                         }
-                                        self.sync_bash_mode_from_editor();
-                                        self.refresh_ui();
                                     }
-                                }
-                                TerminalEvent::Resize(_, _) => {
-                                    self.ui.tui.force_render();
-                                }
-                                TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
-                                    self.ui.tui.handle_raw_input(&data);
                                     self.sync_bash_mode_from_editor();
                                     self.refresh_ui();
                                 }
                             }
+                            TerminalEvent::Resize(_, _) => {
+                                self.ui.tui.force_render();
+                            }
+                            TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
+                                self.ui.tui.handle_raw_input(&data);
+                                self.sync_bash_mode_from_editor();
+                                self.refresh_ui();
+                            }
                         }
                     }
                 }
             }
 
-            // Wait for stream task to finish (it should stop quickly after cancel)
-            let _ = stream_handle.await;
-
             if aborted {
-                let _ = tx.send(AgentLoopEvent::AssistantDone);
-                self.drain_pending_agent_events();
-                self.refresh_ui();
                 break;
             }
+        }
 
-            // Handle context overflow: auto-compact and retry this turn
-            if let Some(ref _overflow_msg) = context_overflow_error {
-                if self.handle_context_overflow().await {
-                    // Compaction succeeded — retry this turn
-                    self.rebuild_chat_container();
-                    self.refresh_ui();
-                    // context_overflow_error is re-initialized at loop top
-                    continue; // retry the loop iteration
-                } else {
-                    // Compaction failed or was cancelled — stop
-                    let _ = tx.send(AgentLoopEvent::AssistantDone);
-                    self.drain_pending_agent_events();
-                    break;
-                }
+        // Wait for turn runner to finish, get tools back
+        let (returned_config, turn_result) = match turn_handle.await {
+            Ok((config, result)) => (Some(config), result),
+            Err(e) => {
+                self.show_warning(format!("Turn runner task panicked: {e}"));
+                (None, Ok(()))
             }
+        };
 
-            // Final render after stream ends
-            self.refresh_ui();
+        // Restore tools from the returned config
+        if let Some(cfg) = returned_config {
+            self.session_setup.tools = cfg.tools;
+        }
 
-            let collected = bb_provider::streaming::CollectedResponse::from_events(&all_events);
-
-            // Build assistant message and append to session
-            let mut assistant_content = Vec::new();
-            if !collected.thinking.is_empty() {
-                assistant_content.push(bb_core::types::AssistantContent::Thinking { thinking: collected.thinking.clone() });
-            }
-            if !collected.text.is_empty() {
-                assistant_content.push(bb_core::types::AssistantContent::Text { text: collected.text.clone() });
-            }
-            for tc in &collected.tool_calls {
-                let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                assistant_content.push(bb_core::types::AssistantContent::ToolCall {
-                    id: tc.id.clone(), name: tc.name.clone(), arguments: args,
-                });
-            }
-            let assistant_msg = bb_core::types::AgentMessage::Assistant(bb_core::types::AssistantMessage {
-                content: assistant_content,
-                provider: self.session_setup.model.provider.clone(),
-                model: self.session_setup.model.id.clone(),
-                usage: {
-                    let inp = collected.input_tokens;
-                    let out = collected.output_tokens;
-                    let cr = collected.cache_read_tokens;
-                    let cw = collected.cache_write_tokens;
-                    let model_cost = &self.session_setup.model.cost;
-                    let cost = bb_core::types::Cost {
-                        input: (model_cost.input / 1_000_000.0) * inp as f64,
-                        output: (model_cost.output / 1_000_000.0) * out as f64,
-                        cache_read: (model_cost.cache_read / 1_000_000.0) * cr as f64,
-                        cache_write: (model_cost.cache_write / 1_000_000.0) * cw as f64,
-                        total: (model_cost.input / 1_000_000.0) * inp as f64
-                            + (model_cost.output / 1_000_000.0) * out as f64
-                            + (model_cost.cache_read / 1_000_000.0) * cr as f64
-                            + (model_cost.cache_write / 1_000_000.0) * cw as f64,
-                    };
-                    bb_core::types::Usage {
-                        input: inp,
-                        output: out,
-                        cache_read: cr,
-                        cache_write: cw,
-                        total_tokens: inp + out + cr + cw,
-                        cost,
-                    }
-                },
-                stop_reason: if collected.tool_calls.is_empty() { bb_core::types::StopReason::Stop } else { bb_core::types::StopReason::ToolUse },
-                error_message: None,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            });
-            let asst_entry = bb_core::types::SessionEntry::Message {
-                base: bb_core::types::EntryBase {
-                    id: bb_core::types::EntryId::generate(),
-                    parent_id: self.get_session_leaf(),
-                    timestamp: chrono::Utc::now(),
-                },
-                message: assistant_msg,
-            };
-            store::append_entry(&self.session_setup.conn, &self.session_setup.session_id, &asst_entry)
-                .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
-
-            let _ = tx.send(AgentLoopEvent::TurnEnd { turn_index });
+        if aborted {
+            let _ = agent_tx.send(AgentLoopEvent::AssistantDone);
             self.drain_pending_agent_events();
             self.refresh_ui();
-
-            // Check if auto-compaction is needed based on token usage
-            if !collected.tool_calls.is_empty() || !collected.text.is_empty() {
-                let total_tokens = collected.input_tokens + collected.output_tokens
-                    + collected.cache_read_tokens + collected.cache_write_tokens;
-                let context_window = self.session_setup.model.context_window;
-                let threshold = (context_window as f64 * 0.85) as u64;
-                if total_tokens > threshold {
-                    if self.run_auto_compaction().await {
-                        // Compaction succeeded; context is now smaller.
-                        // Show compaction summary in chat.
-                        self.rebuild_chat_container();
-                        self.refresh_ui();
-                    }
-                }
-            }
-
-            // If no tool calls, we're done
-            if collected.tool_calls.is_empty() {
-                let _ = tx.send(AgentLoopEvent::AssistantDone);
-                self.drain_pending_agent_events();
-                break;
-            }
-
-            // Execute tool calls (using the shared abort token so Esc cancels tools too)
-            // (auto-compaction may have been cancelled via Esc above)
-            if self.abort_token.is_cancelled() {
-                let _ = tx.send(AgentLoopEvent::AssistantDone);
-                self.drain_pending_agent_events();
-                break;
-            }
-            let cancel = self.abort_token.clone();
-            for tc in &collected.tool_calls {
-                let args: serde_json::Value =
-                    serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                let _ = tx.send(AgentLoopEvent::ToolExecuting {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                });
-                self.drain_pending_agent_events();
+        } else if context_overflow {
+            // Handle context overflow: auto-compact and retry
+            if self.handle_context_overflow().await {
+                self.rebuild_chat_container();
                 self.refresh_ui();
-
-                let tool = self.session_setup.tools.iter().find(|t| t.name() == tc.name);
-                let result = match tool {
-                    Some(t) => t.execute(args, &self.session_setup.tool_ctx, cancel.clone()).await,
-                    None => Err(bb_core::error::BbError::Tool(format!(
-                        "Unknown tool: {}",
-                        tc.name
-                    ))),
-                };
-                let (content, details, artifact_path, is_error) = match result {
-                    Ok(r) => (
-                        r.content,
-                        r.details,
-                        r.artifact_path.map(|p| p.display().to_string()),
-                        r.is_error,
-                    ),
-                    Err(e) => (
-                        vec![bb_core::types::ContentBlock::Text {
-                            text: format!("Error: {e}"),
-                        }],
-                        None,
-                        None,
-                        true,
-                    ),
-                };
-
-                let _ = tx.send(AgentLoopEvent::ToolResult {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    content: content.clone(),
-                    details: details.clone(),
-                    artifact_path: artifact_path.clone(),
-                    is_error,
-                });
+                // Retry the entire turn loop (boxed to avoid infinite-size future)
+                return Box::pin(self.run_streaming_turn_loop()).await;
+            } else {
+                let _ = agent_tx.send(AgentLoopEvent::AssistantDone);
                 self.drain_pending_agent_events();
-                self.refresh_ui();
-
-                let tool_result_entry = bb_core::types::SessionEntry::Message {
-                    base: bb_core::types::EntryBase {
-                        id: bb_core::types::EntryId::generate(),
-                        parent_id: self.get_session_leaf(),
-                        timestamp: chrono::Utc::now(),
-                    },
-                    message: bb_core::types::AgentMessage::ToolResult(
-                        bb_core::types::ToolResultMessage {
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            content,
-                            details,
-                            is_error,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                        },
-                    ),
-                };
-                store::append_entry(
-                    &self.session_setup.conn,
-                    &self.session_setup.session_id,
-                    &tool_result_entry,
-                )
-                .map_err(|e| -> Box<dyn Error + Send + Sync> {
-                    Box::<dyn Error + Send + Sync>::from(e.to_string())
-                })?;
             }
+        } else {
+            // Normal completion - drain any remaining events
+            self.drain_pending_agent_events();
+            self.refresh_ui();
+        }
 
-            turn_index += 1;
+        if let Err(e) = turn_result {
+            self.show_warning(format!("Turn error: {e}"));
         }
 
         self.streaming.is_streaming = false;

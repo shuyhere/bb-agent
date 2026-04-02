@@ -2,25 +2,23 @@ use anyhow::{anyhow, bail, Result};
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{
-    load_agents_md, messages_to_provider, parse_model_arg, PrintTurnResult, PrintTurnStopReason,
+    load_agents_md, parse_model_arg, PrintTurnResult, PrintTurnStopReason,
     ThinPrintSession,
 };
 use bb_core::config;
 use bb_core::settings::Settings;
-use bb_core::types::*;
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
-use bb_provider::streaming::CollectedResponse;
-use bb_provider::{CompletionRequest, Provider, RequestOptions};
-use bb_session::{context, store};
+use bb_session::store;
 use bb_tools::{builtin_tools, Tool, ToolContext};
-use chrono::Utc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::login;
+use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
 use crate::Cli;
 
 pub async fn run_print_mode(cli: Cli) -> Result<()> {
@@ -85,10 +83,10 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         on_output: None,
     };
 
-    let provider: Box<dyn Provider> = match model.api {
-        ApiType::AnthropicMessages => Box::new(AnthropicProvider::new()),
-        ApiType::GoogleGenerative => Box::new(GoogleProvider::new()),
-        _ => Box::new(OpenAiProvider::new()),
+    let provider: Arc<dyn bb_provider::Provider> = match model.api {
+        ApiType::AnthropicMessages => Arc::new(AnthropicProvider::new()),
+        ApiType::GoogleGenerative => Arc::new(GoogleProvider::new()),
+        _ => Arc::new(OpenAiProvider::new()),
     };
 
     let initial_message = if cli.messages.is_empty() {
@@ -98,20 +96,23 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     };
     let follow_up_messages = Vec::new();
 
+    let turn_config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt,
+        model,
+        provider,
+        api_key,
+        base_url,
+        tools,
+        tool_defs,
+        tool_ctx,
+        thinking: None,
+        cancel: CancellationToken::new(),
+    };
+
     let mut session = ThinPrintSession::new(|prompt: String| {
-        run_print_turn(
-            &conn,
-            &session_id,
-            prompt,
-            &system_prompt,
-            &model,
-            &*provider,
-            &api_key,
-            &base_url,
-            &tools,
-            &tool_defs,
-            &tool_ctx,
-        )
+        run_print_turn(&turn_config, prompt)
     });
 
     let last_result = session.run(initial_message, follow_up_messages).await?;
@@ -177,189 +178,43 @@ fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
 }
 
 async fn run_print_turn(
-    conn: &rusqlite::Connection,
-    session_id: &str,
+    config: &TurnConfig,
     prompt: String,
-    system_prompt: &str,
-    model: &bb_provider::registry::Model,
-    provider: &dyn Provider,
-    api_key: &str,
-    base_url: &str,
-    tools: &[Box<dyn Tool>],
-    tool_defs: &[serde_json::Value],
-    tool_ctx: &ToolContext,
 ) -> Result<PrintTurnResult> {
-    append_user_message(conn, session_id, &prompt)?;
+    turn_runner::append_user_message(&config.conn, &config.session_id, &prompt).await?;
 
-    loop {
-        let ctx = context::build_context(conn, session_id)?;
-        let request = CompletionRequest {
-            system_prompt: system_prompt.to_string(),
-            messages: messages_to_provider(&ctx.messages),
-            tools: tool_defs.to_vec(),
-            model: model.id.clone(),
-            max_tokens: Some(model.max_tokens as u32),
-            stream: true,
-            thinking: None,
-        };
-        let options = RequestOptions {
-            api_key: api_key.to_string(),
-            base_url: base_url.to_string(),
-            headers: std::collections::HashMap::new(),
-            cancel: CancellationToken::new(),
-        };
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        provider.stream(request, options, tx).await?;
+    // Run the turn loop directly (print mode is single-threaded, no need to spawn).
+    turn_runner::run_turn_inner(config, &event_tx).await?;
+    drop(event_tx);
 
-        let mut all_events = Vec::new();
-        while let Some(event) = rx.recv().await {
-            all_events.push(event);
+    // Drain remaining events
+    let mut final_text = String::new();
+    let mut error_message = None;
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            TurnEvent::Done { text } => {
+                final_text = text;
+            }
+            TurnEvent::Error(msg) => {
+                error_message = Some(msg);
+            }
+            _ => {}
         }
-
-        let collected = CollectedResponse::from_events(&all_events);
-        append_assistant_message(conn, session_id, model, &collected)?;
-
-        if collected.tool_calls.is_empty() {
-            return Ok(PrintTurnResult {
-                text: collected.text,
-                stop_reason: PrintTurnStopReason::Completed,
-                error_message: None,
-            });
-        }
-
-        execute_tool_calls(conn, session_id, &collected, tools, tool_ctx).await?;
-    }
-}
-
-fn append_user_message(conn: &rusqlite::Connection, session_id: &str, prompt: &str) -> Result<()> {
-    let user_entry = SessionEntry::Message {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(conn, session_id),
-            timestamp: Utc::now(),
-        },
-        message: AgentMessage::User(UserMessage {
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-            timestamp: Utc::now().timestamp_millis(),
-        }),
-    };
-    store::append_entry(conn, session_id, &user_entry)?;
-    Ok(())
-}
-
-fn append_assistant_message(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    model: &bb_provider::registry::Model,
-    collected: &CollectedResponse,
-) -> Result<()> {
-    let mut assistant_content = Vec::new();
-    if !collected.thinking.is_empty() {
-        assistant_content.push(AssistantContent::Thinking {
-            thinking: collected.thinking.clone(),
-        });
-    }
-    if !collected.text.is_empty() {
-        assistant_content.push(AssistantContent::Text {
-            text: collected.text.clone(),
-        });
-    }
-    for tool_call in &collected.tool_calls {
-        let args: serde_json::Value =
-            serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::json!({}));
-        assistant_content.push(AssistantContent::ToolCall {
-            id: tool_call.id.clone(),
-            name: tool_call.name.clone(),
-            arguments: args,
-        });
     }
 
-    let assistant_entry = SessionEntry::Message {
-        base: EntryBase {
-            id: EntryId::generate(),
-            parent_id: get_leaf(conn, session_id),
-            timestamp: Utc::now(),
-        },
-        message: AgentMessage::Assistant(AssistantMessage {
-            content: assistant_content,
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            usage: Usage {
-                input: collected.input_tokens,
-                output: collected.output_tokens,
-                ..Default::default()
-            },
-            stop_reason: if collected.tool_calls.is_empty() {
-                StopReason::Stop
-            } else {
-                StopReason::ToolUse
-            },
+    if let Some(err) = &error_message {
+        Ok(PrintTurnResult {
+            text: final_text,
+            stop_reason: PrintTurnStopReason::Error,
+            error_message: Some(err.clone()),
+        })
+    } else {
+        Ok(PrintTurnResult {
+            text: final_text,
+            stop_reason: PrintTurnStopReason::Completed,
             error_message: None,
-            timestamp: Utc::now().timestamp_millis(),
-        }),
-    };
-    store::append_entry(conn, session_id, &assistant_entry)?;
-    Ok(())
-}
-
-async fn execute_tool_calls(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    collected: &CollectedResponse,
-    tools: &[Box<dyn Tool>],
-    tool_ctx: &ToolContext,
-) -> Result<()> {
-    let cancel = CancellationToken::new();
-
-    for tool_call in &collected.tool_calls {
-        let args: serde_json::Value =
-            serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::json!({}));
-        let tool = tools.iter().find(|tool| tool.name() == tool_call.name);
-        let result = match tool {
-            Some(tool) => tool.execute(args, tool_ctx, cancel.clone()).await,
-            None => Err(bb_core::error::BbError::Tool(format!(
-                "Unknown tool: {}",
-                tool_call.name
-            ))),
-        };
-
-        let (content, is_error) = match result {
-            Ok(result) => (result.content, result.is_error),
-            Err(err) => (
-                vec![ContentBlock::Text {
-                    text: format!("Error: {err}"),
-                }],
-                true,
-            ),
-        };
-
-        let tool_result_entry = SessionEntry::Message {
-            base: EntryBase {
-                id: EntryId::generate(),
-                parent_id: get_leaf(conn, session_id),
-                timestamp: Utc::now(),
-            },
-            message: AgentMessage::ToolResult(ToolResultMessage {
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool_call.name.clone(),
-                content,
-                details: None,
-                is_error,
-                timestamp: Utc::now().timestamp_millis(),
-            }),
-        };
-        store::append_entry(conn, session_id, &tool_result_entry)?;
+        })
     }
-
-    Ok(())
-}
-
-fn get_leaf(conn: &rusqlite::Connection, session_id: &str) -> Option<EntryId> {
-    store::get_session(conn, session_id)
-        .ok()
-        .flatten()
-        .and_then(|s| s.leaf_id.map(EntryId))
 }
