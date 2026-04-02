@@ -52,6 +52,16 @@ impl InteractiveMode {
         self.events = Some(self.ui.tui.start());
         self.interaction.is_initialized = true;
 
+        // Install SIGINT handler so Ctrl-C works even during heavy rendering.
+        let sigint_flag = self.interaction.sigint_flag.clone();
+        tokio::spawn(async move {
+            loop {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    sigint_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        });
+
         self.bind_current_session_extensions().await?;
         self.render_initial_messages();
         self.update_terminal_title();
@@ -87,6 +97,11 @@ impl InteractiveMode {
         }
 
         while !self.interaction.shutdown_requested {
+            // Check SIGINT flag from signal handler.
+            if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.interaction.shutdown_requested = true;
+                break;
+            }
             let Some(user_input) = self.get_user_input().await? else {
                 break;
             };
@@ -106,6 +121,11 @@ impl InteractiveMode {
     pub(super) async fn get_user_input(&mut self) -> InteractiveResult<Option<String>> {
         loop {
             if self.interaction.shutdown_requested {
+                return Ok(None);
+            }
+            // Check SIGINT flag from signal handler.
+            if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.interaction.shutdown_requested = true;
                 return Ok(None);
             }
 

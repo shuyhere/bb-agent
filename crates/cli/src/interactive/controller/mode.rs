@@ -60,6 +60,8 @@ pub(super) struct InteractionState {
     pub(super) last_escape_time: Option<Instant>,
     pub(super) is_bash_running: bool,
     pub(super) is_bash_mode: Arc<Mutex<bool>>,
+    /// Shared flag for SIGINT handler to force exit.
+    pub(super) sigint_flag: Arc<std::sync::atomic::AtomicBool>,
     pub(super) is_compacting: bool,
     pub(super) shutdown_requested: bool,
     pub(super) is_initialized: bool,
@@ -161,6 +163,7 @@ impl InteractiveMode {
                 is_initialized: false,
                 tool_output_expanded: true,
                 pending_fork: false,
+                sigint_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             version: env!("CARGO_PKG_VERSION").to_string(),
             options,
