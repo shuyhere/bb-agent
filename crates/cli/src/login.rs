@@ -250,7 +250,6 @@ fn get_provider_status(name: &str) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSource {
     BbAuth,
-    PiAuth,
     EnvVar,
 }
 
@@ -258,7 +257,6 @@ impl AuthSource {
     pub fn label(self) -> &'static str {
         match self {
             AuthSource::BbAuth => "bb",
-            AuthSource::PiAuth => "pi",
             AuthSource::EnvVar => "env",
         }
     }
@@ -275,9 +273,6 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
         if has {
             return Some(AuthSource::BbAuth);
         }
-    }
-    if resolve_from_pi_auth(provider).is_some() {
-        return Some(AuthSource::PiAuth);
     }
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
@@ -322,12 +317,7 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         }
     }
 
-    // 2. Check pi's auth.json (~/.pi/agent/auth.json) — different field names
-    if let Some(key) = resolve_from_pi_auth(provider) {
-        return Some(key);
-    }
-
-    // 3. Fall back to env var
+    // 2. Fall back to env var
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" | "openai-codex" => &["OPENAI_API_KEY"],
@@ -349,52 +339,4 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
     None
 }
 
-/// Read credentials from pi's auth.json format.
-/// Pi uses `{ "access": "...", "refresh": "...", "expires": N }` instead of
-/// BB's `{ "access_token": "...", "refresh_token": "...", "expires_at": N }`.
-/// Pi also uses provider names like "openai-codex" instead of "openai".
-fn resolve_from_pi_auth(provider: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from)?;
-    let pi_auth_path = home.join(".pi/agent/auth.json");
-    let content = std::fs::read_to_string(&pi_auth_path).ok()?;
-    let data: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let obj = data.as_object()?;
 
-    // Map BB provider names to pi provider names
-    let pi_names: &[&str] = match provider {
-        "anthropic" => &["anthropic"],
-        "openai" => &["openai-codex", "openai"],
-        "openai-codex" => &["openai-codex"],
-        "google" => &["google"],
-        other => &[other],
-    };
-
-    // Workaround: iterate a fixed set since we can't have &[&str] with variable lifetime
-    for &pi_name in &["anthropic", "openai-codex", "openai", "google"] {
-        if !pi_names.contains(&pi_name) {
-            continue;
-        }
-        if let Some(entry) = obj.get(pi_name) {
-            // Pi format: { "type": "oauth", "access": "...", "refresh": "...", "expires": N }
-            // or: { "type": "api_key", "key": "..." }
-            if let Some(access) = entry.get("access").and_then(|v| v.as_str()) {
-                if !access.is_empty() {
-                    return Some(access.to_string());
-                }
-            }
-            if let Some(key) = entry.get("key").and_then(|v| v.as_str()) {
-                if !key.is_empty() {
-                    return Some(key.to_string());
-                }
-            }
-            // Also check access_token (BB format in pi location)
-            if let Some(at) = entry.get("access_token").and_then(|v| v.as_str()) {
-                if !at.is_empty() {
-                    return Some(at.to_string());
-                }
-            }
-        }
-    }
-
-    None
-}

@@ -212,14 +212,8 @@ impl InteractiveMode {
                 self.rebuild_footer();
             }
             Ok(false) => {
-                // Not in BB's store -- maybe it's from pi or env
                 let source = crate::login::auth_source(provider);
                 match source {
-                    Some(crate::login::AuthSource::PiAuth) => {
-                        self.show_warning(format!(
-                            "{provider}: credentials come from pi (~/.pi/agent/auth.json). Use `pi logout` to remove."
-                        ));
-                    }
                     Some(crate::login::AuthSource::EnvVar) => {
                         self.show_warning(format!(
                             "{provider}: credentials come from environment variable. Unset it in your shell."
