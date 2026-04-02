@@ -75,7 +75,7 @@ impl InteractiveMode {
         let width = self.ui.tui.columns();
         let item_count = self.controller.session.render_state.chat_items.len();
         let prefix = Self::render_items_to_lines(
-            &self.controller.session.render_state.chat_items, width,
+            &mut self.controller.session.render_state.chat_items, width,
         );
         self.render_cache.cached_chat_lines_prefix = prefix;
         self.render_cache.cached_chat_line_count = item_count;

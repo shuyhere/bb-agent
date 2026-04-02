@@ -23,7 +23,7 @@ impl InteractiveMode {
             .update_pending_messages_display(&pending);
     }
 
-    pub(super) fn render_items_to_lines(items: &[ChatItem], width: u16) -> Vec<String> {
+    pub(super) fn render_items_to_lines(items: &mut [ChatItem], width: u16) -> Vec<String> {
         let t = theme();
         let dim = &t.dim;
         let reset = &t.reset;
@@ -40,7 +40,7 @@ impl InteractiveMode {
         };
 
         items
-            .iter()
+            .iter_mut()
             .flat_map(|item| match item {
                 ChatItem::Spacer => vec![String::new()],
                 ChatItem::UserMessage(text) => {
@@ -48,7 +48,7 @@ impl InteractiveMode {
                     vec![String::new(), format!("{user_bg} {text}\x1b[K{reset}"), String::new()]
                 }
                 ChatItem::AssistantMessage(component) => component
-                    .render_lines(content_width as u16)
+                    .render_lines(content_width as u16)  // uses internal cache
                     .into_iter()
                     .map(|line| if line.is_empty() { String::new() } else { format!(" {line}") })
                     .collect(),
@@ -73,9 +73,9 @@ impl InteractiveMode {
             .collect()
     }
 
-    pub(super) fn chat_render_lines(&self) -> Vec<String> {
+    pub(super) fn chat_render_lines(&mut self) -> Vec<String> {
         let width = self.ui.tui.columns();
-        let items = &self.render_state().chat_items;
+        let items = &mut self.controller.session.render_state.chat_items;
         let cached_count = self.render_cache.cached_chat_line_count;
         let cached_width = self.render_cache.cached_chat_width;
         let cache_valid = cached_count > 0
@@ -93,7 +93,7 @@ impl InteractiveMode {
         if cache_valid {
             // Copy cached prefix and only re-render new/streaming items.
             lines.extend_from_slice(&self.render_cache.cached_chat_lines_prefix);
-            let tail = &items[cached_count..];
+            let tail = &mut items[cached_count..];
             if !tail.is_empty() {
                 lines.extend(Self::render_items_to_lines(tail, width));
             }
@@ -107,9 +107,9 @@ impl InteractiveMode {
         lines
     }
 
-    pub(super) fn pending_render_lines(&self) -> Vec<String> {
+    pub(super) fn pending_render_lines(&mut self) -> Vec<String> {
         let width = self.ui.tui.columns();
-        let mut lines = Self::render_items_to_lines(&self.render_state().pending_items, width);
+        let mut lines = Self::render_items_to_lines(&mut self.controller.session.render_state.pending_items, width);
         for line in &self.render_cache.pending_lines {
             lines.extend(word_wrap(line, width.max(1) as usize));
         }

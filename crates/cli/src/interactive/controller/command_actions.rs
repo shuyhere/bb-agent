@@ -1039,17 +1039,15 @@ impl InteractiveMode {
             }
         }
 
-        self.rebuild_chat_container();
-        self.rebuild_pending_container();
-        self.rebuild_footer();
-
+        // Add system message, then rebuild everything ONCE.
         self.render_state_mut().add_message_to_chat(
             super::super::events::InteractiveMessage::System {
                 text: "Resumed session".to_string(),
             },
         );
         self.rebuild_chat_container();
-        // Cache all rendered items so subsequent rebuilds (Enter, streaming) are instant.
+        self.rebuild_pending_container();
+        self.rebuild_footer();
         self.snapshot_chat_cache();
         self.refresh_ui();
     }

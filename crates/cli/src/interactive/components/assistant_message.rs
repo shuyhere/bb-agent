@@ -35,6 +35,9 @@ pub struct AssistantMessageComponent {
     hide_thinking_block: bool,
     hidden_thinking_label: String,
     last_message: Option<AssistantMessage>,
+    /// Cached rendered lines. Invalidated on content/settings change.
+    cached_lines: Option<Vec<String>>,
+    cached_width: u16,
 }
 
 impl Default for AssistantMessageComponent {
@@ -43,6 +46,8 @@ impl Default for AssistantMessageComponent {
             hide_thinking_block: false,
             hidden_thinking_label: "Thinking...".to_string(),
             last_message: None,
+            cached_lines: None,
+            cached_width: 0,
         }
     }
 }
@@ -58,21 +63,37 @@ impl AssistantMessageComponent {
 
     pub fn set_hide_thinking_block(&mut self, hide: bool) {
         self.hide_thinking_block = hide;
+        self.cached_lines = None; // invalidate
     }
 
     pub fn set_hidden_thinking_label(&mut self, label: impl Into<String>) {
         self.hidden_thinking_label = label.into();
+        self.cached_lines = None; // invalidate
     }
 
     pub fn update_content(&mut self, message: AssistantMessage) {
         self.last_message = Some(message);
+        self.cached_lines = None; // invalidate
     }
 
     pub fn last_message(&self) -> Option<&AssistantMessage> {
         self.last_message.as_ref()
     }
 
-    pub fn render_lines(&self, width: u16) -> Vec<String> {
+    pub fn render_lines(&mut self, width: u16) -> Vec<String> {
+        // Return cached output if available and width hasn't changed.
+        if let Some(ref cached) = self.cached_lines {
+            if self.cached_width == width {
+                return cached.clone();
+            }
+        }
+        let lines = self.render_lines_inner(width);
+        self.cached_lines = Some(lines.clone());
+        self.cached_width = width;
+        lines
+    }
+
+    fn render_lines_inner(&self, width: u16) -> Vec<String> {
         let Some(message) = &self.last_message else {
             return Vec::new();
         };
@@ -147,7 +168,7 @@ impl AssistantMessageComponent {
     }
 
     pub fn render_plain_text(&self) -> String {
-        self.render_lines(80).join("\n")
+        self.render_lines_inner(80).join("\n")
     }
 }
 
