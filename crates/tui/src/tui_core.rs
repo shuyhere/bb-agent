@@ -169,6 +169,10 @@ pub struct TUI {
     input_listeners: Vec<Box<dyn Fn(&str) -> InputResult + Send>>,
     /// Global callback for debug key (Shift+Ctrl+D).
     pub on_debug: Option<Box<dyn FnMut() + Send>>,
+    /// Cached root.render() output to avoid re-rendering unchanged content.
+    root_cache: Vec<String>,
+    root_cache_width: u16,
+    root_dirty: bool,
 }
 
 impl TUI {
@@ -183,6 +187,9 @@ impl TUI {
             render_requested: false,
             input_listeners: Vec::new(),
             on_debug: None,
+            root_cache: Vec::new(),
+            root_cache_width: 0,
+            root_dirty: true,
         }
     }
 
@@ -235,19 +242,38 @@ impl TUI {
         self.render_requested = false;
         let width = self.terminal.columns();
         let height = self.terminal.rows();
-        let mut lines = self.root.render(width);
+
+        // Cache root render output. Only re-render if explicitly invalidated
+        // or if the width changed.
+        let lines = if self.root_cache_width == width && !self.root_cache.is_empty() && !self.root_dirty {
+            self.root_cache.clone()
+        } else {
+            let rendered = self.root.render(width);
+            self.root_cache = rendered.clone();
+            self.root_cache_width = width;
+            self.root_dirty = false;
+            rendered
+        };
 
         // Composite visible overlays
-        if !self.overlay_stack.is_empty() {
-            lines = self.composite_overlays(lines, width as usize, height as usize);
-        }
+        let lines = if !self.overlay_stack.is_empty() {
+            self.composite_overlays(lines, width as usize, height as usize)
+        } else {
+            lines
+        };
 
         self.renderer.render(&lines, &mut self.terminal);
+    }
+
+    /// Mark root content as changed, so next render() re-renders the component tree.
+    pub fn invalidate_root(&mut self) {
+        self.root_dirty = true;
     }
 
     /// Force full re-render (e.g., after terminal resize).
     pub fn force_render(&mut self) {
         self.renderer.invalidate();
+        self.root_dirty = true;
         self.render();
     }
 

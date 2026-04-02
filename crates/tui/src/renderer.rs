@@ -131,16 +131,24 @@ impl Renderer {
         // Extract cursor position BEFORE stripping marker.
         let cursor_pos = self.find_cursor(new_lines);
 
-        // Only process lines that are likely to have changed.
-        // For the common case (append one line or update last few), avoid
-        // touching hundreds of unchanged lines.
+        // Quick check: if line count + content haven't changed at all, skip everything.
+        if !width_changed && !height_changed
+            && new_lines.len() == self.prev_lines.len()
+            && new_lines.iter().zip(self.prev_lines.iter()).all(|(a, b)| a == b)
+        {
+            // Nothing changed — just reposition cursor if needed.
+            self.position_hardware_cursor(cursor_pos, terminal);
+            return;
+        }
+
+        // Process only changed lines — reuse prev_lines for unchanged ones.
         let new_lines: Vec<String> = new_lines
             .iter()
             .enumerate()
             .map(|(i, l)| {
-                // Skip expensive processing for lines that match previous exactly.
+                // Reuse previous processed line if source is identical.
                 if i < self.prev_lines.len() && *l == self.prev_lines[i] {
-                    return l.clone();
+                    return self.prev_lines[i].clone();
                 }
                 // Strip cursor marker + append line reset.
                 let mut line = l.replace(CURSOR_MARKER, "");

@@ -12,7 +12,9 @@ impl InteractiveMode {
 
         if let Some(action) = self.lookup_key_action(&key) {
             self.handle_key_action(action).await?;
-            self.refresh_ui();
+            // Most key actions only change status/footer, not chat.
+            // Use render_editor_frame to avoid full chat rebuild.
+            self.render_editor_frame();
             return Ok(None);
         }
 

@@ -31,13 +31,11 @@ impl InteractiveMode {
     /// Lightweight render that skips rebuilding the chat container.
     /// Use for typing in the editor where chat content hasn't changed.
     pub(super) fn render_editor_frame(&mut self) {
-        // Only rebuild status + footer (cheap), skip chat + pending (expensive).
+        // Only rebuild status (cheap), skip chat + pending + footer (expensive).
         self.rebuild_status_container();
-        if self.ui.tui.has_overlay() {
-            self.ui.tui.force_render();
-        } else {
-            self.ui.tui.render();
-        }
+        // Mark root dirty since status/editor changed.
+        self.ui.tui.invalidate_root();
+        self.ui.tui.render();
     }
 
     pub(super) fn rebuild_header(&mut self) {
@@ -68,6 +66,7 @@ impl InteractiveMode {
     pub(super) fn rebuild_chat_container(&mut self) {
         let lines = self.chat_render_lines();
         Self::replace_container_lines(&self.ui.chat_container, &lines);
+        self.ui.tui.invalidate_root();
     }
 
     /// Cache rendered lines for all completed chat items.
