@@ -286,6 +286,10 @@ impl InteractiveRenderState {
                 self.chat_items.push(ChatItem::AssistantMessage(component));
             }
             InteractiveMessage::ToolResult { .. } => {}
+            InteractiveMessage::System { text } => {
+                self.chat_items.push(ChatItem::Spacer);
+                self.chat_items.push(ChatItem::SystemMessage(text));
+            }
         }
     }
 

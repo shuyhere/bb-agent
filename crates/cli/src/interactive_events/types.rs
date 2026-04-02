@@ -57,6 +57,7 @@ pub enum ChatItem {
     CompactionSummary(String),
     BranchSummary(String),
     PendingMessageLine(String),
+    SystemMessage(String),
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +99,10 @@ pub enum InteractiveMessage {
     },
     BranchSummary {
         summary: String,
+    },
+    /// System/error message shown inline in chat.
+    System {
+        text: String,
     },
 }
 

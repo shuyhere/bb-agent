@@ -208,6 +208,19 @@ impl InteractiveMode {
         // Render now so user sees their message before streaming starts
         self.refresh_ui();
 
+        // Check if we have credentials before starting.
+        if self.session_setup.api_key.trim().is_empty() {
+            let provider = self.session_setup.model.provider.clone();
+            self.render_state_mut()
+                .add_message_to_chat(InteractiveMessage::System {
+                    text: format!(
+                        "No API key for provider '{provider}'. Use /login to authenticate, or /model to switch to an authenticated provider."
+                    ),
+                });
+            self.refresh_ui();
+            return Ok(());
+        }
+
         // Reset streaming accumulators
         self.streaming.streaming_text.clear();
         self.streaming.streaming_thinking.clear();

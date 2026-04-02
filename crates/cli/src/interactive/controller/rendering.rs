@@ -62,6 +62,10 @@ impl InteractiveMode {
                 ChatItem::CompactionSummary(summary) => word_wrap(&format!("{dim} [c] {summary}{reset}"), width.max(1) as usize),
                 ChatItem::BranchSummary(summary) => word_wrap(&format!("{dim} [b] {summary}{reset}"), width.max(1) as usize),
                 ChatItem::PendingMessageLine(line) => wrap_prefixed(line),
+                ChatItem::SystemMessage(text) => {
+                    let yellow = "\x1b[33m";
+                    word_wrap(&format!("{yellow} {text}{reset}"), width.max(1) as usize)
+                }
             })
             .collect()
     }
