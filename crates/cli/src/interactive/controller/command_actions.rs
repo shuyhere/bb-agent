@@ -101,15 +101,35 @@ impl InteractiveMode {
                 self.session_setup.session_id = new_id.clone();
                 self.options.session_id = Some(new_id.clone());
                 let _ = self.controller.runtime_host.session_mut().clear_queue();
-                self.render_cache.chat_lines.clear();
-                self.render_cache.pending_lines.clear();
-                self.queues.compaction_queued_messages.clear();
+
+                // Clear all chat/pending/streaming state (match pi's renderCurrentSessionState)
                 self.render_state_mut().chat_items.clear();
                 self.render_state_mut().pending_items.clear();
-                self.show_status(format!("New session created: {new_id}"));
+                self.render_state_mut().streaming_component = None;
+                self.streaming.streaming_text.clear();
+                self.streaming.streaming_thinking.clear();
+                self.streaming.streaming_tool_calls.clear();
+                self.streaming.is_streaming = false;
+                self.queues.steering_queue.clear();
+                self.queues.follow_up_queue.clear();
+                self.queues.compaction_queued_messages.clear();
+                self.queues.pending_bash_components.clear();
+
+                // Rebuild containers from scratch so TUI matches cleared state
+                self.rebuild_chat_container();
+                self.rebuild_pending_container();
+                self.rebuild_footer();
+
+                // Show confirmation (like pi's "New session started")
+                self.render_state_mut()
+                    .add_message_to_chat(super::super::events::InteractiveMessage::System {
+                        text: "New session started".to_string(),
+                    });
+                self.rebuild_chat_container();
+                self.refresh_ui();
             }
             Err(e) => {
-                self.show_status(format!("Failed to create new session: {e}"));
+                self.show_warning(format!("Failed to create new session: {e}"));
             }
         }
     }
