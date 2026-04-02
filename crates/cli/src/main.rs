@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod error;
+
 #[path = "interactive.rs"]
 mod interactive;
 mod login;

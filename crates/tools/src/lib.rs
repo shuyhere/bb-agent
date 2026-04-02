@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod error;
 pub mod read;
 pub mod bash;
 pub mod diff;

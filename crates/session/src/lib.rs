@@ -1,3 +1,4 @@
+pub mod error;
 pub mod schema;
 pub mod store;
 pub mod tree;

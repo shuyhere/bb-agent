@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 crossterm = "0.28"
 unicode-width = "0.2"

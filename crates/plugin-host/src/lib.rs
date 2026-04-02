@@ -1,3 +1,4 @@
+pub mod error;
 pub mod host;
 pub mod discovery;
 pub mod protocol;

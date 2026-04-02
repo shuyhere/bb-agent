@@ -1,3 +1,4 @@
+pub mod error;
 pub mod registry;
 pub mod resolver;
 pub mod openai;
