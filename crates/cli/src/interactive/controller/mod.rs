@@ -8,6 +8,7 @@ use super::interactive_commands::SelectorKind;
 use super::auth_selector_overlay::{AuthSelectorAction, AuthSelectorMode, AuthSelectorOverlay};
 use super::model_selector_overlay::{ModelSelectorOverlay, ModelSelectorOverlayAction};
 use super::session_selector_overlay::{SessionListItem, SessionSelectorAction, SessionSelectorOverlay};
+use super::settings_overlay::{SettingItem, SettingsAction, SettingsOverlay};
 use super::tree_selector_overlay::{FlatTreeEntry, TreeSelectorAction, TreeSelectorOverlay};
 use super::api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
 use super::state::{

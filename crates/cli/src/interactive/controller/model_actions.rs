@@ -2,7 +2,40 @@ use super::*;
 
 impl InteractiveMode {
     pub(super) fn show_settings_selector(&mut self) {
-        self.show_status("TODO: settings selector");
+        let thinking = &self.session_setup.thinking_level;
+        let items = vec![
+            SettingItem {
+                id: "thinking".into(),
+                label: "Thinking level".into(),
+                description: "Reasoning depth for the model".into(),
+                current_value: thinking.clone(),
+                values: vec!["off".into(), "low".into(), "medium".into(), "high".into(), "xhigh".into()],
+            },
+            SettingItem {
+                id: "autocompact".into(),
+                label: "Auto-compact".into(),
+                description: "Automatically compact context when it gets large".into(),
+                current_value: "true".into(),
+                values: vec!["true".into(), "false".into()],
+            },
+            SettingItem {
+                id: "tool-expand".into(),
+                label: "Expand tool output".into(),
+                description: "Show full tool output by default".into(),
+                current_value: if self.interaction.tool_output_expanded { "true".into() } else { "false".into() },
+                values: vec!["true".into(), "false".into()],
+            },
+            SettingItem {
+                id: "hide-thinking".into(),
+                label: "Hide thinking blocks".into(),
+                description: "Collapse thinking blocks in assistant messages".into(),
+                current_value: if self.streaming.hide_thinking_block { "true".into() } else { "false".into() },
+                values: vec!["true".into(), "false".into()],
+            },
+        ];
+
+        let overlay = Box::new(SettingsOverlay::new(items));
+        self.ui.tui.show_overlay(overlay);
     }
 
     pub(super) fn handle_model_command(&mut self, search: Option<&str>) {
@@ -184,6 +217,64 @@ impl InteractiveMode {
             }
             _ => {}
         }
+
+        // Check settings overlay
+        let settings_action = self
+            .ui
+            .tui
+            .topmost_overlay_as_mut::<SettingsOverlay>()
+            .map(|overlay| overlay.action().clone());
+
+        match settings_action {
+            Some(SettingsAction::Changed(id, value)) => {
+                self.apply_setting(&id, &value);
+            }
+            Some(SettingsAction::Cancelled) => {
+                self.ui.tui.hide_overlay();
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_setting(&mut self, id: &str, value: &str) {
+        match id {
+            "thinking" => {
+                self.session_setup.thinking_level = value.to_string();
+                let level = match value {
+                    "off" => ThinkingLevel::Off,
+                    "low" => ThinkingLevel::Low,
+                    "medium" => ThinkingLevel::Medium,
+                    "high" => ThinkingLevel::High,
+                    "xhigh" => ThinkingLevel::XHigh,
+                    _ => ThinkingLevel::Medium,
+                };
+                self.controller.runtime_host.session_mut().set_thinking_level(level);
+                self.rebuild_footer();
+            }
+            "autocompact" => {
+                // TODO: wire to compaction settings
+            }
+            "tool-expand" => {
+                self.interaction.tool_output_expanded = value == "true";
+                self.rebuild_chat_container();
+                self.rebuild_pending_container();
+            }
+            "hide-thinking" => {
+                self.streaming.hide_thinking_block = value == "true";
+                let hide = self.streaming.hide_thinking_block;
+                let label = self.streaming.hidden_thinking_label.clone();
+                for item in &mut self.render_state_mut().chat_items {
+                    if let ChatItem::AssistantMessage(c) = item {
+                        c.set_hide_thinking_block(hide);
+                        c.set_hidden_thinking_label(label.clone());
+                    }
+                }
+                self.rebuild_chat_container();
+                self.rebuild_pending_container();
+            }
+            _ => {}
+        }
+        self.refresh_ui();
     }
 
     pub(super) fn show_auth_selector(&mut self, mode: AuthSelectorMode) {

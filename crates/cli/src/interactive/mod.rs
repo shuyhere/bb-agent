@@ -10,6 +10,7 @@ pub mod interactive_commands;
 mod auth_selector_overlay;
 mod model_selector_overlay;
 mod session_selector_overlay;
+mod settings_overlay;
 mod state;
 mod status_loader;
 mod tree_selector_overlay;
