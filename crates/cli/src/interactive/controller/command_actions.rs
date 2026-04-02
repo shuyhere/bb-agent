@@ -510,10 +510,12 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_new_session(&mut self) {
-        let cwd_str = self.session_setup.tool_ctx.cwd.display().to_string();
-        match store::create_session(&self.session_setup.conn, &cwd_str) {
-            Ok(new_id) => {
+        // Don't create the DB row yet — lazy create on first message,
+        // just like startup. This avoids empty /new sessions.
+        let new_id = uuid::Uuid::new_v4().to_string();
+        {
                 self.session_setup.session_id = new_id.clone();
+                self.session_setup.session_created = false; // lazy
                 self.options.session_id = Some(new_id.clone());
                 let _ = self.controller.runtime_host.session_mut().clear_queue();
 
@@ -542,10 +544,6 @@ impl InteractiveMode {
                     });
                 self.rebuild_chat_container();
                 self.refresh_ui();
-            }
-            Err(e) => {
-                self.show_warning(format!("Failed to create new session: {e}"));
-            }
         }
     }
 
@@ -681,6 +679,7 @@ impl InteractiveMode {
     pub(super) fn handle_resume_session(&mut self, session_id: &str) {
         // Switch the active session.
         self.session_setup.session_id = session_id.to_string();
+        self.session_setup.session_created = true; // already exists in DB
         self.options.session_id = Some(session_id.to_string());
         let _ = self.controller.runtime_host.session_mut().clear_queue();
 

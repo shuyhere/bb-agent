@@ -227,6 +227,22 @@ impl InteractiveMode {
         self.streaming.streaming_tool_calls.clear();
         self.streaming.is_streaming = true;
 
+        // Lazily create the session row in the DB on first message.
+        if !self.session_setup.session_created {
+            let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+            match store::create_session_with_id(
+                &self.session_setup.conn,
+                &self.session_setup.session_id,
+                &cwd,
+            ) {
+                Ok(_) => self.session_setup.session_created = true,
+                Err(e) => {
+                    self.show_warning(format!("Failed to create session: {e}"));
+                    return Ok(());
+                }
+            }
+        }
+
         // Append user message to session DB
         {
             let user_entry = bb_core::types::SessionEntry::Message {

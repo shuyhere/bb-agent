@@ -57,7 +57,10 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
     // Open session DB
     let conn = store::open_db(&global_dir.join("sessions.db"))?;
     let cwd_str = cwd.to_str().unwrap_or(".");
-    let session_id = store::create_session(&conn, cwd_str)?;
+    // Don't create a session row yet — wait until the first message is sent.
+    // This avoids cluttering the DB with empty sessions from bb launches that
+    // never send a prompt (like opening bb and immediately closing, or /resume).
+    let session_id = uuid::Uuid::new_v4().to_string();
 
     // Resolve model via core helper
     let settings = Settings::load_merged(&cwd);
@@ -172,6 +175,7 @@ pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
         tool_ctx,
         system_prompt,
         thinking_level: thinking_str.to_string(),
+        session_created: false,
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {

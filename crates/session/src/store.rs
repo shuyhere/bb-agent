@@ -51,13 +51,19 @@ pub fn open_memory() -> Result<Connection> {
 /// Create a new session.
 pub fn create_session(conn: &Connection, cwd: &str) -> Result<String> {
     let session_id = Uuid::new_v4().to_string();
+    create_session_with_id(conn, &session_id, cwd)?;
+    Ok(session_id)
+}
+
+/// Create a session with a specific ID (for lazy creation).
+pub fn create_session_with_id(conn: &Connection, session_id: &str, cwd: &str) -> Result<()> {
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO sessions (session_id, cwd, created_at, updated_at, entry_count)
          VALUES (?1, ?2, ?3, ?4, 0)",
         params![session_id, cwd, now, now],
     )?;
-    Ok(session_id)
+    Ok(())
 }
 
 /// Append an entry to a session. Returns the assigned sequence number.

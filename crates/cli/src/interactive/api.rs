@@ -32,4 +32,6 @@ pub struct InteractiveSessionSetup {
     pub tool_ctx: ToolContext,
     pub system_prompt: String,
     pub thinking_level: String,
+    /// Whether the session row has been created in the DB yet.
+    pub session_created: bool,
 }
