@@ -15,7 +15,6 @@ const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const CALLBACK_PORT: u16 = 1455;
 const CALLBACK_PATH: &str = "/auth/callback";
 const SCOPES: &str = "openid profile email offline_access";
-const AUDIENCE: &str = "https://api.openai.com/v1";
 
 // ── Token response ──────────────────────────────────────────────────
 
@@ -38,19 +37,21 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
 
     let state = uuid::Uuid::new_v4().to_string();
 
+    // Build auth URL — must match pi exactly (no audience param).
     let auth_url = format!(
         "{AUTHORIZE_URL}?\
          response_type=code\
          &client_id={CLIENT_ID}\
          &redirect_uri={redirect}\
          &scope={scopes}\
-         &state={state}\
          &code_challenge={challenge}\
          &code_challenge_method=S256\
-         &audience={audience}",
+         &state={state}\
+         &id_token_add_organizations=true\
+         &codex_cli_simplified_flow=true\
+         &originator=bb",
         redirect = url_encode(REDIRECT_URI),
         scopes = url_encode(SCOPES),
-        audience = url_encode(AUDIENCE),
     );
 
     // Tell the UI about the URL.
@@ -73,8 +74,11 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
                 }
                 manual = manual_rx => {
                     let _ = cancel_tx.send(());
-                    let code = manual.map_err(|_| anyhow::anyhow!("Manual input cancelled"))?;
-                    CallbackParams { code, state: state.clone() }
+                    let raw = manual.map_err(|_| anyhow::anyhow!("Manual input cancelled"))?;
+                    let parsed = parse_authorization_input(&raw);
+                    let code = parsed.code.ok_or_else(|| anyhow::anyhow!("No authorization code found in pasted input"))?;
+                    let parsed_state = parsed.state.unwrap_or_else(|| state.clone());
+                    CallbackParams { code, state: parsed_state }
                 }
             }
         }
@@ -193,6 +197,62 @@ fn extract_account_id(jwt: &str) -> Option<String> {
     }
 
     None
+}
+
+// ── Input parsing (matches pi's parseAuthorizationInput) ────────────
+
+struct ParsedInput {
+    code: Option<String>,
+    state: Option<String>,
+}
+
+/// Parse user-pasted input that could be:
+/// - A full redirect URL: `http://localhost:1455/auth/callback?code=...&state=...`
+/// - A `code=...&state=...` query string
+/// - A `code#state` pair
+/// - A bare authorization code
+fn parse_authorization_input(input: &str) -> ParsedInput {
+    let value = input.trim();
+    if value.is_empty() {
+        return ParsedInput { code: None, state: None };
+    }
+
+    // Try as URL
+    if let Ok(url) = url::Url::parse(value) {
+        let code = url.query_pairs().find(|(k, _)| k == "code").map(|(_, v)| v.to_string());
+        let state = url.query_pairs().find(|(k, _)| k == "state").map(|(_, v)| v.to_string());
+        if code.is_some() {
+            return ParsedInput { code, state };
+        }
+    }
+
+    // Try code#state
+    if value.contains('#') {
+        let parts: Vec<&str> = value.splitn(2, '#').collect();
+        return ParsedInput {
+            code: parts.first().map(|s| s.to_string()),
+            state: parts.get(1).map(|s| s.to_string()),
+        };
+    }
+
+    // Try query string with code=
+    if value.contains("code=") {
+        let pairs: std::collections::HashMap<String, String> = value
+            .split('&')
+            .filter_map(|p| p.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        return ParsedInput {
+            code: pairs.get("code").cloned(),
+            state: pairs.get("state").cloned(),
+        };
+    }
+
+    // Treat as bare code
+    ParsedInput {
+        code: Some(value.to_string()),
+        state: None,
+    }
 }
 
 /// Minimal percent-encoding for URL query values.
