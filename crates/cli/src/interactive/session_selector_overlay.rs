@@ -169,9 +169,11 @@ impl Component for SessionSelectorOverlay {
                             &item.first_message
                         }
                     });
-                // Truncate long display names
-                let display_name = if display_name.len() > 60 {
-                    &display_name[..57]
+                // Truncate long display names (char-safe for multibyte)
+                let display_name: &str = if display_name.chars().count() > 60 {
+                    // Find char boundary
+                    let end = display_name.char_indices().nth(57).map(|(i, _)| i).unwrap_or(display_name.len());
+                    &display_name[..end]
                 } else {
                     display_name
                 };

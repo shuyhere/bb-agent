@@ -111,8 +111,9 @@ impl Component for TreeSelectorOverlay {
                 let suffix_len = if entry.is_leaf { 5 } else { 0 }
                     + if entry.is_branch_point { 3 } else { 0 };
                 let available = w.saturating_sub(prefix_len + suffix_len + 2);
-                let preview = if entry.preview.len() > available {
-                    format!("{}...", &entry.preview[..available.saturating_sub(3)])
+                let preview = if entry.preview.chars().count() > available {
+                    let truncated: String = entry.preview.chars().take(available.saturating_sub(3)).collect();
+                    format!("{truncated}...")
                 } else {
                     entry.preview.clone()
                 };

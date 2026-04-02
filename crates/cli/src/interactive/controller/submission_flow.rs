@@ -258,7 +258,12 @@ impl InteractiveMode {
             if session_row.as_ref().and_then(|r| r.name.as_deref()).is_none() {
                 // Truncate to a reasonable length for display.
                 let name = user_input.trim().replace('\n', " ");
-                let name = if name.len() > 80 { format!("{}...", &name[..77]) } else { name };
+                let name = if name.chars().count() > 80 {
+                    let truncated: String = name.chars().take(77).collect();
+                    format!("{truncated}...")
+                } else {
+                    name
+                };
                 let _ = store::set_session_name(
                     &self.session_setup.conn,
                     &self.session_setup.session_id,
