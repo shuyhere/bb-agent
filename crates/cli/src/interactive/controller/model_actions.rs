@@ -189,7 +189,7 @@ impl InteractiveMode {
             Some(ModelSelectorOverlayAction::Cancelled) => {
                 self.ui.tui.hide_overlay();
                 self.clear_status();
-                self.show_status("Canceled model selector");
+                self.refresh_ui();
                 return;
             }
             None => {}
@@ -243,7 +243,7 @@ impl InteractiveMode {
                 self.ui.tui.hide_overlay();
                 self.clear_status();
                 self.interaction.pending_fork = false;
-                self.show_status("Canceled");
+                self.refresh_ui();
             }
             _ => {}
         }
@@ -289,7 +289,7 @@ impl InteractiveMode {
     }
 
     fn apply_setting(&mut self, id: &str, value: &str) {
-        let feedback = match id {
+        match id {
             "thinking" => {
                 self.session_setup.thinking_level = value.to_string();
                 let level = match value {
@@ -302,20 +302,15 @@ impl InteractiveMode {
                 };
                 self.controller.runtime_host.session_mut().set_thinking_level(level);
                 self.rebuild_footer();
-                format!("Thinking level: {value}")
             }
-            "autocompact" => {
-                format!("Auto-compact: {value}")
-            }
+            "autocompact" => {}
             "retry-enabled" => {
                 self.session_setup.retry_enabled = value == "true";
-                format!("Auto-retry: {value}")
             }
             "retry-max" => {
                 if let Ok(parsed) = value.parse::<u32>() {
                     self.session_setup.retry_max_retries = parsed.max(1);
                 }
-                format!("Retry attempts: {}", self.session_setup.retry_max_retries)
             }
             "retry-delay" => {
                 let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(1);
@@ -323,7 +318,6 @@ impl InteractiveMode {
                 if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
                     self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
                 }
-                format!("Retry base delay: {}s", self.session_setup.retry_base_delay_ms / 1000)
             }
             "retry-max-delay" => {
                 let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(60);
@@ -331,13 +325,11 @@ impl InteractiveMode {
                 if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
                     self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
                 }
-                format!("Retry max delay: {}s", self.session_setup.retry_max_delay_ms / 1000)
             }
             "tool-expand" => {
                 self.interaction.tool_output_expanded = value == "true";
                 self.set_chat_tools_expanded(self.interaction.tool_output_expanded);
                 self.rebuild_pending_container();
-                format!("Tool output expansion: {value}")
             }
             "hide-thinking" => {
                 self.streaming.hide_thinking_block = value == "true";
@@ -353,7 +345,6 @@ impl InteractiveMode {
                 }
                 self.rebuild_chat_from_session_with_live_components();
                 self.rebuild_pending_container();
-                format!("Hide thinking blocks: {value}")
             }
             _ => return,
         };
@@ -371,7 +362,6 @@ impl InteractiveMode {
             }
         }
 
-        self.show_status(feedback);
         self.refresh_ui();
     }
 

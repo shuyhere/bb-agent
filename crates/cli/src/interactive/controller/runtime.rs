@@ -623,20 +623,28 @@ impl InteractiveMode {
             .await
         });
 
+        enum CompactionOutcome {
+            Success {
+                summary: String,
+                first_kept_entry_id: String,
+                tokens_before: u64,
+            },
+            Cancelled,
+            Error(String),
+        }
+
         // Wait for compaction while allowing Esc to cancel
-        let result = loop {
+        let outcome = loop {
             tokio::select! {
                 res = &mut compact_handle => {
                     break match res {
-                        Ok(Ok(r)) => Some(r),
-                        Ok(Err(e)) => {
-                            self.show_warning(format!("Auto-compaction failed: {e}"));
-                            None
-                        }
-                        Err(e) => {
-                            self.show_warning(format!("Auto-compaction task failed: {e}"));
-                            None
-                        }
+                        Ok(Ok(r)) => CompactionOutcome::Success {
+                            summary: r.summary,
+                            first_kept_entry_id: r.first_kept_entry_id,
+                            tokens_before: r.tokens_before,
+                        },
+                        Ok(Err(e)) => CompactionOutcome::Error(format!("Auto-compaction failed: {e}")),
+                        Err(e) => CompactionOutcome::Error(format!("Auto-compaction task failed: {e}")),
                     };
                 }
                 terminal_event = async {
@@ -654,10 +662,7 @@ impl InteractiveMode {
                                     && key.modifiers == KeyModifiers::CONTROL;
                                 if is_esc || is_ctrl_c {
                                     cancel_for_select.cancel();
-                                    self.show_warning("Auto-compaction cancelled");
-                                    self.interaction.is_compacting = false;
-                                    self.refresh_ui();
-                                    return false;
+                                    break CompactionOutcome::Cancelled;
                                 }
                             }
                             TerminalEvent::Resize(_, _) => {
@@ -672,8 +677,22 @@ impl InteractiveMode {
 
         self.interaction.is_compacting = false;
 
-        let Some(compaction_result) = result else {
-            return false;
+        let (summary, first_kept_entry_id, tokens_before) = match outcome {
+            CompactionOutcome::Success {
+                summary,
+                first_kept_entry_id,
+                tokens_before,
+            } => (summary, first_kept_entry_id, tokens_before),
+            CompactionOutcome::Cancelled => {
+                self.show_status("Auto-compaction cancelled");
+                self.refresh_ui();
+                return false;
+            }
+            CompactionOutcome::Error(message) => {
+                self.show_error(message);
+                self.refresh_ui();
+                return false;
+            }
         };
 
         // Save compaction entry to session
@@ -683,9 +702,9 @@ impl InteractiveMode {
                 parent_id: self.get_session_leaf(),
                 timestamp: chrono::Utc::now(),
             },
-            summary: compaction_result.summary.clone(),
-            first_kept_entry_id: bb_core::types::EntryId(compaction_result.first_kept_entry_id.clone()),
-            tokens_before: compaction_result.tokens_before,
+            summary: summary.clone(),
+            first_kept_entry_id: bb_core::types::EntryId(first_kept_entry_id.clone()),
+            tokens_before,
             details: None,
             from_plugin: false,
         };
@@ -695,7 +714,8 @@ impl InteractiveMode {
             &self.session_setup.session_id,
             &compaction_entry,
         ) {
-            self.show_warning(format!("Failed to save compaction: {e}"));
+            self.show_error(format!("Failed to save compaction: {e}"));
+            self.refresh_ui();
             return false;
         }
 
@@ -712,8 +732,6 @@ impl InteractiveMode {
     /// Attempt to handle a context overflow error by compacting and signalling retry.
     /// Returns true if compaction succeeded and the caller should retry.
     pub(super) async fn handle_context_overflow(&mut self) -> bool {
-        self.show_warning("Context overflow detected — auto-compacting…");
-        self.refresh_ui();
         self.run_auto_compaction().await
     }
 }

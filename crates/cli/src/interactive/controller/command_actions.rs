@@ -975,11 +975,15 @@ impl InteractiveMode {
         }
 
         let overlay = Box::new(SessionSelectorOverlay::new(sessions));
+        self.clear_status();
         self.ui.tui.show_overlay(overlay);
-        self.show_status("Select session to resume");
     }
 
     pub(super) fn handle_resume_session(&mut self, session_id: &str) {
+        // Match pi: clear transient status UI before switching sessions.
+        self.streaming.status_loader = None;
+        self.clear_status();
+
         // Switch the active session.
         self.session_setup.session_id = session_id.to_string();
         self.session_setup.session_created = true; // already exists in DB
@@ -1103,8 +1107,8 @@ impl InteractiveMode {
             current_model,
             initial_search.map(|s| s.to_string()),
         ));
+        self.clear_status();
         self.ui.tui.show_overlay(component);
-        self.show_status("Opened model selector");
     }
 
     pub(super) fn show_placeholder(&mut self, label: &str) {
