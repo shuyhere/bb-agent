@@ -17,7 +17,7 @@ pub(crate) async fn stream_assistant_response(
 ) -> Result<LoopAssistantMessage> {
     let mut messages = context.messages.clone();
     if let Some(transform) = &config.transform_context {
-        let sig = signal.clone().unwrap_or_else(super::default_abort_signal);
+        let sig = signal.clone().unwrap_or_else(super::compat::default_abort_signal);
         messages = transform(messages, sig).await;
     }
 
@@ -27,7 +27,7 @@ pub(crate) async fn stream_assistant_response(
 
     if let Some(stream_fn) = stream_fn {
         let sink = emit.clone();
-        let sig = signal.clone().unwrap_or_else(super::default_abort_signal);
+        let sig = signal.clone().unwrap_or_else(super::compat::default_abort_signal);
         let mut loop_config = config.clone();
         loop_config.convert_to_llm = config.convert_to_llm.clone();
         loop_config.transform_context = config.transform_context.clone();

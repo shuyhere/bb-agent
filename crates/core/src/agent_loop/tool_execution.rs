@@ -154,7 +154,7 @@ async fn prepare_tool_call(
     let prepared_tool_call = prepare_tool_call_arguments(&tool, &tool_call);
 
     if let Some(before_tool_call) = &config.before_tool_call {
-        let sig = signal.unwrap_or_else(super::default_abort_signal);
+        let sig = signal.unwrap_or_else(super::compat::default_abort_signal);
         let _ = before_tool_call(
             BeforeToolCallContext {
                 tool_name: Some(prepared_tool_call.name.clone()),
@@ -200,7 +200,7 @@ async fn finalize_executed_tool_call(
     let mut is_error = executed.is_error;
 
     if let Some(after_tool_call) = &config.after_tool_call {
-        let sig = signal.unwrap_or_else(super::default_abort_signal);
+        let sig = signal.unwrap_or_else(super::compat::default_abort_signal);
         let _ = after_tool_call(
             AfterToolCallContext {
                 tool_name: Some(prepared.tool_call.name.clone()),
