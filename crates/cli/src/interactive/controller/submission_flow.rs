@@ -61,7 +61,7 @@ impl InteractiveMode {
                     self.clear_editor();
                 }
                 SubmitAction::Share => {
-                    self.handle_share_command();
+                    self.show_status("Share is not available.");
                     self.clear_editor();
                 }
                 SubmitAction::Copy => {

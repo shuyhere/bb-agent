@@ -159,15 +159,199 @@ fn load_session_message_preview(conn: &rusqlite::Connection, session_id: &str) -
 
 impl InteractiveMode {
     pub(super) fn handle_export_command(&mut self, text: &str) {
-        self.show_status(format!("TODO: export command {text}"));
+        let path = text.strip_prefix("/export").unwrap_or("").trim();
+        let file_path = if path.is_empty() {
+            let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S");
+            format!("session-{ts}.jsonl")
+        } else {
+            path.to_string()
+        };
+
+        // Export current branch as JSONL (matches pi format).
+        let entries = match bb_session::tree::active_path(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
+            Ok(e) => e,
+            Err(e) => {
+                self.show_warning(format!("Failed to read session: {e}"));
+                return;
+            }
+        };
+
+        let mut lines = Vec::new();
+
+        // Session header
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 1,
+            "id": self.session_setup.session_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": self.session_setup.tool_ctx.cwd.display().to_string(),
+        });
+        lines.push(serde_json::to_string(&header).unwrap_or_default());
+
+        // Linearize entries (re-chain parentIds)
+        let mut prev_id: Option<String> = None;
+        for row in &entries {
+            if let Ok(entry) = store::parse_entry(row) {
+                let mut val = serde_json::to_value(&entry).unwrap_or_default();
+                if let Some(obj) = val.as_object_mut() {
+                    obj.insert("parentId".into(), match &prev_id {
+                        Some(id) => serde_json::Value::String(id.clone()),
+                        None => serde_json::Value::Null,
+                    });
+                }
+                prev_id = Some(row.entry_id.clone());
+                lines.push(serde_json::to_string(&val).unwrap_or_default());
+            }
+        }
+
+        match std::fs::write(&file_path, format!("{}\n", lines.join("\n"))) {
+            Ok(()) => {
+                let abs = std::fs::canonicalize(&file_path)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&file_path));
+                self.show_status(format!("Session exported to: {}", abs.display()));
+            }
+            Err(e) => self.show_warning(format!("Failed to export: {e}")),
+        }
     }
 
     pub(super) fn handle_import_command(&mut self, text: &str) {
-        self.show_status(format!("TODO: import command {text}"));
-    }
+        let path = text.strip_prefix("/import").unwrap_or("").trim();
+        if path.is_empty() {
+            self.show_warning("Usage: /import <path.jsonl>");
+            return;
+        }
 
-    pub(super) fn handle_share_command(&mut self) {
-        self.show_status("TODO: share command");
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.show_warning(format!("Failed to read {path}: {e}"));
+                return;
+            }
+        };
+
+        // Parse JSONL lines
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        let mut session_header: Option<serde_json::Value> = None;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(val) => {
+                    if val.get("type").and_then(|t| t.as_str()) == Some("session") {
+                        session_header = Some(val);
+                    } else {
+                        entries.push(val);
+                    }
+                }
+                Err(e) => {
+                    self.show_warning(format!("Invalid JSON line: {e}"));
+                    return;
+                }
+            }
+        }
+
+        if entries.is_empty() {
+            self.show_warning("No entries found in JSONL file.");
+            return;
+        }
+
+        // Create a new session and import entries
+        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+        let new_id = match store::create_session(&self.session_setup.conn, &cwd) {
+            Ok(id) => id,
+            Err(e) => {
+                self.show_warning(format!("Failed to create session: {e}"));
+                return;
+            }
+        };
+
+        let mut imported = 0;
+        for val in &entries {
+            // Try to parse as SessionEntry
+            if let Ok(entry) = serde_json::from_value::<bb_core::types::SessionEntry>(val.clone()) {
+                if store::append_entry(&self.session_setup.conn, &new_id, &entry).is_ok() {
+                    imported += 1;
+                }
+            }
+        }
+
+        if imported == 0 {
+            self.show_warning("No valid entries imported.");
+            return;
+        }
+
+        // Switch to the imported session
+        self.session_setup.session_id = new_id.clone();
+        self.session_setup.session_created = true;
+        self.options.session_id = Some(new_id);
+
+        // Clear and re-render
+        self.render_state_mut().chat_items.clear();
+        self.render_state_mut().pending_items.clear();
+        self.render_state_mut().streaming_component = None;
+        self.streaming.streaming_text.clear();
+        self.streaming.streaming_thinking.clear();
+        self.streaming.streaming_tool_calls.clear();
+
+        // Re-render messages
+        if let Ok(path_entries) = bb_session::tree::active_path(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
+            for row in &path_entries {
+                if let Ok(entry) = store::parse_entry(row) {
+                    match entry {
+                        bb_core::types::SessionEntry::Message { message, .. } => match message {
+                            bb_core::types::AgentMessage::User(u) => {
+                                let txt: String = u.content.iter().filter_map(|b| match b {
+                                    bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                }).collect::<Vec<_>>().join("\n");
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::User { text: txt },
+                                );
+                            }
+                            bb_core::types::AgentMessage::Assistant(a) => {
+                                use super::super::components::assistant_message::{
+                                    AssistantMessage as AMsg, AssistantMessageContent,
+                                };
+                                let mut content = Vec::new();
+                                for c in &a.content {
+                                    match c {
+                                        bb_core::types::AssistantContent::Text { text } => {
+                                            content.push(AssistantMessageContent::Text(text.clone()));
+                                        }
+                                        bb_core::types::AssistantContent::Thinking { thinking } => {
+                                            content.push(AssistantMessageContent::Thinking(thinking.clone()));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                let msg = AMsg { content, stop_reason: None, error_message: a.error_message.clone() };
+                                self.render_state_mut().add_message_to_chat(
+                                    super::super::events::InteractiveMessage::Assistant {
+                                        message: msg, tool_calls: vec![],
+                                    },
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.rebuild_chat_container();
+        self.rebuild_pending_container();
+        self.rebuild_footer();
+        self.show_status(format!("Imported {imported} entries from {path}"));
+        self.refresh_ui();
     }
 
     pub(super) fn handle_copy_command(&mut self) {
