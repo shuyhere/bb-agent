@@ -271,12 +271,25 @@ fn format_edit_call_title(args: &Value) -> String {
     format!("edit {}{path}{}", t.accent, t.reset)
 }
 
+fn bash_command_lines(args: &Value) -> Vec<String> {
+    arg_str(args, "command")
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.to_string())
+        .collect()
+}
+
 fn format_bash_call_title(args: &Value) -> String {
-    let command = arg_str(args, "command").unwrap_or_default();
-    if command.trim().is_empty() {
+    let command_lines = bash_command_lines(args);
+    let first = command_lines
+        .iter()
+        .find(|line| !line.trim().is_empty())
+        .cloned()
+        .unwrap_or_default();
+    if first.trim().is_empty() {
         "bash".to_string()
     } else {
-        format!("$ {command}")
+        format!("$ {first}")
     }
 }
 
@@ -334,6 +347,12 @@ fn render_generic_call_body(tool_name: &str, args: &Value, execution_started: bo
 fn render_bash_call_body(args: &Value) -> Vec<String> {
     let t = theme();
     let mut lines = Vec::new();
+    let command_lines = bash_command_lines(args);
+    if command_lines.len() > 1 {
+        for line in command_lines.iter().skip(1) {
+            lines.push(format!("{}{}{}", t.tool_output, replace_tabs(line), t.reset));
+        }
+    }
     if let Some(timeout) = args.get("timeout").and_then(|v| v.as_f64()) {
         lines.push(format!("{}timeout {timeout}s{}", t.dim, t.reset));
     }

@@ -174,8 +174,24 @@ pub(crate) async fn run_turn_inner(
             }
         }
 
-        // Wait for stream task to finish
-        let _ = stream_handle.await;
+        // Wait for stream task to finish and do not swallow provider/request failures.
+        match stream_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if !config.cancel.is_cancelled() {
+                    let message = e.to_string();
+                    let _ = event_tx.send(TurnEvent::Error(message.clone()));
+                    return Err(anyhow::anyhow!(message));
+                }
+            }
+            Err(e) => {
+                if !config.cancel.is_cancelled() {
+                    let message = format!("stream task failed: {e}");
+                    let _ = event_tx.send(TurnEvent::Error(message.clone()));
+                    return Err(anyhow::anyhow!(message));
+                }
+            }
+        }
 
         if config.cancel.is_cancelled() {
             let _ = event_tx.send(TurnEvent::Done {

@@ -21,7 +21,11 @@ where
             }
         }
     }
-    Err(last_err)
+    Err(BbError::Provider(format!(
+        "Retry failed after {} attempts: {}",
+        max_retries,
+        last_err
+    )))
 }
 
 #[cfg(test)]
