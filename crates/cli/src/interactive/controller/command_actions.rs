@@ -1,5 +1,48 @@
 use super::*;
 
+/// Load the first user message and concatenated message text for a session.
+fn load_session_message_preview(conn: &rusqlite::Connection, session_id: &str) -> (String, String) {
+    let rows = match store::get_entries(conn, session_id) {
+        Ok(r) => r,
+        Err(_) => return (String::new(), String::new()),
+    };
+
+    let mut first_user_message = String::new();
+    let mut all_text = Vec::new();
+
+    for row in rows {
+        let entry = match store::parse_entry(&row) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if let bb_core::types::SessionEntry::Message { message, .. } = entry {
+            match &message {
+                bb_core::types::AgentMessage::User(u) => {
+                    let text: String = u.content.iter().filter_map(|b| match b {
+                        bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).collect::<Vec<_>>().join(" ");
+                    if !text.trim().is_empty() {
+                        if first_user_message.is_empty() {
+                            first_user_message = text.trim().replace('\n', " ");
+                        }
+                        all_text.push(text);
+                    }
+                }
+                bb_core::types::AgentMessage::Assistant(a) => {
+                    let text = bb_core::agent::extract_text(&a.content);
+                    if !text.trim().is_empty() {
+                        all_text.push(text);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (first_user_message, all_text.join(" "))
+}
+
 impl InteractiveMode {
     pub(super) fn handle_export_command(&mut self, text: &str) {
         self.show_status(format!("TODO: export command {text}"));
@@ -318,13 +361,20 @@ impl InteractiveMode {
         let sessions: Vec<SessionListItem> = store::list_sessions(&self.session_setup.conn, &cwd)
             .unwrap_or_default()
             .into_iter()
-            .map(|row| SessionListItem {
-                is_current: row.session_id == current_id,
-                session_id: row.session_id,
-                name: row.name,
-                cwd: row.cwd,
-                updated_at: row.updated_at,
-                entry_count: row.entry_count,
+            .map(|row| {
+                // Load first user message and all messages text for search.
+                let (first_message, all_messages_text) =
+                    load_session_message_preview(&self.session_setup.conn, &row.session_id);
+                SessionListItem {
+                    is_current: row.session_id == current_id,
+                    session_id: row.session_id,
+                    name: row.name,
+                    cwd: row.cwd,
+                    updated_at: row.updated_at,
+                    entry_count: row.entry_count,
+                    first_message,
+                    all_messages_text,
+                }
             })
             .collect();
 

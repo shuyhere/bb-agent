@@ -20,6 +20,10 @@ pub struct SessionListItem {
     pub updated_at: String,
     pub entry_count: i64,
     pub is_current: bool,
+    /// First user message text (used as display name when no name set).
+    pub first_message: String,
+    /// All user+assistant message text concatenated (for search).
+    pub all_messages_text: String,
 }
 
 pub struct SessionSelectorOverlay {
@@ -60,6 +64,8 @@ impl SessionSelectorOverlay {
                             .as_deref()
                             .map(|n| n.to_lowercase().contains(&q))
                             .unwrap_or(false)
+                        || s.first_message.to_lowercase().contains(&q)
+                        || s.all_messages_text.to_lowercase().contains(&q)
                 })
                 .collect()
         }
@@ -155,17 +161,29 @@ impl Component for SessionSelectorOverlay {
                 let display_name = item
                     .name
                     .as_deref()
-                    .unwrap_or(&item.session_id[..8.min(item.session_id.len())]);
-                let short_cwd = shorten_path(&item.cwd);
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| {
+                        if item.first_message.is_empty() {
+                            "(no messages)"
+                        } else {
+                            &item.first_message
+                        }
+                    });
+                // Truncate long display names
+                let display_name = if display_name.len() > 60 {
+                    &display_name[..57]
+                } else {
+                    display_name
+                };
                 let msgs = item.entry_count;
 
                 let line = if is_selected {
                     format!(
-                        "  {BORDER_COLOR}>{RESET} {BOLD}{display_name}{RESET}{current_marker}  {DIM}{short_cwd}  {age}  {msgs} msgs{RESET}"
+                        "  {BORDER_COLOR}>{RESET} {BOLD}{display_name}{RESET}{current_marker}  {DIM}{age}  {msgs} msgs{RESET}"
                     )
                 } else {
                     format!(
-                        "    {display_name}{current_marker}  {DIM}{short_cwd}  {age}  {msgs} msgs{RESET}"
+                        "    {display_name}{current_marker}  {DIM}{age}  {msgs} msgs{RESET}"
                     )
                 };
 

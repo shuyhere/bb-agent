@@ -228,6 +228,15 @@ pub fn set_leaf(conn: &Connection, session_id: &str, leaf_id: Option<&str>) -> R
     Ok(())
 }
 
+/// Set or clear the display name for a session.
+pub fn set_session_name(conn: &Connection, session_id: &str, name: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE sessions SET name = ?1, updated_at = datetime('now') WHERE session_id = ?2",
+        params![name, session_id],
+    )?;
+    Ok(())
+}
+
 /// Parse an EntryRow payload into a SessionEntry.
 pub fn parse_entry(row: &EntryRow) -> Result<SessionEntry> {
     let entry: SessionEntry = serde_json::from_str(&row.payload)?;
