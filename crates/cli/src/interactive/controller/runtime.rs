@@ -284,6 +284,9 @@ impl InteractiveMode {
         self.abort_token = tokio_util::sync::CancellationToken::new();
 
         let mut turn_index: u32 = 0;
+        let mut retry_count: u32 = 0;
+        const MAX_RETRIES: u32 = 5;
+        const BASE_DELAY_MS: u64 = 2000;
 
         loop {
             let _ = tx.send(AgentLoopEvent::TurnStart { turn_index });
@@ -405,13 +408,69 @@ impl InteractiveMode {
             }
 
             // Wait for stream task to finish (it should stop quickly after cancel)
-            let _ = stream_handle.await;
+            let stream_result = stream_handle.await;
 
             if aborted {
                 let _ = tx.send(AgentLoopEvent::AssistantDone);
                 self.drain_pending_agent_events();
                 self.refresh_ui();
                 break;
+            }
+
+            // Check for retryable provider errors
+            let provider_error = match &stream_result {
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+                Ok(Ok(())) => {
+                    // Also check for error events in the stream
+                    all_events.iter().find_map(|ev| {
+                        if let bb_provider::StreamEvent::Error { message } = ev {
+                            Some(message.clone())
+                        } else {
+                            None
+                        }
+                    })
+                }
+            };
+
+            if let Some(ref error_msg) = provider_error {
+                if is_retryable_error(error_msg) && retry_count < MAX_RETRIES {
+                    let delay_ms = BASE_DELAY_MS * 2u64.pow(retry_count);
+                    let delay_secs = delay_ms / 1000;
+                    retry_count += 1;
+                    self.show_warning(format!(
+                        "Rate limited, retrying in {}s ({}/{})",
+                        delay_secs, retry_count, MAX_RETRIES
+                    ));
+                    self.refresh_ui();
+
+                    // Sleep with abort support (Esc cancels)
+                    let retry_aborted = self.abortable_sleep(
+                        std::time::Duration::from_millis(delay_ms),
+                    ).await;
+
+                    if retry_aborted {
+                        self.show_warning(format!("Retry cancelled: {}", error_msg));
+                        let _ = tx.send(AgentLoopEvent::AssistantDone);
+                        self.drain_pending_agent_events();
+                        self.refresh_ui();
+                        break;
+                    }
+
+                    // Don't append failed assistant message; loop back to retry
+                    continue;
+                }
+                // Max retries exceeded or non-retryable: fall through to normal handling
+                if retry_count >= MAX_RETRIES {
+                    self.show_warning(format!(
+                        "Max retries ({}) exceeded: {}",
+                        MAX_RETRIES, error_msg
+                    ));
+                }
+            } else if retry_count > 0 {
+                // Success after retries
+                self.show_status(format!("Retry succeeded (attempt {})", retry_count + 1));
+                retry_count = 0;
             }
 
             // Final render after stream ends
@@ -574,4 +633,80 @@ impl InteractiveMode {
         self.streaming.is_streaming = false;
         Ok(())
     }
+
+    /// Sleep for the given duration, but abort early if the user presses Esc or Ctrl-C.
+    /// Returns `true` if aborted by user, `false` if sleep completed normally.
+    async fn abortable_sleep(&mut self, duration: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + duration;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    return false;
+                }
+                terminal_event = async {
+                    match self.events.as_mut() {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending::<Option<TerminalEvent>>().await,
+                    }
+                } => {
+                    if let Some(event) = terminal_event {
+                        match event {
+                            TerminalEvent::Key(key) => {
+                                let is_esc = key.code == KeyCode::Esc
+                                    && key.modifiers == KeyModifiers::NONE;
+                                let is_ctrl_c = key.code == KeyCode::Char('c')
+                                    && key.modifiers == KeyModifiers::CONTROL;
+                                if is_esc || is_ctrl_c {
+                                    return true;
+                                }
+                            }
+                            TerminalEvent::Resize(_, _) => {
+                                self.ui.tui.force_render();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Check if an error message indicates a retryable provider error.
+fn is_retryable_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Non-retryable patterns (check first)
+    if lower.contains("401 unauthorized")
+        || lower.contains("400 bad request")
+        || lower.contains("context length")
+        || lower.contains("context window")
+        || lower.contains("maximum context")
+        || lower.contains("token limit")
+    {
+        return false;
+    }
+
+    // Retryable patterns
+    let retryable_patterns = [
+        "overloaded",
+        "rate limit",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "service unavailable",
+        "server error",
+        "internal error",
+        "network error",
+        "connection error",
+        "connection refused",
+        "fetch failed",
+        "timed out",
+        "timeout",
+    ];
+
+    retryable_patterns.iter().any(|p| lower.contains(p))
 }
