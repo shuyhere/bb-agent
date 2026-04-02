@@ -986,6 +986,11 @@ impl InteractiveMode {
         self.queues.compaction_queued_messages.clear();
         self.queues.pending_bash_components.clear();
 
+        // Show immediate feedback before the expensive render.
+        self.show_status("Resuming session...");
+        self.rebuild_status_container();
+        self.ui.tui.render();
+
         // Re-render session messages from the DB.
         if let Ok(rows) = store::get_entries(&self.session_setup.conn, session_id) {
             for row in rows {
