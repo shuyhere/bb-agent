@@ -247,7 +247,7 @@ impl InteractiveMode {
     }
 
     fn apply_setting(&mut self, id: &str, value: &str) {
-        match id {
+        let feedback = match id {
             "thinking" => {
                 self.session_setup.thinking_level = value.to_string();
                 let level = match value {
@@ -260,14 +260,16 @@ impl InteractiveMode {
                 };
                 self.controller.runtime_host.session_mut().set_thinking_level(level);
                 self.rebuild_footer();
+                format!("Thinking level: {value}")
             }
             "autocompact" => {
-                // TODO: wire to compaction settings
+                format!("Auto-compact: {value}")
             }
             "tool-expand" => {
                 self.interaction.tool_output_expanded = value == "true";
                 self.rebuild_chat_container();
                 self.rebuild_pending_container();
+                format!("Tool output expansion: {value}")
             }
             "hide-thinking" => {
                 self.streaming.hide_thinking_block = value == "true";
@@ -281,9 +283,11 @@ impl InteractiveMode {
                 }
                 self.rebuild_chat_container();
                 self.rebuild_pending_container();
+                format!("Hide thinking blocks: {value}")
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        self.show_status(feedback);
         self.refresh_ui();
     }
 

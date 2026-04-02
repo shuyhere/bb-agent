@@ -1,5 +1,11 @@
 use super::*;
 
+/// Simple base64 encoder for OSC 52 clipboard.
+fn base64_encode_simple(data: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD.encode(data)
+}
+
 /// Pre-computed preview for a session entry.
 struct EntryPreview {
     entry_type: String,
@@ -165,7 +171,31 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_copy_command(&mut self) {
-        self.show_status("TODO: copy command");
+        // Find the last assistant message text and copy to clipboard via OSC 52.
+        let mut last_text = String::new();
+        for item in self.render_state().chat_items.iter().rev() {
+            if let ChatItem::AssistantMessage(component) = item {
+                if let Some(msg) = component.last_message() {
+                    for c in &msg.content {
+                        if let super::super::components::assistant_message::AssistantMessageContent::Text(t) = c {
+                            last_text = t.clone();
+                            break;
+                        }
+                    }
+                }
+                if !last_text.is_empty() {
+                    break;
+                }
+            }
+        }
+        if last_text.is_empty() {
+            self.show_warning("No assistant messages to copy.");
+            return;
+        }
+        // OSC 52 clipboard copy
+        let encoded = base64_encode_simple(last_text.as_bytes());
+        print!("\x1b]52;c;{encoded}\x07");
+        self.show_status("Copied last assistant message to clipboard");
     }
 
     pub(super) fn handle_name_command(&mut self, text: &str) {
@@ -303,7 +333,16 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_changelog_command(&mut self) {
-        self.show_status("TODO: changelog command");
+        self.render_state_mut().add_message_to_chat(
+            super::super::events::InteractiveMessage::System {
+                text: format!(
+                    "BB-Agent v{}\n\nNo changelog entries yet.",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            },
+        );
+        self.rebuild_chat_container();
+        self.refresh_ui();
     }
 
     pub(super) fn handle_hotkeys_command(&mut self) {
@@ -569,29 +608,43 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_help_command(&mut self) {
-        let commands = vec![
-            "Available commands:",
-            "  /help        - Show this help message",
-            "  /new         - Create a new session",
-            "  /name <name> - Rename current session",
-            "  /session     - Show session info",
-            "  /compact     - Trigger conversation compaction",
-            "  /clear       - Clear chat display",
-            "  /model       - Switch model",
-            "  /hotkeys     - Show key bindings",
-            "  /export      - Export session",
-            "  /import      - Import session",
-            "  /share       - Share session",
-            "  /copy        - Copy last response",
-            "  /debug       - Show debug info",
-            "  /reload      - Reload resources",
-            "  /quit        - Exit the application",
-            "  !<cmd>       - Execute bash command",
-            "  !!<cmd>      - Execute bash (excluded from context)",
-        ];
-        for line in commands {
-            self.render_cache.chat_lines.push(line.to_string());
-        }
+        let help = [
+            "\x1b[1mCommands\x1b[0m",
+            "  /help           Show this help",
+            "  /model          Switch model (Ctrl+L)",
+            "  /settings       Open settings",
+            "  /login          Login to provider",
+            "  /logout         Logout from provider",
+            "  /new            New session (Ctrl+N)",
+            "  /resume         Resume a session (Ctrl+R)",
+            "  /name <name>    Set session name",
+            "  /session        Show session stats",
+            "  /tree           Session tree navigator",
+            "  /fork           Fork from a user message",
+            "  /compact        Compact context",
+            "  /copy           Copy last response to clipboard",
+            "  /hotkeys        Show keyboard shortcuts",
+            "  /debug          Write debug log",
+            "  /changelog      Show changelog",
+            "  /quit           Exit",
+            "",
+            "\x1b[1mBash\x1b[0m",
+            "  !<cmd>          Run bash command",
+            "  !!<cmd>         Run bash (excluded from context)",
+            "",
+            "\x1b[1mEditor\x1b[0m",
+            "  Enter           Send message",
+            "  Alt+Enter       New line",
+            "  Esc             Cancel / back",
+            "  Ctrl+C          Clear / interrupt",
+            "  @               File autocomplete",
+        ]
+        .join("\n");
+        self.render_state_mut().add_message_to_chat(
+            super::super::events::InteractiveMessage::System { text: help },
+        );
+        self.rebuild_chat_container();
+        self.refresh_ui();
     }
 
     pub(super) fn check_auto_compaction(&mut self) {
@@ -652,7 +705,27 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_debug_command(&mut self) {
-        self.show_status("TODO: debug command");
+        let width = self.ui.tui.columns();
+        let lines = self.ui.tui.root.render(width);
+        let debug_path = bb_core::config::global_dir().join("debug.log");
+        let mut data = Vec::new();
+        data.push(format!("Debug output at {}", chrono::Utc::now()));
+        data.push(format!("Terminal width: {width}"));
+        data.push(format!("Total lines: {}", lines.len()));
+        data.push(String::new());
+        data.push("=== Rendered lines ===".into());
+        for (i, line) in lines.iter().enumerate() {
+            let vw = bb_tui::utils::visible_width(line);
+            let escaped = format!("{:?}", line);
+            data.push(format!("[{i}] (w={vw}) {escaped}"));
+        }
+        data.push(String::new());
+        data.push(format!("Session: {}", self.session_setup.session_id));
+        data.push(format!("Model: {}/{}", self.session_setup.model.provider, self.session_setup.model.id));
+        data.push(format!("Thinking: {}", self.session_setup.thinking_level));
+        data.push(format!("API key: {}...", &self.session_setup.api_key.chars().take(10).collect::<String>()));
+        let _ = std::fs::write(&debug_path, data.join("\n"));
+        self.show_status(format!("Debug log written to {}", debug_path.display()));
     }
 
     pub(super) fn handle_armin_says_hi(&mut self) {

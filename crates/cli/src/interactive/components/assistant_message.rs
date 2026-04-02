@@ -72,6 +72,10 @@ impl AssistantMessageComponent {
         self.last_message = Some(message);
     }
 
+    pub fn last_message(&self) -> Option<&AssistantMessage> {
+        self.last_message.as_ref()
+    }
+
     pub fn render_lines(&self, width: u16) -> Vec<String> {
         let Some(message) = &self.last_message else {
             return Vec::new();
