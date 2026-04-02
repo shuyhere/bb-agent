@@ -8,7 +8,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const FRAMES: [&str; 10] = ["|", "/", "-", "\\", "|", "/", "-", "\\", "|", "/"];
+const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TICK_MS: u64 = 80;
 
 type ColorFn = Arc<dyn Fn(&str) -> String + Send + Sync>;
