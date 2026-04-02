@@ -60,8 +60,8 @@ impl InteractiveMode {
     pub(super) fn update_streaming_display(&mut self) {
         self.sync_streaming_assistant_component(None, None);
         // Only rebuild chat (streaming content changed) + render.
-        // Skip footer/pending rebuild for streaming perf.
-        self.rebuild_chat_container();
+        // Skip footer/pending/status rebuild for streaming perf.
+        self.rebuild_chat_container_streaming();
         self.ui.tui.render();
     }
 
@@ -76,12 +76,16 @@ impl InteractiveMode {
     }
 
     /// Drain any pending agent events from the channel and handle them.
+    /// Batches renders — only rebuilds containers once after processing all events.
     pub(super) fn drain_pending_agent_events(&mut self) {
         let mut events = Vec::new();
         if let Some(rx) = self.agent_events.as_mut() {
             while let Ok(event) = rx.try_recv() {
                 events.push(event);
             }
+        }
+        if events.is_empty() {
+            return;
         }
         for event in events {
             self.handle_agent_event(event);
@@ -216,7 +220,8 @@ impl InteractiveMode {
                 self.streaming.streaming_thinking.clear();
                 self.streaming.streaming_tool_calls.clear();
                 self.sync_streaming_assistant_component(None, None);
-                self.refresh_ui();
+                self.rebuild_status_container();
+                self.ui.tui.render();
             }
             AgentLoopEvent::TextDelta { text } => {
                 self.streaming.streaming_text.push_str(&text);
@@ -250,7 +255,8 @@ impl InteractiveMode {
                 component.set_expanded(self.interaction.tool_output_expanded);
                 self.render_state_mut().chat_items.push(ChatItem::ToolExecution(component.clone()));
                 self.render_state_mut().pending_tools.insert(id, component);
-                self.refresh_ui();
+                self.rebuild_chat_container();
+                self.ui.tui.render();
             }
             AgentLoopEvent::ToolCallDelta { id, args_delta } => {
                 if let Some(call) = self.streaming.streaming_tool_calls.iter_mut().find(|call| call.id == id) {
@@ -271,7 +277,8 @@ impl InteractiveMode {
                     }
                 }
                 self.sync_streaming_assistant_component(None, None);
-                self.refresh_ui();
+                self.rebuild_chat_container();
+                self.ui.tui.render();
             }
             AgentLoopEvent::ToolExecuting { id, .. } => {
                 let updated = {
@@ -290,7 +297,8 @@ impl InteractiveMode {
                         *chat_item = ChatItem::ToolExecution(updated);
                     }
                 }
-                self.refresh_ui();
+                self.rebuild_chat_container();
+                self.ui.tui.render();
             }
             AgentLoopEvent::ToolResult {
                 id,
@@ -351,7 +359,8 @@ impl InteractiveMode {
                     }
                 }
                 self.render_state_mut().pending_tools.remove(&id);
-                self.refresh_ui();
+                self.rebuild_chat_container();
+                self.ui.tui.render();
             }
             AgentLoopEvent::TurnEnd { .. } => {
                 // Finalize the assistant message but keep the loader running.

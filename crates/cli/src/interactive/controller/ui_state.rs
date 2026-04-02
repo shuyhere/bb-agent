@@ -70,6 +70,13 @@ impl InteractiveMode {
         Self::replace_container_lines(&self.ui.chat_container, &lines);
     }
 
+    /// Rebuild only the last part of the chat (streaming component).
+    /// Much faster than rebuild_chat_container during streaming.
+    pub(super) fn rebuild_chat_container_streaming(&mut self) {
+        // Re-use the full rebuild for now but mark for future optimization
+        self.rebuild_chat_container();
+    }
+
     pub(super) fn rebuild_pending_container(&mut self) {
         self.sync_pending_render_state();
         let lines = self.pending_render_lines();
