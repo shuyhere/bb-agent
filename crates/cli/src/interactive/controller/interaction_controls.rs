@@ -7,9 +7,9 @@ impl InteractiveMode {
             self.ui.tui.hide_overlay();
             return;
         }
-        // Priority 2: cancel pending auth key entry
+        // Priority 2: cancel any pending auth flow (OAuth or API key)
         if self.streaming.pending_auth_provider.is_some() {
-            self.streaming.pending_auth_provider = None;
+            self.cancel_pending_auth();
             self.show_status("Login canceled.");
             return;
         }
