@@ -373,10 +373,15 @@ impl InteractiveMode {
                     }
                 }
                 self.finalize_streaming_assistant_message(None, None);
-                // Don't clear is_streaming or status_loader here — tool execution follows.
+                // If no pending tool calls, clear the loader now.
+                // If tools are pending, keep it running through execution.
+                if self.render_state().pending_tools.is_empty() {
+                    self.streaming.status_loader = None;
+                }
                 self.rebuild_chat_container();
+                self.rebuild_status_container();
                 self.rebuild_footer();
-                self.render_editor_frame();
+                self.ui.tui.render();
             }
             AgentLoopEvent::AssistantDone => {
                 self.streaming.is_streaming = false;
