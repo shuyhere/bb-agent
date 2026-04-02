@@ -98,7 +98,7 @@ impl InteractiveMode {
     ) -> Self {
         let editor = {
             let mut e = Editor::new();
-            e.set_focused(true);
+            bb_tui::component::Focusable::set_focused(&mut e, true);
             Arc::new(Mutex::new(e))
         };
         let is_bash_mode = Arc::new(Mutex::new(false));
