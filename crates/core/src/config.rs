@@ -10,10 +10,16 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Parse settings from a JSON string, returning defaults on invalid input.
+    pub fn parse(content: &str) -> Self {
+        serde_json::from_str(content).unwrap_or_default()
+    }
+
+    // IO boundary — should migrate to cli
     /// Load settings from a JSON file, or return defaults.
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Ok(content) => Self::parse(&content),
             Err(_) => Self::default(),
         }
     }
