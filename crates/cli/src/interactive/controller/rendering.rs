@@ -3,7 +3,7 @@ use super::*;
 impl InteractiveMode {
     pub(super) fn sync_pending_render_state(&mut self) {
         let queued = self
-            .compaction_queued_messages
+            .queues.compaction_queued_messages
             .iter()
             .map(|message| RenderQueuedMessage {
                 text: message.text.clone(),
@@ -13,8 +13,8 @@ impl InteractiveMode {
                 },
             })
             .collect::<Vec<_>>();
-        let steering: Vec<String> = self.steering_queue.iter().cloned().collect();
-        let follow_up: Vec<String> = self.follow_up_queue.iter().cloned().collect();
+        let steering: Vec<String> = self.queues.steering_queue.iter().cloned().collect();
+        let follow_up: Vec<String> = self.queues.follow_up_queue.iter().cloned().collect();
         let pending = InteractiveRenderState::collect_pending_messages(&steering, &follow_up, &queued);
         self.controller.session.pending_messages = pending.clone();
         self.render_state_mut()
@@ -67,18 +67,18 @@ impl InteractiveMode {
     }
 
     pub(super) fn chat_render_lines(&self) -> Vec<String> {
-        let width = self.ui.columns();
+        let width = self.ui.tui.columns();
         let mut lines = Self::render_items_to_lines(&self.render_state().chat_items, width);
-        for line in &self.chat_lines {
+        for line in &self.render_cache.chat_lines {
             lines.extend(word_wrap(line, width.max(1) as usize));
         }
         lines
     }
 
     pub(super) fn pending_render_lines(&self) -> Vec<String> {
-        let width = self.ui.columns();
+        let width = self.ui.tui.columns();
         let mut lines = Self::render_items_to_lines(&self.render_state().pending_items, width);
-        for line in &self.pending_lines {
+        for line in &self.render_cache.pending_lines {
             lines.extend(word_wrap(line, width.max(1) as usize));
         }
         lines

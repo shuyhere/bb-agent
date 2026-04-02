@@ -91,13 +91,13 @@ impl InteractiveMode {
 
     pub(super) fn process_overlay_actions(&mut self) {
         let action = self
-            .ui
+            .ui.tui
             .topmost_overlay_as_mut::<ModelSelectorOverlay>()
             .and_then(|overlay| overlay.take_action());
 
         match action {
             Some(ModelSelectorOverlayAction::Selected(selection)) => {
-                self.ui.hide_overlay();
+                self.ui.tui.hide_overlay();
                 if let Some(model) = self
                     .get_model_candidates()
                     .into_iter()
@@ -112,7 +112,7 @@ impl InteractiveMode {
                 }
             }
             Some(ModelSelectorOverlayAction::Cancelled) => {
-                self.ui.hide_overlay();
+                self.ui.tui.hide_overlay();
                 self.show_status("Canceled model selector");
             }
             None => {}

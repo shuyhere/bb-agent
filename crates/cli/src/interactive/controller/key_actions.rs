@@ -3,8 +3,8 @@ use super::*;
 impl InteractiveMode {
     pub(super) async fn handle_key_event(&mut self, key: KeyEvent) -> InteractiveResult<Option<String>> {
         // Match pi: overlays own input while open.
-        if self.ui.has_overlay() {
-            self.ui.handle_key(&key);
+        if self.ui.tui.has_overlay() {
+            self.ui.tui.handle_key(&key);
             self.process_overlay_actions();
             self.refresh_ui();
             return Ok(None);
@@ -27,7 +27,7 @@ impl InteractiveMode {
             };
         }
 
-        self.ui.handle_key(&key);
+        self.ui.tui.handle_key(&key);
         self.sync_bash_mode_from_editor();
         self.refresh_ui();
         Ok(None)
