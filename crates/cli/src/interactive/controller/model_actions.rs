@@ -281,8 +281,11 @@ impl InteractiveMode {
                             self.session_setup.api_key = creds.access.clone();
                         }
                         self.show_status(format!(
-                            "Logged in to {provider}. Credentials saved."
+                            "Logged in to {provider}. Credentials saved. Verifying…"
                         ));
+                        // Queue a verification prompt so user sees the login works.
+                        self.streaming.pending_oauth_verify_provider =
+                            Some(provider.clone());
                     }
                     Err(e) => {
                         self.show_warning(format!(

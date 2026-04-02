@@ -112,6 +112,11 @@ impl InteractiveMode {
             // Check for completed OAuth flows.
             self.poll_oauth_result();
 
+            // If an OAuth flow just completed, run a verification request.
+            if let Some(provider) = self.streaming.pending_oauth_verify_provider.take() {
+                self.run_oauth_verification(provider).await;
+            }
+
             // Use tokio::select! to handle terminal events, agent events,
             // and a periodic tick for background polling (OAuth results etc).
             tokio::select! {
@@ -161,6 +166,86 @@ impl InteractiveMode {
         }
     }
 
+
+    /// Send a tiny test request to verify that newly-saved OAuth credentials work.
+    async fn run_oauth_verification(&mut self, provider: String) {
+        // Resolve the fresh key we just saved.
+        let api_key = match crate::login::resolve_api_key(&provider) {
+            Some(k) if !k.trim().is_empty() => k,
+            _ => {
+                self.show_warning(format!("{provider}: saved but could not read key back"));
+                return;
+            }
+        };
+
+        // Pick the right provider backend + base URL + model for verification.
+        let (test_provider, base_url, model_id): (
+            std::sync::Arc<dyn bb_provider::Provider>,
+            String,
+            String,
+        ) = match provider.as_str() {
+            "anthropic" => (
+                std::sync::Arc::new(bb_provider::anthropic::AnthropicProvider::new()),
+                "https://api.anthropic.com".into(),
+                "claude-haiku-4-5-20251001".into(),
+            ),
+            "openai-codex" | "openai" => (
+                std::sync::Arc::new(bb_provider::openai::OpenAiProvider::new()),
+                "https://api.openai.com/v1".into(),
+                "gpt-4o-mini".into(),
+            ),
+            _ => {
+                self.show_status(format!("Logged in to {provider}."));
+                return;
+            }
+        };
+
+        self.show_status(format!("Verifying {provider} credentials…"));
+        self.refresh_ui();
+
+        let request = bb_provider::CompletionRequest {
+            system_prompt: String::new(),
+            messages: vec![serde_json::json!({"role": "user", "content": "Reply with exactly: ok"})],
+            tools: vec![],
+            model: model_id,
+            max_tokens: Some(16),
+            stream: false,
+            thinking: None,
+        };
+        let options = bb_provider::RequestOptions {
+            api_key,
+            base_url,
+            headers: std::collections::HashMap::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+
+        match test_provider.complete(request, options).await {
+            Ok(_events) => {
+                self.show_status(format!(
+                    "Logged in to {provider} -- verified, credentials work."
+                ));
+                // If this matches the current session provider, update the live key.
+                let model_provider = &self.session_setup.model.provider;
+                let matches = model_provider == &provider
+                    || (provider == "openai-codex" && model_provider == "openai")
+                    || (provider == "openai" && model_provider == "openai-codex");
+                if matches {
+                    if let Some(k) = crate::login::resolve_api_key(&provider) {
+                        self.session_setup.api_key = k;
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                let short = msg.lines().next().unwrap_or(&msg);
+                self.show_warning(format!(
+                    "{provider}: credentials saved but verification failed -- {short}"
+                ));
+            }
+        }
+        self.rebuild_footer();
+        self.refresh_ui();
+    }
 
     pub(super) fn get_session_leaf(&self) -> Option<bb_core::types::EntryId> {
         store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
