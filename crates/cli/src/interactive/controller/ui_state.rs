@@ -161,6 +161,27 @@ impl InteractiveMode {
         crate::login::authenticated_providers().len()
     }
 
+    /// Check if the current model's provider is using OAuth subscription (vs API key).
+    pub(super) fn is_using_oauth_subscription(&self) -> bool {
+        let provider = &self.session_setup.model.provider;
+        // Check both the model provider and openai-codex alias.
+        let check_providers: &[&str] = match provider.as_str() {
+            "openai" => &["openai", "openai-codex"],
+            _ => &[provider.as_str()],
+        };
+        for &p in check_providers {
+            if let Some(source) = crate::login::auth_source(p) {
+                if source == crate::login::AuthSource::BbAuth {
+                    // Check if it's an OAuth entry (not API key).
+                    if crate::login::is_oauth_entry(p) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(super) fn rebuild_footer(&mut self) {
         self.ui.footer_data_provider
             .set_cwd(self.controller.runtime_host.cwd().to_path_buf());
@@ -200,6 +221,7 @@ impl InteractiveMode {
                 None
             },
             available_provider_count: self.ui.footer_data_provider.get_available_provider_count(),
+            is_subscription: self.is_using_oauth_subscription(),
         });
 
         self.render_cache.footer_lines = footer.render(self.ui.tui.columns());

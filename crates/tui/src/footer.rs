@@ -53,6 +53,8 @@ pub struct FooterData {
     pub auto_compact: bool,
     pub thinking_level: Option<String>,
     pub available_provider_count: usize,
+    /// Whether the current model is using an OAuth subscription (shows "(sub)" after cost).
+    pub is_subscription: bool,
 }
 
 impl Default for FooterData {
@@ -73,6 +75,7 @@ impl Default for FooterData {
             auto_compact: true,
             thinking_level: None,
             available_provider_count: 1,
+            is_subscription: false,
         }
     }
 }
@@ -142,8 +145,9 @@ impl Component for Footer {
         if data.cache_write > 0 {
             stats_parts.push(format!("W{}", format_tokens(data.cache_write)));
         }
-        if data.cost > 0.0 {
-            stats_parts.push(format!("${:.3}", data.cost));
+        if data.cost > 0.0 || data.is_subscription {
+            let sub = if data.is_subscription { " (sub)" } else { "" };
+            stats_parts.push(format!("${:.3}{sub}", data.cost));
         }
 
         let context_percent_value = data.context_percent.unwrap_or(0.0);

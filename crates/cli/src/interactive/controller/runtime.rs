@@ -437,16 +437,30 @@ impl InteractiveMode {
                 content: assistant_content,
                 provider: self.session_setup.model.provider.clone(),
                 model: self.session_setup.model.id.clone(),
-                usage: bb_core::types::Usage {
-                    input: collected.input_tokens,
-                    output: collected.output_tokens,
-                    cache_read: collected.cache_read_tokens,
-                    cache_write: collected.cache_write_tokens,
-                    total_tokens: collected.input_tokens
-                        + collected.output_tokens
-                        + collected.cache_read_tokens
-                        + collected.cache_write_tokens,
-                    ..Default::default()
+                usage: {
+                    let inp = collected.input_tokens;
+                    let out = collected.output_tokens;
+                    let cr = collected.cache_read_tokens;
+                    let cw = collected.cache_write_tokens;
+                    let model_cost = &self.session_setup.model.cost;
+                    let cost = bb_core::types::Cost {
+                        input: (model_cost.input / 1_000_000.0) * inp as f64,
+                        output: (model_cost.output / 1_000_000.0) * out as f64,
+                        cache_read: (model_cost.cache_read / 1_000_000.0) * cr as f64,
+                        cache_write: (model_cost.cache_write / 1_000_000.0) * cw as f64,
+                        total: (model_cost.input / 1_000_000.0) * inp as f64
+                            + (model_cost.output / 1_000_000.0) * out as f64
+                            + (model_cost.cache_read / 1_000_000.0) * cr as f64
+                            + (model_cost.cache_write / 1_000_000.0) * cw as f64,
+                    };
+                    bb_core::types::Usage {
+                        input: inp,
+                        output: out,
+                        cache_read: cr,
+                        cache_write: cw,
+                        total_tokens: inp + out + cr + cw,
+                        cost,
+                    }
                 },
                 stop_reason: if collected.tool_calls.is_empty() { bb_core::types::StopReason::Stop } else { bb_core::types::StopReason::ToolUse },
                 error_message: None,

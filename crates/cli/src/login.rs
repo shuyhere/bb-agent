@@ -337,6 +337,22 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
     None
 }
 
+/// Check if a provider's stored credentials are OAuth (not API key).
+pub fn is_oauth_entry(provider: &str) -> bool {
+    let store = load_auth();
+    let keys: &[&str] = match provider {
+        "openai" => &["openai", "openai-codex"],
+        "openai-codex" => &["openai-codex", "openai"],
+        _ => &[provider],
+    };
+    for &k in keys {
+        if let Some(AuthEntry::OAuth { .. }) = store.providers.get(k) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolve API key for a provider: auth.json first, then env var.
 pub fn provider_has_auth(provider: &str) -> bool {
     resolve_api_key(provider)
