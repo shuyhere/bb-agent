@@ -12,7 +12,7 @@ mod runtime;
 mod session;
 mod state;
 
-pub use agents_md::load_agents_md;
+pub use agents_md::{load_agents_md, merge_agents_md_contents};
 pub use config::{
     AgentSessionConfig, CustomMessageDelivery, PromptOptions, PromptSource,
     SendCustomMessageOptions, SendUserMessageOptions, StreamingBehavior,

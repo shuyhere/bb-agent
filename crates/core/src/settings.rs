@@ -94,6 +94,12 @@ pub struct ProviderOverride {
 }
 
 impl Settings {
+    /// Parse settings from a JSON string, returning defaults on invalid input.
+    pub fn parse(content: &str) -> Self {
+        serde_json::from_str(content).unwrap_or_default()
+    }
+
+    // IO boundary — should migrate to cli
     /// Load the global settings from `~/.bb-agent/settings.json`.
     pub fn load_global() -> Self {
         let dir = crate::config::global_dir();
@@ -101,6 +107,7 @@ impl Settings {
         Self::load_from_file(&path)
     }
 
+    // IO boundary — should migrate to cli
     /// Load project-local settings by walking up from `cwd` looking for
     /// `.bb-agent/settings.json`.
     pub fn load_project(cwd: &Path) -> Self {
@@ -108,11 +115,12 @@ impl Settings {
         Self::load_from_file(&path)
     }
 
+    // IO boundary — should migrate to cli
     /// Load settings from a specific file path, returning defaults if the
     /// file doesn't exist or can't be parsed.
     pub fn load_from_file(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Ok(content) => Self::parse(&content),
             Err(_) => Self::default(),
         }
     }
@@ -143,6 +151,7 @@ impl Settings {
         }
     }
 
+    // IO boundary — should migrate to cli
     /// Convenience: load global + project and merge.
     pub fn load_merged(cwd: &Path) -> Self {
         let global = Self::load_global();
@@ -373,5 +382,27 @@ mod tests {
         let s = Settings::load_from_file(Path::new("/nonexistent/path/settings.json"));
         assert!(s.compaction.enabled);
         assert!(s.default_provider.is_none());
+    }
+
+    #[test]
+    fn test_parse_valid_json() {
+        let json = r#"{"default_provider": "anthropic", "compaction": {"enabled": false}}"#;
+        let s = Settings::parse(json);
+        assert_eq!(s.default_provider.as_deref(), Some("anthropic"));
+        assert!(!s.compaction.enabled);
+    }
+
+    #[test]
+    fn test_parse_invalid_json_returns_default() {
+        let s = Settings::parse("not valid json");
+        assert!(s.compaction.enabled);
+        assert!(s.default_provider.is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_object() {
+        let s = Settings::parse("{}");
+        assert!(s.compaction.enabled);
+        assert_eq!(s.compaction.reserve_tokens, 16384);
     }
 }
