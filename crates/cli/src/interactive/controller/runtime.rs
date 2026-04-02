@@ -112,7 +112,8 @@ impl InteractiveMode {
             // Check for completed OAuth flows.
             self.poll_oauth_result();
 
-            // Use tokio::select! to handle both terminal and agent events
+            // Use tokio::select! to handle terminal events, agent events,
+            // and a periodic tick for background polling (OAuth results etc).
             tokio::select! {
                 terminal_event = async {
                     match self.events.as_mut() {
@@ -150,6 +151,11 @@ impl InteractiveMode {
                     if let Some(event) = agent_event {
                         self.handle_agent_event(event);
                     }
+                }
+                // Periodic tick so background work (OAuth polling, etc) runs
+                // even when no terminal/agent events arrive.
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                    // poll_oauth_result runs at loop top on next iteration.
                 }
             }
         }
