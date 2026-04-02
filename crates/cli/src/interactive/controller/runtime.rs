@@ -473,8 +473,14 @@ impl InteractiveMode {
                         }
                     }
                 }
-                // 80ms tick for spinner animation (matches pi's Loader interval).
+                // 80ms tick for spinner animation + SIGINT check.
                 _ = spinner_interval.tick() => {
+                    // Check SIGINT flag (Ctrl-C from signal handler).
+                    if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        self.abort_token.cancel();
+                        aborted = true;
+                        self.show_warning("Aborted");
+                    }
                     if self.streaming.status_loader.is_some() {
                         self.rebuild_status_container();
                         self.ui.tui.render();
@@ -487,11 +493,18 @@ impl InteractiveMode {
             }
         }
 
-        // Wait for turn runner to finish, get tools back
-        let (returned_config, turn_result) = match turn_handle.await {
-            Ok((config, result)) => (Some(config), result),
-            Err(e) => {
+        // Wait for turn runner to finish (with timeout to prevent hang).
+        let (returned_config, turn_result) = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            turn_handle,
+        ).await {
+            Ok(Ok((config, result))) => (Some(config), result),
+            Ok(Err(e)) => {
                 self.show_warning(format!("Turn runner task panicked: {e}"));
+                (None, Ok(()))
+            }
+            Err(_) => {
+                // Timeout waiting for turn runner — it's stuck, just proceed.
                 (None, Ok(()))
             }
         };
