@@ -93,14 +93,17 @@ pub async fn login_anthropic(callbacks: OAuthCallbacks) -> Result<OAuthCredentia
 
 /// Refresh an existing Anthropic OAuth token.
 pub async fn refresh_anthropic_token(refresh_token: &str) -> Result<OAuthCredentials> {
+    // Anthropic uses JSON body for token requests — must match pi.
     let client = reqwest::Client::new();
     let resp = client
         .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", CLIENT_ID),
-            ("refresh_token", refresh_token),
-        ])
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "refresh_token": refresh_token,
+        }))
         .send()
         .await
         .context("Failed to send refresh request to Anthropic")?;
@@ -125,17 +128,20 @@ pub async fn refresh_anthropic_token(refresh_token: &str) -> Result<OAuthCredent
 // ── Internals ───────────────────────────────────────────────────────
 
 async fn exchange_code(code: &str, state: &str, verifier: &str) -> Result<OAuthCredentials> {
+    // Anthropic uses JSON body (not form-encoded) — must match pi exactly.
     let client = reqwest::Client::new();
     let resp = client
         .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", CLIENT_ID),
-            ("code", code),
-            ("state", state),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", verifier),
-        ])
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": CLIENT_ID,
+            "code": code,
+            "state": state,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": verifier,
+        }))
         .send()
         .await
         .context("Failed to send token exchange request to Anthropic")?;
