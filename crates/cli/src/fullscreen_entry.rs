@@ -162,13 +162,7 @@ fn fullscreen_auth_display_name(provider: &str) -> String {
 
 fn fullscreen_auth_status_detail(provider: &str) -> String {
     match crate::login::auth_source(provider) {
-        Some(source) => {
-            let mut detail = format!("({}) [via {}]", fullscreen_auth_method_label(provider), source.label());
-            if crate::login::is_oauth_entry(provider) {
-                detail.push_str(" [oauth]");
-            }
-            detail
-        }
+        Some(_) => format!("({}) [configured]", fullscreen_auth_method_label(provider)),
         None => format!("({}) [not authenticated]", fullscreen_auth_method_label(provider)),
     }
 }
@@ -754,23 +748,33 @@ impl FullscreenController {
         Ok(())
     }
 
-    fn entry_preview_text(entry: &SessionEntry) -> String {
+    fn tree_entry_role_and_preview(entry: &SessionEntry) -> (String, String) {
         match entry {
             SessionEntry::Message { message: AgentMessage::User(user), .. } => {
-                text_from_blocks(&user.content, " ")
+                ("user".to_string(), text_from_blocks(&user.content, " "))
             }
             SessionEntry::Message { message: AgentMessage::Assistant(msg), .. } => {
                 let text = format_assistant_text(msg);
-                if text.is_empty() {
-                    "assistant".to_string()
-                } else {
-                    text
-                }
+                (
+                    "assistant".to_string(),
+                    if text.is_empty() {
+                        "assistant".to_string()
+                    } else {
+                        text
+                    },
+                )
             }
-            SessionEntry::Compaction { summary, .. } => summary.clone(),
-            SessionEntry::BranchSummary { summary, .. } => summary.clone(),
-            SessionEntry::CustomMessage { custom_type, .. } => custom_type.clone(),
-            _ => String::new(),
+            SessionEntry::Message { message: AgentMessage::ToolResult(result), .. } => {
+                ("tool_result".to_string(), format_tool_result_blocks(&result.content))
+            }
+            SessionEntry::Compaction { summary, .. } => ("compaction".to_string(), summary.clone()),
+            SessionEntry::BranchSummary { summary, .. } => {
+                ("branch_summary".to_string(), summary.clone())
+            }
+            SessionEntry::CustomMessage { custom_type, .. } => {
+                ("custom".to_string(), custom_type.clone())
+            }
+            _ => ("other".to_string(), String::new()),
         }
     }
 
@@ -781,10 +785,10 @@ impl FullscreenController {
             return Ok(());
         }
         let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
-        let mut previews = HashMap::new();
+        let mut previews: HashMap<String, (String, String)> = HashMap::new();
         for row in &entries {
             if let Ok(entry) = store::parse_entry(row) {
-                previews.insert(row.entry_id.clone(), Self::entry_preview_text(&entry));
+                previews.insert(row.entry_id.clone(), Self::tree_entry_role_and_preview(&entry));
             }
         }
         let leaf_id = store::get_session(&self.session_setup.conn, &self.session_setup.session_id)?
@@ -793,19 +797,36 @@ impl FullscreenController {
         fn flatten(
             node: &bb_session::tree::TreeNode,
             depth: usize,
-            previews: &HashMap<String, String>,
+            previews: &HashMap<String, (String, String)>,
             leaf_id: Option<&str>,
             out: &mut Vec<SelectItem>,
         ) {
-            let prefix = if depth == 0 { String::new() } else { format!("{}", "  ".repeat(depth)) };
-            let marker = if leaf_id == Some(node.entry_id.as_str()) { "* " } else { "" };
-            let preview = previews
+            let prefix = if depth == 0 {
+                String::new()
+            } else {
+                format!("{}", "  ".repeat(depth))
+            };
+            let marker = if leaf_id == Some(node.entry_id.as_str()) {
+                "* "
+            } else {
+                ""
+            };
+            let (role, preview) = previews
                 .get(&node.entry_id)
                 .cloned()
-                .unwrap_or_else(|| node.entry_type.clone());
+                .unwrap_or_else(|| ("other".to_string(), node.entry_type.clone()));
+            let role_tag = match role.as_str() {
+                "user" => "[U]",
+                "assistant" => "[A]",
+                "tool_result" => "[T]",
+                "compaction" => "[C]",
+                "branch_summary" => "[B]",
+                _ => "[?]",
+            };
+            let branch_marker = if node.children.len() > 1 { " *" } else { "" };
             out.push(SelectItem {
-                label: format!("{prefix}{marker}{preview}"),
-                detail: Some(node.entry_type.clone()),
+                label: format!("{prefix}{marker}{role_tag} {}{branch_marker}", preview.trim()),
+                detail: None,
                 value: node.entry_id.clone(),
             });
             for child in &node.children {
@@ -819,7 +840,7 @@ impl FullscreenController {
         }
         self.send_command(FullscreenCommand::OpenSelectMenu {
             menu_id: TREE_ENTRY_MENU_ID.to_string(),
-            title: "Session tree".to_string(),
+            title: "Session Tree".to_string(),
             items,
         });
         Ok(())

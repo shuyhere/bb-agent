@@ -170,6 +170,17 @@ struct FullscreenSelectMenuState {
     max_visible: usize,
 }
 
+fn colorize_tree_menu_label(label: &str) -> String {
+    let t = crate::theme::theme();
+    label
+        .replace("[U]", &format!("{}[U]{}", t.cyan, t.reset))
+        .replace("[A]", &format!("{}[A]{}", t.green, t.reset))
+        .replace("[T]", &format!("{}[T]{}", t.yellow, t.reset))
+        .replace("[C]", &format!("{}[C]{}", t.dim, t.reset))
+        .replace("[B]", &format!("{}[B]{}", t.accent, t.reset))
+        .replace("[?]", &format!("{}[?]{}", t.dim, t.reset))
+}
+
 impl FullscreenSelectMenuState {
     fn new(menu_id: String, title: String, items: Vec<SelectItem>) -> Self {
         Self {
@@ -251,10 +262,15 @@ impl FullscreenSelectMenuState {
             let item = &self.items[index];
             let is_selected = index == self.selected;
             let marker = if is_selected { ">" } else { " " };
-            let label = if is_selected {
-                format!("{}", item.label.clone().bold().attribute(Attribute::Reverse))
+            let label_text = if self.menu_id == "tree-entry" {
+                colorize_tree_menu_label(&item.label)
             } else {
                 item.label.clone()
+            };
+            let label = if is_selected {
+                format!("{}", label_text.bold().attribute(Attribute::Reverse))
+            } else {
+                label_text
             };
             let detail = item
                 .detail
