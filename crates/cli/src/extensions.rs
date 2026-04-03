@@ -2422,11 +2422,12 @@ mod tests {
         // gracefully via tracing::warn).
         let cwd = tempdir().unwrap();
 
-        let spec = "@test/nonexistent-pkg";
-        let source = format!("npm:{spec}");
+        // Use a unique spec so previous test runs can't leave stale dirs.
+        let unique = format!("@test/nonexistent-{}", std::process::id());
+        let source = format!("npm:{unique}");
 
-        // Confirm the install root does not exist yet.
-        let root = resolve_install_root("npm", spec, cwd.path());
+        // Check the project-scoped root (under temp cwd) — guaranteed fresh.
+        let root = package_install_root("npm", &unique, SettingsScope::Project, cwd.path());
         assert!(!root.exists(), "install root should not exist before auto-install");
 
         let settings = Settings {
