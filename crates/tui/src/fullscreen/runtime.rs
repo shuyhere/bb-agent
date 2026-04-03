@@ -772,6 +772,7 @@ impl FullscreenState {
                 KeyCode::Char(' ') if key.modifiers == KeyModifiers::NONE => {
                     if let Some(value) = menu.selected_value() {
                         self.accept_slash_selection(value);
+                        self.insert_char(' ');
                     }
                     return;
                 }
