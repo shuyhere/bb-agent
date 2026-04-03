@@ -1,15 +1,19 @@
+use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use bb_core::types::ContentBlock;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use tokio::sync::mpsc;
 
 use super::{
     frame::{build_frame, measure_input},
-    layout::{Size, compute_layout},
+    layout::{FullscreenLayout, Size, compute_layout},
     projection::{ProjectedRowKind, TranscriptProjection, TranscriptProjector},
     renderer::FullscreenRenderer,
+    scheduler::{RenderIntent, RenderScheduler},
     terminal::{FullscreenEvent, FullscreenTerminal, spawn_event_reader},
     transcript::{BlockId, BlockKind, NewBlock, Transcript},
     viewport::ViewportState,
@@ -41,6 +45,51 @@ pub struct FullscreenOutcome {
     pub submitted_inputs: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub enum FullscreenNoteLevel {
+    Status,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub enum FullscreenCommand {
+    SetStatusLine(String),
+    PushNote {
+        level: FullscreenNoteLevel,
+        text: String,
+    },
+    TurnStart {
+        turn_index: u32,
+    },
+    TextDelta(String),
+    ThinkingDelta(String),
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args: String,
+    },
+    ToolExecuting {
+        id: String,
+    },
+    ToolResult {
+        id: String,
+        name: String,
+        content: Vec<ContentBlock>,
+        details: Option<serde_json::Value>,
+        artifact_path: Option<String>,
+        is_error: bool,
+    },
+    TurnEnd,
+    TurnAborted,
+    TurnError {
+        message: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FullscreenMode {
     #[default]
@@ -52,6 +101,34 @@ pub enum FullscreenMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FullscreenSearchState {
     pub query: String,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveTurnState {
+    root_id: BlockId,
+    turn_index: u32,
+    thinking_id: Option<BlockId>,
+    content_id: Option<BlockId>,
+    tools: HashMap<String, ToolCallState>,
+}
+
+impl ActiveTurnState {
+    fn new(root_id: BlockId, turn_index: u32) -> Self {
+        Self {
+            root_id,
+            turn_index,
+            thinking_id: None,
+            content_id: None,
+            tools: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ToolCallState {
+    name: String,
+    tool_use_id: BlockId,
+    tool_result_id: BlockId,
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +149,10 @@ pub struct FullscreenState {
     pub should_quit: bool,
     pub tick_count: u64,
     pub submitted_inputs: Vec<String>,
+    projector: TranscriptProjector,
+    projection_dirty: bool,
+    pending_submissions: VecDeque<String>,
+    active_turn: Option<ActiveTurnState>,
 }
 
 impl FullscreenState {
@@ -93,8 +174,12 @@ impl FullscreenState {
             should_quit: false,
             tick_count: 0,
             submitted_inputs: Vec::new(),
+            projector: TranscriptProjector::new(),
+            projection_dirty: true,
+            pending_submissions: VecDeque::new(),
+            active_turn: None,
         };
-        state.refresh_projection(false);
+        state.prepare_for_render();
         state
     }
 
@@ -104,16 +189,23 @@ impl FullscreenState {
         dirty
     }
 
+    pub fn take_pending_submissions(&mut self) -> Vec<String> {
+        self.pending_submissions.drain(..).collect()
+    }
+
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
-        if self.tick_count % 8 == 0 {
-            self.dirty = true;
-        }
     }
 
     pub fn on_resize(&mut self, width: u16, height: u16) {
         self.size = Size { width, height };
-        self.status_line = format!("resized to {}x{} • {}", width, height, self.mode_help_text());
+        self.status_line = format!(
+            "resized to {}x{} • {}",
+            width,
+            height,
+            self.mode_help_text()
+        );
+        self.projection_dirty = true;
         self.refresh_projection(true);
         self.dirty = true;
     }
@@ -130,8 +222,8 @@ impl FullscreenState {
                 self.dirty = true;
             }
             FullscreenMode::Transcript => {
-                self.status_line = "paste is ignored while transcript navigation is active"
-                    .to_string();
+                self.status_line =
+                    "paste is ignored while transcript navigation is active".to_string();
                 self.dirty = true;
             }
         }
@@ -214,11 +306,32 @@ impl FullscreenState {
         }
     }
 
+    pub fn prepare_for_render(&mut self) {
+        self.refresh_projection(!self.viewport.auto_follow);
+    }
+
     pub fn refresh_projection(&mut self, preserve_anchor: bool) {
         let layout = self.current_layout();
+        let transcript_width = layout.transcript.width as usize;
+        let viewport_height = layout.transcript.height as usize;
+        let should_refresh = self.projection_dirty
+            || self.projection.width != transcript_width
+            || self.viewport.viewport_height != viewport_height;
+        if !should_refresh {
+            return;
+        }
+
         let anchor = if preserve_anchor && !self.viewport.auto_follow {
-            if let Some(block_id) = self.focused_block {
-                self.viewport.capture_header_anchor(&self.projection, block_id)
+            if matches!(
+                self.mode,
+                FullscreenMode::Transcript | FullscreenMode::Search
+            ) {
+                self.focused_block
+                    .and_then(|block_id| {
+                        self.viewport
+                            .capture_header_anchor(&self.projection, block_id)
+                    })
+                    .or_else(|| self.viewport.capture_top_anchor(&self.projection))
             } else {
                 self.viewport.capture_top_anchor(&self.projection)
             }
@@ -226,10 +339,10 @@ impl FullscreenState {
             None
         };
 
-        let mut projector = TranscriptProjector::new();
-        let next_projection = projector.project(&self.transcript, layout.transcript.width as usize);
-        self.viewport
-            .set_viewport_height(layout.transcript.height as usize);
+        let next_projection = self
+            .projector
+            .project(&mut self.transcript, transcript_width);
+        self.viewport.set_viewport_height(viewport_height);
         if let Some(anchor) = anchor {
             self.viewport.preserve_anchor(&next_projection, &anchor);
         } else {
@@ -239,14 +352,177 @@ impl FullscreenState {
         self.focused_block = self
             .focused_block
             .filter(|block_id| self.projection.rows_for_block(*block_id).is_some());
-        if matches!(self.mode, FullscreenMode::Transcript | FullscreenMode::Search)
-            && self.focused_block.is_none()
+        if matches!(
+            self.mode,
+            FullscreenMode::Transcript | FullscreenMode::Search
+        ) && self.focused_block.is_none()
         {
             self.focused_block = self.default_focus_block();
         }
         self.sync_focus_tracking();
-        if matches!(self.mode, FullscreenMode::Transcript | FullscreenMode::Search) {
+        if matches!(
+            self.mode,
+            FullscreenMode::Transcript | FullscreenMode::Search
+        ) {
             self.ensure_focus_visible();
+        }
+        self.projection_dirty = false;
+    }
+
+    pub fn apply_command(&mut self, command: FullscreenCommand) -> RenderIntent {
+        match command {
+            FullscreenCommand::SetStatusLine(status) => {
+                self.status_line = status;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::PushNote { level, text } => {
+                let title = match level {
+                    FullscreenNoteLevel::Status => "status",
+                    FullscreenNoteLevel::Warning => "warning",
+                    FullscreenNoteLevel::Error => "error",
+                };
+                self.transcript.append_root_block(
+                    NewBlock::new(BlockKind::SystemNote, title).with_content(text),
+                );
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::TurnStart { turn_index } => {
+                let root_id = self.transcript.append_root_block(
+                    NewBlock::new(
+                        BlockKind::AssistantMessage,
+                        format!("turn {} • streaming", turn_index + 1),
+                    )
+                    .with_expandable(true),
+                );
+                self.active_turn = Some(ActiveTurnState::new(root_id, turn_index));
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::TextDelta(text) => {
+                if text.is_empty() {
+                    return RenderIntent::None;
+                }
+                let Ok(content_id) = self.ensure_assistant_content_block() else {
+                    return RenderIntent::None;
+                };
+                let _ = self.transcript.append_streamed_content(content_id, text);
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Schedule
+            }
+            FullscreenCommand::ThinkingDelta(text) => {
+                if text.is_empty() {
+                    return RenderIntent::None;
+                }
+                let Ok(thinking_id) = self.ensure_thinking_block() else {
+                    return RenderIntent::None;
+                };
+                let _ = self.transcript.append_streamed_content(thinking_id, text);
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Schedule
+            }
+            FullscreenCommand::ToolCallStart { id, name } => {
+                let Some(turn_root_id) = self.ensure_active_turn_root() else {
+                    return RenderIntent::None;
+                };
+                let Ok(tool_use_id) = self.transcript.append_child_block(
+                    turn_root_id,
+                    NewBlock::new(BlockKind::ToolUse, format!("{name} • collecting"))
+                        .with_expandable(true),
+                ) else {
+                    return RenderIntent::None;
+                };
+                let Ok(tool_result_id) = self.transcript.append_child_block(
+                    tool_use_id,
+                    NewBlock::new(BlockKind::ToolResult, "pending"),
+                ) else {
+                    return RenderIntent::None;
+                };
+                if let Some(active_turn) = self.active_turn.as_mut() {
+                    active_turn.tools.insert(
+                        id,
+                        ToolCallState {
+                            name,
+                            tool_use_id,
+                            tool_result_id,
+                        },
+                    );
+                }
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::ToolCallDelta { id, args } => {
+                if args.is_empty() {
+                    return RenderIntent::None;
+                }
+                let Some(tool) = self.tool_call_state(&id).cloned() else {
+                    return RenderIntent::None;
+                };
+                let _ = self
+                    .transcript
+                    .append_streamed_content(tool.tool_use_id, args);
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Schedule
+            }
+            FullscreenCommand::ToolExecuting { id } => {
+                let Some(tool) = self.tool_call_state(&id).cloned() else {
+                    return RenderIntent::None;
+                };
+                let _ = self
+                    .transcript
+                    .update_title(tool.tool_use_id, format!("{} • running", tool.name));
+                let _ = self.transcript.update_title(tool.tool_result_id, "pending");
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::ToolResult {
+                id,
+                name,
+                content,
+                details,
+                artifact_path,
+                is_error,
+            } => {
+                let Some(tool) = self.tool_call_state(&id).cloned() else {
+                    return RenderIntent::None;
+                };
+                let _ = self.transcript.update_title(
+                    tool.tool_use_id,
+                    format!("{} • {}", name, if is_error { "error" } else { "done" }),
+                );
+                let _ = self.transcript.update_title(
+                    tool.tool_result_id,
+                    if is_error { "error" } else { "result" },
+                );
+                let formatted = format_tool_result_content(&content, details, artifact_path);
+                let _ = self
+                    .transcript
+                    .replace_tool_result_content(tool.tool_result_id, formatted);
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::TurnEnd => {
+                self.finish_active_turn("complete");
+                RenderIntent::Render
+            }
+            FullscreenCommand::TurnAborted => {
+                self.finish_active_turn("aborted");
+                RenderIntent::Render
+            }
+            FullscreenCommand::TurnError { message } => {
+                self.status_line = message;
+                self.finish_active_turn("error");
+                RenderIntent::Render
+            }
         }
     }
 
@@ -315,8 +591,7 @@ impl FullscreenState {
             (KeyCode::End, KeyModifiers::NONE) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => {
                 self.focus_last();
             }
-            (KeyCode::Enter, KeyModifiers::NONE)
-            | (KeyCode::Char(' '), KeyModifiers::NONE) => {
+            (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Char(' '), KeyModifiers::NONE) => {
                 self.toggle_focused_block();
             }
             (KeyCode::Char('o'), KeyModifiers::NONE) => {
@@ -351,8 +626,8 @@ impl FullscreenState {
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
                 self.mode = FullscreenMode::Transcript;
                 if self.search.query.trim().is_empty() {
-                    self.status_line = "search scaffold ready • type after / to filter transcript"
-                        .to_string();
+                    self.status_line =
+                        "search scaffold ready • type after / to filter transcript".to_string();
                     self.dirty = true;
                 } else {
                     self.search_step(true);
@@ -378,8 +653,10 @@ impl FullscreenState {
             FullscreenMode::Transcript | FullscreenMode::Search => FullscreenMode::Normal,
         };
 
-        if matches!(self.mode, FullscreenMode::Transcript | FullscreenMode::Search)
-            && self.focused_block.is_none()
+        if matches!(
+            self.mode,
+            FullscreenMode::Transcript | FullscreenMode::Search
+        ) && self.focused_block.is_none()
         {
             self.focused_block = self.default_focus_block();
             self.sync_focus_tracking();
@@ -417,7 +694,7 @@ impl FullscreenState {
         }
     }
 
-    fn current_layout(&self) -> super::layout::FullscreenLayout {
+    fn current_layout(&self) -> FullscreenLayout {
         let input_inner_width = self.size.width.saturating_sub(2).max(1) as usize;
         let input_wrap = measure_input(&self.input, self.cursor, input_inner_width);
         compute_layout(self.size, input_wrap.lines.len())
@@ -514,7 +791,13 @@ impl FullscreenState {
         let current_index = self
             .focused_block
             .and_then(|block_id| blocks.iter().position(|candidate| *candidate == block_id))
-            .unwrap_or_else(|| if step.is_negative() { blocks.len() - 1 } else { 0 });
+            .unwrap_or_else(|| {
+                if step.is_negative() {
+                    blocks.len() - 1
+                } else {
+                    0
+                }
+            });
 
         let next_index = if step.is_negative() {
             current_index.saturating_sub(step.unsigned_abs())
@@ -632,13 +915,20 @@ impl FullscreenState {
             return;
         };
         if !(block.expandable || !block.children.is_empty()) {
-            self.status_line = format!("focused {} block is not expandable", self.block_label(block_id));
+            self.status_line = format!(
+                "focused {} block is not expandable",
+                self.block_label(block_id)
+            );
             self.dirty = true;
             return;
         }
 
         let next_collapsed = !block.collapsed;
-        let action = if next_collapsed { "collapsed" } else { "expanded" };
+        let action = if next_collapsed {
+            "collapsed"
+        } else {
+            "expanded"
+        };
         self.set_block_collapsed(block_id, next_collapsed, action);
     }
 
@@ -647,7 +937,10 @@ impl FullscreenState {
             return;
         };
         if !(block.expandable || !block.children.is_empty()) {
-            self.status_line = format!("focused {} block is not expandable", self.block_label(block_id));
+            self.status_line = format!(
+                "focused {} block is not expandable",
+                self.block_label(block_id)
+            );
             self.dirty = true;
             return;
         }
@@ -661,6 +954,7 @@ impl FullscreenState {
             return;
         }
 
+        self.projection_dirty = true;
         self.refresh_projection(true);
         self.focus_block(block_id);
         self.status_line = format!("{} {}", action, self.block_label(block_id));
@@ -701,6 +995,62 @@ impl FullscreenState {
         Some(row.block_id)
     }
 
+    fn finish_active_turn(&mut self, status: &str) {
+        if let Some(active_turn) = self.active_turn.take() {
+            let _ = self.transcript.update_title(
+                active_turn.root_id,
+                format!("turn {} • {status}", active_turn.turn_index + 1),
+            );
+            self.projection_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn ensure_active_turn_root(&mut self) -> Option<BlockId> {
+        self.active_turn.as_ref().map(|turn| turn.root_id)
+    }
+
+    fn ensure_thinking_block(&mut self) -> Result<BlockId, ()> {
+        let Some(turn_root_id) = self.ensure_active_turn_root() else {
+            return Err(());
+        };
+        if let Some(id) = self.active_turn.as_ref().and_then(|turn| turn.thinking_id) {
+            return Ok(id);
+        }
+        let id = self
+            .transcript
+            .append_child_block(turn_root_id, NewBlock::new(BlockKind::Thinking, "thinking"))
+            .map_err(|_| ())?;
+        if let Some(active_turn) = self.active_turn.as_mut() {
+            active_turn.thinking_id = Some(id);
+        }
+        Ok(id)
+    }
+
+    fn ensure_assistant_content_block(&mut self) -> Result<BlockId, ()> {
+        let Some(turn_root_id) = self.ensure_active_turn_root() else {
+            return Err(());
+        };
+        if let Some(id) = self.active_turn.as_ref().and_then(|turn| turn.content_id) {
+            return Ok(id);
+        }
+        let id = self
+            .transcript
+            .append_child_block(
+                turn_root_id,
+                NewBlock::new(BlockKind::AssistantMessage, "response"),
+            )
+            .map_err(|_| ())?;
+        if let Some(active_turn) = self.active_turn.as_mut() {
+            active_turn.content_id = Some(id);
+        }
+        Ok(id)
+    }
+
+    fn tool_call_state(&self, id: &str) -> Option<&ToolCallState> {
+        self.active_turn.as_ref()?.tools.get(id)
+    }
+
     fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
         if submitted.trim().is_empty() {
@@ -713,13 +1063,11 @@ impl FullscreenState {
             NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
         );
         self.submitted_inputs.push(submitted.clone());
+        self.pending_submissions.push_back(submitted);
         self.input.clear();
         self.cursor = 0;
-        self.status_line = format!(
-            "captured prompt locally ({} chars) • agent turn wiring lands in a later branch",
-            submitted.chars().count()
-        );
-        self.refresh_projection(true);
+        self.status_line = "submitted prompt • waiting for assistant".to_string();
+        self.projection_dirty = true;
         self.dirty = true;
     }
 
@@ -763,23 +1111,44 @@ impl FullscreenState {
 }
 
 pub async fn run(config: FullscreenAppConfig) -> io::Result<FullscreenOutcome> {
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let (submission_tx, _submission_rx) = mpsc::unbounded_channel();
+    run_with_channels(config, command_rx, submission_tx).await
+}
+
+pub async fn run_with_channels(
+    config: FullscreenAppConfig,
+    mut command_rx: mpsc::UnboundedReceiver<FullscreenCommand>,
+    submission_tx: mpsc::UnboundedSender<String>,
+) -> io::Result<FullscreenOutcome> {
     let mut terminal = FullscreenTerminal::enter()?;
     let (width, height) = terminal.size()?;
     let mut state = FullscreenState::new(config, Size { width, height });
     let mut renderer = FullscreenRenderer::new();
     let mut events = spawn_event_reader();
+    let mut scheduler = RenderScheduler::default();
+    let mut command_open = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    if state.take_dirty() {
-        let frame = build_frame(&state);
-        renderer.render(&mut terminal, &frame)?;
-    }
+    render_now(&mut terminal, &mut renderer, &mut state)?;
+    flush_submissions(&mut state, &submission_tx);
 
     loop {
         if state.should_quit {
             break;
         }
+
+        let scheduled_deadline = scheduler.next_flush_at();
+        let scheduled_flush = async move {
+            match scheduled_deadline {
+                Some(deadline) => {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(scheduled_flush);
 
         tokio::select! {
             maybe_event = events.recv() => {
@@ -793,19 +1162,143 @@ pub async fn run(config: FullscreenAppConfig) -> io::Result<FullscreenOutcome> {
                     FullscreenEvent::Resize(width, height) => state.on_resize(width, height),
                     FullscreenEvent::Paste(text) => state.on_paste(&text),
                 }
+
+                if state.dirty {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.clear();
+                }
+                flush_submissions(&mut state, &submission_tx);
+            }
+            maybe_command = command_rx.recv(), if command_open => {
+                match maybe_command {
+                    Some(command) => apply_render_intent(
+                        state.apply_command(command),
+                        &mut scheduler,
+                        &mut terminal,
+                        &mut renderer,
+                        &mut state,
+                    )?,
+                    None => {
+                        command_open = false;
+                    }
+                }
+            }
+            _ = &mut scheduled_flush => {
+                if scheduler.should_flush(Instant::now()) {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.on_flushed();
+                }
             }
             _ = tick.tick() => {
                 state.on_tick();
             }
         }
 
-        if state.take_dirty() {
-            let frame = build_frame(&state);
-            renderer.render(&mut terminal, &frame)?;
-        }
+        flush_submissions(&mut state, &submission_tx);
+    }
+
+    if scheduler.is_dirty() || state.dirty {
+        render_now(&mut terminal, &mut renderer, &mut state)?;
+        scheduler.on_flushed();
     }
 
     Ok(state.outcome())
+}
+
+fn apply_render_intent(
+    intent: RenderIntent,
+    scheduler: &mut RenderScheduler,
+    terminal: &mut FullscreenTerminal,
+    renderer: &mut FullscreenRenderer,
+    state: &mut FullscreenState,
+) -> io::Result<()> {
+    match intent {
+        RenderIntent::None => {}
+        RenderIntent::Schedule => scheduler.mark_dirty(Instant::now()),
+        RenderIntent::Render => {
+            render_now(terminal, renderer, state)?;
+            scheduler.on_flushed();
+        }
+    }
+    Ok(())
+}
+
+fn render_now(
+    terminal: &mut FullscreenTerminal,
+    renderer: &mut FullscreenRenderer,
+    state: &mut FullscreenState,
+) -> io::Result<()> {
+    if !state.take_dirty() {
+        return Ok(());
+    }
+    state.prepare_for_render();
+    let frame = build_frame(state);
+    renderer.render(terminal, &frame)
+}
+
+fn flush_submissions(state: &mut FullscreenState, submission_tx: &mpsc::UnboundedSender<String>) {
+    for submitted in state.take_pending_submissions() {
+        if submission_tx.send(submitted).is_err() {
+            break;
+        }
+    }
+}
+
+fn format_tool_result_content(
+    content: &[ContentBlock],
+    details: Option<serde_json::Value>,
+    artifact_path: Option<String>,
+) -> String {
+    let mut lines = Vec::new();
+    let mut text_lines = 0usize;
+    let max_lines = 20usize;
+
+    for block in content {
+        match block {
+            ContentBlock::Text { text } => {
+                for line in text.lines() {
+                    lines.push(line.to_string());
+                    text_lines += 1;
+                    if text_lines >= max_lines {
+                        lines.push("… output truncated".to_string());
+                        break;
+                    }
+                }
+            }
+            ContentBlock::Image { mime_type, .. } => {
+                lines.push(format!("[image: {mime_type}]"));
+                text_lines += 1;
+            }
+        }
+        if text_lines >= max_lines {
+            break;
+        }
+    }
+
+    if let Some(details) = details {
+        let details =
+            serde_json::to_string_pretty(&details).unwrap_or_else(|_| details.to_string());
+        if !details.trim().is_empty() {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push("details:".to_string());
+            lines.extend(details.lines().map(str::to_string));
+        }
+    }
+
+    if let Some(path) = artifact_path {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(format!("artifact: {path}"));
+    }
+
+    if lines.is_empty() {
+        "(no textual output)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn previous_boundary(text: &str, cursor: usize) -> usize {
@@ -933,5 +1426,168 @@ mod tests {
         state.search_step(true);
 
         assert_eq!(state.focused_block, Some(result));
+    }
+
+    #[test]
+    fn streaming_updates_do_not_force_auto_follow_back_to_bottom() {
+        let mut transcript = Transcript::new();
+        for idx in 0..8 {
+            transcript.append_root_block(
+                NewBlock::new(BlockKind::SystemNote, format!("note {idx}"))
+                    .with_content(format!("line {idx}")),
+            );
+        }
+
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig {
+                transcript,
+                ..FullscreenAppConfig::default()
+            },
+            Size {
+                width: 80,
+                height: 12,
+            },
+        );
+        state.viewport.jump_to_top();
+        state.projection_dirty = true;
+        state.prepare_for_render();
+        let top_before = state.viewport.viewport_top;
+
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        let _ = state.apply_command(FullscreenCommand::TextDelta("hello".to_string()));
+        state.prepare_for_render();
+
+        assert!(!state.viewport.auto_follow);
+        assert_eq!(state.viewport.viewport_top, top_before);
+    }
+
+    #[test]
+    fn focused_transcript_anchor_is_preserved_during_streaming() {
+        let mut transcript = Transcript::new();
+        let first = transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "first").with_content("one"));
+        transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "second").with_content("two"));
+        transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "third").with_content("three"));
+
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig {
+                transcript,
+                ..FullscreenAppConfig::default()
+            },
+            Size {
+                width: 80,
+                height: 12,
+            },
+        );
+        state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        state.focused_block = Some(first);
+        state.viewport.jump_to_top();
+        state.viewport.auto_follow = false;
+        state.sync_focus_tracking();
+        let anchor_before = state
+            .viewport
+            .capture_header_anchor(&state.projection, first)
+            .expect("anchor should exist");
+
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        let _ = state.apply_command(FullscreenCommand::TextDelta("delta".into()));
+        state.prepare_for_render();
+
+        let anchor_after = state
+            .viewport
+            .capture_header_anchor(&state.projection, first)
+            .expect("anchor should still exist");
+        assert_eq!(anchor_after.screen_offset, anchor_before.screen_offset);
+        assert_eq!(state.focused_block, Some(first));
+    }
+
+    #[test]
+    fn command_deltas_update_only_shared_transcript_blocks() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        let _ = state.apply_command(FullscreenCommand::ThinkingDelta("thinking".into()));
+        let _ = state.apply_command(FullscreenCommand::ToolCallStart {
+            id: "tool-1".into(),
+            name: "bash".into(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolCallDelta {
+            id: "tool-1".into(),
+            args: "{\"command\":\"ls\"}".into(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolResult {
+            id: "tool-1".into(),
+            name: "bash".into(),
+            content: vec![ContentBlock::Text {
+                text: "file.txt".into(),
+            }],
+            details: None,
+            artifact_path: None,
+            is_error: false,
+        });
+        let _ = state.apply_command(FullscreenCommand::TextDelta("done".into()));
+        state.prepare_for_render();
+
+        let assistant = state.transcript.root_blocks()[0];
+        let assistant_block = state
+            .transcript
+            .block(assistant)
+            .expect("assistant root should exist");
+        assert_eq!(assistant_block.kind, BlockKind::AssistantMessage);
+        assert_eq!(assistant_block.children.len(), 3);
+
+        let thinking = state
+            .transcript
+            .block(assistant_block.children[0])
+            .expect("thinking block should exist");
+        assert_eq!(thinking.kind, BlockKind::Thinking);
+        assert_eq!(thinking.content, "thinking");
+
+        let tool_use = state
+            .transcript
+            .block(assistant_block.children[1])
+            .expect("tool use block should exist");
+        assert_eq!(tool_use.kind, BlockKind::ToolUse);
+        assert!(tool_use.content.contains("ls"));
+
+        let tool_result = state
+            .transcript
+            .block(tool_use.children[0])
+            .expect("tool result block should exist");
+        assert_eq!(tool_result.kind, BlockKind::ToolResult);
+        assert!(tool_result.content.contains("file.txt"));
+
+        let response = state
+            .transcript
+            .block(assistant_block.children[2])
+            .expect("assistant response block should exist");
+        assert_eq!(response.kind, BlockKind::AssistantMessage);
+        assert_eq!(response.content, "done");
+    }
+
+    #[test]
+    fn scheduler_batches_streaming_bursts_until_idle_or_frame_cap() {
+        let start = Instant::now();
+        let mut scheduler =
+            RenderScheduler::new(Duration::from_millis(30), Duration::from_millis(10));
+
+        scheduler.mark_dirty(start);
+        scheduler.mark_dirty(start + Duration::from_millis(8));
+        scheduler.mark_dirty(start + Duration::from_millis(16));
+
+        assert!(!scheduler.should_flush(start + Duration::from_millis(24)));
+        assert!(scheduler.should_flush(start + Duration::from_millis(26)));
+
+        scheduler.on_flushed();
+        scheduler.mark_dirty(start + Duration::from_millis(40));
+        assert!(scheduler.should_flush(start + Duration::from_millis(70)));
     }
 }

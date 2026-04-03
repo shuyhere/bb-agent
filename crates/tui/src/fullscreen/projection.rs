@@ -51,78 +51,166 @@ impl TranscriptProjection {
     }
 }
 
-#[derive(Default)]
-pub struct TranscriptProjector;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OrderedBlock {
+    block_id: BlockId,
+    depth: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CachedBlockRows {
+    depth: usize,
+    header_lines: Vec<String>,
+    content_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TranscriptProjector {
+    width: usize,
+    block_order: Vec<OrderedBlock>,
+    block_rows: HashMap<BlockId, CachedBlockRows>,
+    projection: TranscriptProjection,
+}
 
 impl TranscriptProjector {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    pub fn project(&mut self, transcript: &Transcript, width: usize) -> TranscriptProjection {
+    pub fn project(&mut self, transcript: &mut Transcript, width: usize) -> TranscriptProjection {
         let width = width.max(1);
-        let mut projection = TranscriptProjection {
-            width,
-            ..TranscriptProjection::default()
-        };
+        let width_changed = self.width != width;
+        let mut dirty_blocks = transcript.take_dirty_blocks();
+        if width_changed {
+            dirty_blocks.extend(transcript.all_block_ids());
+        }
+        let next_order = collect_visible_blocks(transcript);
+        let order_changed = self.block_order != next_order;
 
-        for root_id in transcript.root_blocks() {
-            self.project_block(&mut projection, transcript, *root_id, 0);
+        if width_changed {
+            self.block_rows.clear();
         }
 
-        projection.total_rows = projection.rows.len();
-        projection
+        if !(width_changed
+            || order_changed
+            || !dirty_blocks.is_empty()
+            || self.projection.rows.is_empty())
+        {
+            return self.projection.clone();
+        }
+
+        self.width = width;
+        self.block_rows
+            .retain(|block_id, _| next_order.iter().any(|entry| entry.block_id == *block_id));
+
+        for entry in &next_order {
+            let should_render = width_changed
+                || dirty_blocks.contains(&entry.block_id)
+                || self
+                    .block_rows
+                    .get(&entry.block_id)
+                    .map(|cached| cached.depth != entry.depth)
+                    .unwrap_or(true);
+            if !should_render {
+                continue;
+            }
+
+            let Some(block) = transcript.block(entry.block_id) else {
+                continue;
+            };
+            self.block_rows.insert(
+                entry.block_id,
+                CachedBlockRows {
+                    depth: entry.depth,
+                    header_lines: render_header_lines(block, width, entry.depth),
+                    content_lines: if block.collapsed {
+                        Vec::new()
+                    } else {
+                        render_content_lines(block, width, entry.depth)
+                    },
+                },
+            );
+        }
+
+        self.block_order = next_order;
+        self.projection = compose_projection(width, &self.block_order, &self.block_rows);
+        self.projection.clone()
+    }
+}
+
+fn collect_visible_blocks(transcript: &Transcript) -> Vec<OrderedBlock> {
+    let mut blocks = Vec::new();
+    for root_id in transcript.root_blocks() {
+        collect_visible_block_recursive(transcript, *root_id, 0, &mut blocks);
+    }
+    blocks
+}
+
+fn collect_visible_block_recursive(
+    transcript: &Transcript,
+    block_id: BlockId,
+    depth: usize,
+    out: &mut Vec<OrderedBlock>,
+) {
+    let Some(block) = transcript.block(block_id) else {
+        return;
+    };
+
+    out.push(OrderedBlock { block_id, depth });
+    if block.collapsed {
+        return;
     }
 
-    fn project_block(
-        &mut self,
-        projection: &mut TranscriptProjection,
-        transcript: &Transcript,
-        block_id: BlockId,
-        depth: usize,
-    ) {
-        let Some(block) = transcript.block(block_id).cloned() else {
-            return;
+    for child_id in &block.children {
+        collect_visible_block_recursive(transcript, *child_id, depth + 1, out);
+    }
+}
+
+fn compose_projection(
+    width: usize,
+    block_order: &[OrderedBlock],
+    cached_rows: &HashMap<BlockId, CachedBlockRows>,
+) -> TranscriptProjection {
+    let mut projection = TranscriptProjection {
+        width,
+        ..TranscriptProjection::default()
+    };
+
+    for entry in block_order {
+        let Some(rows) = cached_rows.get(&entry.block_id) else {
+            continue;
         };
 
         let all_start = projection.rows.len();
         let header_start = projection.rows.len();
-        for line in render_header_lines(&block, projection.width, depth) {
+        for line in &rows.header_lines {
             let index = projection.rows.len();
             projection.rows.push(ProjectedRow {
                 index,
-                block_id,
+                block_id: entry.block_id,
                 kind: ProjectedRowKind::Header,
-                depth,
-                text: line,
+                depth: entry.depth,
+                text: line.clone(),
             });
         }
         let header_end = projection.rows.len();
 
         let content_start = projection.rows.len();
-        if !block.collapsed {
-            for line in render_content_lines(&block, projection.width, depth) {
-                let index = projection.rows.len();
-                projection.rows.push(ProjectedRow {
-                    index,
-                    block_id,
-                    kind: ProjectedRowKind::Content,
-                    depth,
-                    text: line,
-                });
-            }
+        for line in &rows.content_lines {
+            let index = projection.rows.len();
+            projection.rows.push(ProjectedRow {
+                index,
+                block_id: entry.block_id,
+                kind: ProjectedRowKind::Content,
+                depth: entry.depth,
+                text: line.clone(),
+            });
         }
         let content_end = projection.rows.len();
-
-        if !block.collapsed {
-            for child_id in &block.children {
-                self.project_block(projection, transcript, *child_id, depth + 1);
-            }
-        }
-
         let all_end = projection.rows.len();
+
         projection.block_rows.insert(
-            block_id,
+            entry.block_id,
             BlockRowSpan {
                 all_rows: all_start..all_end,
                 header_rows: header_start..header_end,
@@ -130,6 +218,9 @@ impl TranscriptProjector {
             },
         );
     }
+
+    projection.total_rows = projection.rows.len();
+    projection
 }
 
 fn render_header_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
@@ -237,7 +328,10 @@ fn wrap_visual_line(
         }
 
         if end == start {
-            let ch = line[start..].chars().next().unwrap();
+            let ch = line[start..]
+                .chars()
+                .next()
+                .expect("line should have a char");
             let next = start + ch.len_utf8();
             out.push(format!("{prefix}{}", &line[start..next]));
             start = next;
@@ -268,7 +362,7 @@ fn wrap_visual_line(
 fn skip_leading_whitespace(line: &str, start: usize) -> usize {
     let mut idx = start;
     while idx < line.len() {
-        let ch = line[idx..].chars().next().unwrap();
+        let ch = line[idx..].chars().next().expect("line should have a char");
         if !ch.is_whitespace() {
             break;
         }
@@ -290,11 +384,77 @@ mod tests {
         );
         transcript
             .append_child_block(root, NewBlock::new(BlockKind::Thinking, "thought"))
-            .unwrap();
-        transcript.set_collapsed(root, true).unwrap();
+            .expect("child block should be appended");
+        transcript
+            .set_collapsed(root, true)
+            .expect("collapse should succeed");
 
         let mut projector = TranscriptProjector::new();
-        let projection = projector.project(&transcript, 40);
+        let projection = projector.project(&mut transcript, 40);
         assert_eq!(projection.total_rows, 1);
+    }
+
+    #[test]
+    fn reuses_cached_rows_for_clean_blocks() {
+        let mut transcript = Transcript::new();
+        let first = transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "first").with_content("alpha"));
+        let second = transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "second").with_content("beta"));
+
+        let mut projector = TranscriptProjector::new();
+        let initial = projector.project(&mut transcript, 40);
+        let initial_first = initial
+            .rows_for_block(first)
+            .cloned()
+            .expect("first span should exist");
+        let initial_second = initial
+            .rows_for_block(second)
+            .cloned()
+            .expect("second span should exist");
+
+        transcript
+            .append_streamed_content(second, " gamma")
+            .expect("streaming append should succeed");
+        let updated = projector.project(&mut transcript, 40);
+
+        assert_eq!(
+            &updated.rows[initial_first.all_rows.clone()],
+            &initial.rows[initial_first.all_rows]
+        );
+        assert_ne!(
+            &updated.rows[initial_second.all_rows.clone()],
+            &initial.rows[initial_second.all_rows]
+        );
+    }
+
+    #[test]
+    fn width_change_rewraps_existing_cached_blocks() {
+        let mut transcript = Transcript::new();
+        transcript.append_root_block(
+            NewBlock::new(BlockKind::AssistantMessage, "assistant")
+                .with_content("this line wraps differently when the width changes"),
+        );
+
+        let mut projector = TranscriptProjector::new();
+        let wide = projector.project(&mut transcript, 40);
+        let narrow = projector.project(&mut transcript, 18);
+
+        assert!(narrow.total_rows > wide.total_rows);
+    }
+
+    #[test]
+    fn clean_projection_call_leaves_transcript_clean() {
+        let mut transcript = Transcript::new();
+        transcript.append_root_block(
+            NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content("hello"),
+        );
+
+        let mut projector = TranscriptProjector::new();
+        let _ = projector.project(&mut transcript, 40);
+        assert!(!transcript.has_dirty_blocks());
+
+        let _ = projector.project(&mut transcript, 40);
+        assert!(!transcript.has_dirty_blocks());
     }
 }

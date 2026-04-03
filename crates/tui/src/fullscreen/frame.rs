@@ -147,9 +147,12 @@ fn render_transcript(
 
     let visible = state.viewport.visible_row_range();
     let visible_rows = &projection.rows[visible.clone()];
-    let focused_block = matches!(state.mode, FullscreenMode::Transcript | FullscreenMode::Search)
-        .then_some(state.focused_block)
-        .flatten();
+    let focused_block = matches!(
+        state.mode,
+        FullscreenMode::Transcript | FullscreenMode::Search
+    )
+    .then_some(state.focused_block)
+    .flatten();
 
     let mut lines = Vec::with_capacity(height);
     let top_padding = height.saturating_sub(visible_rows.len());
@@ -188,9 +191,15 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
             }
         }
     };
+    let follow = if state.viewport.auto_follow {
+        "follow on"
+    } else {
+        "follow paused"
+    };
     let text = format!(
-        " {spinner} [{mode}] {} • size {}x{} • row {} of {} ",
+        " {spinner} [{mode}] {} • {} • size {}x{} • row {} of {} ",
         state.status_line,
+        follow,
         state.size.width,
         state.size.height,
         state.viewport.viewport_top,

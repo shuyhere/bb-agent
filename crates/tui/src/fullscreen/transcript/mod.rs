@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use thiserror::Error;
 
@@ -212,6 +212,25 @@ impl Transcript {
         Ok(())
     }
 
+    pub fn take_dirty_blocks(&mut self) -> BTreeSet<BlockId> {
+        let mut dirty = BTreeSet::new();
+        for block in self.blocks.values_mut() {
+            if block.dirty {
+                dirty.insert(block.id);
+                block.dirty = false;
+            }
+        }
+        dirty
+    }
+
+    pub fn has_dirty_blocks(&self) -> bool {
+        self.blocks.values().any(|block| block.dirty)
+    }
+
+    pub fn all_block_ids(&self) -> BTreeSet<BlockId> {
+        self.blocks.keys().copied().collect()
+    }
+
     fn next_id(&mut self) -> BlockId {
         self.next_block_id += 1;
         BlockId(self.next_block_id)
@@ -234,6 +253,8 @@ impl Transcript {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{BlockKind, NewBlock, Transcript};
 
     #[test]
@@ -371,5 +392,24 @@ mod tests {
             transcript.block(block).expect("block should exist").content,
             "new"
         );
+    }
+
+    #[test]
+    fn take_dirty_blocks_returns_only_changed_ids() {
+        let mut transcript = Transcript::new();
+        let first = transcript.append_root_block(
+            NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content("hello"),
+        );
+        let second = transcript
+            .append_root_block(NewBlock::new(BlockKind::SystemNote, "note").with_content("world"));
+        let _ = transcript.take_dirty_blocks();
+
+        transcript
+            .append_streamed_content(first, "!")
+            .expect("streaming append should succeed");
+        let dirty = transcript.take_dirty_blocks();
+
+        assert_eq!(dirty, BTreeSet::from([first]));
+        assert!(!dirty.contains(&second));
     }
 }

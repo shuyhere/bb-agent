@@ -9,9 +9,13 @@ mod layout;
 mod projection;
 mod renderer;
 mod runtime;
+mod scheduler;
 mod terminal;
 mod transcript;
 mod viewport;
 
-pub use runtime::{FullscreenAppConfig, FullscreenOutcome, run};
+pub use runtime::{
+    FullscreenAppConfig, FullscreenCommand, FullscreenNoteLevel, FullscreenOutcome, run,
+    run_with_channels,
+};
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
