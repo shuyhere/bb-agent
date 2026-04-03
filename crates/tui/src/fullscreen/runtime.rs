@@ -1115,9 +1115,7 @@ impl FullscreenState {
 
     fn should_animate_status(&self) -> bool {
         matches!(self.mode, FullscreenMode::Normal)
-            && (self.has_active_turn()
-                || self.status_line.trim() == "Working..."
-                || self.status_line.starts_with("Retrying ("))
+            && (self.has_active_turn() || !self.pending_submissions.is_empty())
     }
 
     fn mode_help_text(&self) -> String {
@@ -1523,6 +1521,10 @@ impl FullscreenState {
             self.projection_dirty = true;
             self.dirty = true;
         }
+        // Clear the stale "Working..." status so it doesn't persist after the
+        // turn ends.  Reset to the mode-appropriate help text (empty in Normal,
+        // help string in Transcript/Search).
+        self.status_line = self.mode_help_text();
     }
 
     fn ensure_active_turn_root(&mut self) -> Option<BlockId> {
