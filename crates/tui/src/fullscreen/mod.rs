@@ -15,6 +15,7 @@ mod renderer;
 mod runtime;
 mod scheduler;
 mod search;
+mod streaming;
 mod terminal;
 mod tool_format;
 mod transcript;
