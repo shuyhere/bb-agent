@@ -2,224 +2,111 @@
 
 Last updated: 2026-04-03
 
-## Round 1: `bb-fullscreen`
+This queue now reflects the latest reviewed state after the final fullscreen subagent round.
 
-### Merge now
+## Current `master` base
 
-#### r24-fullscreen-foundation
-- Branch: `r24-fullscreen-foundation`
-- Commit: `9a2a555`
-- Title: `add fullscreen transcript foundation`
+Already on `master`:
+- `8d5af47` `add fullscreen transcript foundation`
+- `18c071e` `add structured transcript block model`
+- `c360a71` `unify fullscreen foundation with structured transcript state`
+- `f7dbd86` `launch final fullscreen tui subagent round`
+
+## Merge now
+
+### r38-fullscreen-cleanup
+- Branch: `r38-fullscreen-cleanup`
+- Commit: `c990227`
+- Title: `clean up shared fullscreen integration surface`
 - Judgment: ACCEPT
 - Build status: passes
-- Branch status: clean
-- Notes:
-  - strongest clean branch in round 1
-  - introduces fullscreen path in parallel
-  - owns alternate-screen / terminal shell / bottom-fixed input shell / status line shell
-  - does not disrupt the old interactive path
+- Extra verification: `cargo run -p bb-cli -- --help` shows canonical `--fullscreen-transcript` and legacy alias `--fullscreen`
+- Why merge now:
+  - removes the obsolete duplicate fullscreen integration surface
+  - adds thin `crates/cli/src/fullscreen_entry.rs`
+  - keeps the shared fullscreen stack as the only target architecture
 
-#### r25-transcript-block-model
-- Branch: `r25-transcript-block-model`
-- Commit: `ebbc4c4`
-- Title: `add structured transcript block model`
-- Judgment: ACCEPT (commit-only)
-- Build status: committed state accepted earlier
-- Branch status: dirty after accepted commit
-- Notes:
-  - commit itself is focused and good
-  - includes structured transcript blocks, hierarchy, collapse state, and mutation helpers
-  - do not take the current dirty branch state after this commit
+### r35-shared-fullscreen-controls
+- Branch: `r35-shared-fullscreen-controls`
+- Commit: `e5796f5`
+- Title: `add transcript controls to shared fullscreen runtime`
+- Judgment: ACCEPT
+- Build status: passes
+- Test status:
+  - `cargo test -p bb-tui fullscreen::runtime -- --nocapture` passes
+- Why merge now:
+  - adds transcript mode controls to the shared fullscreen runtime
+  - adds focused block styling, mouse toggle, wheel scroll, and search scaffold
+  - the important work is in the shared TUI layer
+- Merge note:
+  - merge after `r38`
+  - expect a small conflict because `r35` still touched a file that `r38` deletes
+  - keep the shared fullscreen runtime/frame changes, drop stale CLI-local path references
 
-### Cherry-pick / salvage only
+## Salvage next
 
-#### r26-projection-scroll
-- Branch: `r26-projection-scroll`
-- Commit: `6eb6005`
-- Title: `add transcript projection and scroll model`
+### r36-shared-fullscreen-streaming
+- Branch: `r36-shared-fullscreen-streaming`
+- Commit: `fcb193c`
+- Title: `add shared fullscreen streaming scheduler`
 - Judgment: SALVAGE
 - Build status: passes
-- Branch status: still dirty after commit
+- Test status:
+  - `cargo test -p bb-tui fullscreen::runtime -- --nocapture` passes
 - Keep:
-  - wrapping
-  - row projection mechanics
-  - hit-test map ideas
-  - viewport auto-follow logic
-  - anchor-preservation logic
-- Do not merge directly because:
-  - it duplicates transcript block types instead of consuming the accepted shared model
-  - branch still has extra dirty changes after the useful commit
-
-#### r28-streaming-scheduler
-- Branch: `r28-streaming-scheduler`
-- Commit: `e442f4f`
-- Title: `add streaming scheduler for fullscreen transcript UI`
-- Judgment: SALVAGE
-- Build status: passes
-- Branch status: clean
-- Keep:
-  - render scheduler idea
+  - `crates/tui/src/fullscreen/scheduler.rs`
   - dirty tracking concepts
-  - batching cadence logic
-  - idle flush behavior
+  - frame cadence cap
+  - batching / idle flush logic
+  - shared runtime/projection improvements that do not depend on obsolete CLI-local fullscreen files
 - Do not merge directly because:
-  - implementation is still tied to the old interactive controller / renderer stack
-  - not yet integrated into the new shared fullscreen architecture
+  - the branch still uses the obsolete CLI-local fullscreen integration surface
+  - the final architecture must route through the thin shared entry instead
 
-#### r29-bb-integration
-- Branch: `r29-bb-integration`
-- Commit: `728b53c`
-- Title: `integrate fullscreen transcript UI into bb interactive runtime`
+### r37-shared-fullscreen-runtime-mapping
+- Branch: `r37-shared-fullscreen-runtime-mapping`
+- Commit: `5402cfb`
+- Title: `map bb runtime events into shared fullscreen transcript`
 - Judgment: SALVAGE
 - Build status: passes
-- Branch status: only `Cargo.lock` dirty
+- Test status:
+  - build passes
+  - no meaningful targeted fullscreen-runtime test coverage landed with the commit itself
 - Keep:
-  - fullscreen runtime entry wiring
-  - runtime event-mapping ideas
-  - bottom-fixed fullscreen input flow ideas
+  - runtime-event to transcript-block mapping ideas
+  - user / assistant / thinking / tool / status hierarchy wiring ideas
+  - prompt submission and streaming integration ideas
 - Do not merge directly because:
-  - it introduces another CLI-local fullscreen transcript stack
-  - it overlaps with the accepted/salvageable responsibilities from `r24`, `r25`, and `r26`
+  - the main implementation still lives on the obsolete CLI-local fullscreen integration surface
+  - the logic must be re-homed into `crates/cli/src/fullscreen_entry.rs` and shared fullscreen APIs
 
-### Reject
+## Preferred next integration order
 
-#### r27-input-modes-mouse
-- Branch: `r27-input-modes-mouse`
-- Commit: `be4222f`
-- Title: `add transcript mode keyboard and mouse controls`
-- Judgment: REJECT
-- Build status: passes
-- Branch status: clean
-- Reason:
-  - targets the old interactive controller/component stack rather than the new shared fullscreen path
-  - not mergeable into the intended fullscreen architecture without re-porting behavior only
+1. merge `c990227` from `r38`
+2. merge `e5796f5` from `r35`
+3. salvage-port streaming from `fcb193c` into the shared fullscreen stack
+4. salvage-port runtime mapping from `5402cfb` into the shared fullscreen stack
+5. run attached-terminal verification and long-session streaming checks
 
-#### Dirty branch states to reject
-- `r25` dirty working tree after `ebbc4c4`
-- `r26` dirty working tree after `6eb6005`
+## Explicit accept / salvage / reject state
 
-## Round 2: `bb-fullscreen-next`
+### ACCEPT
+- `r38-fullscreen-cleanup @ c990227`
+- `r35-shared-fullscreen-controls @ e5796f5`
 
-### Current purpose
-This second round exists to fill the remaining architectural gaps after round 1 by building the shared fullscreen stack properly.
+### SALVAGE
+- `r36-shared-fullscreen-streaming @ fcb193c`
+- `r37-shared-fullscreen-runtime-mapping @ 5402cfb`
 
-### Reviewed branch states
+### REJECT AS A FINAL TARGET SURFACE
+- any reintroduction of `crates/cli/src/interactive_fullscreen/*`
+- any new `crates/cli/src/fullscreen_transcript/*` stack
+- any fullscreen implementation that duplicates the shared `crates/tui/src/fullscreen/*` stack instead of extending it
 
-#### r30-unify-fullscreen-stack
-- Branch: `r30-unify-fullscreen-stack`
-- Commit status: no commit yet
-- Judgment: HOLD
-- Build status: passes in current uncommitted state
-- Current status:
-  - meaningful in-progress work exists
-  - touches shared fullscreen stack locations
-  - no commit yet, so not mergeable
-- Why this is promising:
-  - aims at the correct architectural target
-  - combines fullscreen foundation with shared transcript state / viewport shell
-- Merge readiness:
-  - wait for first focused commit
+## Working rule for remaining TUI work
 
-#### r31-projector-viewport-integration
-- Branch: `r31-projector-viewport-integration`
-- Commit status: no commit yet
-- Judgment: HOLD
-- Build status: passes in current uncommitted state
-- Current status:
-  - meaningful in-progress work exists
-  - shared fullscreen transcript files are being created under tui-side modules
-  - no commit yet, so not mergeable
-- Why this is promising:
-  - targets the correct architectural layer
-  - appears to be integrating model / projector / viewport / wrapping into the shared stack
-- Merge readiness:
-  - wait for first focused commit
+All remaining fullscreen work must follow this boundary:
 
-#### r32-transcript-controls
-- Branch: `r32-transcript-controls`
-- Commit status: no commit yet
-- Judgment: REJECT (current state)
-- Build status: fails
-- Current status:
-  - substantial uncommitted work
-  - mostly under `crates/cli/src/fullscreen_transcript/`
-- Reason:
-  - wrong architectural target: building another CLI-local fullscreen subsystem
-  - duplicates architecture instead of using the shared fullscreen stack
-  - currently broken to build
-- Merge readiness:
-  - not mergeable in current form
-
-#### r33-fullscreen-streaming
-- Branch: `r33-fullscreen-streaming`
-- Commit status: no commit yet
-- Judgment: SALVAGE / HOLD
-- Build status: passes in current uncommitted state
-- Current status:
-  - focused uncommitted scheduler/streaming work exists
-  - still implemented under CLI-local fullscreen transcript modules
-- Keep later:
-  - scheduler logic
-  - batching / idle-flush ideas
-  - transcript render cache ideas
-- Reason it is not mergeable yet:
-  - still targets the wrong architectural layer
-  - needs re-port into the shared fullscreen stack
-
-#### r34-fullscreen-runtime-mapping
-- Branch: `r34-fullscreen-runtime-mapping`
-- Commit status: no commit yet
-- Judgment: REJECT (current state)
-- Build status: fails
-- Current status:
-  - partial mixed work between shared fullscreen modules and CLI-local fullscreen transcript modules
-  - no coherent clean integration commit yet
-- Reason:
-  - not yet architecturally coherent
-  - currently broken to build
-- Merge readiness:
-  - not mergeable in current form
-
-## Best current architectural path
-
-### Round 1 accepted base
-1. `r24 @ 9a2a555`
-2. `r25 @ ebbc4c4` (commit only)
-
-### Salvage from round 1
-3. salvage-port from `r26 @ 6eb6005`
-4. salvage-port from `r28 @ e442f4f`
-5. salvage-port from `r29 @ 728b53c`
-
-### Most promising active round-2 branches
-6. wait for first focused commit from `r30`
-7. wait for first focused commit from `r31`
-
-### Branches to ignore unless restarted cleanly
-8. `r27`
-9. current `r32`
-10. current `r34`
-
-## Preferred merge order
-
-1. `r24 @ 9a2a555`
-2. `r25 @ ebbc4c4`
-3. salvage-port projector / viewport ideas from `r26`
-4. salvage-port scheduler ideas from `r28`
-5. salvage-port runtime wiring from `r29`
-6. focused follow-up commits from round 2 in this preferred order:
-   - `r30`
-   - `r31`
-   - `r33`
-
-## Live monitoring
-
-### Round 1
-- tmux session: `bb-fullscreen`
-- progress log: `/tmp/bb-fullscreen/monitor.log`
-- commit review log: `/tmp/bb-fullscreen/review-events.log`
-
-### Round 2
-- tmux session: `bb-fullscreen-next`
-- progress log: `/tmp/bb-fullscreen-next/monitor.log`
-- commit review log: `/tmp/bb-fullscreen-next/review-events.log`
+- shared fullscreen behavior belongs in `crates/tui/src/fullscreen/*`
+- BB-specific wiring belongs in `crates/cli/src/fullscreen_entry.rs`
+- no second fullscreen architecture is allowed to grow beside that shared stack

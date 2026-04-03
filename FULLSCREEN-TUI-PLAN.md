@@ -1,11 +1,13 @@
 # Fullscreen No-Flicker Transcript UI Plan
 
-This plan records the new user-approved direction for BB-Agent's TUI.
+Last updated: 2026-04-03
 
-## Direction change
+This document records the user-approved direction for BB-Agent's TUI and the current execution plan after the latest fullscreen review round.
 
-BB-Agent's existing interactive UI is a scrollback-style renderer modeled after pi.
-The new target is a fullscreen transcript UI with:
+## Direction
+
+BB-Agent's older interactive UI is a scrollback-style renderer modeled after pi.
+The newer target is a fullscreen transcript UI with:
 
 - alternate screen ownership
 - bottom-fixed input
@@ -19,125 +21,143 @@ The new target is a fullscreen transcript UI with:
 - batched incremental rendering during streaming
 - strong long-session performance
 
-This work should be built in parallel on separate branches/worktrees, then merged back in waves.
-
 ## Product goal
 
 Build a fullscreen transcript viewer for BB-Agent that feels like a live structured conversation inspector rather than a raw logging terminal.
 
-## Non-goals for first merge wave
+## Architectural conclusion
 
-Do not block the entire app on a perfect migration.
-The first merge wave should preserve the current interactive path while introducing a new fullscreen transcript path behind a dedicated entry switch.
+The final architecture is now clear:
 
-## Integration strategy
+### Shared TUI stack
+Own all fullscreen UI behavior in:
+- `crates/tui/src/fullscreen/`
 
-1. Add a new fullscreen transcript implementation in parallel to the current interactive renderer.
-2. Keep old interactive mode buildable until the new path is feature-complete.
-3. Wire BB interactive events into a structured transcript state.
-4. Only replace the default mode once the fullscreen path is stable.
+This layer should contain:
+- terminal ownership
+- layout / frame building
+- transcript block model
+- projection / viewport
+- controls
+- streaming scheduler
+- rendering
 
-## Parallel worktree plan
+### Thin CLI adapter
+Own BB-specific fullscreen bootstrapping in:
+- `crates/cli/src/fullscreen_entry.rs`
 
-### r24-fullscreen-foundation
-- Branch: `r24-fullscreen-foundation`
-- Worktree: `/tmp/bb-fullscreen/r24-foundation`
-- Scope:
-  - alternate screen enter/leave
-  - mouse capture
-  - fullscreen layout shell
-  - bottom-fixed input + status line frame
-  - render loop skeleton
+This layer should:
+- build the initial fullscreen config
+- wire BB runtime events into shared transcript blocks
+- stay thin
 
-### r25-transcript-block-model
-- Branch: `r25-transcript-block-model`
-- Worktree: `/tmp/bb-fullscreen/r25-block-model`
-- Scope:
-  - structured transcript block model
-  - block ids / parent-child relationships
-  - collapse state
-  - mutation APIs for streaming updates
+### Explicit non-goal
+Do not preserve or introduce another fullscreen subsystem under:
+- `crates/cli/src/interactive_fullscreen/`
+- `crates/cli/src/fullscreen_transcript/`
 
-### r26-projection-scroll
-- Branch: `r26-projection-scroll`
-- Worktree: `/tmp/bb-fullscreen/r26-projection-scroll`
-- Scope:
-  - visible-row projection
-  - wrapping cache
-  - viewport state
-  - scroll behavior
-  - anchor preservation on expand/collapse/resize
-  - auto-follow rules
+## What is already complete on `master`
 
-### r27-input-modes-mouse
-- Branch: `r27-input-modes-mouse`
-- Worktree: `/tmp/bb-fullscreen/r27-input-modes`
-- Scope:
-  - normal / transcript / search mode state
-  - `Ctrl+O` toggle
-  - transcript keyboard controls
-  - mouse click hit testing
-  - wheel scrolling
-  - focused row / selected block behavior
+- fullscreen terminal shell
+- bottom-fixed input shell
+- status line shell
+- structured transcript block model
+- shared fullscreen baseline using transcript blocks
+- shared projection baseline
+- shared viewport baseline
 
-### r28-streaming-scheduler
-- Branch: `r28-streaming-scheduler`
-- Worktree: `/tmp/bb-fullscreen/r28-streaming`
-- Scope:
-  - per-block streaming append
-  - dirty block tracking
-  - render scheduler / frame cap
-  - incremental redraw
-  - no-flicker behavior during token bursts
+Key commits already on `master`:
+- `8d5af47` `add fullscreen transcript foundation`
+- `18c071e` `add structured transcript block model`
+- `c360a71` `unify fullscreen foundation with structured transcript state`
 
-### r29-bb-integration
-- Branch: `r29-bb-integration`
-- Worktree: `/tmp/bb-fullscreen/r29-integration`
-- Scope:
-  - map BB interactive events into transcript blocks
-  - wire tools / thinking / assistant content into hierarchy
-  - preserve bottom input flow
-  - provide a CLI switch for the new fullscreen transcript UI
+## Reviewed follow-up branches
 
-## Merge order
+### Accepted
+- `r38-fullscreen-cleanup @ c990227`
+  - thin shared entry surface
+  - removes obsolete duplicate fullscreen surface
 
-Recommended merge order:
+- `r35-shared-fullscreen-controls @ e5796f5`
+  - transcript mode controls in shared fullscreen runtime
+  - keyboard navigation
+  - search scaffold
+  - mouse wheel / click toggle
+  - focused header styling
 
-1. r25-transcript-block-model
-2. r26-projection-scroll
-3. r24-fullscreen-foundation
-4. r27-input-modes-mouse
-5. r28-streaming-scheduler
-6. r29-bb-integration
+### Salvage
+- `r36-shared-fullscreen-streaming @ fcb193c`
+  - scheduler / dirty-tracking / batching ideas
+  - not mergeable as-is because it still depends partly on obsolete CLI-local fullscreen files
 
-## Verification expectations
+- `r37-shared-fullscreen-runtime-mapping @ 5402cfb`
+  - runtime-event mapping ideas
+  - not mergeable as-is because the main implementation still lives on the obsolete CLI-local fullscreen surface
 
-For each branch:
+## Remaining execution plan
 
-```bash
-cd ~/BB-Agent
-cargo build
-cargo test
-```
+### Step 1: integrate accepted work
+Merge in this order:
+1. `c990227` from `r38-fullscreen-cleanup`
+2. `e5796f5` from `r35-shared-fullscreen-controls`
 
-For integration branch additionally verify:
+Result:
+- thin shared fullscreen entry surface
+- shared fullscreen transcript controls on `master`
 
-```bash
-cargo run -p bb-cli -- --help
-cargo run -p bb-cli -- --fullscreen-transcript
-```
+### Step 2: finish shared fullscreen streaming
+Salvage-port the useful parts from:
+- `fcb193c` from `r36-shared-fullscreen-streaming`
 
-## Launching the subagents
+Target only:
+- `crates/tui/src/fullscreen/*`
+- `crates/cli/src/fullscreen_entry.rs`
+
+Deliverables:
+- dirty block tracking
+- frame cadence cap
+- idle flush behavior
+- batching during token bursts
+- stronger no-flicker redraw path
+- correct auto-follow while user is scrolled away
+
+### Step 3: finish BB runtime mapping
+Salvage-port the useful parts from:
+- `5402cfb` from `r37-shared-fullscreen-runtime-mapping`
+
+Target only:
+- `crates/cli/src/fullscreen_entry.rs`
+- shared fullscreen transcript mutation APIs
+
+Deliverables:
+- fullscreen prompt submission runs real BB turns
+- user / assistant / thinking / tool / result / status blocks update live in the shared fullscreen transcript
+
+### Step 4: attached-terminal verification
+Verify in a real terminal:
+- long streamed turns
+- scroll while streaming
+- click expand/collapse while streaming
+- resize while streaming
+- auto-follow off / on transitions
+- long-session performance
+- no-flicker behavior
+
+## Final integration strategy
+
+1. keep the old interactive path buildable until the fullscreen path is complete
+2. finish the shared fullscreen path behind `--fullscreen-transcript`
+3. verify real runtime behavior and terminal feel
+4. only then decide whether to make fullscreen the default path
+
+## Canonical CLI entry
 
 Use:
-
 ```bash
-cd ~/BB-Agent
-bash .bb-agent/tasks/tui/launch-fullscreen-subagents.sh
+bb --fullscreen-transcript
 ```
 
-Then attach:
-
+Backward-compatible alias:
 ```bash
-tmux attach -t bb-fullscreen
+bb --fullscreen
 ```

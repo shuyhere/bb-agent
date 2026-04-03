@@ -1,109 +1,194 @@
 # Fullscreen Transcript UI Gap Review
 
-Current accepted/salvageable inputs:
+Last updated: 2026-04-03
 
-- `r24-fullscreen-foundation` @ `9a2a555` — accepted foundation
-- `r25-transcript-block-model` @ `ebbc4c4` — accepted transcript block model commit
-- `r26-projection-scroll` @ `6eb6005` — salvage projection/viewport/hit-test/wrapping ideas
-- `r29-bb-integration` @ `728b53c` — salvage event-mapping and fullscreen runtime ideas
+This document supersedes the earlier gap review that was written before the latest shared-fullscreen integration pass and before the final subagent review round.
 
-Current non-mergeable or off-scope inputs:
+## Current architectural conclusion
 
-- `r25` dirty working tree after `ebbc4c4`
-- `r26` dirty working tree after `6eb6005`
-- `r27-input-modes-mouse` current branch state
-- `r28-streaming-scheduler` current dirty branch state
+The correct final architecture is now clear:
 
-## What is already covered
+- shared fullscreen UI lives in `crates/tui/src/fullscreen/`
+- BB wiring into that shared UI lives in a thin CLI adapter
+- the CLI adapter should be `crates/cli/src/fullscreen_entry.rs`
+- we must not grow or preserve another CLI-local fullscreen subsystem
 
-### Foundation
-Covered by `r24`:
+Concretely, the old intermediate path under `crates/cli/src/interactive_fullscreen/` is not the final design and should not survive the final cutover.
+
+## What is already on `master`
+
+### 1. Shared fullscreen foundation
+Already merged on `master`:
 - alternate screen ownership
-- mouse capture shell
+- raw mode / mouse capture shell
 - fullscreen frame shell
-- bottom-fixed input area
-- status line area
-- dedicated fullscreen entry path
+- bottom-fixed input shell
+- status line shell
 
-### Structured transcript model
-Covered by `r25` commit:
+Relevant commits on `master`:
+- `8d5af47` `add fullscreen transcript foundation`
+
+### 2. Structured transcript block model
+Already merged on `master`:
 - block ids
 - block kinds
 - parent / child relationships
 - collapse state
-- mutation helpers for streamed content
+- mutation helpers
 
-### Projection ideas
-Covered conceptually by `r26` commit:
-- wrapping
-- row projection
-- hit-test map
-- viewport state
-- auto-follow / anchor-preservation logic
+Relevant commits on `master`:
+- `18c071e` `add structured transcript block model`
 
-### BB runtime integration direction
-Covered conceptually by `r29` commit:
-- new fullscreen runtime path
-- mapping runtime events into transcript-like UI state
+### 3. Unified shared fullscreen baseline
+Already merged on `master`:
+- shared fullscreen runtime uses the structured transcript model
+- shared fullscreen projection baseline exists
+- shared fullscreen viewport baseline exists
+- fullscreen entry foundation is no longer a flat transcript item list
 
-## What is NOT implemented yet
+Relevant commits on `master`:
+- `c360a71` `unify fullscreen foundation with structured transcript state`
 
-### 1. No unified stack
-The accepted pieces are still split across branches and duplicate each other.
-There is not yet one shared fullscreen implementation that combines:
-- `r24` foundation
-- `r25` transcript blocks
-- `r26` projection/viewport
-- `r29` event mapping
+## What the latest review round proved
 
-### 2. Foundation still uses plain transcript items
-`r24` foundation currently uses a simple transcript item list rather than the structured transcript block tree from `r25`.
+The final subagent round produced four reviewed results:
 
-### 3. Projection is not wired to the accepted block model
-`r26` introduced its own transcript block type instead of consuming the transcript model from `r25`.
+### ACCEPT
+- `r35-shared-fullscreen-controls @ e5796f5`
+  - transcript controls in the shared fullscreen runtime
+  - keyboard controls
+  - search scaffold
+  - mouse wheel and click toggle
+  - focused header styling
+  - build + targeted tests pass
 
-### 4. Transcript mode is not implemented
-The plan requires:
-- `Ctrl+O` transcript mode toggle
-- normal / transcript / search modes
-- focused row state
-- transcript navigation keys
+- `r38-fullscreen-cleanup @ c990227`
+  - removes duplicate fullscreen integration surface
+  - introduces thin `crates/cli/src/fullscreen_entry.rs`
+  - tightens CLI naming around `--fullscreen-transcript`
+  - build + CLI help verification pass
 
-This is not completed in the new fullscreen path.
+### SALVAGE
+- `r36-shared-fullscreen-streaming @ fcb193c`
+  - good scheduler / dirty-tracking / batching ideas exist
+  - build + targeted tests pass
+  - not mergeable as-is because it still depends on obsolete CLI-local fullscreen integration files
 
-### 5. Expand/collapse interaction is not finished
-Missing in the unified fullscreen path:
-- focused block toggling
-- click-to-toggle using hit testing
-- visible focused styling for action rows
-- search-mode navigation scaffold
+- `r37-shared-fullscreen-runtime-mapping @ 5402cfb`
+  - good runtime-event mapping ideas exist
+  - build passes
+  - not mergeable as-is because the main logic still lives on the obsolete CLI-local fullscreen integration surface
 
-### 6. Streaming scheduler is not integrated
-Missing in the fullscreen path:
-- per-block dirty tracking
-- batched render scheduler
-- incremental redraw tied to transcript blocks
-- anti-flicker batching during token bursts
+## Gaps that are now closed
 
-### 7. BB runtime event mapping is not unified with the shared stack
-`r29` maps events into a separate CLI-local transcript implementation.
-That must be rewritten to target the shared fullscreen transcript model.
+These are no longer open design gaps:
 
-### 8. Auto-follow and anchor preservation are not wired end-to-end
-The ideas exist in `r26`, but they are not yet integrated into the accepted fullscreen path.
+### Closed: shared fullscreen foundation
+Already implemented on `master`.
 
-### 9. Visible-only rendering / performance path is incomplete
-The plan calls for:
-- visible projection fragments
-- cache invalidation on width/content/collapse change
-- stable long-session performance
+### Closed: structured transcript block model
+Already implemented on `master`.
 
-This is only partially present in salvage code and not yet unified.
+### Closed: unified shared baseline
+Already implemented on `master` by `c360a71`.
 
-## New subagent job list
+### Closed in reviewed branch: transcript controls
+Implemented by accepted branch `r35`, pending integration.
 
-1. unify fullscreen stack
-2. wire projection + viewport onto structured transcript blocks
-3. implement transcript mode / controls / mouse toggles
-4. add fullscreen streaming scheduler and dirty rendering
-5. map BB runtime events into the shared fullscreen transcript stack
+### Closed in reviewed branch: fullscreen cleanup / thin entry surface
+Implemented by accepted branch `r38`, pending integration.
+
+## Remaining real gaps
+
+The remaining work is no longer broad architecture design. It is final integration work.
+
+### 1. Accepted branches are not integrated into `master` yet
+Still needed:
+- merge / cherry-pick `c990227`
+- merge / cherry-pick `e5796f5`
+- resolve the small conflict caused by `r35` touching a file that `r38` deletes
+
+This is an integration task, not a design task.
+
+### 2. Shared fullscreen streaming scheduler is not finished on `master`
+Still needed on the shared stack:
+- frame cadence cap
+- idle flush behavior
+- batched redraw during token bursts
+- per-block dirty updates
+- stronger no-flicker redraw path during streaming
+- auto-follow behavior that stays off when the user scrolls away
+
+The useful implementation source is:
+- `r36 @ fcb193c`
+
+But it must be ported into:
+- `crates/tui/src/fullscreen/*`
+- `crates/cli/src/fullscreen_entry.rs`
+
+It must not resurrect `crates/cli/src/interactive_fullscreen/*`.
+
+### 3. Real BB runtime event mapping is not finished on `master`
+Still needed:
+- prompt submission in fullscreen path triggers real BB turn execution
+- user messages map into transcript blocks
+- assistant text deltas map into transcript blocks
+- thinking deltas map into transcript blocks
+- tool-use / tool-result hierarchy maps into transcript blocks
+- status / warning / error notes map cleanly into transcript blocks
+
+The useful implementation source is:
+- `r37 @ 5402cfb`
+
+But it must be ported into:
+- `crates/cli/src/fullscreen_entry.rs`
+- shared fullscreen mutation helpers / runtime APIs
+
+It must not restore another fullscreen controller subtree.
+
+### 4. Real attached-terminal verification is still pending
+Even after code integration lands, we still need direct terminal verification for:
+- long streamed turns
+- wheel scrolling during streaming
+- click expand/collapse during streaming
+- resize during streaming
+- auto-follow off / on transitions
+- long-session performance
+- no-flicker behavior in an attached terminal
+
+## Updated execution order
+
+### Step 1: merge accepted work
+1. `c990227` from `r38-fullscreen-cleanup`
+2. `e5796f5` from `r35-shared-fullscreen-controls`
+
+### Step 2: salvage streaming onto the shared stack
+Port only the good parts from:
+- `fcb193c` from `r36-shared-fullscreen-streaming`
+
+Target only:
+- `crates/tui/src/fullscreen/*`
+- `crates/cli/src/fullscreen_entry.rs`
+
+### Step 3: salvage runtime mapping onto the shared stack
+Port only the good parts from:
+- `5402cfb` from `r37-shared-fullscreen-runtime-mapping`
+
+Target only:
+- `crates/cli/src/fullscreen_entry.rs`
+- shared fullscreen transcript mutation APIs
+
+### Step 4: verify in a real terminal
+Run:
+- build/test verification
+- `bb --fullscreen-transcript`
+- real streaming smoke tests
+- long-session behavior tests
+
+## Final rule for all follow-up work
+
+All remaining fullscreen work must obey this rule:
+
+- fullscreen UI logic belongs in `crates/tui/src/fullscreen/`
+- BB-specific wiring belongs in a thin `crates/cli/src/fullscreen_entry.rs`
+- no new `interactive_fullscreen` or `fullscreen_transcript` subsystems should be introduced
