@@ -230,7 +230,17 @@ fn render_transcript_row(
 
     let padded = pad_to_width(&truncate_to_width(&plain, width), width);
     if focused_block == Some(row.block_id) && row.kind == ProjectedRowKind::Header {
-        return format!("\x1b[7m{padded}\x1b[0m");
+        return match &block.kind {
+            super::transcript::BlockKind::ToolUse => {
+                let content = format!("{}\x1b[7m{}\x1b[0m{}", t.bold, truncate_to_width(&plain, width), t.reset);
+                render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
+            }
+            super::transcript::BlockKind::ToolResult => {
+                let content = format!("{}\x1b[7m{}\x1b[0m{}", t.bold, truncate_to_width(&plain, width), t.reset);
+                render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
+            }
+            _ => format!("\x1b[7m{padded}\x1b[0m"),
+        };
     }
 
     match &block.kind {
@@ -274,14 +284,10 @@ fn render_transcript_row(
 }
 
 fn transcript_row_text(
-    state: &FullscreenState,
+    _state: &FullscreenState,
     row: &super::projection::ProjectedRow,
     block: &super::transcript::TranscriptBlock,
 ) -> String {
-    if !matches!(state.mode, FullscreenMode::Normal) {
-        return row.text.clone();
-    }
-
     match (row.kind, &block.kind) {
         (ProjectedRowKind::Header, super::transcript::BlockKind::UserMessage)
         | (ProjectedRowKind::Header, super::transcript::BlockKind::AssistantMessage)
@@ -629,5 +635,48 @@ mod tests {
         state.tick_count = 2;
         let later = render_status(&state, 80);
         assert!(later.contains("⠹ Working..."));
+    }
+
+    #[test]
+    fn tool_use_rows_stay_aligned_when_focused_in_transcript_mode() {
+        let mut config = FullscreenAppConfig::default();
+        let mut transcript = crate::fullscreen::transcript::Transcript::new();
+        let assistant = transcript.append_root_block(
+            crate::fullscreen::transcript::NewBlock::new(
+                crate::fullscreen::transcript::BlockKind::AssistantMessage,
+                "assistant",
+            )
+            .with_content("done"),
+        );
+        let tool = transcript
+            .append_child_block(
+                assistant,
+                crate::fullscreen::transcript::NewBlock::new(
+                    crate::fullscreen::transcript::BlockKind::ToolUse,
+                    "bash",
+                )
+                .with_content("echo hi"),
+            )
+            .expect("tool block");
+        config.transcript = transcript;
+
+        let mut state = FullscreenState::new(
+            config,
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+        state.mode = crate::fullscreen::runtime::FullscreenMode::Transcript;
+        state.focused_block = Some(tool);
+
+        let lines = render_transcript(&state, &state.projection, 80, 20);
+        let tool_line = lines
+            .into_iter()
+            .find(|line| line.contains("bash"))
+            .expect("tool line should render");
+
+        assert!(tool_line.starts_with(&theme().tool_pending_bg));
+        assert!(!tool_line.starts_with("\x1b[7m"));
     }
 }
