@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::select_list::SelectItem;
+
 use super::{
     frame::{build_frame, measure_input},
     menus::{FullscreenSelectMenuState, FullscreenSlashMenuState},
@@ -47,6 +49,7 @@ pub struct FullscreenState {
     pub(super) pending_submissions: VecDeque<FullscreenSubmission>,
     pub(super) active_turn: Option<ActiveTurnState>,
     pub(super) tool_output_expanded: bool,
+    pub(crate) extra_slash_items: Vec<SelectItem>,
 }
 
 impl FullscreenState {
@@ -76,6 +79,7 @@ impl FullscreenState {
             pending_submissions: VecDeque::new(),
             active_turn: None,
             tool_output_expanded: false,
+            extra_slash_items: config.extra_slash_items,
         };
         state.prepare_for_render();
         state

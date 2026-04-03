@@ -18,6 +18,8 @@ pub struct FullscreenAppConfig {
     pub status_line: String,
     pub footer: FullscreenFooterData,
     pub transcript: Transcript,
+    /// Extra slash-menu items from skills, prompts, and extension commands.
+    pub extra_slash_items: Vec<SelectItem>,
 }
 
 impl Default for FullscreenAppConfig {
@@ -30,6 +32,7 @@ impl Default for FullscreenAppConfig {
                     .to_string(),
             footer: FullscreenFooterData::default(),
             transcript: Transcript::new(),
+            extra_slash_items: Vec::new(),
         }
     }
 }

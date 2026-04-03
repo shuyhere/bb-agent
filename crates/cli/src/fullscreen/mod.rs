@@ -37,7 +37,11 @@ const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
 pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> {
     let (runtime_host, options, session_setup) = prepare_interactive_mode(entry).await?;
-    let config = build_fullscreen_config(&session_setup);
+    let extra_slash_items = build_dynamic_slash_items(
+        &runtime_host,
+        &session_setup.extension_commands,
+    );
+    let config = build_fullscreen_config(&session_setup, extra_slash_items);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (submission_tx, submission_rx) = mpsc::unbounded_channel();
     let controller_command_tx = command_tx.clone();
@@ -64,7 +68,51 @@ pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> 
     Ok(())
 }
 
-fn build_fullscreen_config(session_setup: &InteractiveSessionSetup) -> FullscreenAppConfig {
+fn build_dynamic_slash_items(
+    runtime_host: &bb_core::agent_session_runtime::AgentSessionRuntimeHost,
+    extension_commands: &crate::extensions::ExtensionCommandRegistry,
+) -> Vec<bb_tui::select_list::SelectItem> {
+    let mut items = Vec::new();
+
+    // Skills
+    for skill in &runtime_host.bootstrap().resource_bootstrap.skills {
+        items.push(bb_tui::select_list::SelectItem {
+            label: format!("/skill:{}", skill.info.name),
+            detail: Some(skill.info.description.clone()),
+            value: format!("/skill:{}", skill.info.name),
+        });
+    }
+
+    // Prompt templates
+    for prompt in &runtime_host.bootstrap().resource_bootstrap.prompts {
+        items.push(bb_tui::select_list::SelectItem {
+            label: format!("/{}", prompt.info.name),
+            detail: Some(prompt.info.description.clone()),
+            value: format!("/{}", prompt.info.name),
+        });
+    }
+
+    // Extension commands
+    for cmd in &runtime_host
+        .bootstrap()
+        .resource_bootstrap
+        .extensions
+        .registered_commands
+    {
+        items.push(bb_tui::select_list::SelectItem {
+            label: format!("/{}", cmd.invocation_name),
+            detail: Some(cmd.description.clone()),
+            value: format!("/{}", cmd.invocation_name),
+        });
+    }
+
+    items
+}
+
+fn build_fullscreen_config(
+    session_setup: &InteractiveSessionSetup,
+    extra_slash_items: Vec<bb_tui::select_list::SelectItem>,
+) -> FullscreenAppConfig {
     let transcript = Transcript::new();
 
     FullscreenAppConfig {
@@ -73,6 +121,7 @@ fn build_fullscreen_config(session_setup: &InteractiveSessionSetup) -> Fullscree
         status_line: String::new(),
         footer: build_footer_data(session_setup),
         transcript,
+        extra_slash_items,
     }
 }
 

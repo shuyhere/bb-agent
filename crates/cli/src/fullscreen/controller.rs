@@ -52,6 +52,7 @@ impl FullscreenController {
         mut submission_rx: mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
         self.publish_footer();
+        self.show_startup_resources();
 
         if let Some(initial_message) = self.options.initial_message.take() {
             self.handle_submitted_text(initial_message, &mut submission_rx)
@@ -126,6 +127,60 @@ impl FullscreenController {
 
     pub(super) fn publish_status(&mut self) {
         self.send_command(FullscreenCommand::SetStatusLine(self.status_line()));
+    }
+
+    fn show_startup_resources(&mut self) {
+        let bootstrap = &self.runtime_host.bootstrap().resource_bootstrap;
+        let skills: Vec<&str> = bootstrap
+            .skills
+            .iter()
+            .map(|s| s.info.name.as_str())
+            .collect();
+        let prompts: Vec<&str> = bootstrap
+            .prompts
+            .iter()
+            .map(|p| p.info.name.as_str())
+            .collect();
+        let commands: Vec<&str> = bootstrap
+            .extensions
+            .registered_commands
+            .iter()
+            .map(|c| c.invocation_name.as_str())
+            .collect();
+        let extensions_count = bootstrap.extensions.extensions.len();
+
+        let mut parts = Vec::new();
+        if extensions_count > 0 {
+            parts.push(format!("{extensions_count} extension(s)"));
+        }
+        if !skills.is_empty() {
+            parts.push(format!(
+                "{} skill(s): {}",
+                skills.len(),
+                skills.join(", ")
+            ));
+        }
+        if !prompts.is_empty() {
+            parts.push(format!(
+                "{} prompt(s): {}",
+                prompts.len(),
+                prompts.iter().map(|p| format!("/{p}")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !commands.is_empty() {
+            parts.push(format!(
+                "{} command(s): {}",
+                commands.len(),
+                commands.iter().map(|c| format!("/{c}")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+
+        if !parts.is_empty() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
+                text: format!("Loaded: {}", parts.join(" • ")),
+            });
+        }
     }
 
     pub(super) fn publish_footer(&mut self) {

@@ -66,8 +66,16 @@ impl FullscreenSelectMenuState {
 }
 
 impl FullscreenSlashMenuState {
-    pub(crate) fn new() -> Self {
-        let all_items = shared_slash_command_select_items();
+    pub(crate) fn new(extra_items: &[SelectItem]) -> Self {
+        let mut all_items = shared_slash_command_select_items();
+        // Add /reload before extension/skill/prompt items
+        all_items.push(SelectItem {
+            label: "/reload".to_string(),
+            detail: Some("Reload extensions, skills, and prompts".to_string()),
+            value: "/reload".to_string(),
+        });
+        // Add skill, prompt, and extension command items
+        all_items.extend(extra_items.iter().cloned());
         let mut list = SelectList::new(all_items.clone(), 6);
         list.set_show_search(false);
         Self { all_items, list }
@@ -150,7 +158,8 @@ impl FullscreenState {
             self.slash_menu = None;
             return;
         };
-        let mut menu = self.slash_menu.take().unwrap_or_else(FullscreenSlashMenuState::new);
+        let extra = self.extra_slash_items.clone();
+        let mut menu = self.slash_menu.take().unwrap_or_else(|| FullscreenSlashMenuState::new(&extra));
         menu.set_search(&query);
         self.slash_menu = Some(menu);
     }
