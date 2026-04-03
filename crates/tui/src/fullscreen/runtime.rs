@@ -1567,7 +1567,7 @@ fn format_tool_result_content(
         if !lines.is_empty() {
             lines.push(String::new());
         }
-        lines.push(format!("artifact: {path}"));
+        lines.push(format!("artifact: {}", shorten_display_path(&path)));
     }
 
     if lines.is_empty() {
@@ -2074,6 +2074,22 @@ mod tests {
             .to_string(),
         );
         assert_eq!(find, "find *.md in /tmp/project");
+    }
+
+    #[test]
+    fn artifact_paths_shorten_home_prefix() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/test".to_string());
+        let rendered = format_tool_result_content(
+            "write",
+            &[],
+            None,
+            Some(format!("{home}/project/out.patch")),
+            false,
+        );
+        assert!(
+            rendered.contains("artifact: ~/project/out.patch")
+                || rendered.contains("artifact: /home/test/project/out.patch")
+        );
     }
 
     #[test]
