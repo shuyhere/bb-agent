@@ -17,7 +17,7 @@ use bb_tui::fullscreen::{
 };
 use bb_tui::select_list::SelectItem;
 
-use crate::slash::{handle_slash_command, help_lines, SlashResult};
+use crate::slash::{dispatch_local_slash_command, LocalSlashCommandHost};
 use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -517,97 +517,7 @@ impl FullscreenController {
             return Ok(true);
         }
 
-        match handle_slash_command(text) {
-            SlashResult::NotCommand => Ok(false),
-            SlashResult::Exit => {
-                self.shutdown_requested = true;
-                self.abort_token.cancel();
-                Ok(true)
-            }
-            SlashResult::Help => {
-                self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: help_lines().join("\n"),
-                });
-                Ok(true)
-            }
-            SlashResult::NewSession => {
-                self.handle_new_session();
-                Ok(true)
-            }
-            SlashResult::Compact(instructions) => {
-                self.handle_compact_command(instructions.as_deref())?;
-                Ok(true)
-            }
-            SlashResult::ModelSelect(search) => {
-                self.handle_model_selection_command(search.as_deref())?;
-                Ok(true)
-            }
-            SlashResult::Resume => {
-                self.open_resume_menu()?;
-                Ok(true)
-            }
-            SlashResult::Tree => {
-                self.open_tree_menu()?;
-                Ok(true)
-            }
-            SlashResult::Fork => {
-                self.open_fork_menu()?;
-                Ok(true)
-            }
-            SlashResult::Login => {
-                self.open_login_provider_menu();
-                Ok(true)
-            }
-            SlashResult::Logout => {
-                self.open_logout_provider_menu();
-                Ok(true)
-            }
-            SlashResult::SetName(name) => {
-                self.ensure_session_row_created()?;
-                store::set_session_name(
-                    &self.session_setup.conn,
-                    &self.session_setup.session_id,
-                    Some(&name),
-                )?;
-                self.publish_footer();
-                self.send_command(FullscreenCommand::SetStatusLine(format!("Session name: {name}")));
-                Ok(true)
-            }
-            SlashResult::SessionInfo => {
-                self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: format!(
-                        "Session: {}\nModel: {}/{}\nThinking: {}",
-                        self.session_setup.session_id,
-                        self.session_setup.model.provider,
-                        self.session_setup.model.id,
-                        self.session_setup.thinking_level
-                    ),
-                });
-                Ok(true)
-            }
-            SlashResult::Copy => {
-                self.copy_last_assistant_message()?;
-                Ok(true)
-            }
-            SlashResult::Handled if text == "/settings" => {
-                self.open_settings_menu();
-                Ok(true)
-            }
-            SlashResult::Handled if text == "/name" => {
-                self.send_command(FullscreenCommand::SetStatusLine(
-                    "Usage: /name <session name>".to_string(),
-                ));
-                Ok(true)
-            }
-            SlashResult::Handled => {
-                self.send_command(FullscreenCommand::SetStatusLine(format!(
-                    "Handled local command: {text}"
-                )));
-                Ok(true)
-            }
-        }
+        dispatch_local_slash_command(self, text)
     }
 
     fn copy_last_assistant_message(&mut self) -> Result<()> {
@@ -1758,6 +1668,101 @@ impl FullscreenController {
 
     fn get_session_leaf(&self) -> Option<EntryId> {
         turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id)
+    }
+}
+
+impl LocalSlashCommandHost for FullscreenController {
+    fn slash_help(&mut self) -> Result<()> {
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: crate::slash::help_lines().join("\n"),
+        });
+        Ok(())
+    }
+
+    fn slash_exit(&mut self) -> Result<()> {
+        self.shutdown_requested = true;
+        self.abort_token.cancel();
+        Ok(())
+    }
+
+    fn slash_new_session(&mut self) -> Result<()> {
+        self.handle_new_session();
+        Ok(())
+    }
+
+    fn slash_compact(&mut self, instructions: Option<&str>) -> Result<()> {
+        self.handle_compact_command(instructions)
+    }
+
+    fn slash_model_select(&mut self, search: Option<&str>) -> Result<()> {
+        self.handle_model_selection_command(search)
+    }
+
+    fn slash_resume(&mut self) -> Result<()> {
+        self.open_resume_menu()
+    }
+
+    fn slash_tree(&mut self) -> Result<()> {
+        self.open_tree_menu()
+    }
+
+    fn slash_fork(&mut self) -> Result<()> {
+        self.open_fork_menu()
+    }
+
+    fn slash_login(&mut self) -> Result<()> {
+        self.open_login_provider_menu();
+        Ok(())
+    }
+
+    fn slash_logout(&mut self) -> Result<()> {
+        self.open_logout_provider_menu();
+        Ok(())
+    }
+
+    fn slash_name(&mut self, name: Option<&str>) -> Result<()> {
+        match name {
+            Some(name) => {
+                self.ensure_session_row_created()?;
+                store::set_session_name(
+                    &self.session_setup.conn,
+                    &self.session_setup.session_id,
+                    Some(name),
+                )?;
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Session name: {name}")));
+            }
+            None => {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Usage: /name <session name>".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn slash_session_info(&mut self) -> Result<()> {
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: format!(
+                "Session: {}\nModel: {}/{}\nThinking: {}",
+                self.session_setup.session_id,
+                self.session_setup.model.provider,
+                self.session_setup.model.id,
+                self.session_setup.thinking_level
+            ),
+        });
+        Ok(())
+    }
+
+    fn slash_copy(&mut self) -> Result<()> {
+        self.copy_last_assistant_message()
+    }
+
+    fn slash_settings(&mut self) -> Result<()> {
+        self.open_settings_menu();
+        Ok(())
     }
 }
 

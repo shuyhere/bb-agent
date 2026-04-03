@@ -191,20 +191,8 @@ impl InteractiveMode {
     pub(super) fn setup_editor_submit_handler(&mut self) {
         self.submit_routes = vec![
             SubmitRoute {
-                matcher: SubmitMatch::Exact("/settings"),
-                action: SubmitAction::Settings,
-            },
-            SubmitRoute {
                 matcher: SubmitMatch::Exact("/scoped-models"),
                 action: SubmitAction::ScopedModels,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/model"),
-                action: SubmitAction::Model,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Prefix("/model "),
-                action: SubmitAction::Model,
             },
             SubmitRoute {
                 matcher: SubmitMatch::Prefix("/export"),
@@ -219,56 +207,12 @@ impl InteractiveMode {
                 action: SubmitAction::Share,
             },
             SubmitRoute {
-                matcher: SubmitMatch::Exact("/copy"),
-                action: SubmitAction::Copy,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/name"),
-                action: SubmitAction::Name,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Prefix("/name "),
-                action: SubmitAction::Name,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/session"),
-                action: SubmitAction::Session,
-            },
-            SubmitRoute {
                 matcher: SubmitMatch::Exact("/changelog"),
                 action: SubmitAction::Changelog,
             },
             SubmitRoute {
                 matcher: SubmitMatch::Exact("/hotkeys"),
                 action: SubmitAction::Hotkeys,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/fork"),
-                action: SubmitAction::Fork,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/tree"),
-                action: SubmitAction::Tree,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/login"),
-                action: SubmitAction::Login,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/logout"),
-                action: SubmitAction::Logout,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/new"),
-                action: SubmitAction::New,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/compact"),
-                action: SubmitAction::Compact,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Prefix("/compact "),
-                action: SubmitAction::Compact,
             },
             SubmitRoute {
                 matcher: SubmitMatch::Exact("/reload"),
@@ -281,18 +225,6 @@ impl InteractiveMode {
             SubmitRoute {
                 matcher: SubmitMatch::Exact("/arminsayshi"),
                 action: SubmitAction::ArminSaysHi,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/resume"),
-                action: SubmitAction::Resume,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/quit"),
-                action: SubmitAction::Quit,
-            },
-            SubmitRoute {
-                matcher: SubmitMatch::Exact("/help"),
-                action: SubmitAction::Help,
             },
         ];
     }

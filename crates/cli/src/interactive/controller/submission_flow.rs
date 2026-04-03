@@ -1,4 +1,5 @@
 use super::*;
+use crate::slash::{dispatch_local_slash_command, LocalSlashCommandHost};
 
 impl InteractiveMode {
     /// Drain pending extension UI notifications and display them in the TUI.
@@ -68,6 +69,15 @@ impl InteractiveMode {
         let text = text.trim().to_string();
         if text.is_empty() || text == "/" {
             return Ok(SubmitOutcome::Ignored);
+        }
+
+        if dispatch_local_slash_command(self, &text)? {
+            self.clear_editor();
+            return if self.interaction.shutdown_requested {
+                Ok(SubmitOutcome::Shutdown)
+            } else {
+                Ok(SubmitOutcome::Ignored)
+            };
         }
 
         for route in &self.submit_routes {
@@ -511,5 +521,80 @@ impl InteractiveMode {
     /// Cancel any pending UI dialog, resolving with defaults.
     pub(super) fn cancel_pending_dialog(&mut self) {
         self.resolve_pending_dialog(None);
+    }
+}
+
+impl LocalSlashCommandHost for InteractiveMode {
+    fn slash_help(&mut self) -> anyhow::Result<()> {
+        self.handle_help_command();
+        Ok(())
+    }
+
+    fn slash_exit(&mut self) -> anyhow::Result<()> {
+        self.shutdown();
+        Ok(())
+    }
+
+    fn slash_new_session(&mut self) -> anyhow::Result<()> {
+        self.handle_new_session();
+        Ok(())
+    }
+
+    fn slash_compact(&mut self, instructions: Option<&str>) -> anyhow::Result<()> {
+        self.handle_compact_command(instructions);
+        Ok(())
+    }
+
+    fn slash_model_select(&mut self, search: Option<&str>) -> anyhow::Result<()> {
+        self.handle_model_command(search);
+        Ok(())
+    }
+
+    fn slash_resume(&mut self) -> anyhow::Result<()> {
+        self.show_session_selector();
+        Ok(())
+    }
+
+    fn slash_tree(&mut self) -> anyhow::Result<()> {
+        self.show_tree_selector();
+        Ok(())
+    }
+
+    fn slash_fork(&mut self) -> anyhow::Result<()> {
+        self.show_user_message_selector();
+        Ok(())
+    }
+
+    fn slash_login(&mut self) -> anyhow::Result<()> {
+        self.show_auth_selector(AuthSelectorMode::Login);
+        Ok(())
+    }
+
+    fn slash_logout(&mut self) -> anyhow::Result<()> {
+        self.show_auth_selector(AuthSelectorMode::Logout);
+        Ok(())
+    }
+
+    fn slash_name(&mut self, name: Option<&str>) -> anyhow::Result<()> {
+        match name {
+            Some(name) => self.handle_name_command(&format!("/name {name}")),
+            None => self.handle_name_command("/name"),
+        }
+        Ok(())
+    }
+
+    fn slash_session_info(&mut self) -> anyhow::Result<()> {
+        self.handle_session_command();
+        Ok(())
+    }
+
+    fn slash_copy(&mut self) -> anyhow::Result<()> {
+        self.handle_copy_command();
+        Ok(())
+    }
+
+    fn slash_settings(&mut self) -> anyhow::Result<()> {
+        self.show_settings_selector();
+        Ok(())
     }
 }
