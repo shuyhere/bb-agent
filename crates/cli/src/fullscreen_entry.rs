@@ -123,6 +123,7 @@ struct FullscreenController {
     command_tx: mpsc::UnboundedSender<FullscreenCommand>,
     abort_token: CancellationToken,
     streaming: bool,
+    retry_status: Option<String>,
     queued_prompts: VecDeque<String>,
     shutdown_requested: bool,
 }
@@ -141,6 +142,7 @@ impl FullscreenController {
             command_tx,
             abort_token: CancellationToken::new(),
             streaming: false,
+            retry_status: None,
             queued_prompts: VecDeque::new(),
             shutdown_requested: false,
         }
@@ -346,12 +348,17 @@ impl FullscreenController {
     }
 
     fn status_line(&self) -> String {
-        let mut status = String::from(
-            "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript",
-        );
-        if self.streaming {
-            status.push_str(" • streaming");
+        if let Some(status) = &self.retry_status {
+            return status.clone();
         }
+
+        let mut status = if self.streaming {
+            String::from("Working...")
+        } else {
+            String::from(
+                "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript",
+            )
+        };
         if !self.queued_prompts.is_empty() {
             status.push_str(&format!(" • queued {}", self.queued_prompts.len()));
         }
@@ -467,6 +474,7 @@ impl FullscreenController {
         submission_rx: &mut mpsc::UnboundedReceiver<String>,
     ) -> Result<()> {
         self.streaming = true;
+        self.retry_status = None;
         self.abort_token = CancellationToken::new();
         self.publish_status();
 
@@ -574,6 +582,7 @@ impl FullscreenController {
         }
 
         self.streaming = false;
+        self.retry_status = None;
         self.publish_footer();
         self.publish_status();
         Ok(())
@@ -625,7 +634,9 @@ impl FullscreenController {
                 });
             }
             TurnEvent::TurnEnd { .. } => {
+                self.retry_status = None;
                 self.send_command(FullscreenCommand::TurnEnd);
+                self.publish_status();
             }
             TurnEvent::ContextOverflow { message } => {
                 self.send_command(FullscreenCommand::PushNote {
@@ -639,39 +650,23 @@ impl FullscreenController {
                 delay_ms,
                 error_message,
             } => {
-                self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: format!(
-                        "Retrying ({attempt}/{max_attempts}) in {}s: {error_message}",
-                        ((delay_ms + 500) / 1000).max(1)
-                    ),
-                });
+                self.retry_status = Some(format!(
+                    "Retrying ({attempt}/{max_attempts}) in {}s... {error_message}",
+                    ((delay_ms + 500) / 1000).max(1)
+                ));
+                self.publish_status();
             }
             TurnEvent::AutoRetryEnd {
-                success,
-                attempt,
-                final_error,
+                success: _,
+                attempt: _,
+                final_error: _,
             } => {
-                self.send_command(FullscreenCommand::PushNote {
-                    level: if *success {
-                        FullscreenNoteLevel::Status
-                    } else {
-                        FullscreenNoteLevel::Warning
-                    },
-                    text: if *success {
-                        format!("Retry {attempt} succeeded")
-                    } else {
-                        format!(
-                            "Retry {attempt} failed: {}",
-                            final_error
-                                .clone()
-                                .unwrap_or_else(|| "unknown error".to_string())
-                        )
-                    },
-                });
+                self.retry_status = None;
+                self.publish_status();
             }
             TurnEvent::Done { .. } => {}
             TurnEvent::Error(message) => {
+                self.retry_status = None;
                 self.send_command(FullscreenCommand::TurnError {
                     message: message.clone(),
                 });

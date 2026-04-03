@@ -137,6 +137,7 @@ impl ActiveTurnState {
 #[derive(Clone, Debug)]
 struct ToolCallState {
     name: String,
+    raw_args: String,
     tool_use_id: BlockId,
     tool_result_id: BlockId,
 }
@@ -464,6 +465,7 @@ impl FullscreenState {
                         id,
                         ToolCallState {
                             name,
+                            raw_args: String::new(),
                             tool_use_id,
                             tool_result_id,
                         },
@@ -477,12 +479,15 @@ impl FullscreenState {
                 if args.is_empty() {
                     return RenderIntent::None;
                 }
-                let Some(tool) = self.tool_call_state(&id).cloned() else {
-                    return RenderIntent::None;
+                let (tool_use_id, tool_name, raw_args) = match self.tool_call_state_mut(&id) {
+                    Some(tool) => {
+                        tool.raw_args.push_str(&args);
+                        (tool.tool_use_id, tool.name.clone(), tool.raw_args.clone())
+                    }
+                    None => return RenderIntent::None,
                 };
-                let _ = self
-                    .transcript
-                    .append_streamed_content(tool.tool_use_id, args);
+                let preview = format_tool_call_content(&tool_name, &raw_args);
+                let _ = self.transcript.replace_content(tool_use_id, preview);
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Schedule
@@ -491,10 +496,14 @@ impl FullscreenState {
                 let Some(tool) = self.tool_call_state(&id).cloned() else {
                     return RenderIntent::None;
                 };
+                let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
                 let _ = self
                     .transcript
-                    .update_title(tool.tool_use_id, format!("{} • running", tool.name));
-                let _ = self.transcript.update_title(tool.tool_result_id, "pending");
+                    .update_title(tool.tool_use_id, format!("{display_name} • running"));
+                let _ = self
+                    .transcript
+                    .replace_content(tool.tool_use_id, format_tool_call_content(&tool.name, &tool.raw_args));
+                let _ = self.transcript.update_title(tool.tool_result_id, "running");
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Render
@@ -510,15 +519,19 @@ impl FullscreenState {
                 let Some(tool) = self.tool_call_state(&id).cloned() else {
                     return RenderIntent::None;
                 };
+                let display_name = format_tool_call_title(&name, &tool.raw_args);
                 let _ = self.transcript.update_title(
                     tool.tool_use_id,
-                    format!("{} • {}", name, if is_error { "error" } else { "done" }),
+                    format!("{display_name} • {}", if is_error { "error" } else { "done" }),
                 );
+                let _ = self
+                    .transcript
+                    .replace_content(tool.tool_use_id, format_tool_call_content(&name, &tool.raw_args));
                 let _ = self.transcript.update_title(
                     tool.tool_result_id,
-                    if is_error { "error" } else { "result" },
+                    if is_error { "error output" } else { "output" },
                 );
-                let formatted = format_tool_result_content(&content, details, artifact_path);
+                let formatted = format_tool_result_content(&name, &content, details, artifact_path, is_error);
                 let _ = self
                     .transcript
                     .replace_tool_result_content(tool.tool_result_id, formatted);
@@ -1087,6 +1100,10 @@ impl FullscreenState {
         self.active_turn.as_ref()?.tools.get(id)
     }
 
+    fn tool_call_state_mut(&mut self, id: &str) -> Option<&mut ToolCallState> {
+        self.active_turn.as_mut()?.tools.get_mut(id)
+    }
+
     fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
         if submitted.trim().is_empty() {
@@ -1280,15 +1297,168 @@ fn flush_submissions(state: &mut FullscreenState, submission_tx: &mpsc::Unbounde
     }
 }
 
+fn format_tool_call_title(name: &str, raw_args: &str) -> String {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
+        return name.to_string();
+    };
+
+    match name {
+        "bash" => {
+            let first_line = args
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if first_line.is_empty() {
+                "bash".to_string()
+            } else {
+                format!("$ {first_line}")
+            }
+        }
+        "read" => {
+            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+            if path.is_empty() {
+                "read".to_string()
+            } else {
+                format!("read {path}")
+            }
+        }
+        "write" | "edit" | "ls" | "find" => {
+            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+            if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} {path}")
+            }
+        }
+        "grep" => {
+            let pattern = args
+                .get("pattern")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
+            if pattern.is_empty() {
+                format!("grep {path}")
+            } else {
+                format!("grep /{pattern}/ in {path}")
+            }
+        }
+        _ => name.to_string(),
+    }
+}
+
+fn format_tool_call_content(name: &str, raw_args: &str) -> String {
+    if raw_args.trim().is_empty() {
+        return String::new();
+    }
+
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
+        return raw_args.to_string();
+    };
+
+    match name {
+        "bash" => {
+            let mut lines = Vec::new();
+            if let Some(command) = args.get("command").and_then(|value| value.as_str()) {
+                let command_lines: Vec<&str> = command.lines().collect();
+                if command_lines.len() > 1 {
+                    lines.extend(command_lines.into_iter().skip(1).map(str::to_string));
+                }
+            }
+            if let Some(timeout) = args.get("timeout").and_then(|value| value.as_f64()) {
+                lines.push(format!("timeout {timeout}s"));
+            }
+            lines.join("\n")
+        }
+        "read" | "ls" | "find" | "grep" => String::new(),
+        _ => serde_json::to_string_pretty(&args).unwrap_or_else(|_| raw_args.to_string()),
+    }
+}
+
 fn format_tool_result_content(
+    name: &str,
     content: &[ContentBlock],
     details: Option<serde_json::Value>,
     artifact_path: Option<String>,
+    is_error: bool,
 ) -> String {
     let mut lines = Vec::new();
+
+    if let Some(details) = details.as_ref() {
+        match name {
+            "read" => {
+                let path = details.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+                let start = details.get("startLine").and_then(|value| value.as_u64()).unwrap_or(1);
+                let end = details.get("endLine").and_then(|value| value.as_u64()).unwrap_or(start);
+                let total = details.get("totalLines").and_then(|value| value.as_u64()).unwrap_or(end);
+                if !path.is_empty() {
+                    lines.push(format!("read {path} lines {start}-{end} / {total}"));
+                }
+            }
+            "write" => {
+                let path = details.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+                let bytes = details.get("bytes").and_then(|value| value.as_u64()).unwrap_or(0);
+                if !path.is_empty() || bytes > 0 {
+                    if path.is_empty() {
+                        lines.push(format!("wrote {bytes} bytes"));
+                    } else {
+                        lines.push(format!("wrote {bytes} bytes to {path}"));
+                    }
+                }
+            }
+            "edit" => {
+                let path = details.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+                let applied = details.get("applied").and_then(|value| value.as_u64()).unwrap_or(0);
+                let total = details.get("total").and_then(|value| value.as_u64()).unwrap_or(0);
+                if !path.is_empty() || total > 0 {
+                    if path.is_empty() {
+                        lines.push(format!("applied {applied}/{total} edit(s)"));
+                    } else {
+                        lines.push(format!("applied {applied}/{total} edit(s) to {path}"));
+                    }
+                }
+            }
+            "bash" => {
+                let exit = details.get("exitCode").and_then(|value| value.as_i64()).unwrap_or(-1);
+                let truncated = details.get("truncated").and_then(|value| value.as_bool()).unwrap_or(false);
+                let cancelled = details.get("cancelled").and_then(|value| value.as_bool()).unwrap_or(false);
+                let mut flags = Vec::new();
+                if truncated {
+                    flags.push("truncated");
+                }
+                if cancelled {
+                    flags.push("cancelled");
+                }
+                if flags.is_empty() {
+                    lines.push(format!("exit code: {exit}"));
+                } else {
+                    lines.push(format!("exit code: {exit} [{}]", flags.join(", ")));
+                }
+            }
+            "ls" => {
+                let count = details.get("entryCount").and_then(|value| value.as_u64()).unwrap_or(0);
+                let truncated = details.get("truncated").and_then(|value| value.as_bool()).unwrap_or(false);
+                if count > 0 || truncated {
+                    lines.push(format!("{count} entr{} shown{}", if count == 1 { "y" } else { "ies" }, if truncated { " (truncated)" } else { "" }));
+                }
+            }
+            "grep" | "find" => {
+                let count = details.get("matchCount").and_then(|value| value.as_u64()).unwrap_or(0);
+                if count > 0 {
+                    let noun = if name == "grep" { "match(es)" } else { "file(s)" };
+                    lines.push(format!("{count} {noun}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut text_lines = 0usize;
     let max_lines = 20usize;
-
     for block in content {
         match block {
             ContentBlock::Text { text } => {
@@ -1312,14 +1482,10 @@ fn format_tool_result_content(
     }
 
     if let Some(details) = details {
-        let details =
-            serde_json::to_string_pretty(&details).unwrap_or_else(|_| details.to_string());
-        if !details.trim().is_empty() {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
+        let rendered = serde_json::to_string_pretty(&details).unwrap_or_else(|_| details.to_string());
+        if !rendered.trim().is_empty() && lines.is_empty() {
             lines.push("details:".to_string());
-            lines.extend(details.lines().map(str::to_string));
+            lines.extend(rendered.lines().map(str::to_string));
         }
     }
 
@@ -1331,7 +1497,11 @@ fn format_tool_result_content(
     }
 
     if lines.is_empty() {
-        "(no textual output)".to_string()
+        if is_error {
+            "tool failed with no textual output".to_string()
+        } else {
+            "(no textual output)".to_string()
+        }
     } else {
         lines.join("\n")
     }
@@ -1641,7 +1811,7 @@ mod tests {
             .block(assistant_block.children[1])
             .expect("tool use block should exist");
         assert_eq!(tool_use.kind, BlockKind::ToolUse);
-        assert!(tool_use.content.contains("ls"));
+        assert!(tool_use.title.contains("ls"));
 
         let tool_result = state
             .transcript

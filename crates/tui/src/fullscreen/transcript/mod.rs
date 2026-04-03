@@ -180,6 +180,17 @@ impl Transcript {
         Ok(())
     }
 
+    pub fn replace_content(
+        &mut self,
+        id: BlockId,
+        content: impl Into<String>,
+    ) -> Result<(), TranscriptError> {
+        let block = self.block_mut(id)?;
+        block.content = content.into();
+        block.dirty = true;
+        Ok(())
+    }
+
     pub fn set_collapsed(&mut self, id: BlockId, collapsed: bool) -> Result<(), TranscriptError> {
         let block = self.block_mut(id)?;
         block.collapsed = collapsed;
@@ -387,6 +398,23 @@ mod tests {
         transcript
             .replace_tool_result_content(block, "new")
             .expect("tool result replacement should succeed");
+
+        assert_eq!(
+            transcript.block(block).expect("block should exist").content,
+            "new"
+        );
+    }
+
+    #[test]
+    fn replace_content_updates_any_block_kind() {
+        let mut transcript = Transcript::new();
+        let block = transcript.append_root_block(
+            NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content("old"),
+        );
+
+        transcript
+            .replace_content(block, "new")
+            .expect("replacement should succeed");
 
         assert_eq!(
             transcript.block(block).expect("block should exist").content,

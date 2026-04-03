@@ -209,48 +209,127 @@ fn render_transcript_row(
     width: usize,
     focused_block: Option<super::transcript::BlockId>,
 ) -> String {
-    let kind = state.transcript.block(row.block_id).map(|block| block.kind.clone());
-    let t = theme();
-
-    let plain = match (&state.mode, row.kind, kind.as_ref()) {
-        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::UserMessage)) => String::new(),
-        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::AssistantMessage)) => String::new(),
-        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::Thinking)) => String::new(),
-        _ => row.text.clone(),
+    let Some(block) = state.transcript.block(row.block_id) else {
+        return blank_line(width);
     };
+    let t = theme();
+    let plain = transcript_row_text(state, row, block);
 
-    let body = pad_to_width(&truncate_to_width(&plain, width), width);
-    if body.trim().is_empty() {
+    if plain.trim().is_empty() {
         return blank_line(width);
     }
 
+    let padded = pad_to_width(&truncate_to_width(&plain, width), width);
     if focused_block == Some(row.block_id) && row.kind == ProjectedRowKind::Header {
-        return format!("\x1b[7m{body}\x1b[0m");
+        return format!("\x1b[7m{padded}\x1b[0m");
     }
 
-    match kind {
-        Some(super::transcript::BlockKind::UserMessage) => {
-            format!("{}{body}{}", t.user_msg_bg, t.reset)
+    match &block.kind {
+        super::transcript::BlockKind::UserMessage => {
+            render_boxed_line(&plain, width, &t.user_msg_bg)
         }
-        Some(super::transcript::BlockKind::Thinking) => {
-            format!("{}{}{body}{}", t.italic, t.thinking_text, t.reset)
+        super::transcript::BlockKind::Thinking => {
+            format!(
+                "{}{}{}{}",
+                t.italic,
+                t.thinking_text,
+                pad_to_width(&truncate_to_width(&plain, width), width),
+                t.reset
+            )
         }
-        Some(super::transcript::BlockKind::ToolUse) => {
+        super::transcript::BlockKind::ToolUse => {
             let content = if row.kind == ProjectedRowKind::Header {
-                format!("{}{}{}", t.bold, body, t.reset)
+                format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else {
-                body
+                truncate_to_width(&plain, width)
             };
-            format!("{}{content}{}", t.tool_pending_bg, t.reset)
+            render_boxed_ansi_line(&content, width, &t.tool_pending_bg)
         }
-        Some(super::transcript::BlockKind::ToolResult) => {
-            format!("{}{body}{}", t.tool_success_bg, t.reset)
+        super::transcript::BlockKind::ToolResult => {
+            let bg = if block.title.contains("error") {
+                &t.tool_error_bg
+            } else {
+                &t.tool_success_bg
+            };
+            let content = if row.kind == ProjectedRowKind::Header {
+                format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
+            } else {
+                truncate_to_width(&plain, width)
+            };
+            render_boxed_ansi_line(&content, width, bg)
         }
-        Some(super::transcript::BlockKind::SystemNote) => {
-            format!("{}{}{}{}", t.dim, t.yellow, body, t.reset)
-        }
-        _ => body,
+        super::transcript::BlockKind::SystemNote => render_note_line(block, &plain, width),
+        super::transcript::BlockKind::AssistantMessage => padded,
     }
+}
+
+fn transcript_row_text(
+    state: &FullscreenState,
+    row: &super::projection::ProjectedRow,
+    block: &super::transcript::TranscriptBlock,
+) -> String {
+    if !matches!(state.mode, FullscreenMode::Normal) {
+        return row.text.clone();
+    }
+
+    match (row.kind, &block.kind) {
+        (ProjectedRowKind::Header, super::transcript::BlockKind::UserMessage)
+        | (ProjectedRowKind::Header, super::transcript::BlockKind::AssistantMessage)
+        | (ProjectedRowKind::Header, super::transcript::BlockKind::Thinking)
+        | (ProjectedRowKind::Header, super::transcript::BlockKind::SystemNote) => String::new(),
+        (ProjectedRowKind::Header, _) => strip_tree_header_prefix(&row.text),
+        (ProjectedRowKind::Content, _) => row.text.trim_start().to_string(),
+    }
+}
+
+fn strip_tree_header_prefix(text: &str) -> String {
+    let mut trimmed = text.trim_start();
+    for prefix in ["▸ ", "▾ ", "• "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            trimmed = rest;
+            break;
+        }
+    }
+    for label in ["you ", "bb ", "thinking ", "tool ", "result ", "note "] {
+        if let Some(rest) = trimmed.strip_prefix(label) {
+            return rest.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn render_note_line(
+    block: &super::transcript::TranscriptBlock,
+    text: &str,
+    width: usize,
+) -> String {
+    let t = theme();
+    let body = pad_to_width(&truncate_to_width(text, width), width);
+    match block.title.as_str() {
+        "error" => format!("{}{}{}", t.error, body, t.reset),
+        "warning" => format!("{}{}{}{}", t.dim, t.warning, body, t.reset),
+        "status" => format!("{}{}{}", t.dim, body, t.reset),
+        _ => format!("{}{}{}{}", t.dim, t.yellow, body, t.reset),
+    }
+}
+
+fn render_boxed_line(text: &str, width: usize, bg: &str) -> String {
+    render_boxed_ansi_line(&truncate_to_width(text, width), width, bg)
+}
+
+fn render_boxed_ansi_line(content: &str, width: usize, bg: &str) -> String {
+    let t = theme();
+    if width <= 2 {
+        let body = truncate_to_width(content, width);
+        return format!("{bg}{body}{}", t.reset);
+    }
+
+    let inner_width = width.saturating_sub(2);
+    let truncated = truncate_to_width(content, inner_width);
+    let visible = visible_width(&truncated);
+    let pad = inner_width.saturating_sub(visible);
+    let content_with_bg = truncated.replace(&t.reset, &format!("{}{bg}", t.reset));
+    format!("{bg} {content_with_bg}{} {}", " ".repeat(pad), t.reset)
 }
 
 fn render_status(state: &FullscreenState, width: usize) -> String {
