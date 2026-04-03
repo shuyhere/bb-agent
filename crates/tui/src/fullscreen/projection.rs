@@ -559,4 +559,19 @@ mod tests {
         assert!(rows.iter().any(|row| row.text.contains("\x1b[")));
         assert!(rows.iter().any(|row| row.text.contains("Heading") || row.text.contains("item")));
     }
+
+    #[test]
+    fn user_slash_commands_remain_visible_in_content_rows() {
+        let mut transcript = Transcript::new();
+        let user = transcript.append_root_block(
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content("/help"),
+        );
+
+        let mut projector = TranscriptProjector::new();
+        let projection = projector.project(&mut transcript, 80);
+        let span = projection.rows_for_block(user).expect("user span");
+        let rows = &projection.rows[span.content_rows.clone()];
+
+        assert!(rows.iter().any(|row| row.text.contains("/help")));
+    }
 }

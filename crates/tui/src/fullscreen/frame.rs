@@ -217,13 +217,13 @@ fn render_transcript_row(
     if plain.trim().is_empty() {
         return match &block.kind {
             super::transcript::BlockKind::UserMessage => {
-                render_compact_boxed_ansi_line("", width, &t.user_msg_bg, block)
+                render_boxed_ansi_line("", width, &t.user_msg_bg)
             }
             super::transcript::BlockKind::ToolUse => {
-                render_compact_boxed_ansi_line("", width, tool_use_bg(block, t), block)
+                render_boxed_ansi_line("", width, tool_use_bg(block, t))
             }
             super::transcript::BlockKind::ToolResult if !block.content.trim().is_empty() => {
-                render_compact_boxed_ansi_line("", width, tool_result_bg(block, t), block)
+                render_boxed_ansi_line("", width, tool_result_bg(block, t))
             }
             _ => blank_line(width),
         };
@@ -236,46 +236,37 @@ fn render_transcript_row(
 
     match &block.kind {
         super::transcript::BlockKind::UserMessage => {
-            render_compact_boxed_line(&plain, width, &t.user_msg_bg, block)
+            render_boxed_line(&plain, width, &t.user_msg_bg)
         }
         super::transcript::BlockKind::Thinking => {
-            let compact_width = compact_text_width_for_block(block, width);
-            render_compact_text_line(
-                &format!(
-                    "{}{}{}{}",
-                    t.italic,
-                    t.thinking_text,
-                    truncate_to_width(&plain, compact_width),
-                    t.reset
-                ),
-                width,
+            format!(
+                "{}{}{}{}",
+                t.italic,
+                t.thinking_text,
+                pad_to_width(&truncate_to_width(&plain, width), width),
+                t.reset
             )
         }
         super::transcript::BlockKind::ToolUse => {
-            let compact_width = compact_box_inner_width_for_block(block, width);
             let content = if row.kind == ProjectedRowKind::Header {
-                format!("{}{}{}", t.bold, truncate_to_width(&plain, compact_width), t.reset)
+                format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else {
-                format!("{}{}{}", t.dim, truncate_to_width(&plain, compact_width), t.reset)
+                format!("{}{}{}", t.dim, truncate_to_width(&plain, width), t.reset)
             };
-            render_compact_boxed_ansi_line(&content, width, tool_use_bg(block, t), block)
+            render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
         }
         super::transcript::BlockKind::ToolResult => {
-            let compact_width = compact_box_inner_width_for_block(block, width);
             let content = if row.kind == ProjectedRowKind::Header {
-                format!("{}{}{}", t.bold, truncate_to_width(&plain, compact_width), t.reset)
+                format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else {
-                style_tool_result_line(block, &plain, compact_width)
+                style_tool_result_line(block, &plain, width)
             };
-            render_compact_boxed_ansi_line(&content, width, tool_result_bg(block, t), block)
+            render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
         }
         super::transcript::BlockKind::SystemNote => render_note_line(block, &plain, width),
         super::transcript::BlockKind::AssistantMessage => {
             if row.kind == ProjectedRowKind::Content {
-                render_compact_text_line(
-                    &format!("{}{}{}", t.text, truncate_to_width(&plain, width), t.reset),
-                    width,
-                )
+                format!("{}{}{}", t.text, padded, t.reset)
             } else {
                 padded
             }
@@ -396,95 +387,19 @@ fn render_boxed_line(text: &str, width: usize, bg: &str) -> String {
     render_boxed_ansi_line(&truncate_to_width(text, width), width, bg)
 }
 
-fn compact_box_inner_width_for_block(
-    block: &super::transcript::TranscriptBlock,
-    width: usize,
-) -> usize {
-    compact_box_width_for_block(block, width).saturating_sub(2).max(1)
-}
-
-fn compact_box_width_for_block(block: &super::transcript::TranscriptBlock, width: usize) -> usize {
-    if width <= 2 {
-        return width;
-    }
-
-    let max_inner_width = width.saturating_sub(2).max(1);
-    let min_inner_width = 12.min(max_inner_width);
-    let mut desired_inner_width = visible_width(&block.title);
-    for line in block.content.lines() {
-        desired_inner_width = desired_inner_width.max(visible_width(line));
-    }
-    desired_inner_width = desired_inner_width.max(min_inner_width);
-
-    desired_inner_width.min(max_inner_width) + 2
-}
-
-fn compact_text_width_for_block(block: &super::transcript::TranscriptBlock, width: usize) -> usize {
-    let min_width = 8.min(width.max(1));
-    let mut desired_width = visible_width(&block.title);
-    for line in block.content.lines() {
-        desired_width = desired_width.max(visible_width(line));
-    }
-    desired_width.max(min_width).min(width.max(1))
-}
-
-fn render_compact_text_line(content: &str, width: usize) -> String {
-    let visible = visible_width(content).min(width);
-    format!("{content}{}", " ".repeat(width.saturating_sub(visible)))
-}
-
-fn render_compact_boxed_line(
-    text: &str,
-    width: usize,
-    bg: &str,
-    block: &super::transcript::TranscriptBlock,
-) -> String {
-    let inner_width = compact_box_inner_width_for_block(block, width);
-    let truncated = truncate_to_width(text, inner_width);
-    render_compact_boxed_ansi_line(&truncated, width, bg, block)
-}
-
-fn render_compact_boxed_ansi_line(
-    content: &str,
-    width: usize,
-    bg: &str,
-    block: &super::transcript::TranscriptBlock,
-) -> String {
-    let box_width = compact_box_width_for_block(block, width);
-    render_boxed_ansi_line_with_box_width(content, width, box_width, bg)
-}
-
 fn render_boxed_ansi_line(content: &str, width: usize, bg: &str) -> String {
-    render_boxed_ansi_line_with_box_width(content, width, width, bg)
-}
-
-fn render_boxed_ansi_line_with_box_width(
-    content: &str,
-    width: usize,
-    box_width: usize,
-    bg: &str,
-) -> String {
     let t = theme();
-    if width == 0 {
-        return String::new();
-    }
-    let box_width = box_width.clamp(1, width);
-    if box_width <= 2 {
-        let body = truncate_to_width(content, box_width);
-        return format!("{bg}{body}{}{}", t.reset, " ".repeat(width.saturating_sub(box_width)));
+    if width <= 2 {
+        let body = truncate_to_width(content, width);
+        return format!("{bg}{body}{}", t.reset);
     }
 
-    let inner_width = box_width.saturating_sub(2);
+    let inner_width = width.saturating_sub(2);
     let truncated = truncate_to_width(content, inner_width);
     let visible = visible_width(&truncated);
     let pad = inner_width.saturating_sub(visible);
     let content_with_bg = truncated.replace(&t.reset, &format!("{}{bg}", t.reset));
-    format!(
-        "{bg} {content_with_bg}{} {}{}",
-        " ".repeat(pad),
-        t.reset,
-        " ".repeat(width.saturating_sub(box_width))
-    )
+    format!("{bg} {content_with_bg}{} {}", " ".repeat(pad), t.reset)
 }
 
 fn render_status(state: &FullscreenState, width: usize) -> String {
@@ -671,28 +586,10 @@ fn blank_line(width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fullscreen::transcript::{BlockKind, NewBlock, Transcript, TranscriptBlock};
-
-    fn block(kind: BlockKind, title: &str, content: &str) -> TranscriptBlock {
-        let mut transcript = Transcript::new();
-        let id = transcript.append_root_block(NewBlock::new(kind, title).with_content(content));
-        transcript.block(id).expect("block should exist").clone()
-    }
 
     #[test]
-    fn compact_boxed_line_keeps_background_local_to_content_width() {
-        let line = render_compact_boxed_line(
-            "hi",
-            20,
-            &theme().user_msg_bg,
-            &block(BlockKind::UserMessage, "", "hi"),
-        );
-        assert!(line.contains("\x1b[0m      "));
-    }
-
-    #[test]
-    fn compact_text_line_does_not_style_trailing_space() {
-        let line = render_compact_text_line("\x1b[3mhello\x1b[0m", 20);
-        assert!(line.ends_with("               "));
+    fn boxed_line_uses_full_width_background() {
+        let line = render_boxed_ansi_line("hi", 20, &theme().user_msg_bg);
+        assert!(!line.contains("\x1b[0m      "));
     }
 }
