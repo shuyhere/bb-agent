@@ -9,6 +9,7 @@ use crossterm::event::{
 use tokio::sync::mpsc;
 
 use crate::select_list::SelectItem;
+use crate::slash_commands::shared_slash_command_select_items;
 
 use super::{
     frame::{build_frame, measure_input},
@@ -317,7 +318,7 @@ impl FullscreenSelectMenuState {
 
 impl FullscreenSlashMenuState {
     fn new() -> Self {
-        let items = default_slash_commands();
+        let items = shared_slash_command_select_items();
         let filtered = (0..items.len()).collect();
         Self {
             items,
@@ -2252,32 +2253,6 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
         .nth(1)
         .map(|(idx, _)| cursor + idx)
         .unwrap_or(text.len())
-}
-
-fn default_slash_commands() -> Vec<SelectItem> {
-    vec![
-        ("help", "Show help"),
-        ("new", "Start a new session"),
-        ("resume", "Resume a previous session"),
-        ("model", "Switch model"),
-        ("compact", "Compact conversation context"),
-        ("copy", "Copy last response to clipboard"),
-        ("tree", "Navigate session tree"),
-        ("fork", "Fork current session"),
-        ("name", "Set session display name"),
-        ("session", "Show current session info"),
-        ("login", "Login to a provider"),
-        ("logout", "Logout from a provider"),
-        ("settings", "Show settings info"),
-        ("quit", "Exit"),
-    ]
-    .into_iter()
-    .map(|(label, detail)| SelectItem {
-        label: format!("/{label}"),
-        detail: Some(detail.to_string()),
-        value: format!("/{label}"),
-    })
-    .collect()
 }
 
 fn encode_menu_selection(menu_id: &str, value: &str) -> String {

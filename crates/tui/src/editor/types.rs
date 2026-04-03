@@ -3,6 +3,7 @@
 use crate::component::Focusable;
 use crate::kill_ring::KillRing;
 use crate::select_list::{SelectItem, SelectList};
+use crate::slash_commands::shared_slash_command_select_items;
 use crate::undo_stack::UndoStack;
 use std::path::PathBuf;
 
@@ -84,7 +85,7 @@ impl Editor {
             disable_submit: false,
             border_color: "\x1b[38;2;178;148;187m".to_string(), // pi-style purple
             slash_menu: None,
-            slash_commands: default_slash_commands(),
+            slash_commands: shared_slash_command_select_items(),
             kill_ring: KillRing::default(),
             undo_stack: UndoStack::default(),
             redo_stack: UndoStack::default(),
@@ -175,32 +176,6 @@ impl Editor {
     pub fn set_cwd(&mut self, cwd: PathBuf) {
         self.cwd = cwd;
     }
-}
-
-fn default_slash_commands() -> Vec<SelectItem> {
-    vec![
-        ("help", "Show help"),
-        ("new", "Start a new session"),
-        ("resume", "Resume a previous session"),
-        ("model", "Switch model"),
-        ("compact", "Compact conversation context"),
-        ("copy", "Copy last response to clipboard"),
-        ("tree", "Navigate session tree"),
-        ("fork", "Fork current session"),
-        ("name", "Set session display name"),
-        ("session", "Show current session info"),
-        ("login", "Login to a provider"),
-        ("logout", "Logout from a provider"),
-        ("settings", "Show settings info"),
-        ("quit", "Exit"),
-    ]
-    .into_iter()
-    .map(|(label, detail)| SelectItem {
-        label: format!("/{label}"),
-        detail: Some(detail.to_string()),
-        value: format!("/{label}"),
-    })
-    .collect()
 }
 
 impl Focusable for Editor {

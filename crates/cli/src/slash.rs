@@ -1,3 +1,5 @@
+use bb_tui::slash_commands::shared_slash_command_help_lines;
+
 /// Handle slash commands in interactive mode.
 /// Returns a SlashResult indicating what happened.
 pub fn handle_slash_command(text: &str) -> SlashResult {
@@ -68,28 +70,7 @@ pub enum SlashResult {
 
 /// Get help text as lines (for display in TUI).
 pub fn help_lines() -> Vec<String> {
-    vec![
-        "  Available commands:".into(),
-        "    /help          Show this help".into(),
-        "    /new           Start a new session".into(),
-        "    /resume        Resume a previous session".into(),
-        "    /model [name]  Switch model".into(),
-        "    /compact       Compact conversation context".into(),
-        "    /copy          Copy last response to clipboard".into(),
-        "    /tree          Navigate session tree".into(),
-        "    /fork          Fork current session".into(),
-        "    /name <name>   Set session display name".into(),
-        "    /session       Show current session info".into(),
-        "    /login         Login to a provider".into(),
-        "    /logout        Logout from a provider".into(),
-        "    /settings      Show settings info".into(),
-        "    /quit          Exit".into(),
-        String::new(),
-        "  Shortcuts:".into(),
-        "    Ctrl+C         Abort / clear".into(),
-        "    Ctrl+D         Exit (empty editor)".into(),
-        "    !command       Run bash directly".into(),
-    ]
+    shared_slash_command_help_lines()
 }
 
 #[cfg(test)]

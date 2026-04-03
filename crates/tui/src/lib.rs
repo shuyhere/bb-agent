@@ -14,6 +14,7 @@ pub mod footer_data;
 pub mod status;
 pub mod app;
 pub mod select_list;
+pub mod slash_commands;
 pub mod model_selector;
 pub mod session_selector;
 pub mod tree_selector;
