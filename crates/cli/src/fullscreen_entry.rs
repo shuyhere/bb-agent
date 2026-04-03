@@ -76,7 +76,7 @@ fn build_fullscreen_config(entry: &InteractiveEntryOptions) -> FullscreenAppConf
         title: "BB-Agent fullscreen transcript".to_string(),
         input_placeholder: "Type a prompt for BB-Agent…".to_string(),
         status_line:
-            "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript"
+            "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel/click transcript"
                 .to_string(),
         transcript,
     }

@@ -269,25 +269,20 @@ impl FullscreenState {
                 self.viewport.scroll_up(3);
                 self.mode = FullscreenMode::Transcript;
                 self.focus_first_visible_block();
-                self.status_line = format!(
-                    "transcript row {} • j/k navigate • Enter toggles",
-                    self.viewport.viewport_top
-                );
+                self.status_line = self.transcript_scroll_status_line();
                 self.dirty = true;
             }
             MouseEventKind::ScrollDown if in_transcript => {
                 self.viewport.scroll_down(3);
                 self.mode = FullscreenMode::Transcript;
-                self.focus_first_visible_block();
-                self.status_line = format!(
-                    "transcript row {} • j/k navigate • Enter toggles",
-                    self.viewport.viewport_top
-                );
+                self.focus_last_visible_block();
+                self.status_line = self.transcript_scroll_status_line();
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(block_id) = self.header_block_at_screen_row(event.row) {
                     self.mode = FullscreenMode::Transcript;
+                    self.viewport.auto_follow = false;
                     self.set_focused_block(Some(block_id));
                     self.toggle_block(block_id);
                 }
@@ -714,6 +709,25 @@ impl FullscreenState {
         }
     }
 
+    fn focus_last_visible_block(&mut self) {
+        let visible = self.visible_header_blocks();
+        if let Some(block_id) = visible.last().copied() {
+            self.set_focused_block(Some(block_id));
+        }
+    }
+
+    fn transcript_scroll_status_line(&self) -> String {
+        let follow = if self.viewport.auto_follow {
+            "follow on"
+        } else {
+            "follow off"
+        };
+        format!(
+            "transcript row {} • {follow} • j/k navigate • Enter toggles",
+            self.viewport.viewport_top
+        )
+    }
+
     fn default_focus_block(&self) -> Option<BlockId> {
         self.visible_header_blocks()
             .last()
@@ -765,6 +779,7 @@ impl FullscreenState {
 
     fn focus_block(&mut self, block_id: BlockId) {
         self.focused_block = Some(block_id);
+        self.viewport.auto_follow = false;
         self.sync_focus_tracking();
         self.ensure_focus_visible();
         self.dirty = true;
@@ -1320,6 +1335,7 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fullscreen::frame::build_frame;
 
     fn sample_state() -> (FullscreenState, BlockId, BlockId, BlockId) {
         let mut transcript = Transcript::new();
@@ -1349,6 +1365,43 @@ mod tests {
             },
         );
         (state, intro, tool, result)
+    }
+
+    fn scrolling_state() -> (FullscreenState, Vec<BlockId>) {
+        let mut transcript = Transcript::new();
+        let mut blocks = Vec::new();
+        for idx in 0..10 {
+            let block_id = transcript.append_root_block(
+                NewBlock::new(BlockKind::AssistantMessage, format!("message {idx}"))
+                    .with_content(format!("line {idx}\nmore detail {idx}")),
+            );
+            blocks.push(block_id);
+        }
+
+        let state = FullscreenState::new(
+            FullscreenAppConfig {
+                transcript,
+                ..FullscreenAppConfig::default()
+            },
+            Size {
+                width: 60,
+                height: 10,
+            },
+        );
+        (state, blocks)
+    }
+
+    fn screen_row_for_header(state: &FullscreenState, block_id: BlockId) -> u16 {
+        let header_row = state
+            .projection
+            .header_row_for_block(block_id)
+            .expect("header row should exist");
+        let local_row = header_row.saturating_sub(state.viewport.viewport_top);
+        let layout = state.current_layout();
+        let visible = state.viewport.visible_row_range();
+        let top_padding = (layout.transcript.height as usize)
+            .saturating_sub(visible.end.saturating_sub(visible.start));
+        layout.transcript.y + (top_padding + local_row) as u16
     }
 
     #[test]
@@ -1392,16 +1445,7 @@ mod tests {
     #[test]
     fn mouse_click_on_header_toggles_block() {
         let (mut state, _, tool, _) = sample_state();
-        let header_row = state
-            .projection
-            .header_row_for_block(tool)
-            .expect("header row should exist");
-        let local_row = header_row.saturating_sub(state.viewport.viewport_top);
-        let layout = state.current_layout();
-        let visible = state.viewport.visible_row_range();
-        let top_padding = (layout.transcript.height as usize)
-            .saturating_sub(visible.end.saturating_sub(visible.start));
-        let screen_row = layout.transcript.y + (top_padding + local_row) as u16;
+        let screen_row = screen_row_for_header(&state, tool);
 
         state.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1412,6 +1456,7 @@ mod tests {
 
         assert_eq!(state.mode, FullscreenMode::Transcript);
         assert_eq!(state.focused_block, Some(tool));
+        assert!(!state.viewport.auto_follow);
         assert!(state.transcript.block(tool).expect("tool block").collapsed);
     }
 
@@ -1589,5 +1634,93 @@ mod tests {
         scheduler.on_flushed();
         scheduler.mark_dirty(start + Duration::from_millis(40));
         assert!(scheduler.should_flush(start + Duration::from_millis(70)));
+    }
+
+    #[test]
+    fn scroll_events_toggle_follow_and_focus_the_visible_edge() {
+        let (mut state, _) = scrolling_state();
+        let transcript_row = state.current_layout().transcript.y;
+
+        state.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: transcript_row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(state.mode, FullscreenMode::Transcript);
+        assert!(!state.viewport.auto_follow);
+        assert_eq!(
+            state.focused_block,
+            state.visible_header_blocks().first().copied()
+        );
+        assert!(state.status_line.contains("follow off"));
+
+        for _ in 0..10 {
+            state.on_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: transcript_row,
+                modifiers: KeyModifiers::NONE,
+            });
+            if state.viewport.auto_follow {
+                break;
+            }
+        }
+
+        assert!(state.viewport.auto_follow);
+        assert_eq!(
+            state.focused_block,
+            state.visible_header_blocks().last().copied()
+        );
+        assert!(state.status_line.contains("follow on"));
+    }
+
+    #[test]
+    fn keyboard_navigation_turns_follow_off_and_resize_preserves_focus_anchor_when_possible() {
+        let (mut state, _) = scrolling_state();
+
+        state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(state.viewport.auto_follow);
+
+        state.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let focused = state.focused_block.expect("focus after navigation");
+        let header_row = state
+            .projection
+            .header_row_for_block(focused)
+            .expect("focused header row should exist");
+        let anchor_offset = header_row.saturating_sub(state.viewport.viewport_top);
+
+        assert!(!state.viewport.auto_follow);
+
+        state.on_resize(72, 14);
+
+        let resized_header_row = state
+            .projection
+            .header_row_for_block(focused)
+            .expect("focused header row should still exist");
+        let expected_top = resized_header_row
+            .saturating_sub(anchor_offset)
+            .min(state.viewport.bottom_top());
+        assert_eq!(state.focused_block, Some(focused));
+        assert_eq!(state.viewport.viewport_top, expected_top);
+        assert!(resized_header_row >= state.viewport.viewport_top);
+        assert!(resized_header_row < state.viewport.viewport_top + state.viewport.viewport_height);
+    }
+
+    #[test]
+    fn cursor_is_only_visible_in_normal_mode() {
+        let (mut state, _, _, _) = sample_state();
+        state.input = "hello".to_string();
+        state.cursor = state.input.len();
+
+        assert!(build_frame(&state).cursor.is_some());
+
+        state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(build_frame(&state).cursor.is_none());
+
+        state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(state.mode, FullscreenMode::Search);
+        assert!(build_frame(&state).cursor.is_none());
     }
 }
