@@ -20,13 +20,12 @@ mod turn_runner;
     about = "BB-Agent — a minimal Rust-native coding agent",
     version,
     after_help = r#"Examples:
-  bb                                  Fullscreen TUI
-  bb "List all .rs files in src/"     Fullscreen TUI with initial prompt
-  bb --legacy-interactive             Legacy scrollback TUI
+  bb                                  Interactive mode
+  bb "List all .rs files in src/"     Interactive with initial prompt
   bb -p "What is 2+2?"               Print mode (non-interactive)
   bb -c                               Continue previous session
   bb -r                               Resume: pick a session
-  bb --fullscreen-transcript          Explicit fullscreen TUI alias
+  bb --fullscreen-transcript          Shared fullscreen transcript shell
   bb --model anthropic/claude-sonnet-4-20250514
   bb --model sonnet:high              Model with thinking level
   bb --list-models                    List all available models
@@ -110,13 +109,9 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Launch the shared fullscreen transcript shell explicitly (`bb` already defaults to this)
+    /// Launch the shared fullscreen transcript shell (`--fullscreen` kept as a legacy alias)
     #[arg(long = "fullscreen-transcript", visible_alias = "fullscreen")]
     fullscreen_transcript: bool,
-
-    /// Force the legacy scrollback interactive TUI instead of the fullscreen default
-    #[arg(long = "legacy-interactive")]
-    legacy_interactive: bool,
 
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
@@ -217,11 +212,10 @@ async fn main() -> Result<()> {
         };
     }
 
-    let use_fullscreen = fullscreen_tui_enabled(&cli);
+    let use_fullscreen = fullscreen_transcript_requested(&cli);
 
-    // Print mode stays a thin entry layer. Plain `bb` now launches the shared fullscreen TUI
-    // by default, while `--legacy-interactive` remains as a safe escape hatch to the older
-    // scrollback controller during the transition.
+    // Print mode stays a thin entry layer; interactive mode owns the legacy TUI controller.
+    // The fullscreen entry remains available behind an explicit flag until its UX reaches parity.
     if cli.print {
         run::run_print_mode(cli).await
     } else if use_fullscreen {
@@ -232,16 +226,10 @@ async fn main() -> Result<()> {
     }
 }
 
-fn fullscreen_tui_enabled(cli: &Cli) -> bool {
-    if cli.legacy_interactive || env_flag_enabled("BB_LEGACY_INTERACTIVE") {
-        return false;
-    }
-
-    if cli.fullscreen_transcript {
-        return true;
-    }
-
-    true
+fn fullscreen_transcript_requested(cli: &Cli) -> bool {
+    cli.fullscreen_transcript
+        || env_flag_enabled("BB_FULLSCREEN_TRANSCRIPT")
+        || env_flag_enabled("BB_FULLSCREEN")
 }
 
 fn env_flag_enabled(name: &str) -> bool {
