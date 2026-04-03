@@ -18,6 +18,15 @@ pub struct RegisteredCommand {
     pub description: String,
 }
 
+/// Minimal execution context exposed to plugin handlers and commands.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginContext {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default, alias = "hasUI")]
+    pub has_ui: bool,
+}
+
 /// Errors from the plugin host.
 #[derive(Debug, thiserror::Error)]
 pub enum PluginHostError {

@@ -4,7 +4,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::PluginHost;
-use super::types::{PluginHostError, RegisteredCommand, RegisteredTool};
+use super::types::{PluginContext, PluginHostError, RegisteredCommand, RegisteredTool};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -14,6 +14,15 @@ impl PluginHost {
     /// Serializes the event as a JSON-RPC request with method "event",
     /// waits for the response with the matching id.
     pub async fn send_event(&mut self, event: &bb_hooks::Event) -> Option<bb_hooks::HookResult> {
+        self.send_event_with_context(event, &PluginContext::default())
+            .await
+    }
+
+    pub async fn send_event_with_context(
+        &mut self,
+        event: &bb_hooks::Event,
+        context: &PluginContext,
+    ) -> Option<bb_hooks::HookResult> {
         let event_data = serialize_event(event);
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
@@ -21,7 +30,10 @@ impl PluginHost {
             "jsonrpc": "2.0",
             "id": id,
             "method": "event",
-            "params": event_data,
+            "params": {
+                "event": event_data,
+                "context": context,
+            },
         });
 
         if let Err(e) = self.send_json(&request).await {
@@ -126,6 +138,16 @@ impl PluginHost {
         name: &str,
         args: &str,
     ) -> Result<serde_json::Value, PluginHostError> {
+        self.execute_command_with_context(name, args, &PluginContext::default())
+            .await
+    }
+
+    pub async fn execute_command_with_context(
+        &mut self,
+        name: &str,
+        args: &str,
+        context: &PluginContext,
+    ) -> Result<serde_json::Value, PluginHostError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         let request = serde_json::json!({
@@ -135,6 +157,7 @@ impl PluginHost {
             "params": {
                 "name": name,
                 "args": args,
+                "context": context,
             },
         });
 

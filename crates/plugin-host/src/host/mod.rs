@@ -7,4 +7,4 @@ mod types;
 mod tests;
 
 pub use host_impl::PluginHost;
-pub use types::{PluginHostError, RegisteredCommand, RegisteredTool};
+pub use types::{PluginContext, PluginHostError, RegisteredCommand, RegisteredTool};

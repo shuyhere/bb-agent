@@ -74,6 +74,36 @@ function send(msg) {
     process.stdout.write(JSON.stringify(msg) + '\n');
 }
 
+function buildContext(raw) {
+    const context = raw || {};
+    const entries = context.session_entries || [];
+    const branch = context.session_branch || entries;
+    return {
+        cwd: context.cwd || process.cwd(),
+        hasUI: !!context.has_ui || !!context.hasUI,
+        signal: undefined,
+        sessionManager: {
+            getEntries: () => entries,
+            getBranch: () => branch,
+            getLeafId: () => context.leaf_id || context.leafId || null,
+        },
+        ui: {
+            notify: async () => undefined,
+            setStatus: async () => undefined,
+            setTitle: async () => undefined,
+            setEditorText: async () => undefined,
+            setWidget: async () => undefined,
+            select: async () => undefined,
+            confirm: async () => false,
+            input: async () => undefined,
+            editor: async () => undefined,
+            custom: async () => undefined,
+        },
+        getSystemPrompt: () => context.system_prompt || context.systemPrompt || '',
+        shutdown: () => undefined,
+    };
+}
+
 for (const pluginPath of process.argv.slice(2)) {
     try {
         const mod = loadPluginModule(pluginPath);
@@ -91,12 +121,13 @@ rl.on('line', async (line) => {
     try {
         const msg = JSON.parse(line);
         if (msg.method === 'event') {
-            const event = msg.params;
+            const event = msg.params.event;
+            const ctx = buildContext(msg.params.context);
             const eventHandlers = handlers[event.type] || [];
             let result = {};
             for (const handler of eventHandlers) {
                 try {
-                    const r = await handler(event, {});
+                    const r = await handler(event, ctx);
                     if (!r) continue;
 
                     result = { ...result, ...r };
@@ -166,11 +197,11 @@ rl.on('line', async (line) => {
                 send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: `Tool ${name} not found` } });
             }
         } else if (msg.method === 'execute_command') {
-            const { name, args } = msg.params;
+            const { name, args, context } = msg.params;
             const command = commands[name];
             if (command && command.handler) {
                 try {
-                    const result = await command.handler(args || '', {});
+                    const result = await command.handler(args || '', buildContext(context));
                     send({ jsonrpc: "2.0", id: msg.id, result: result ?? null });
                 } catch (e) {
                     send({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: e.message } });

@@ -1022,10 +1022,11 @@ impl InteractiveMode {
             session_resources,
             mut tools,
             commands,
-        } = crate::extensions::load_runtime_extension_support(
+        } = crate::extensions::load_runtime_extension_support_with_ui(
             &cwd,
             &settings,
             &self.session_setup.extension_bootstrap,
+            true,
         )
         .await
         .map_err(|err| -> Box<dyn Error + Send + Sync> {

@@ -16,7 +16,8 @@ use bb_core::error::{BbError, BbResult};
 use bb_core::settings::Settings;
 use bb_core::types::ContentBlock;
 use bb_plugin_host::{
-    PluginHost, RegisteredCommand as HostRegisteredCommand, RegisteredTool as HostRegisteredTool,
+    PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
+    RegisteredTool as HostRegisteredTool,
 };
 use bb_tools::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
@@ -61,6 +62,7 @@ pub(crate) struct InputHookOutcome {
 pub(crate) struct ExtensionCommandRegistry {
     host: Option<Arc<Mutex<PluginHost>>>,
     commands: BTreeSet<String>,
+    context: PluginContext,
 }
 
 impl ExtensionCommandRegistry {
@@ -82,14 +84,16 @@ impl ExtensionCommandRegistry {
             bail!("extension command runtime is not available");
         };
         let mut host = host.lock().await;
-        let result = host.execute_command(name, args.unwrap_or_default()).await?;
+        let result = host
+            .execute_command_with_context(name, args.unwrap_or_default(), &self.context)
+            .await?;
         Ok(render_command_result(&result))
     }
 
     pub(crate) async fn send_event(&self, event: &bb_hooks::Event) -> Option<bb_hooks::HookResult> {
         let host = self.host.as_ref()?;
         let mut host = host.lock().await;
-        host.send_event(event).await
+        host.send_event_with_context(event, &self.context).await
     }
 
     pub(crate) async fn apply_input_hooks(
@@ -154,6 +158,15 @@ pub(crate) async fn load_runtime_extension_support(
     cwd: &Path,
     settings: &Settings,
     bootstrap: &ExtensionBootstrap,
+) -> Result<RuntimeExtensionSupport> {
+    load_runtime_extension_support_with_ui(cwd, settings, bootstrap, false).await
+}
+
+pub(crate) async fn load_runtime_extension_support_with_ui(
+    cwd: &Path,
+    settings: &Settings,
+    bootstrap: &ExtensionBootstrap,
+    has_ui: bool,
 ) -> Result<RuntimeExtensionSupport> {
     let package_dirs = resolve_package_directories(cwd, settings, bootstrap)?;
     let mut discovered = DiscoveredResources::default();
@@ -280,6 +293,10 @@ pub(crate) async fn load_runtime_extension_support(
                 .iter()
                 .map(|command| command.name.clone())
                 .collect(),
+            context: PluginContext {
+                cwd: Some(cwd.display().to_string()),
+                has_ui,
+            },
         };
 
         session_resources.extensions = ExtensionsResult {
@@ -322,14 +339,17 @@ pub(crate) fn install_package(source: &str, scope: SettingsScope, cwd: &Path) ->
     }
 
     let mut settings = load_settings_for_scope(scope, cwd);
-    append_unique_value(&mut settings.packages, source.to_string());
+    append_unique_package(&mut settings.packages, source.to_string(), cwd)?;
     save_settings_for_scope(scope, cwd, &settings)
 }
 
 pub(crate) fn remove_package(source: &str, scope: SettingsScope, cwd: &Path) -> Result<bool> {
     let mut settings = load_settings_for_scope(scope, cwd);
+    let target_identity = package_identity(source, cwd)?;
     let before = settings.packages.len();
-    settings.packages.retain(|entry| entry != source);
+    settings.packages.retain(|entry| {
+        package_identity(entry, cwd).ok().as_deref() != Some(target_identity.as_str())
+    });
     let removed = before != settings.packages.len();
     if removed {
         save_settings_for_scope(scope, cwd, &settings)?;
@@ -340,26 +360,29 @@ pub(crate) fn remove_package(source: &str, scope: SettingsScope, cwd: &Path) -> 
 pub(crate) fn list_packages(scope: Option<SettingsScope>, cwd: &Path) -> Vec<String> {
     match scope {
         Some(scope) => load_settings_for_scope(scope, cwd).packages,
-        None => {
-            let mut values = load_settings_for_scope(SettingsScope::Global, cwd).packages;
-            for package in load_settings_for_scope(SettingsScope::Project, cwd).packages {
-                append_unique_value(&mut values, package);
-            }
-            values
-        }
+        None => merge_package_lists(
+            load_settings_for_scope(SettingsScope::Global, cwd).packages,
+            load_settings_for_scope(SettingsScope::Project, cwd).packages,
+            cwd,
+        ),
     }
 }
 
 pub(crate) fn update_packages(scope: Option<SettingsScope>, cwd: &Path) -> Result<Vec<String>> {
     let packages = list_packages(scope, cwd);
+    let mut updated = Vec::new();
     for package in &packages {
+        if package_is_pinned(package) {
+            continue;
+        }
         match classify_package_source(package) {
             PackageSource::LocalPath(_) => {}
             PackageSource::Npm(spec) => install_npm_package(spec)?,
             PackageSource::Git(spec) => install_git_package(spec)?,
         }
+        updated.push(package.clone());
     }
-    Ok(packages)
+    Ok(updated)
 }
 
 #[derive(Default)]
@@ -772,9 +795,43 @@ fn save_settings_for_scope(scope: SettingsScope, cwd: &Path, settings: &Settings
     }
 }
 
-fn append_unique_value(values: &mut Vec<String>, value: String) {
-    if !values.contains(&value) {
+fn append_unique_package(values: &mut Vec<String>, value: String, cwd: &Path) -> Result<()> {
+    let identity = package_identity(&value, cwd)?;
+    if let Some(existing_index) = values.iter().position(|existing| {
+        package_identity(existing, cwd).ok().as_deref() == Some(identity.as_str())
+    }) {
+        values[existing_index] = value;
+    } else {
         values.push(value);
+    }
+    Ok(())
+}
+
+fn merge_package_lists(global: Vec<String>, project: Vec<String>, cwd: &Path) -> Vec<String> {
+    let mut merged = global;
+    for package in project {
+        let _ = append_unique_package(&mut merged, package, cwd);
+    }
+    merged
+}
+
+fn package_identity(source: &str, cwd: &Path) -> Result<String> {
+    match classify_package_source(source) {
+        PackageSource::LocalPath(path) => {
+            Ok(format!("local:{}", resolve_input_path(cwd, path).display()))
+        }
+        PackageSource::Npm(spec) => Ok(format!("npm:{}", npm_package_name(spec)?)),
+        PackageSource::Git(spec) => Ok(format!("git:{}", git_repo_url(spec))),
+    }
+}
+
+fn package_is_pinned(source: &str) -> bool {
+    match classify_package_source(source) {
+        PackageSource::LocalPath(_) => false,
+        PackageSource::Npm(spec) => npm_package_name(spec)
+            .map(|name| name != spec)
+            .unwrap_or(false),
+        PackageSource::Git(spec) => git_ref(spec).is_some(),
     }
 }
 
@@ -1121,6 +1178,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
     #[test]
     fn parses_frontmatter_name_and_description() {
         let metadata =
@@ -1274,5 +1338,164 @@ mod tests {
             .unwrap()
         );
         assert!(list_packages(Some(SettingsScope::Project), cwd.path()).is_empty());
+    }
+
+    #[test]
+    fn package_identity_controls_remove_and_listing() {
+        let cwd = tempdir().unwrap();
+        let merged = merge_package_lists(
+            vec!["npm:@demo/pkg@1.0.0".to_string()],
+            vec!["npm:@demo/pkg@2.0.0".to_string()],
+            cwd.path(),
+        );
+        assert_eq!(merged, vec!["npm:@demo/pkg@2.0.0".to_string()]);
+
+        let settings = Settings {
+            packages: vec!["npm:@demo/pkg@2.0.0".to_string()],
+            ..Settings::default()
+        };
+        settings.save_project(cwd.path()).unwrap();
+
+        assert!(remove_package("npm:@demo/pkg", SettingsScope::Project, cwd.path()).unwrap());
+        assert!(list_packages(Some(SettingsScope::Project), cwd.path()).is_empty());
+    }
+
+    #[test]
+    fn update_skips_pinned_package_sources() {
+        let cwd = tempdir().unwrap();
+        let package_dir = cwd.path().join("local-package");
+        fs::create_dir_all(&package_dir).unwrap();
+
+        let settings = Settings {
+            packages: vec![
+                package_dir.display().to_string(),
+                "npm:@demo/pinned@1.2.3".to_string(),
+                "git:https://example.com/repo@v1".to_string(),
+            ],
+            ..Settings::default()
+        };
+        settings.save_project(cwd.path()).unwrap();
+
+        let updated = update_packages(Some(SettingsScope::Project), cwd.path()).unwrap();
+        assert!(updated.contains(&package_dir.display().to_string()));
+        assert!(!updated.contains(&"npm:@demo/pinned@1.2.3".to_string()));
+        assert!(!updated.contains(&"git:https://example.com/repo@v1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn package_loaded_extension_command_executes_with_context() {
+        if !node_available() {
+            eprintln!("Skipping test: node not available");
+            return;
+        }
+
+        let cwd = tempdir().unwrap();
+        let package_dir = cwd.path().join("command-package");
+        fs::create_dir_all(package_dir.join("extensions")).unwrap();
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{
+                "name": "command-package",
+                "pi": {
+                    "extensions": ["./extensions"]
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("extensions/hello.js"),
+            r#"
+                module.exports = function(bb) {
+                    bb.registerCommand('pkghello', {
+                        description: 'package hello',
+                        handler: async (args, ctx) => ({
+                            message: `pkg:${args}|ui:${ctx.hasUI}|cwd:${ctx.cwd}`,
+                        }),
+                    });
+                };
+            "#,
+        )
+        .unwrap();
+
+        let settings = Settings {
+            packages: vec![package_dir.display().to_string()],
+            ..Settings::default()
+        };
+        let support = load_runtime_extension_support_with_ui(
+            cwd.path(),
+            &settings,
+            &ExtensionBootstrap::default(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(support.commands.is_registered("/pkghello world"));
+        let output = support
+            .commands
+            .execute_text("/pkghello world")
+            .await
+            .unwrap();
+        let output = output.unwrap();
+        assert!(output.contains("pkg:world"));
+        assert!(output.contains("ui:true"));
+        assert!(output.contains(cwd.path().to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn reload_reloads_extension_command_output() {
+        if !node_available() {
+            eprintln!("Skipping test: node not available");
+            return;
+        }
+
+        let cwd = tempdir().unwrap();
+        let extension_path = cwd.path().join("reload.js");
+        fs::write(
+            &extension_path,
+            r#"
+                module.exports = function(bb) {
+                    bb.registerCommand('hello', {
+                        description: 'hello',
+                        handler: async () => ({ message: 'v1' }),
+                    });
+                };
+            "#,
+        )
+        .unwrap();
+
+        let bootstrap = ExtensionBootstrap {
+            paths: vec![extension_path.clone()],
+            package_sources: Vec::new(),
+        };
+        let settings = Settings::default();
+        let support_v1 = load_runtime_extension_support(cwd.path(), &settings, &bootstrap)
+            .await
+            .unwrap();
+        assert_eq!(
+            support_v1.commands.execute_text("/hello").await.unwrap(),
+            Some("v1".to_string())
+        );
+
+        fs::write(
+            &extension_path,
+            r#"
+                module.exports = function(bb) {
+                    bb.registerCommand('hello', {
+                        description: 'hello',
+                        handler: async () => ({ message: 'v2' }),
+                    });
+                };
+            "#,
+        )
+        .unwrap();
+
+        let support_v2 = load_runtime_extension_support(cwd.path(), &settings, &bootstrap)
+            .await
+            .unwrap();
+        assert_eq!(
+            support_v2.commands.execute_text("/hello").await.unwrap(),
+            Some("v2".to_string())
+        );
     }
 }

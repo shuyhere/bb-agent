@@ -41,7 +41,9 @@ async fn test_load_plugins_with_sample() {
 
                 bb.registerCommand("hello", {
                     description: "Say hello",
-                    handler: async (args) => ({ message: "Hello command " + (args || "world") })
+                    handler: async (args, ctx) => ({
+                        message: "Hello command " + (args || "world") + " @ " + ctx.cwd + " ui=" + ctx.hasUI
+                    })
                 });
             };
         "#,
@@ -95,8 +97,21 @@ async fn test_load_plugins_with_sample() {
         .unwrap();
     assert_eq!(result["content"][0]["text"], "Hello, Alice!");
 
-    let result = host.execute_command("hello", "Alice").await.unwrap();
-    assert_eq!(result["message"], "Hello command Alice");
+    let result = host
+        .execute_command_with_context(
+            "hello",
+            "Alice",
+            &PluginContext {
+                cwd: Some("/tmp/plugin-test".to_string()),
+                has_ui: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result["message"],
+        "Hello command Alice @ /tmp/plugin-test ui=true"
+    );
 
     // Cleanup
     host.kill().await;

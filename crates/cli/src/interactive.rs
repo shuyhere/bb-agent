@@ -19,7 +19,7 @@ use bb_session::store;
 use bb_tools::{Tool, ToolContext, builtin_tools};
 
 use crate::extensions::{
-    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support,
+    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support_with_ui,
 };
 use crate::login;
 
@@ -140,7 +140,7 @@ pub(crate) async fn prepare_interactive_mode(
         session_resources,
         mut tools,
         commands,
-    } = load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    } = load_runtime_extension_support_with_ui(&cwd, &settings, &extension_bootstrap, true).await?;
     let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
     let mut builtin_tools = select_tools_default();
     builtin_tools.append(&mut tools);
