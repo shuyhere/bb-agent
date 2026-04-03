@@ -762,18 +762,18 @@ pub(crate) fn auto_install_missing_packages(cwd: &Path, settings: &Settings) {
             PackageSource::Npm(spec) => {
                 let root = resolve_install_root("npm", spec, cwd);
                 if !root.exists() {
-                    eprintln!("Installing package {source} …");
+                    tracing::info!("auto-installing missing package {source}");
                     if let Err(err) = install_npm_package(spec, SettingsScope::Global, cwd) {
-                        eprintln!("Warning: failed to auto-install {source}: {err}");
+                        tracing::warn!("failed to auto-install {source}: {err}");
                     }
                 }
             }
             PackageSource::Git(spec) => {
                 let root = resolve_install_root("git", spec, cwd);
                 if !root.exists() {
-                    eprintln!("Installing package {source} …");
+                    tracing::info!("auto-installing missing package {source}");
                     if let Err(err) = install_git_package(spec, SettingsScope::Global, cwd) {
-                        eprintln!("Warning: failed to auto-install {source}: {err}");
+                        tracing::warn!("failed to auto-install {source}: {err}");
                     }
                 }
             }
@@ -2411,6 +2411,30 @@ mod tests {
         };
 
         // Should not panic or error — local paths are skipped.
+        auto_install_missing_packages(cwd.path(), &settings);
+    }
+
+    #[test]
+    fn auto_install_identifies_missing_npm_package_dir() {
+        // Verify that an npm: package whose install directory does not exist
+        // is recognised as needing installation (the actual npm install will
+        // fail in the test environment, but the function handles the error
+        // gracefully via tracing::warn).
+        let cwd = tempdir().unwrap();
+
+        let spec = "@test/nonexistent-pkg";
+        let source = format!("npm:{spec}");
+
+        // Confirm the install root does not exist yet.
+        let root = resolve_install_root("npm", spec, cwd.path());
+        assert!(!root.exists(), "install root should not exist before auto-install");
+
+        let settings = Settings {
+            packages: vec![PackageEntry::Simple(source)],
+            ..Settings::default()
+        };
+
+        // Should attempt install and handle the failure without panicking.
         auto_install_missing_packages(cwd.path(), &settings);
     }
 }
