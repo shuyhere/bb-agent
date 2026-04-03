@@ -131,54 +131,68 @@ impl FullscreenController {
 
     fn show_startup_resources(&mut self) {
         let bootstrap = &self.runtime_host.bootstrap().resource_bootstrap;
-        let skills: Vec<&str> = bootstrap
-            .skills
-            .iter()
-            .map(|s| s.info.name.as_str())
-            .collect();
-        let prompts: Vec<&str> = bootstrap
-            .prompts
-            .iter()
-            .map(|p| p.info.name.as_str())
-            .collect();
-        let commands: Vec<&str> = bootstrap
-            .extensions
-            .registered_commands
-            .iter()
-            .map(|c| c.invocation_name.as_str())
-            .collect();
-        let extensions_count = bootstrap.extensions.extensions.len();
+        let mut sections: Vec<String> = Vec::new();
 
-        let mut parts = Vec::new();
-        if extensions_count > 0 {
-            parts.push(format!("{extensions_count} extension(s)"));
-        }
-        if !skills.is_empty() {
-            parts.push(format!(
-                "{} skill(s): {}",
-                skills.len(),
-                skills.join(", ")
-            ));
-        }
-        if !prompts.is_empty() {
-            parts.push(format!(
-                "{} prompt(s): {}",
-                prompts.len(),
-                prompts.iter().map(|p| format!("/{p}")).collect::<Vec<_>>().join(", ")
-            ));
-        }
-        if !commands.is_empty() {
-            parts.push(format!(
-                "{} command(s): {}",
-                commands.len(),
-                commands.iter().map(|c| format!("/{c}")).collect::<Vec<_>>().join(", ")
-            ));
+        // Skills section (pi-style)
+        if !bootstrap.skills.is_empty() {
+            let mut skill_lines = vec!["Skills".to_string()];
+            for skill in &bootstrap.skills {
+                let scope = super::format_source_scope(&skill.info.source_info.source);
+                let desc = if skill.info.description.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", skill.info.description)
+                };
+                skill_lines.push(format!(
+                    "  /skill:{}{}{}",
+                    skill.info.name,
+                    desc,
+                    if scope.is_empty() { String::new() } else { format!(" ({})", scope) }
+                ));
+            }
+            sections.push(skill_lines.join("\n"));
         }
 
-        if !parts.is_empty() {
+        // Prompts section
+        if !bootstrap.prompts.is_empty() {
+            let mut prompt_lines = vec!["Prompts".to_string()];
+            for prompt in &bootstrap.prompts {
+                let scope = super::format_source_scope(&prompt.info.source_info.source);
+                let desc = if prompt.info.description.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", prompt.info.description)
+                };
+                prompt_lines.push(format!(
+                    "  /{}{}{}",
+                    prompt.info.name,
+                    desc,
+                    if scope.is_empty() { String::new() } else { format!(" ({})", scope) }
+                ));
+            }
+            sections.push(prompt_lines.join("\n"));
+        }
+
+        // Extensions section
+        let extensions = &bootstrap.extensions;
+        if !extensions.extensions.is_empty() {
+            let mut ext_lines = vec!["Extensions".to_string()];
+            for ext in &extensions.extensions {
+                ext_lines.push(format!("  {}", super::shorten_path(&ext.path)));
+            }
+            for cmd in &extensions.registered_commands {
+                ext_lines.push(format!("    /{:<20} {}", cmd.invocation_name, cmd.description));
+            }
+            for tool in &extensions.registered_tools {
+                ext_lines.push(format!("    tool: {}", tool.definition.name));
+            }
+            sections.push(ext_lines.join("\n"));
+        }
+
+        if !sections.is_empty() {
             self.send_command(FullscreenCommand::PushNote {
                 level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
-                text: format!("Loaded: {}", parts.join(" • ")),
+                text: sections.join("\n\n"),
             });
         }
     }

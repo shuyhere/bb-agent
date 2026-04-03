@@ -166,6 +166,24 @@ fn shorten_home_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Shorten a path for display (home prefix + long paths).
+pub(super) fn shorten_path(path: &str) -> String {
+    shorten_home_path(path)
+}
+
+/// Format a source scope label for display.
+pub(super) fn format_source_scope(source: &str) -> &str {
+    if source.contains("global") {
+        "global"
+    } else if source.contains("project") {
+        "project"
+    } else if source.starts_with("package:") {
+        source
+    } else {
+        ""
+    }
+}
+
 fn format_tokens(count: u64) -> String {
     if count < 1_000 {
         count.to_string()
