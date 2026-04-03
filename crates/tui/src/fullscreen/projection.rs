@@ -300,6 +300,7 @@ fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
         BlockKind::ToolResult => {
             if !lines.is_empty() {
                 lines.insert(0, String::new());
+                lines.push(String::new());
             }
         }
         BlockKind::SystemNote => {}
@@ -540,6 +541,7 @@ mod tests {
         assert!(result_span.header_rows.is_empty());
         let result_rows = &projection.rows[result_span.content_rows.clone()];
         assert!(result_rows.first().expect("result spacer row").text.is_empty());
+        assert!(result_rows.last().expect("result bottom pad").text.is_empty());
     }
 
     #[test]
