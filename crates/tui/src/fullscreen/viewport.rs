@@ -100,10 +100,12 @@ impl ViewportState {
         projection: &TranscriptProjection,
         block_id: BlockId,
     ) -> Option<ViewportAnchor> {
-        let header_row = projection.header_row_for_block(block_id)?;
+        let row = projection
+            .header_row_for_block(block_id)
+            .or_else(|| projection.rows_for_block(block_id).map(|span| span.all_rows.start))?;
         Some(ViewportAnchor {
             block_id,
-            screen_offset: header_row.saturating_sub(self.viewport_top),
+            screen_offset: row.saturating_sub(self.viewport_top),
         })
     }
 
@@ -126,8 +128,11 @@ impl ViewportState {
         anchor: &ViewportAnchor,
     ) {
         self.total_projected_rows = next_projection.total_rows;
-        if let Some(next_header_row) = next_projection.header_row_for_block(anchor.block_id) {
-            self.viewport_top = next_header_row.saturating_sub(anchor.screen_offset);
+        if let Some(next_row) = next_projection
+            .header_row_for_block(anchor.block_id)
+            .or_else(|| next_projection.rows_for_block(anchor.block_id).map(|span| span.all_rows.start))
+        {
+            self.viewport_top = next_row.saturating_sub(anchor.screen_offset);
             self.clamp_to_bounds();
         } else if self.auto_follow {
             self.viewport_top = self.bottom_top();

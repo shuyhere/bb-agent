@@ -225,6 +225,10 @@ fn compose_projection(
 }
 
 fn render_header_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
+    if block.kind != BlockKind::ToolUse {
+        return Vec::new();
+    }
+
     let indent = "  ".repeat(depth);
     let expandable = block.expandable || !block.children.is_empty();
     let marker = if expandable {
@@ -235,9 +239,9 @@ fn render_header_lines(block: &TranscriptBlock, width: usize, depth: usize) -> V
     let first_prefix = format!("{indent}{marker} ");
     let continuation_prefix = format!("{}  ", indent);
     let header_text = if block.title.trim().is_empty() {
-        kind_label(&block.kind).to_string()
+        "tool".to_string()
     } else {
-        format!("{} {}", kind_label(&block.kind), block.title)
+        block.title.clone()
     };
 
     wrap_with_prefix(&header_text, width, &first_prefix, &continuation_prefix)
@@ -300,17 +304,6 @@ fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
             }
         }
         BlockKind::SystemNote => {}
-    }
-}
-
-fn kind_label(kind: &BlockKind) -> &'static str {
-    match kind {
-        BlockKind::UserMessage => "you",
-        BlockKind::AssistantMessage => "bb",
-        BlockKind::Thinking => "thinking",
-        BlockKind::ToolUse => "tool",
-        BlockKind::ToolResult => "result",
-        BlockKind::SystemNote => "note",
     }
 }
 
@@ -432,10 +425,10 @@ mod tests {
     fn projects_collapsed_children_out_of_view() {
         let mut transcript = Transcript::new();
         let root = transcript.append_root_block(
-            NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content("hello"),
+            NewBlock::new(BlockKind::ToolUse, "$ ls").with_content("timeout 5s"),
         );
         transcript
-            .append_child_block(root, NewBlock::new(BlockKind::Thinking, "thought"))
+            .append_child_block(root, NewBlock::new(BlockKind::ToolResult, "output").with_content("done"))
             .expect("child block should be appended");
         transcript
             .set_collapsed(root, true)
@@ -525,10 +518,15 @@ mod tests {
 
         let user_span = projection.rows_for_block(user).expect("user span");
         let user_rows = &projection.rows[user_span.content_rows.clone()];
+        assert!(user_span.header_rows.is_empty());
         assert!(user_rows.first().expect("user top pad").text.is_empty());
         assert!(user_rows.last().expect("user bottom pad").text.is_empty());
 
         let tool_span = projection.rows_for_block(tool).expect("tool span");
+        assert_eq!(tool_span.header_rows.len(), 1);
+        let tool_header = &projection.rows[tool_span.header_rows.start];
+        assert!(tool_header.text.contains("bash"));
+        assert!(!tool_header.text.contains("tool bash"));
         let tool_rows = &projection.rows[tool_span.content_rows.clone()];
         assert!(tool_rows.first().expect("tool top pad").text.is_empty());
 
@@ -540,6 +538,7 @@ mod tests {
             .expect("tool result");
         let projection = projector.project(&mut transcript, 80);
         let result_span = projection.rows_for_block(result).expect("result span");
+        assert!(result_span.header_rows.is_empty());
         let result_rows = &projection.rows[result_span.content_rows.clone()];
         assert!(result_rows.last().expect("result bottom pad").text.is_empty());
     }

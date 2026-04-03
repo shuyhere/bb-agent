@@ -734,7 +734,7 @@ impl FullscreenState {
         self.viewport.selected_block = self.focused_block;
         self.viewport.focused_row = self
             .focused_block
-            .and_then(|block_id| self.projection.header_row_for_block(block_id));
+            .and_then(|block_id| self.focus_row_for_block(block_id));
     }
 
     fn focus_first_visible_block(&mut self) {
@@ -791,10 +791,7 @@ impl FullscreenState {
         self.projection
             .rows
             .iter()
-            .filter(|row| {
-                row.kind == ProjectedRowKind::Header
-                    && self.projection.header_row_for_block(row.block_id) == Some(row.index)
-            })
+            .filter(|row| self.focus_row_for_block(row.block_id) == Some(row.index))
             .map(|row| row.block_id)
             .collect()
     }
@@ -871,7 +868,7 @@ impl FullscreenState {
             self.sync_focus_tracking();
             return;
         };
-        let Some(header_row) = self.projection.header_row_for_block(block_id) else {
+        let Some(focus_row) = self.focus_row_for_block(block_id) else {
             self.sync_focus_tracking();
             return;
         };
@@ -881,16 +878,22 @@ impl FullscreenState {
             return;
         }
 
-        if header_row < self.viewport.viewport_top {
-            self.viewport.viewport_top = header_row;
+        if focus_row < self.viewport.viewport_top {
+            self.viewport.viewport_top = focus_row;
             self.viewport.auto_follow = false;
-        } else if header_row >= self.viewport.viewport_top + self.viewport.viewport_height {
-            self.viewport.viewport_top = header_row
+        } else if focus_row >= self.viewport.viewport_top + self.viewport.viewport_height {
+            self.viewport.viewport_top = focus_row
                 .saturating_add(1)
                 .saturating_sub(self.viewport.viewport_height);
             self.viewport.auto_follow = false;
         }
         self.sync_focus_tracking();
+    }
+
+    fn focus_row_for_block(&self, block_id: BlockId) -> Option<usize> {
+        self.projection
+            .header_row_for_block(block_id)
+            .or_else(|| self.projection.rows_for_block(block_id).map(|span| span.all_rows.start))
     }
 
     fn search_step(&mut self, forward: bool) {
@@ -1034,6 +1037,9 @@ impl FullscreenState {
         let local_row = row.saturating_sub(layout.transcript.y) as usize;
         let projected_row = visible.start + local_row;
         let row = self.projection.row(projected_row)?;
+        if row.kind != ProjectedRowKind::Header {
+            return None;
+        }
         Some(row.block_id)
     }
 
