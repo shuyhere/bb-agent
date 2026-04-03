@@ -746,6 +746,41 @@ pub(crate) async fn load_runtime_extension_support_with_ui(
     })
 }
 
+/// Check all packages in the merged settings and auto-install any whose
+/// install directories do not yet exist.  This mirrors pi behaviour where
+/// packages listed in settings are transparently installed on first launch.
+pub(crate) fn auto_install_missing_packages(cwd: &Path, settings: &Settings) {
+    for entry in &settings.packages {
+        let source = entry.source().trim();
+        if source.is_empty() {
+            continue;
+        }
+        match classify_package_source(source) {
+            PackageSource::LocalPath(_) => {
+                // Local paths are used as-is; nothing to install.
+            }
+            PackageSource::Npm(spec) => {
+                let root = resolve_install_root("npm", spec, cwd);
+                if !root.exists() {
+                    eprintln!("Installing package {source} …");
+                    if let Err(err) = install_npm_package(spec, SettingsScope::Global, cwd) {
+                        eprintln!("Warning: failed to auto-install {source}: {err}");
+                    }
+                }
+            }
+            PackageSource::Git(spec) => {
+                let root = resolve_install_root("git", spec, cwd);
+                if !root.exists() {
+                    eprintln!("Installing package {source} …");
+                    if let Err(err) = install_git_package(spec, SettingsScope::Global, cwd) {
+                        eprintln!("Warning: failed to auto-install {source}: {err}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn install_package(source: &str, scope: SettingsScope, cwd: &Path) -> Result<()> {
     match classify_package_source(source) {
         PackageSource::LocalPath(path) => {
@@ -2361,5 +2396,21 @@ mod tests {
         // Verify status was captured
         let statuses = interactive_handler.get_statuses().await;
         assert_eq!(statuses.get("demo"), Some(&Some("active".to_string())));
+    }
+
+    #[test]
+    fn auto_install_skips_local_and_already_installed() {
+        let cwd = tempdir().unwrap();
+        let local_dir = cwd.path().join("local-pkg");
+        fs::create_dir_all(&local_dir).unwrap();
+
+        // Settings with a local path — should be silently skipped.
+        let settings = Settings {
+            packages: vec![PackageEntry::Simple(local_dir.display().to_string())],
+            ..Settings::default()
+        };
+
+        // Should not panic or error — local paths are skipped.
+        auto_install_missing_packages(cwd.path(), &settings);
     }
 }

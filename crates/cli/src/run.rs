@@ -22,7 +22,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Cli;
 use crate::extensions::{
-    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support,
+    ExtensionBootstrap, RuntimeExtensionSupport, auto_install_missing_packages,
+    load_runtime_extension_support,
 };
 use crate::login;
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
@@ -88,6 +89,8 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         .base_url
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
+
+    auto_install_missing_packages(&cwd, &settings);
 
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &cli.extensions);
     let RuntimeExtensionSupport {

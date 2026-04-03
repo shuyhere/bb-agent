@@ -19,7 +19,8 @@ use bb_session::store;
 use bb_tools::{Tool, ToolContext, builtin_tools};
 
 use crate::extensions::{
-    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support_with_ui,
+    ExtensionBootstrap, RuntimeExtensionSupport, auto_install_missing_packages,
+    load_runtime_extension_support_with_ui,
 };
 use crate::login;
 
@@ -134,6 +135,8 @@ pub(crate) async fn prepare_interactive_mode(
         ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
         _ => std::sync::Arc::new(OpenAiProvider::new()),
     };
+
+    auto_install_missing_packages(&cwd, &settings);
 
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &entry.extensions);
     let RuntimeExtensionSupport {
