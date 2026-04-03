@@ -288,11 +288,14 @@ fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
                 lines.insert(0, String::new());
             }
         }
-        BlockKind::ToolUse | BlockKind::ToolResult => {
-            if lines.is_empty() {
+        BlockKind::ToolUse => {
+            lines.insert(0, String::new());
+            if block.children.is_empty() {
                 lines.push(String::new());
-            } else {
-                lines.insert(0, String::new());
+            }
+        }
+        BlockKind::ToolResult => {
+            if !lines.is_empty() {
                 lines.push(String::new());
             }
         }
@@ -528,7 +531,17 @@ mod tests {
         let tool_span = projection.rows_for_block(tool).expect("tool span");
         let tool_rows = &projection.rows[tool_span.content_rows.clone()];
         assert!(tool_rows.first().expect("tool top pad").text.is_empty());
-        assert!(tool_rows.last().expect("tool bottom pad").text.is_empty());
+
+        let result = transcript
+            .append_child_block(
+                tool,
+                NewBlock::new(BlockKind::ToolResult, "output").with_content("done"),
+            )
+            .expect("tool result");
+        let projection = projector.project(&mut transcript, 80);
+        let result_span = projection.rows_for_block(result).expect("result span");
+        let result_rows = &projection.rows[result_span.content_rows.clone()];
+        assert!(result_rows.last().expect("result bottom pad").text.is_empty());
     }
 
     #[test]

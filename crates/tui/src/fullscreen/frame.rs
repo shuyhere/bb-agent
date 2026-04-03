@@ -188,10 +188,6 @@ fn render_transcript(
     .flatten();
 
     let mut lines = Vec::with_capacity(height);
-    let top_padding = height.saturating_sub(visible_rows.len());
-    for _ in 0..top_padding {
-        lines.push(blank_line(width));
-    }
 
     lines.extend(
         visible_rows
@@ -200,6 +196,9 @@ fn render_transcript(
     );
 
     lines.truncate(height);
+    while lines.len() < height {
+        lines.push(blank_line(width));
+    }
     lines
 }
 
@@ -221,15 +220,10 @@ fn render_transcript_row(
                 render_boxed_ansi_line("", width, &t.user_msg_bg)
             }
             super::transcript::BlockKind::ToolUse => {
-                render_boxed_ansi_line("", width, &t.tool_pending_bg)
+                render_boxed_ansi_line("", width, tool_use_bg(block, t))
             }
-            super::transcript::BlockKind::ToolResult => {
-                let bg = if block.title.contains("error") {
-                    &t.tool_error_bg
-                } else {
-                    &t.tool_success_bg
-                };
-                render_boxed_ansi_line("", width, bg)
+            super::transcript::BlockKind::ToolResult if !block.content.trim().is_empty() => {
+                render_boxed_ansi_line("", width, tool_result_bg(block, t))
             }
             _ => blank_line(width),
         };
@@ -259,15 +253,10 @@ fn render_transcript_row(
             } else {
                 format!("{}{}{}", t.dim, truncate_to_width(&plain, width), t.reset)
             };
-            render_boxed_ansi_line(&content, width, &t.tool_pending_bg)
+            render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
         }
         super::transcript::BlockKind::ToolResult => {
             let is_error = block.title.contains("error");
-            let bg = if is_error {
-                &t.tool_error_bg
-            } else {
-                &t.tool_success_bg
-            };
             let content = if row.kind == ProjectedRowKind::Header {
                 format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else if is_error {
@@ -275,7 +264,7 @@ fn render_transcript_row(
             } else {
                 format!("{}{}{}", t.tool_output, truncate_to_width(&plain, width), t.reset)
             };
-            render_boxed_ansi_line(&content, width, bg)
+            render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
         }
         super::transcript::BlockKind::SystemNote => render_note_line(block, &plain, width),
         super::transcript::BlockKind::AssistantMessage => {
@@ -301,9 +290,28 @@ fn transcript_row_text(
         (ProjectedRowKind::Header, super::transcript::BlockKind::UserMessage)
         | (ProjectedRowKind::Header, super::transcript::BlockKind::AssistantMessage)
         | (ProjectedRowKind::Header, super::transcript::BlockKind::Thinking)
-        | (ProjectedRowKind::Header, super::transcript::BlockKind::SystemNote) => String::new(),
+        | (ProjectedRowKind::Header, super::transcript::BlockKind::SystemNote)
+        | (ProjectedRowKind::Header, super::transcript::BlockKind::ToolResult) => String::new(),
         (ProjectedRowKind::Header, _) => strip_tree_header_prefix(&row.text),
         (ProjectedRowKind::Content, _) => row.text.trim_start().to_string(),
+    }
+}
+
+fn tool_use_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::theme::Theme) -> &'a str {
+    if block.title.contains("error") {
+        &t.tool_error_bg
+    } else if block.title.contains("done") {
+        &t.tool_success_bg
+    } else {
+        &t.tool_pending_bg
+    }
+}
+
+fn tool_result_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::theme::Theme) -> &'a str {
+    if block.title.contains("error") {
+        &t.tool_error_bg
+    } else {
+        &t.tool_success_bg
     }
 }
 

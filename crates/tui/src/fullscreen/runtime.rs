@@ -1035,14 +1035,8 @@ impl FullscreenState {
         }
 
         let visible = self.viewport.visible_row_range();
-        let visible_count = visible.end.saturating_sub(visible.start);
-        let top_padding = (layout.transcript.height as usize).saturating_sub(visible_count);
         let local_row = row.saturating_sub(layout.transcript.y) as usize;
-        if local_row < top_padding {
-            return None;
-        }
-
-        let projected_row = visible.start + local_row.saturating_sub(top_padding);
+        let projected_row = visible.start + local_row;
         let row = self.projection.row(projected_row)?;
         Some(row.block_id)
     }
@@ -1592,10 +1586,7 @@ mod tests {
             .expect("header row should exist");
         let local_row = header_row.saturating_sub(state.viewport.viewport_top);
         let layout = state.current_layout();
-        let visible = state.viewport.visible_row_range();
-        let top_padding = (layout.transcript.height as usize)
-            .saturating_sub(visible.end.saturating_sub(visible.start));
-        layout.transcript.y + (top_padding + local_row) as u16
+        layout.transcript.y + local_row as u16
     }
 
     #[test]
