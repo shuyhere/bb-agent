@@ -1334,7 +1334,7 @@ fn format_tool_call_title(name: &str, raw_args: &str) -> String {
             if path.is_empty() {
                 "read".to_string()
             } else {
-                format!("read {path}")
+                format!("read {}", shorten_display_path(path))
             }
         }
         "write" | "edit" | "ls" | "find" => {
@@ -1342,7 +1342,7 @@ fn format_tool_call_title(name: &str, raw_args: &str) -> String {
             if path.is_empty() {
                 name.to_string()
             } else {
-                format!("{name} {path}")
+                format!("{name} {}", shorten_display_path(path))
             }
         }
         "grep" => {
@@ -1352,13 +1352,25 @@ fn format_tool_call_title(name: &str, raw_args: &str) -> String {
                 .unwrap_or_default();
             let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
             if pattern.is_empty() {
-                format!("grep {path}")
+                format!("grep {}", shorten_display_path(path))
             } else {
-                format!("grep /{pattern}/ in {path}")
+                format!("grep /{pattern}/ in {}", shorten_display_path(path))
             }
         }
         _ => name.to_string(),
     }
+}
+
+fn shorten_display_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if path.starts_with(&home) {
+            return format!("~{}", &path[home.len()..]);
+        }
+    }
+    path.to_string()
 }
 
 fn format_tool_call_content(name: &str, raw_args: &str) -> String {
@@ -1406,7 +1418,10 @@ fn format_tool_result_content(
                 let end = details.get("endLine").and_then(|value| value.as_u64()).unwrap_or(start);
                 let total = details.get("totalLines").and_then(|value| value.as_u64()).unwrap_or(end);
                 if !path.is_empty() {
-                    lines.push(format!("read {path} lines {start}-{end} / {total}"));
+                    lines.push(format!(
+                        "read {} lines {start}-{end} / {total}",
+                        shorten_display_path(path)
+                    ));
                 }
             }
             "write" => {
@@ -1416,7 +1431,10 @@ fn format_tool_result_content(
                     if path.is_empty() {
                         lines.push(format!("wrote {bytes} bytes"));
                     } else {
-                        lines.push(format!("wrote {bytes} bytes to {path}"));
+                        lines.push(format!(
+                            "wrote {bytes} bytes to {}",
+                            shorten_display_path(path)
+                        ));
                     }
                 }
             }
@@ -1428,7 +1446,10 @@ fn format_tool_result_content(
                     if path.is_empty() {
                         lines.push(format!("applied {applied}/{total} edit(s)"));
                     } else {
-                        lines.push(format!("applied {applied}/{total} edit(s) to {path}"));
+                        lines.push(format!(
+                            "applied {applied}/{total} edit(s) to {}",
+                            shorten_display_path(path)
+                        ));
                     }
                 }
                 if let Some(diff) = details.get("diff").and_then(|value| value.as_str()) {
@@ -1949,6 +1970,28 @@ mod tests {
         assert!(rendered.contains("@@ -1 +1 @@"));
         assert!(rendered.contains("-old"));
         assert!(rendered.contains("+new"));
+    }
+
+    #[test]
+    fn tool_titles_and_results_shorten_home_paths() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/test".to_string());
+        let path = format!("{home}/project/demo.txt");
+        let raw_args = serde_json::json!({ "path": path }).to_string();
+
+        let title = format_tool_call_title("read", &raw_args);
+        assert!(title.contains("~/project/demo.txt") || title.contains("/project/demo.txt"));
+
+        let rendered = format_tool_result_content(
+            "write",
+            &[],
+            Some(serde_json::json!({
+                "path": format!("{home}/project/demo.txt"),
+                "bytes": 12
+            })),
+            None,
+            false,
+        );
+        assert!(rendered.contains("wrote 12 bytes to ~/project/demo.txt") || rendered.contains("wrote 12 bytes to /home/test/project/demo.txt"));
     }
 
     #[test]
