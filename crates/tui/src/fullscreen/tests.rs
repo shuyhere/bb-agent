@@ -152,9 +152,8 @@ fn mouse_click_on_header_toggles_block() {
         modifiers: KeyModifiers::NONE,
     });
 
-    assert_eq!(state.mode, FullscreenMode::Transcript);
-    assert_eq!(state.focused_block, Some(tool));
-    assert!(!state.viewport.auto_follow);
+    // Mouse click toggles the block but does NOT enter Transcript mode
+    assert_eq!(state.mode, FullscreenMode::Normal);
     assert!(state.transcript.block(tool).expect("tool block").collapsed);
 }
 
@@ -411,7 +410,7 @@ fn scheduler_batches_streaming_bursts_until_idle_or_frame_cap() {
 }
 
 #[test]
-fn scroll_events_toggle_follow_and_focus_the_visible_edge() {
+fn scroll_events_toggle_follow_but_stay_in_normal_mode() {
     let (mut state, _) = scrolling_state();
     let transcript_row = state.current_layout().transcript.y;
 
@@ -422,13 +421,9 @@ fn scroll_events_toggle_follow_and_focus_the_visible_edge() {
         modifiers: KeyModifiers::NONE,
     });
 
-    assert_eq!(state.mode, FullscreenMode::Transcript);
+    // Scroll does NOT enter Transcript mode — user stays in Normal
+    assert_eq!(state.mode, FullscreenMode::Normal);
     assert!(!state.viewport.auto_follow);
-    assert_eq!(
-        state.focused_block,
-        state.visible_header_blocks().first().copied()
-    );
-    assert!(state.status_line.contains("follow off"));
 
     for _ in 0..10 {
         state.on_mouse(MouseEvent {
@@ -443,11 +438,7 @@ fn scroll_events_toggle_follow_and_focus_the_visible_edge() {
     }
 
     assert!(state.viewport.auto_follow);
-    assert_eq!(
-        state.focused_block,
-        state.visible_header_blocks().last().copied()
-    );
-    assert!(state.status_line.contains("follow on"));
+    assert_eq!(state.mode, FullscreenMode::Normal);
 }
 
 #[test]
@@ -978,15 +969,33 @@ fn turn_end_stays_in_transcript_when_user_scrolled_away() {
 }
 
 #[test]
-fn printable_char_in_transcript_mode_switches_to_normal_and_inserts() {
+fn escape_from_transcript_returns_to_normal() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),
         Size { width: 80, height: 24 },
     );
-    state.mode = FullscreenMode::Transcript;
+    // Enter Transcript via Ctrl+O
+    state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert_eq!(state.mode, FullscreenMode::Transcript);
 
-    // Press 'a' — should switch to Normal and insert 'a'
-    state.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    // Escape returns to Normal
+    state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(state.mode, FullscreenMode::Normal);
-    assert_eq!(state.input, "a");
+    assert!(state.viewport.auto_follow);
+}
+
+#[test]
+fn mouse_scroll_does_not_enter_transcript_mode() {
+    let (mut state, _) = scrolling_state();
+    assert_eq!(state.mode, FullscreenMode::Normal);
+
+    // Scroll up — should scroll viewport but stay in Normal mode
+    state.on_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(state.mode, FullscreenMode::Normal, "scroll should not enter transcript");
+    assert!(!state.viewport.auto_follow, "auto_follow should be off after scroll up");
 }

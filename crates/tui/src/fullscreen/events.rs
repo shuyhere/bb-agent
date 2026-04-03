@@ -98,23 +98,35 @@ impl FullscreenState {
         match event.kind {
             MouseEventKind::ScrollUp if in_transcript => {
                 self.viewport.scroll_up(3);
-                self.mode = FullscreenMode::Transcript;
-                self.focus_first_visible_block();
+                // Stay in current mode — do NOT force Transcript mode.
+                // User can keep typing while scrolling. Ctrl+O enters
+                // Transcript mode deliberately for navigation.
+                if matches!(self.mode, FullscreenMode::Transcript) {
+                    self.focus_first_visible_block();
+                }
                 self.status_line = self.transcript_scroll_status_line();
                 self.dirty = true;
             }
             MouseEventKind::ScrollDown if in_transcript => {
                 self.viewport.scroll_down(3);
-                self.mode = FullscreenMode::Transcript;
-                self.focus_last_visible_block();
-                self.status_line = self.transcript_scroll_status_line();
+                if matches!(self.mode, FullscreenMode::Transcript) {
+                    if self.viewport.auto_follow {
+                        // Scrolled back to bottom — exit transcript mode
+                        self.mode = FullscreenMode::Normal;
+                        self.status_line = self.mode_help_text();
+                    } else {
+                        self.focus_last_visible_block();
+                        self.status_line = self.transcript_scroll_status_line();
+                    }
+                } else {
+                    self.status_line = self.transcript_scroll_status_line();
+                }
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(block_id) = self.header_block_at_screen_row(event.row) {
-                    self.mode = FullscreenMode::Transcript;
-                    self.viewport.auto_follow = false;
-                    self.set_focused_block(Some(block_id));
+                    // Toggle the block but do NOT switch to Transcript mode.
+                    // The user clicked to expand/collapse, not to navigate.
                     self.toggle_block(block_id);
                 }
             }
@@ -267,6 +279,7 @@ impl FullscreenState {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, KeyModifiers::NONE) => {
                 self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
                 self.status_line = self.mode_help_text();
                 self.dirty = true;
             }
@@ -308,14 +321,6 @@ impl FullscreenState {
             }
             (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
                 self.search_step(false);
-            }
-            // Any other printable character: switch to Normal mode and
-            // insert into the input area so the user can just start typing.
-            (KeyCode::Char(ch), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) => {
-                self.mode = FullscreenMode::Normal;
-                self.viewport.auto_follow = true;
-                self.status_line = self.mode_help_text();
-                self.insert_char(ch);
             }
             _ => {}
         }
