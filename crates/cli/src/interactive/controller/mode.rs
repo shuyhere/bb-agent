@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const EDITOR_FOCUS_INDEX: usize = 6;
+
 pub(super) struct UIContainers {
     pub(super) tui: TUI,
     pub(super) header_container: Arc<Mutex<Container>>,

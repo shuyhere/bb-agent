@@ -189,21 +189,20 @@ impl Renderer {
             return;
         }
 
-        // Height changed — skip full redraw in Termux (keyboard show/hide).
-        if height_changed && !in_termux() {
-            log_redraw(
-                &format!("terminal height changed ({} -> {})", self.prev_height, height),
-                self.prev_lines.len(),
-                new_lines.len(),
-                height,
-            );
-            // Recalculate viewport top after height change
+        // Height changed: preserve scrollback and avoid full-screen clear.
+        // The terminal already reflows the visible viewport for us; we only
+        // need to update our viewport bookkeeping before diff rendering.
+        if height_changed {
+            if !in_termux() {
+                log_redraw(
+                    &format!("terminal height changed ({} -> {})", self.prev_height, height),
+                    self.prev_lines.len(),
+                    new_lines.len(),
+                    height,
+                );
+            }
             let prev_buffer_len = self.prev_viewport_top + self.prev_height as usize;
             self.prev_viewport_top = prev_buffer_len.saturating_sub(height_usize);
-            self.full_render(&new_lines, terminal, true);
-            self.position_hardware_cursor(cursor_pos, terminal);
-            self.save_state(&new_lines, width, height);
-            return;
         }
 
         // Content shrunk and clear_on_shrink is enabled

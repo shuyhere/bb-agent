@@ -53,6 +53,6 @@ mod ui_state;
 
 pub use mode::{InteractiveMode, run_interactive};
 
-use mode::{UIContainers, StreamingState, QueueState, RenderCache, InteractionState};
-use shared::{SharedComponentWrapper, SharedContainer, SharedEditorWrapper};
+use mode::{EDITOR_FOCUS_INDEX, InteractionState, QueueState, RenderCache, StreamingState, UIContainers};
+use shared::{BottomAnchorMarker, SharedComponentWrapper, SharedContainer, SharedEditorWrapper};
 

@@ -19,7 +19,7 @@ impl InteractiveMode {
         if let Ok(mut slot) = self.ui.editor_component.lock() {
             *slot = component;
         }
-        self.ui.tui.set_focus(Some(5));
+        self.ui.tui.set_focus(Some(EDITOR_FOCUS_INDEX));
     }
 
     fn restore_default_editor_component(&mut self) {

@@ -13,6 +13,10 @@ use std::any::Any;
 /// TUI finds and strips this marker, then positions the hardware cursor there.
 pub const CURSOR_MARKER: &str = "\x1b_bb:c\x07";
 
+/// Marker line used to pin everything after it to the bottom of the viewport
+/// when the rendered content is shorter than the terminal height.
+pub const BOTTOM_ANCHOR_MARKER: &str = "\x1b_bb:b\x07";
+
 /// A renderable TUI component.
 pub trait Component: Send {
     /// Render to terminal lines for the given width.

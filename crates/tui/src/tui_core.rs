@@ -3,7 +3,7 @@
 //! Matches pi-tui's TUI class: owns a Terminal and Renderer,
 //! renders a component tree, manages focus, and handles input dispatch.
 
-use crate::component::{Component, Container};
+use crate::component::{BOTTOM_ANCHOR_MARKER, Component, Container};
 use crate::renderer::Renderer;
 use crate::terminal::{ProcessTerminal, Terminal, TerminalEvent};
 use crate::utils::{extract_segments, visible_width};
@@ -236,6 +236,7 @@ impl TUI {
         let width = self.terminal.columns();
         let height = self.terminal.rows();
         let mut lines = self.root.render(width);
+        lines = Self::apply_bottom_anchor(lines, height as usize);
 
         // Composite visible overlays
         if !self.overlay_stack.is_empty() {
@@ -243,6 +244,32 @@ impl TUI {
         }
 
         self.renderer.render(&lines, &mut self.terminal);
+    }
+
+    fn apply_bottom_anchor(lines: Vec<String>, term_height: usize) -> Vec<String> {
+        let mut cleaned = Vec::with_capacity(lines.len());
+        let mut anchor_idx: Option<usize> = None;
+
+        for line in lines {
+            if line.contains(BOTTOM_ANCHOR_MARKER) {
+                anchor_idx = Some(cleaned.len());
+                let stripped = line.replace(BOTTOM_ANCHOR_MARKER, "");
+                if !stripped.is_empty() {
+                    cleaned.push(stripped);
+                }
+            } else {
+                cleaned.push(line);
+            }
+        }
+
+        if let Some(anchor_idx) = anchor_idx {
+            if cleaned.len() < term_height {
+                let pad = term_height - cleaned.len();
+                cleaned.splice(anchor_idx..anchor_idx, std::iter::repeat(String::new()).take(pad));
+            }
+        }
+
+        cleaned
     }
 
     /// Mark root content as changed (no-op — kept for API compat).

@@ -1,7 +1,24 @@
 use super::*;
+use bb_tui::component::BOTTOM_ANCHOR_MARKER;
 
 pub(super) struct SharedContainer {
     inner: Arc<Mutex<Container>>,
+}
+
+pub(super) struct BottomAnchorMarker;
+
+impl Component for BottomAnchorMarker {
+    fn render(&self, _width: u16) -> Vec<String> {
+        vec![BOTTOM_ANCHOR_MARKER.to_string()]
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 impl SharedContainer {

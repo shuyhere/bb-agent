@@ -33,6 +33,7 @@ impl InteractiveMode {
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.widget_container_above.clone(),
         )));
+        self.ui.tui.root.add(Box::new(BottomAnchorMarker));
         self.ui.tui
             .root
             .add(Box::new(SharedComponentWrapper::new(self.ui.editor_component.clone())));
@@ -42,7 +43,7 @@ impl InteractiveMode {
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.footer_container.clone(),
         )));
-        self.ui.tui.set_focus(Some(5));
+        self.ui.tui.set_focus(Some(EDITOR_FOCUS_INDEX));
 
         self.rebuild_header();
         self.render_widgets();
@@ -158,7 +159,7 @@ impl InteractiveMode {
 
                     match event {
                         TerminalEvent::Resize(_, _) => {
-                            self.ui.tui.force_render();
+                            self.ui.tui.render();
                         }
                         TerminalEvent::Paste(data) | TerminalEvent::Raw(data) => {
                             self.ui.tui.handle_raw_input(&data);
