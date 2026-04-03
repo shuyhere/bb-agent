@@ -39,9 +39,12 @@ impl FullscreenState {
                 self.insert_str(text);
             }
             FullscreenMode::Search => {
-                self.search.query.push_str(text);
-                self.status_line = format!("search {}", self.search_prompt());
-                self.dirty = true;
+                // Search mode is no longer entered from transcript.
+                // If somehow active, treat paste as returning to Normal.
+                self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
+                self.status_line = self.mode_help_text();
+                self.insert_str(text);
             }
             FullscreenMode::Transcript => {
                 self.status_line =
@@ -86,7 +89,14 @@ impl FullscreenState {
         match self.mode {
             FullscreenMode::Normal => self.on_normal_key(key),
             FullscreenMode::Transcript => self.on_transcript_key(key),
-            FullscreenMode::Search => self.on_search_key(key),
+            // Search mode is no longer reachable from transcript.
+            // If somehow active, Esc returns to Normal.
+            FullscreenMode::Search => {
+                self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
+                self.status_line = self.mode_help_text();
+                self.dirty = true;
+            }
         }
     }
 
@@ -310,26 +320,14 @@ impl FullscreenState {
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 self.collapse_focused_block();
             }
-            // Search is only available via explicit Ctrl+/ in transcript mode.
-            // Plain '/' switches back to Normal and inserts into the input
-            // (which opens the slash command menu).
-            (KeyCode::Char('/'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.mode = FullscreenMode::Search;
-                self.search.query.clear();
-                self.status_line = format!("search {}", self.search_prompt());
-                self.dirty = true;
-            }
+            // '/' returns to Normal mode and inserts into the input
+            // (which opens the slash command menu). Transcript search is
+            // not available here — use /tree for session navigation.
             (KeyCode::Char('/'), KeyModifiers::NONE) => {
                 self.mode = FullscreenMode::Normal;
                 self.viewport.auto_follow = true;
                 self.status_line = self.mode_help_text();
                 self.insert_char('/');
-            }
-            (KeyCode::Char('n'), KeyModifiers::NONE) => {
-                self.search_step(true);
-            }
-            (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
-                self.search_step(false);
             }
             _ => {}
         }
@@ -341,10 +339,7 @@ impl FullscreenState {
             FullscreenMode::Transcript | FullscreenMode::Search => FullscreenMode::Normal,
         };
 
-        if matches!(
-            self.mode,
-            FullscreenMode::Transcript | FullscreenMode::Search
-        ) && self.focused_block.is_none()
+        if matches!(self.mode, FullscreenMode::Transcript) && self.focused_block.is_none()
         {
             self.focused_block = if self.viewport.auto_follow {
                 self.last_focusable_block().or_else(|| self.default_focus_block())

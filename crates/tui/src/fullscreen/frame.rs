@@ -484,11 +484,9 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
             format!("{base} • {follow}")
         }
         FullscreenMode::Search => {
-            if state.search.query.is_empty() {
-                "search /".to_string()
-            } else {
-                format!("search /{}", state.search.query)
-            }
+            // Search mode is no longer reachable from transcript.
+            // Show generic status if somehow active.
+            state.status_line.clone()
         }
     };
     if text.trim().is_empty() {

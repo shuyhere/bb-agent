@@ -926,11 +926,7 @@ fn cursor_is_only_visible_in_normal_mode() {
     assert!(build_frame(&state).cursor.is_some());
 
     state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
-    assert!(build_frame(&state).cursor.is_none());
-
-    // Ctrl+/ enters search mode from transcript
-    state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::CONTROL));
-    assert_eq!(state.mode, FullscreenMode::Search);
+    assert_eq!(state.mode, FullscreenMode::Transcript);
     assert!(build_frame(&state).cursor.is_none());
 }
 

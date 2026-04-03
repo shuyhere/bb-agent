@@ -359,14 +359,12 @@ impl FullscreenState {
         match self.mode {
             FullscreenMode::Normal => String::new(),
             FullscreenMode::Transcript => {
-                "transcript mode • j/k navigate • Enter/Space toggle • o expand • c collapse • Ctrl+O tool output • Ctrl+/ search • Esc returns"
+                "transcript mode • j/k navigate • Enter/Space toggle • o expand • c collapse • Ctrl+O tool output • Esc returns"
                     .to_string()
             }
             FullscreenMode::Search => {
-                format!(
-                    "search mode • type to filter • Enter jumps • Esc returns • {}",
-                    self.search_prompt()
-                )
+                // Search mode is no longer reachable from transcript.
+                String::new()
             }
         }
     }
