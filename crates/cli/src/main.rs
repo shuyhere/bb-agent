@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 mod error;
 mod extensions;
 
-mod fullscreen_entry;
+mod fullscreen;
 #[path = "interactive.rs"]
 mod interactive;
 mod login;
@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
     if cli.print {
         run::run_print_mode(cli).await
     } else if use_fullscreen {
-        fullscreen_entry::run_fullscreen_entry(interactive::InteractiveEntryOptions::from(&cli))
+        fullscreen::run_fullscreen_entry(interactive::InteractiveEntryOptions::from(&cli))
             .await
     } else {
         interactive::run_interactive(interactive::InteractiveEntryOptions::from(&cli)).await
