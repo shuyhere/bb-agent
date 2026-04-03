@@ -6,7 +6,7 @@ use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_core::types::{AgentMessage, ContentBlock, EntryBase, EntryId, SessionEntry, UserMessage};
 use bb_session::store;
 use bb_tui::fullscreen::{
-    BlockKind, FullscreenAppConfig, FullscreenCommand, FullscreenNoteLevel, NewBlock, Transcript,
+    FullscreenAppConfig, FullscreenCommand, FullscreenNoteLevel, Transcript,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -48,32 +48,11 @@ pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> 
     Ok(())
 }
 
-fn build_fullscreen_config(entry: &InteractiveEntryOptions) -> FullscreenAppConfig {
-    let mut transcript = Transcript::new();
-    transcript.append_root_block(
-        NewBlock::new(BlockKind::SystemNote, "fullscreen runtime").with_content(
-            "Shared fullscreen transcript active. Submit a prompt below to run a real BB-Agent turn.",
-        ),
-    );
-
-    if !entry.messages.is_empty() {
-        transcript.append_root_block(
-            NewBlock::new(BlockKind::SystemNote, "startup messages").with_content(format!(
-                "Loaded {} startup prompt(s) into the shared fullscreen transcript shell.",
-                entry.messages.len()
-            )),
-        );
-
-        for message in &entry.messages {
-            transcript.append_root_block(
-                NewBlock::new(BlockKind::UserMessage, "startup prompt")
-                    .with_content(message.clone()),
-            );
-        }
-    }
+fn build_fullscreen_config(_entry: &InteractiveEntryOptions) -> FullscreenAppConfig {
+    let transcript = Transcript::new();
 
     FullscreenAppConfig {
-        title: "BB-Agent fullscreen transcript".to_string(),
+        title: format!("BB-Agent v{}", env!("CARGO_PKG_VERSION")),
         input_placeholder: "Type a prompt for BB-Agent…".to_string(),
         status_line:
             "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel/click transcript"

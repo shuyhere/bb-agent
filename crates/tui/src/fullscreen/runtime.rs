@@ -1405,6 +1405,25 @@ mod tests {
     }
 
     #[test]
+    fn frame_renders_header_title_when_space_allows() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig {
+                title: "BB-Agent v0.1.0".to_string(),
+                ..FullscreenAppConfig::default()
+            },
+            Size {
+                width: 80,
+                height: 12,
+            },
+        );
+        state.prepare_for_render();
+        let frame = build_frame(&state);
+
+        assert!(frame.lines[0].contains("BB-Agent v0.1.0"));
+        assert!(frame.lines[1].contains("Ctrl-C exit"));
+    }
+
+    #[test]
     fn ctrl_o_and_escape_switch_modes_before_quitting() {
         let (mut state, _, _, _) = sample_state();
 

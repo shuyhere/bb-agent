@@ -98,6 +98,15 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
 
     let mut lines = vec![blank_line(state.size.width as usize); state.size.height as usize];
 
+    render_header(state, layout.header.width as usize)
+        .into_iter()
+        .enumerate()
+        .for_each(|(offset, line)| {
+            if let Some(slot) = lines.get_mut(layout.header.y as usize + offset) {
+                *slot = line;
+            }
+        });
+
     render_transcript(
         state,
         &state.projection,
@@ -133,6 +142,21 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
         });
 
     FrameBuffer { lines, cursor }
+}
+
+fn render_header(state: &FullscreenState, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    if !state.title.is_empty() {
+        lines.push(format!("\x1b[1m\x1b[36m{}\x1b[0m", pad_to_width(&truncate_to_width(&state.title, width), width)));
+        let hints = "\x1b[90mCtrl-C exit . / commands . ! bash . F2 thinking . /help for more\x1b[0m";
+        lines.push(pad_to_width(&truncate_to_width(hints, width), width));
+        lines.push(blank_line(width));
+    }
+    lines
 }
 
 fn render_transcript(
