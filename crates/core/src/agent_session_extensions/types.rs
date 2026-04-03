@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub type ShutdownHandler = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -55,6 +55,57 @@ pub struct ResourcesDiscoverResult {
     pub theme_paths: Vec<DiscoveredResourcePath>,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceKind {
+    Skill,
+    Prompt,
+    Theme,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ResourceSourceKind {
+    Builtin,
+    Sdk,
+    Extension,
+    Package,
+    Settings,
+    #[default]
+    Unknown,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceLabel(String);
+
+#[allow(dead_code)]
+impl SourceLabel {
+    pub(crate) fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn kind(&self) -> ResourceSourceKind {
+        let (prefix, _) = split_source_label(&self.0);
+        match prefix {
+            "builtin" => ResourceSourceKind::Builtin,
+            "sdk" => ResourceSourceKind::Sdk,
+            "extension" => ResourceSourceKind::Extension,
+            "package" => ResourceSourceKind::Package,
+            "settings" => ResourceSourceKind::Settings,
+            _ => ResourceSourceKind::Unknown,
+        }
+    }
+
+    pub(crate) fn owner(&self) -> Option<&str> {
+        split_source_label(&self.0).1
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourcePathMetadata {
     pub source: String,
@@ -65,12 +116,16 @@ pub struct ResourcePathMetadata {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceScope {
+    User,
+    Project,
     Temporary,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceOrigin {
     TopLevel,
+    Package,
+    Settings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +139,33 @@ pub struct ResourceExtensionPaths {
     pub skill_paths: Vec<ResourcePathEntry>,
     pub prompt_paths: Vec<ResourcePathEntry>,
     pub theme_paths: Vec<ResourcePathEntry>,
+}
+
+impl ResourceExtensionPaths {
+    pub(crate) fn extend_owned(&mut self, other: Self) {
+        self.skill_paths.extend(other.skill_paths);
+        self.prompt_paths.extend(other.prompt_paths);
+        self.theme_paths.extend(other.theme_paths);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.skill_paths.is_empty() && self.prompt_paths.is_empty() && self.theme_paths.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.skill_paths.clear();
+        self.prompt_paths.clear();
+        self.theme_paths.clear();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn entries(&self, kind: ResourceKind) -> &[ResourcePathEntry] {
+        match kind {
+            ResourceKind::Skill => &self.skill_paths,
+            ResourceKind::Prompt => &self.prompt_paths,
+            ResourceKind::Theme => &self.theme_paths,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -114,6 +196,12 @@ pub struct PromptTemplateInfo {
     pub source_info: SourceInfo,
 }
 
+impl PromptTemplateInfo {
+    pub fn slash_command_name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SkillInfo {
     pub name: String,
@@ -124,6 +212,22 @@ pub struct SkillInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SkillCatalog {
     pub skills: Vec<SkillInfo>,
+}
+
+impl SkillInfo {
+    pub fn slash_command_name(&self) -> String {
+        format!("skill:{}", self.name)
+    }
+}
+
+impl SkillCatalog {
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.skills.len()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -220,4 +324,48 @@ pub struct ExtensionCoreBindings {
     pub all_tools: Vec<String>,
     pub model: Option<ModelDescriptor>,
     pub system_prompt: String,
+}
+
+#[allow(dead_code)]
+impl ResourcePathMetadata {
+    pub(crate) fn source_label(&self) -> SourceLabel {
+        SourceLabel::new(self.source.clone())
+    }
+
+    pub(crate) fn source_kind(&self) -> ResourceSourceKind {
+        self.source_label().kind()
+    }
+
+    pub(crate) fn to_source_info(&self, path: &Path) -> SourceInfo {
+        SourceInfo {
+            path: path.to_string_lossy().into_owned(),
+            source: self.source.clone(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl ResourcePathEntry {
+    pub(crate) fn source_info(&self) -> SourceInfo {
+        self.metadata.to_source_info(&self.path)
+    }
+}
+
+#[allow(dead_code)]
+impl SourceInfo {
+    pub(crate) fn source_label(&self) -> SourceLabel {
+        SourceLabel::new(self.source.clone())
+    }
+
+    pub(crate) fn source_kind(&self) -> ResourceSourceKind {
+        self.source_label().kind()
+    }
+}
+
+#[allow(dead_code)]
+fn split_source_label(source: &str) -> (&str, Option<&str>) {
+    match source.split_once(':') {
+        Some((prefix, owner)) if !prefix.is_empty() && !owner.is_empty() => (prefix, Some(owner)),
+        _ => (source, None),
+    }
 }

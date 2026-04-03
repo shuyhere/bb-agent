@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 // =============================================================================
@@ -30,13 +30,17 @@ fn default_retry_max_delay() -> u64 {
     60000
 }
 
+fn default_enable_skill_commands() -> bool {
+    true
+}
+
 // =============================================================================
 // Settings
 // =============================================================================
 
 /// Layered settings: global (`~/.bb-agent/settings.json`) merged with
 /// project (`.bb-agent/settings.json`).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub compaction: CompactionConfig,
@@ -50,6 +54,14 @@ pub struct Settings {
     pub default_thinking: Option<String>,
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub prompts: Vec<String>,
+    #[serde(default = "default_enable_skill_commands", alias = "enableSkillCommands")]
+    pub enable_skill_commands: bool,
     #[serde(default)]
     pub models: Option<Vec<ModelOverride>>,
     #[serde(default)]
@@ -130,6 +142,25 @@ pub struct ProviderOverride {
     pub headers: Option<HashMap<String, String>>,
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            compaction: CompactionConfig::default(),
+            retry: RetryConfig::default(),
+            default_provider: None,
+            default_model: None,
+            default_thinking: None,
+            tools: None,
+            extensions: Vec::new(),
+            skills: Vec::new(),
+            prompts: Vec::new(),
+            enable_skill_commands: default_enable_skill_commands(),
+            models: None,
+            providers: None,
+        }
+    }
+}
+
 impl Settings {
     /// Parse settings from a JSON string, returning defaults on invalid input.
     pub fn parse(content: &str) -> Self {
@@ -194,6 +225,14 @@ impl Settings {
                 .tools
                 .clone()
                 .or_else(|| global.tools.clone()),
+            extensions: merge_string_lists(&global.extensions, &project.extensions),
+            skills: merge_string_lists(&global.skills, &project.skills),
+            prompts: merge_string_lists(&global.prompts, &project.prompts),
+            enable_skill_commands: merge_bool_with_default(
+                global.enable_skill_commands,
+                project.enable_skill_commands,
+                default_enable_skill_commands(),
+            ),
             models: merge_optional_vec(&global.models, &project.models),
             providers: merge_optional_vec_providers(&global.providers, &project.providers),
         }
@@ -268,6 +307,31 @@ fn merge_retry(global: &RetryConfig, project: &RetryConfig) -> RetryConfig {
     }
 }
 
+fn merge_string_lists(global: &[String], project: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut merged = Vec::new();
+
+    for value in global.iter().chain(project.iter()) {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if seen.insert(normalized.to_owned()) {
+            merged.push(normalized.to_owned());
+        }
+    }
+
+    merged
+}
+
+fn merge_bool_with_default(global: bool, project: bool, default: bool) -> bool {
+    if project != default {
+        project
+    } else {
+        global
+    }
+}
+
 /// Merge model overrides: project models override global models with the
 /// same id, and any new project models are appended.
 fn merge_optional_vec(
@@ -331,6 +395,10 @@ mod tests {
         assert_eq!(s.compaction.keep_recent_tokens, 20000);
         assert!(s.default_provider.is_none());
         assert!(s.default_model.is_none());
+        assert!(s.extensions.is_empty());
+        assert!(s.skills.is_empty());
+        assert!(s.prompts.is_empty());
+        assert!(s.enable_skill_commands);
     }
 
     #[test]
@@ -342,6 +410,8 @@ mod tests {
                 "enabled": false,
                 "reserve_tokens": 8000
             },
+            "skills": ["./skills"],
+            "enableSkillCommands": false,
             "models": [
                 {
                     "id": "my-model",
@@ -355,6 +425,8 @@ mod tests {
         assert!(!s.compaction.enabled);
         assert_eq!(s.compaction.reserve_tokens, 8000);
         assert_eq!(s.compaction.keep_recent_tokens, 20000); // default
+        assert_eq!(s.skills, vec!["./skills"]);
+        assert!(!s.enable_skill_commands);
         assert_eq!(s.models.as_ref().unwrap().len(), 1);
         assert_eq!(s.models.as_ref().unwrap()[0].id, "my-model");
     }
@@ -369,6 +441,9 @@ mod tests {
                 reserve_tokens: 8192,
                 keep_recent_tokens: 20000,
             },
+            extensions: vec!["./global-extension.ts".into()],
+            skills: vec!["./global-skills".into()],
+            enable_skill_commands: true,
             models: Some(vec![ModelOverride {
                 id: "custom-1".into(),
                 name: Some("Custom 1".into()),
@@ -385,6 +460,9 @@ mod tests {
         let project = Settings {
             default_provider: Some("anthropic".into()),
             // default_model left as None — global should win
+            extensions: vec!["./project-extension.ts".into(), "./global-extension.ts".into()],
+            prompts: vec!["./project-prompts".into()],
+            enable_skill_commands: false,
             models: Some(vec![ModelOverride {
                 id: "custom-2".into(),
                 name: Some("Custom 2".into()),
@@ -406,6 +484,13 @@ mod tests {
         assert_eq!(merged.default_model.as_deref(), Some("gpt-4o"));
         // Global reserve_tokens preserved (project is default)
         assert_eq!(merged.compaction.reserve_tokens, 8192);
+        assert_eq!(
+            merged.extensions,
+            vec!["./global-extension.ts", "./project-extension.ts"]
+        );
+        assert_eq!(merged.skills, vec!["./global-skills"]);
+        assert_eq!(merged.prompts, vec!["./project-prompts"]);
+        assert!(!merged.enable_skill_commands);
         // Both models present
         let models = merged.models.unwrap();
         assert_eq!(models.len(), 2);
@@ -463,6 +548,7 @@ mod tests {
         let s = Settings::parse(json);
         assert_eq!(s.default_provider.as_deref(), Some("anthropic"));
         assert!(!s.compaction.enabled);
+        assert!(s.enable_skill_commands);
     }
 
     #[test]
