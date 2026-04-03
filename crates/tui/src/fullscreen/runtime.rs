@@ -3,12 +3,10 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use bb_core::types::ContentBlock;
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::select_list::{SelectAction, SelectItem, SelectList};
+use crate::select_list::{SelectItem, SelectList};
 use crate::slash_commands::{
     matches_shared_local_slash_submission, shared_slash_command_select_items,
 };
@@ -16,7 +14,7 @@ use crate::slash_commands::{
 use super::{
     frame::{build_frame, measure_input},
     layout::{FullscreenLayout, Size, compute_layout_with_footer},
-    projection::{ProjectedRowKind, TranscriptProjection, TranscriptProjector},
+    projection::{TranscriptProjection, TranscriptProjector},
     renderer::FullscreenRenderer,
     scheduler::{RenderIntent, RenderScheduler},
     terminal::{FullscreenEvent, FullscreenTerminal, spawn_event_reader},
@@ -167,16 +165,16 @@ struct ToolCallState {
 }
 
 #[derive(Clone, Debug)]
-struct FullscreenSlashMenuState {
+pub(super) struct FullscreenSlashMenuState {
     all_items: Vec<SelectItem>,
-    list: SelectList,
+    pub(super) list: SelectList,
 }
 
 #[derive(Clone, Debug)]
-struct FullscreenSelectMenuState {
-    menu_id: String,
+pub(super) struct FullscreenSelectMenuState {
+    pub(super) menu_id: String,
     title: String,
-    list: SelectList,
+    pub(super) list: SelectList,
 }
 
 fn colorize_tree_menu_label(label: &str) -> String {
@@ -202,10 +200,6 @@ impl FullscreenSelectMenuState {
         Self { menu_id, title, list }
     }
 
-    fn selected_value(&self) -> Option<String> {
-        self.list.selected_value()
-    }
-
     fn render(&self, width: usize) -> Vec<String> {
         let mut lines = vec![crate::utils::pad_to_width(
             &crate::utils::truncate_to_width(
@@ -229,7 +223,7 @@ impl FullscreenSelectMenuState {
 }
 
 impl FullscreenSlashMenuState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let all_items = shared_slash_command_select_items();
         let mut list = SelectList::new(all_items.clone(), 6);
         list.set_show_search(false);
@@ -263,7 +257,7 @@ impl FullscreenSlashMenuState {
         self.list = list;
     }
 
-    fn selected_value(&self) -> Option<String> {
+    pub(super) fn selected_value(&self) -> Option<String> {
         self.list.selected_value()
     }
 
@@ -305,10 +299,10 @@ pub struct FullscreenState {
     pub tick_count: u64,
     pub submitted_inputs: Vec<String>,
     projector: TranscriptProjector,
-    slash_menu: Option<FullscreenSlashMenuState>,
-    select_menu: Option<FullscreenSelectMenuState>,
-    projection_dirty: bool,
-    pending_submissions: VecDeque<FullscreenSubmission>,
+    pub(super) slash_menu: Option<FullscreenSlashMenuState>,
+    pub(super) select_menu: Option<FullscreenSelectMenuState>,
+    pub(super) projection_dirty: bool,
+    pub(super) pending_submissions: VecDeque<FullscreenSubmission>,
     active_turn: Option<ActiveTurnState>,
     tool_output_expanded: bool,
 }
@@ -353,116 +347,6 @@ impl FullscreenState {
 
     pub fn take_pending_submissions(&mut self) -> Vec<FullscreenSubmission> {
         self.pending_submissions.drain(..).collect()
-    }
-
-    pub fn on_tick(&mut self) {
-        self.tick_count = self.tick_count.wrapping_add(1);
-        if self.should_animate_status() {
-            self.dirty = true;
-        }
-    }
-
-    pub fn on_resize(&mut self, width: u16, height: u16) {
-        self.size = Size { width, height };
-        let help = self.mode_help_text();
-        self.status_line = if help.is_empty() {
-            format!("resized to {}x{}", width, height)
-        } else {
-            format!("resized to {}x{} • {}", width, height, help)
-        };
-        self.projection_dirty = true;
-        self.refresh_projection(true);
-        self.dirty = true;
-    }
-
-    pub fn on_paste(&mut self, text: &str) {
-        match self.mode {
-            FullscreenMode::Normal => {
-                self.insert_str(text);
-            }
-            FullscreenMode::Search => {
-                self.search.query.push_str(text);
-                self.status_line = format!("search {}", self.search_prompt());
-                self.dirty = true;
-            }
-            FullscreenMode::Transcript => {
-                self.status_line =
-                    "paste is ignored while transcript navigation is active".to_string();
-                self.dirty = true;
-            }
-        }
-    }
-
-    pub fn on_key(&mut self, key: KeyEvent) {
-        if matches!(key.kind, KeyEventKind::Release) {
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-                self.dirty = true;
-                return;
-            }
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-                self.dirty = true;
-                return;
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if matches!(self.mode, FullscreenMode::Transcript)
-                    && self
-                        .focused_block
-                        .and_then(|block_id| self.transcript.block(block_id))
-                        .is_some_and(|block| block.kind == BlockKind::ToolUse)
-                {
-                    self.toggle_tool_output_expansion();
-                } else {
-                    self.toggle_transcript_mode();
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        match self.mode {
-            FullscreenMode::Normal => self.on_normal_key(key),
-            FullscreenMode::Transcript => self.on_transcript_key(key),
-            FullscreenMode::Search => self.on_search_key(key),
-        }
-    }
-
-    pub fn on_mouse(&mut self, event: MouseEvent) {
-        let layout = self.current_layout();
-        let in_transcript = event.row >= layout.transcript.y
-            && event.row < layout.transcript.y.saturating_add(layout.transcript.height);
-
-        match event.kind {
-            MouseEventKind::ScrollUp if in_transcript => {
-                self.viewport.scroll_up(3);
-                self.mode = FullscreenMode::Transcript;
-                self.focus_first_visible_block();
-                self.status_line = self.transcript_scroll_status_line();
-                self.dirty = true;
-            }
-            MouseEventKind::ScrollDown if in_transcript => {
-                self.viewport.scroll_down(3);
-                self.mode = FullscreenMode::Transcript;
-                self.focus_last_visible_block();
-                self.status_line = self.transcript_scroll_status_line();
-                self.dirty = true;
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(block_id) = self.header_block_at_screen_row(event.row) {
-                    self.mode = FullscreenMode::Transcript;
-                    self.viewport.auto_follow = false;
-                    self.set_focused_block(Some(block_id));
-                    self.toggle_block(block_id);
-                }
-            }
-            MouseEventKind::Drag(MouseButton::Left) => {}
-            _ => {}
-        }
     }
 
     pub fn outcome(&self) -> FullscreenOutcome {
@@ -717,205 +601,9 @@ impl FullscreenState {
         }
     }
 
-    fn on_normal_key(&mut self, key: KeyEvent) {
-        if let Some(menu) = self.select_menu.as_mut() {
-            let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
-                && key.modifiers.contains(KeyModifiers::CONTROL);
-            let action = if ctrl_submit {
-                menu.list
-                    .selected_value()
-                    .map(SelectAction::Selected)
-                    .unwrap_or(SelectAction::Cancelled)
-            } else {
-                menu.list.handle_key(key)
-            };
-            match action {
-                SelectAction::None => {
-                    self.dirty = true;
-                }
-                SelectAction::Cancelled => {
-                    self.select_menu = None;
-                    self.dirty = true;
-                }
-                SelectAction::Selected(value) => {
-                    let menu_id = menu.menu_id.clone();
-                    self.select_menu = None;
-                    self.pending_submissions.push_back(FullscreenSubmission::MenuSelection {
-                        menu_id,
-                        value,
-                    });
-                    self.dirty = true;
-                }
-            }
-            return;
-        }
 
-        if let Some(menu) = self.slash_menu.as_mut() {
-            let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
-                && key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Tab => {
-                    if let Some(value) = menu.selected_value() {
-                        self.accept_slash_selection(value);
-                    }
-                    return;
-                }
-                KeyCode::Char(' ') if key.modifiers == KeyModifiers::NONE => {
-                    if let Some(value) = menu.selected_value() {
-                        self.accept_slash_selection(value);
-                        self.insert_char(' ');
-                    }
-                    return;
-                }
-                _ => {}
-            }
-            let action = if ctrl_submit {
-                menu.list
-                    .selected_value()
-                    .map(SelectAction::Selected)
-                    .unwrap_or(SelectAction::Cancelled)
-            } else {
-                match key.code {
-                    KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Home
-                    | KeyCode::End
-                    | KeyCode::Enter
-                    | KeyCode::Esc => menu.list.handle_key(key),
-                    _ => SelectAction::None,
-                }
-            };
-            match action {
-                SelectAction::None => {}
-                SelectAction::Cancelled => {
-                    self.slash_menu = None;
-                    self.dirty = true;
-                    return;
-                }
-                SelectAction::Selected(value) => {
-                    let exact_match = self.slash_query().as_deref() == Some(value.as_str());
-                    if matches!(key.code, KeyCode::Enter) || ctrl_submit {
-                        if exact_match {
-                            self.submit_local_command(value);
-                        } else {
-                            self.accept_slash_selection(value);
-                        }
-                    }
-                    return;
-                }
-            }
-            self.dirty = true;
-        }
 
-        match key.code {
-            KeyCode::Esc => {
-                self.should_quit = true;
-                self.dirty = true;
-            }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.insert_char('\n');
-            }
-            KeyCode::Enter => {
-                self.submit_input();
-            }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.submit_input();
-            }
-            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.submit_input();
-            }
-            KeyCode::Backspace => {
-                self.backspace();
-            }
-            KeyCode::Left => {
-                self.move_left();
-            }
-            KeyCode::Right => {
-                self.move_right();
-            }
-            KeyCode::Home => {
-                self.cursor = 0;
-                self.update_slash_menu();
-                self.dirty = true;
-            }
-            KeyCode::End => {
-                self.cursor = self.input.len();
-                self.update_slash_menu();
-                self.dirty = true;
-            }
-            KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.status_line = format!("ignored Ctrl+{ch}");
-                self.dirty = true;
-            }
-            KeyCode::Tab => {}
-            KeyCode::Char(ch) => {
-                self.insert_char(ch);
-            }
-            _ => {}
-        }
-    }
-
-    fn on_transcript_key(&mut self, key: KeyEvent) {
-        match (key.code, key.modifiers) {
-            (KeyCode::Esc, KeyModifiers::NONE) => {
-                self.mode = FullscreenMode::Normal;
-                self.status_line = self.mode_help_text();
-                self.dirty = true;
-            }
-            (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                self.move_focus(1);
-            }
-            (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                self.move_focus(-1);
-            }
-            (KeyCode::PageDown, KeyModifiers::NONE) => {
-                self.page_move(1);
-            }
-            (KeyCode::PageUp, KeyModifiers::NONE) => {
-                self.page_move(-1);
-            }
-            (KeyCode::Home, KeyModifiers::NONE) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                self.focus_first();
-            }
-            (KeyCode::End, KeyModifiers::NONE) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => {
-                self.focus_last();
-            }
-            (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                self.toggle_focused_block();
-            }
-            (KeyCode::Char('o'), KeyModifiers::NONE) => {
-                self.expand_focused_block();
-            }
-            (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                self.collapse_focused_block();
-            }
-            (KeyCode::Char('/'), KeyModifiers::NONE) => {
-                self.mode = FullscreenMode::Search;
-                self.search.query.clear();
-                self.status_line = format!("search {}", self.search_prompt());
-                self.dirty = true;
-            }
-            (KeyCode::Char('n'), KeyModifiers::NONE) => {
-                self.search_step(true);
-            }
-            (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
-                self.search_step(false);
-            }
-            // Any other printable character: switch to Normal mode and
-            // insert into the input area so the user can just start typing.
-            (KeyCode::Char(ch), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) => {
-                self.mode = FullscreenMode::Normal;
-                self.viewport.auto_follow = true;
-                self.status_line = self.mode_help_text();
-                self.insert_char(ch);
-            }
-            _ => {}
-        }
-    }
-
-    fn on_search_key(&mut self, key: KeyEvent) {
+    pub(super) fn on_search_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc if key.modifiers == KeyModifiers::NONE => {
                 self.mode = FullscreenMode::Transcript;
@@ -946,38 +634,7 @@ impl FullscreenState {
         }
     }
 
-    fn toggle_transcript_mode(&mut self) {
-        self.mode = match self.mode {
-            FullscreenMode::Normal => FullscreenMode::Transcript,
-            FullscreenMode::Transcript | FullscreenMode::Search => FullscreenMode::Normal,
-        };
-
-        if matches!(
-            self.mode,
-            FullscreenMode::Transcript | FullscreenMode::Search
-        ) && self.focused_block.is_none()
-        {
-            self.focused_block = if self.viewport.auto_follow {
-                self.last_focusable_block().or_else(|| self.default_focus_block())
-            } else {
-                self.default_focus_block()
-            };
-            self.sync_focus_tracking();
-            if !self.viewport.auto_follow {
-                self.ensure_focus_visible();
-            }
-        }
-
-        self.status_line = self.mode_help_text();
-        self.dirty = true;
-    }
-
-    fn should_animate_status(&self) -> bool {
-        matches!(self.mode, FullscreenMode::Normal)
-            && (self.has_active_turn() || !self.pending_submissions.is_empty())
-    }
-
-    fn mode_help_text(&self) -> String {
+    pub(super) fn mode_help_text(&self) -> String {
         match self.mode {
             FullscreenMode::Normal => String::new(),
             FullscreenMode::Transcript => {
@@ -993,7 +650,7 @@ impl FullscreenState {
         }
     }
 
-    fn search_prompt(&self) -> String {
+    pub(super) fn search_prompt(&self) -> String {
         if self.search.query.is_empty() {
             "/".to_string()
         } else {
@@ -1027,7 +684,7 @@ impl FullscreenState {
         self.slash_menu.as_ref().map(|menu| menu.render(width))
     }
 
-    fn slash_query(&self) -> Option<String> {
+    pub(super) fn slash_query(&self) -> Option<String> {
         let before = self.input.get(..self.cursor)?;
         if before.contains('\n') {
             return None;
@@ -1041,7 +698,7 @@ impl FullscreenState {
         Some(before.to_string())
     }
 
-    fn update_slash_menu(&mut self) {
+    pub(super) fn update_slash_menu(&mut self) {
         let Some(query) = self.slash_query() else {
             self.slash_menu = None;
             return;
@@ -1051,47 +708,35 @@ impl FullscreenState {
         self.slash_menu = Some(menu);
     }
 
-    fn accept_slash_selection(&mut self, value: String) {
+    pub(super) fn accept_slash_selection(&mut self, value: String) {
         self.input = value;
         self.cursor = self.input.len();
         self.slash_menu = None;
         self.dirty = true;
     }
 
-    fn sync_focus_tracking(&mut self) {
+    pub(super) fn sync_focus_tracking(&mut self) {
         self.viewport.selected_block = self.focused_block;
         self.viewport.focused_row = self
             .focused_block
             .and_then(|block_id| self.focus_row_for_block(block_id));
     }
 
-    fn focus_first_visible_block(&mut self) {
+    pub(super) fn focus_first_visible_block(&mut self) {
         let visible = self.visible_header_blocks();
         if let Some(block_id) = visible.first().copied() {
             self.set_focused_block(Some(block_id));
         }
     }
 
-    fn focus_last_visible_block(&mut self) {
+    pub(super) fn focus_last_visible_block(&mut self) {
         let visible = self.visible_header_blocks();
         if let Some(block_id) = visible.last().copied() {
             self.set_focused_block(Some(block_id));
         }
     }
 
-    fn transcript_scroll_status_line(&self) -> String {
-        let follow = if self.viewport.auto_follow {
-            "follow on"
-        } else {
-            "follow off"
-        };
-        format!(
-            "transcript row {} • {follow} • j/k navigate • Enter toggles",
-            self.viewport.viewport_top
-        )
-    }
-
-    fn default_focus_block(&self) -> Option<BlockId> {
+    pub(super) fn default_focus_block(&self) -> Option<BlockId> {
         self.visible_header_blocks()
             .last()
             .copied()
@@ -1128,17 +773,17 @@ impl FullscreenState {
         self.focusable_blocks().into_iter().next()
     }
 
-    fn last_focusable_block(&self) -> Option<BlockId> {
+    pub(super) fn last_focusable_block(&self) -> Option<BlockId> {
         self.focusable_blocks().into_iter().last()
     }
 
-    fn set_focused_block(&mut self, block_id: Option<BlockId>) {
+    pub(super) fn set_focused_block(&mut self, block_id: Option<BlockId>) {
         self.focused_block = block_id;
         self.sync_focus_tracking();
         self.dirty = true;
     }
 
-    fn focus_block(&mut self, block_id: BlockId) {
+    pub(super) fn focus_block(&mut self, block_id: BlockId) {
         self.focused_block = Some(block_id);
         self.viewport.auto_follow = false;
         self.sync_focus_tracking();
@@ -1146,19 +791,19 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn focus_first(&mut self) {
+    pub(super) fn focus_first(&mut self) {
         if let Some(block_id) = self.first_focusable_block() {
             self.focus_block(block_id);
         }
     }
 
-    fn focus_last(&mut self) {
+    pub(super) fn focus_last(&mut self) {
         if let Some(block_id) = self.last_focusable_block() {
             self.focus_block(block_id);
         }
     }
 
-    fn move_focus(&mut self, step: isize) {
+    pub(super) fn move_focus(&mut self, step: isize) {
         let blocks = self.focusable_blocks();
         if blocks.is_empty() {
             return;
@@ -1184,14 +829,14 @@ impl FullscreenState {
         self.focus_block(blocks[next_index]);
     }
 
-    fn page_move(&mut self, direction: isize) {
+    pub(super) fn page_move(&mut self, direction: isize) {
         let step = self.visible_header_blocks().len().max(1);
         for _ in 0..step {
             self.move_focus(direction.signum());
         }
     }
 
-    fn ensure_focus_visible(&mut self) {
+    pub(super) fn ensure_focus_visible(&mut self) {
         let Some(block_id) = self.focused_block else {
             self.sync_focus_tracking();
             return;
@@ -1224,7 +869,7 @@ impl FullscreenState {
             .or_else(|| self.projection.rows_for_block(block_id).map(|span| span.all_rows.start))
     }
 
-    fn search_step(&mut self, forward: bool) {
+    pub(super) fn search_step(&mut self, forward: bool) {
         let query = self.search.query.trim().to_ascii_lowercase();
         if query.is_empty() {
             self.status_line =
@@ -1271,105 +916,6 @@ impl FullscreenState {
             .contains(query)
     }
 
-    fn toggle_focused_block(&mut self) {
-        let Some(block_id) = self.focused_block else {
-            return;
-        };
-        self.toggle_block(block_id);
-    }
-
-    fn expand_focused_block(&mut self) {
-        let Some(block_id) = self.focused_block else {
-            return;
-        };
-        self.set_block_collapsed(block_id, false, "expanded");
-    }
-
-    fn collapse_focused_block(&mut self) {
-        let Some(block_id) = self.focused_block else {
-            return;
-        };
-        self.set_block_collapsed(block_id, true, "collapsed");
-    }
-
-    fn toggle_block(&mut self, block_id: BlockId) {
-        let Some(block) = self.transcript.block(block_id).cloned() else {
-            return;
-        };
-        if !(block.expandable || !block.children.is_empty()) {
-            self.status_line = format!(
-                "focused {} block is not expandable",
-                self.block_label(block_id)
-            );
-            self.dirty = true;
-            return;
-        }
-
-        let next_collapsed = !block.collapsed;
-        let action = if next_collapsed {
-            "collapsed"
-        } else {
-            "expanded"
-        };
-        self.set_block_collapsed(block_id, next_collapsed, action);
-    }
-
-    fn set_block_collapsed(&mut self, block_id: BlockId, collapsed: bool, action: &str) {
-        let Some(block) = self.transcript.block(block_id).cloned() else {
-            return;
-        };
-        if !(block.expandable || !block.children.is_empty()) {
-            self.status_line = format!(
-                "focused {} block is not expandable",
-                self.block_label(block_id)
-            );
-            self.dirty = true;
-            return;
-        }
-        if block.collapsed == collapsed {
-            self.status_line = format!("{} already {}", self.block_label(block_id), action);
-            self.dirty = true;
-            return;
-        }
-
-        if self.transcript.set_collapsed(block_id, collapsed).is_err() {
-            return;
-        }
-
-        self.projection_dirty = true;
-        self.refresh_projection(true);
-        self.focus_block(block_id);
-        self.status_line = format!("{} {}", action, self.block_label(block_id));
-    }
-
-    fn block_label(&self, block_id: BlockId) -> String {
-        self.transcript
-            .block(block_id)
-            .map(|block| {
-                if block.title.trim().is_empty() {
-                    format!("block {}", block_id.get())
-                } else {
-                    format!("“{}”", block.title)
-                }
-            })
-            .unwrap_or_else(|| format!("block {}", block_id.get()))
-    }
-
-    fn header_block_at_screen_row(&self, row: u16) -> Option<BlockId> {
-        let layout = self.current_layout();
-        if row < layout.transcript.y || row >= layout.transcript.y + layout.transcript.height {
-            return None;
-        }
-
-        let visible = self.viewport.visible_row_range();
-        let local_row = row.saturating_sub(layout.transcript.y) as usize;
-        let projected_row = visible.start + local_row;
-        let row = self.projection.row(projected_row)?;
-        if row.kind != ProjectedRowKind::Header {
-            return None;
-        }
-        Some(row.block_id)
-    }
 
     fn finish_active_turn(&mut self, status: &str) {
         if let Some(active_turn) = self.active_turn.take() {
@@ -1511,7 +1057,7 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn toggle_tool_output_expansion(&mut self) {
+    pub(super) fn toggle_tool_output_expansion(&mut self) {
         self.tool_output_expanded = !self.tool_output_expanded;
         if let Some(active_turn) = self.active_turn.as_ref() {
             let ids = active_turn.tools.keys().cloned().collect::<Vec<_>>();
@@ -1527,7 +1073,7 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn submit_input(&mut self) {
+    pub(super) fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
         if submitted.trim().is_empty() {
             self.status_line = "empty input ignored".to_string();
@@ -1555,7 +1101,7 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn submit_local_command(&mut self, submitted: String) {
+    pub(super) fn submit_local_command(&mut self, submitted: String) {
         self.pending_submissions
             .push_back(FullscreenSubmission::Input(submitted));
         self.input.clear();
@@ -1566,21 +1112,21 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn insert_char(&mut self, ch: char) {
+    pub(super) fn insert_char(&mut self, ch: char) {
         self.input.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.update_slash_menu();
         self.dirty = true;
     }
 
-    fn insert_str(&mut self, text: &str) {
+    pub(super) fn insert_str(&mut self, text: &str) {
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.update_slash_menu();
         self.dirty = true;
     }
 
-    fn backspace(&mut self) {
+    pub(super) fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
         }
@@ -1591,7 +1137,7 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn move_left(&mut self) {
+    pub(super) fn move_left(&mut self) {
         if self.cursor == 0 {
             return;
         }
@@ -1600,7 +1146,7 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    fn move_right(&mut self) {
+    pub(super) fn move_right(&mut self) {
         if self.cursor >= self.input.len() {
             return;
         }
@@ -1896,6 +1442,7 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
 mod tests {
     use super::*;
     use crate::fullscreen::frame::build_frame;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
     fn sample_state() -> (FullscreenState, BlockId, BlockId, BlockId) {
         let mut transcript = Transcript::new();
