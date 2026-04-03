@@ -18,6 +18,7 @@ pub enum SelectAction {
 }
 
 /// A filterable, scrollable select list with keyboard navigation.
+#[derive(Clone, Debug)]
 pub struct SelectList {
     items: Vec<SelectItem>,
     filtered: Vec<usize>,
@@ -50,6 +51,13 @@ impl SelectList {
     pub fn set_search(&mut self, query: &str) {
         self.search = query.to_string();
         self.refilter();
+    }
+
+    pub fn selected_value(&self) -> Option<String> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|idx| self.items.get(*idx))
+            .map(|item| item.value.clone())
     }
 
     /// Render the select list into styled lines.

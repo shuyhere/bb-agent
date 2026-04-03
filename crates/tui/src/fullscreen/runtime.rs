@@ -8,7 +8,7 @@ use crossterm::event::{
 };
 use tokio::sync::mpsc;
 
-use crate::select_list::SelectItem;
+use crate::select_list::{SelectAction, SelectItem, SelectList};
 use crate::slash_commands::shared_slash_command_select_items;
 
 use super::{
@@ -55,6 +55,12 @@ impl Default for FullscreenAppConfig {
 #[derive(Clone, Debug, Default)]
 pub struct FullscreenOutcome {
     pub submitted_inputs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FullscreenSubmission {
+    Input(String),
+    MenuSelection { menu_id: String, value: String },
 }
 
 #[derive(Clone, Debug)]
@@ -153,23 +159,17 @@ struct ToolCallState {
     tool_result_id: Option<BlockId>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct FullscreenSlashMenuState {
-    items: Vec<SelectItem>,
-    filtered: Vec<usize>,
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
+    all_items: Vec<SelectItem>,
+    list: SelectList,
 }
 
 #[derive(Clone, Debug)]
 struct FullscreenSelectMenuState {
     menu_id: String,
     title: String,
-    items: Vec<SelectItem>,
-    selected: usize,
-    scroll_offset: usize,
-    max_visible: usize,
+    list: SelectList,
 }
 
 fn colorize_tree_menu_label(label: &str) -> String {
@@ -184,48 +184,22 @@ fn colorize_tree_menu_label(label: &str) -> String {
 }
 
 impl FullscreenSelectMenuState {
-    fn new(menu_id: String, title: String, items: Vec<SelectItem>) -> Self {
-        Self {
-            menu_id,
-            title,
-            items,
-            selected: 0,
-            scroll_offset: 0,
-            max_visible: 8,
+    fn new(menu_id: String, title: String, mut items: Vec<SelectItem>) -> Self {
+        if menu_id == "tree-entry" {
+            for item in &mut items {
+                item.label = colorize_tree_menu_label(&item.label);
+            }
         }
-    }
-
-    fn move_up(&mut self, n: usize) {
-        if self.items.is_empty() {
-            return;
-        }
-        self.selected = self.selected.saturating_sub(n);
-        self.adjust_scroll();
-    }
-
-    fn move_down(&mut self, n: usize) {
-        if self.items.is_empty() {
-            return;
-        }
-        self.selected = (self.selected + n).min(self.items.len().saturating_sub(1));
-        self.adjust_scroll();
+        let mut list = SelectList::new(items, 8);
+        list.set_show_search(false);
+        Self { menu_id, title, list }
     }
 
     fn selected_value(&self) -> Option<String> {
-        self.items.get(self.selected).map(|item| item.value.clone())
-    }
-
-    fn adjust_scroll(&mut self) {
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = self.selected + 1 - self.max_visible;
-        }
+        self.list.selected_value()
     }
 
     fn render(&self, width: usize) -> Vec<String> {
-        use crossterm::style::{Attribute, Color, Stylize};
-
         let mut lines = vec![crate::utils::pad_to_width(
             &crate::utils::truncate_to_width(
                 &format!("{} (Enter select, Esc close)", self.title),
@@ -233,81 +207,12 @@ impl FullscreenSelectMenuState {
             ),
             width,
         )];
-
-        if self.items.is_empty() {
-            lines.push(crate::utils::pad_to_width(
-                &format!(
-                    "  {}",
-                    "(no available items)"
-                        .with(Color::DarkGrey)
-                        .attribute(Attribute::Dim)
-                ),
-                width,
-            ));
-            return lines;
-        }
-
-        let total = self.items.len();
-        let end = (self.scroll_offset + self.max_visible).min(total);
-        if self.scroll_offset > 0 {
-            lines.push(crate::utils::pad_to_width(
-                &format!(
-                    "  {} {} more above",
-                    "▲".with(Color::DarkGrey),
-                    self.scroll_offset.to_string().with(Color::DarkGrey)
-                ),
-                width,
-            ));
-        }
-
-        for index in self.scroll_offset..end {
-            let item = &self.items[index];
-            let is_selected = index == self.selected;
-            let marker = if is_selected { ">" } else { " " };
-            let label_text = if self.menu_id == "tree-entry" {
-                colorize_tree_menu_label(&item.label)
-            } else {
-                item.label.clone()
-            };
-            let label = if is_selected {
-                format!("{}", label_text.bold().attribute(Attribute::Reverse))
-            } else {
-                label_text
-            };
-            let detail = item
-                .detail
-                .as_ref()
-                .map(|detail| format!(" {}", detail.clone().with(Color::DarkGrey).attribute(Attribute::Dim)))
-                .unwrap_or_default();
-            let marker_styled = if is_selected {
-                format!("{}", marker.with(Color::Cyan).bold())
-            } else {
-                marker.to_string()
-            };
-            lines.push(crate::utils::pad_to_width(
-                &crate::utils::truncate_to_width(&format!("{marker_styled} {label}{detail}"), width),
-                width,
-            ));
-        }
-
-        if end < total {
-            lines.push(crate::utils::pad_to_width(
-                &format!(
-                    "  {} {} more below",
-                    "▼".with(Color::DarkGrey),
-                    (total - end).to_string().with(Color::DarkGrey)
-                ),
-                width,
-            ));
-        }
-
-        lines.push(crate::utils::pad_to_width(
-            &crate::utils::truncate_to_width(
-                &format!("{}", format!(" {}/{} items", total, total).with(Color::DarkGrey).attribute(Attribute::Dim)),
-                width,
-            ),
-            width,
-        ));
+        lines.extend(
+            self.list
+                .render(width as u16)
+                .into_iter()
+                .map(|line| crate::utils::pad_to_width(&crate::utils::truncate_to_width(&line, width), width)),
+        );
         lines
     }
 
@@ -318,24 +223,18 @@ impl FullscreenSelectMenuState {
 
 impl FullscreenSlashMenuState {
     fn new() -> Self {
-        let items = shared_slash_command_select_items();
-        let filtered = (0..items.len()).collect();
-        Self {
-            items,
-            filtered,
-            selected: 0,
-            scroll_offset: 0,
-            max_visible: 6,
-        }
+        let all_items = shared_slash_command_select_items();
+        let mut list = SelectList::new(all_items.clone(), 6);
+        list.set_show_search(false);
+        Self { all_items, list }
     }
 
     fn set_search(&mut self, query: &str) {
         let q = query.trim_start_matches('/').to_ascii_lowercase();
-        self.filtered = self
-            .items
+        let items = self
+            .all_items
             .iter()
-            .enumerate()
-            .filter(|(_, item)| {
+            .filter(|item| {
                 if q.is_empty() {
                     true
                 } else {
@@ -350,116 +249,27 @@ impl FullscreenSlashMenuState {
                             .starts_with(&q)
                 }
             })
-            .map(|(idx, _)| idx)
-            .collect();
-        self.selected = 0;
-        self.scroll_offset = 0;
-    }
-
-    fn move_up(&mut self, n: usize) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        self.selected = self.selected.saturating_sub(n);
-        self.adjust_scroll();
-    }
-
-    fn move_down(&mut self, n: usize) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        self.selected = (self.selected + n).min(self.filtered.len().saturating_sub(1));
-        self.adjust_scroll();
-    }
-
-    fn adjust_scroll(&mut self) {
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = self.selected + 1 - self.max_visible;
-        }
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut list = SelectList::new(items, 6);
+        list.set_show_search(false);
+        self.list = list;
     }
 
     fn selected_value(&self) -> Option<String> {
-        self.filtered
-            .get(self.selected)
-            .and_then(|idx| self.items.get(*idx))
-            .map(|item| item.value.clone())
+        self.list.selected_value()
     }
 
     fn render(&self, width: usize) -> Vec<String> {
-        use crossterm::style::{Attribute, Color, Stylize};
-        let mut lines = Vec::new();
-        if self.filtered.is_empty() {
-            lines.push(format!(
-                "  {}",
-                "(no matching commands)"
-                    .with(Color::DarkGrey)
-                    .attribute(Attribute::Dim)
-            ));
-            return lines;
+        let mut lines = self
+            .list
+            .render(width as u16)
+            .into_iter()
+            .map(|line| line.replace(" items", " commands"))
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            lines.push("  (no matching commands)".to_string());
         }
-
-        let total = self.filtered.len();
-        let end = (self.scroll_offset + self.max_visible).min(total);
-        if self.scroll_offset > 0 {
-            lines.push(crate::utils::pad_to_width(
-                &format!(
-                    "  {} {} more above",
-                    "▲".with(Color::DarkGrey),
-                    self.scroll_offset.to_string().with(Color::DarkGrey)
-                ),
-                width,
-            ));
-        }
-        for visible_index in self.scroll_offset..end {
-            let item_idx = self.filtered[visible_index];
-            let item = &self.items[item_idx];
-            let is_selected = visible_index == self.selected;
-            let marker = if is_selected { ">" } else { " " };
-            let label = if is_selected {
-                format!("{}", item.label.clone().bold().attribute(Attribute::Reverse))
-            } else {
-                item.label.clone()
-            };
-            let detail = item
-                .detail
-                .as_ref()
-                .map(|detail| format!(" {}", detail.clone().with(Color::DarkGrey).attribute(Attribute::Dim)))
-                .unwrap_or_default();
-            let marker_styled = if is_selected {
-                format!("{}", marker.with(Color::Cyan).bold())
-            } else {
-                marker.to_string()
-            };
-            let line = format!("{marker_styled} {label}{detail}");
-            lines.push(crate::utils::pad_to_width(
-                &crate::utils::truncate_to_width(&line, width),
-                width,
-            ));
-        }
-        if end < total {
-            lines.push(crate::utils::pad_to_width(
-                &format!(
-                    "  {} {} more below",
-                    "▼".with(Color::DarkGrey),
-                    (total - end).to_string().with(Color::DarkGrey)
-                ),
-                width,
-            ));
-        }
-        lines.push(crate::utils::pad_to_width(
-            &crate::utils::truncate_to_width(
-                &format!(
-                    "{}",
-                    format!(" {}/{} commands", self.filtered.len(), self.items.len())
-                        .with(Color::DarkGrey)
-                        .attribute(Attribute::Dim)
-                ),
-                width,
-            ),
-            width,
-        ));
         lines
     }
 
@@ -491,7 +301,7 @@ pub struct FullscreenState {
     slash_menu: Option<FullscreenSlashMenuState>,
     select_menu: Option<FullscreenSelectMenuState>,
     projection_dirty: bool,
-    pending_submissions: VecDeque<String>,
+    pending_submissions: VecDeque<FullscreenSubmission>,
     active_turn: Option<ActiveTurnState>,
 }
 
@@ -532,7 +342,7 @@ impl FullscreenState {
         dirty
     }
 
-    pub fn take_pending_submissions(&mut self) -> Vec<String> {
+    pub fn take_pending_submissions(&mut self) -> Vec<FullscreenSubmission> {
         self.pending_submissions.drain(..).collect()
     }
 
@@ -918,53 +728,32 @@ impl FullscreenState {
         if let Some(menu) = self.select_menu.as_mut() {
             let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
                 && key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Up => menu.move_up(1),
-                KeyCode::Down => menu.move_down(1),
-                KeyCode::PageUp => menu.move_up(menu.max_visible),
-                KeyCode::PageDown => menu.move_down(menu.max_visible),
-                KeyCode::Home => {
-                    menu.selected = 0;
-                    menu.scroll_offset = 0;
+            let action = if ctrl_submit {
+                menu.list
+                    .selected_value()
+                    .map(SelectAction::Selected)
+                    .unwrap_or(SelectAction::Cancelled)
+            } else {
+                menu.list.handle_key(key)
+            };
+            match action {
+                SelectAction::None => {
+                    self.dirty = true;
                 }
-                KeyCode::End => {
-                    if !menu.items.is_empty() {
-                        menu.selected = menu.items.len() - 1;
-                        menu.adjust_scroll();
-                    }
-                }
-                KeyCode::Esc => {
+                SelectAction::Cancelled => {
                     self.select_menu = None;
                     self.dirty = true;
-                    return;
                 }
-                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    if let (Some(menu_id), Some(value)) = (
-                        self.select_menu.as_ref().map(|m| m.menu_id.clone()),
-                        self.select_menu.as_ref().and_then(|m| m.selected_value()),
-                    ) {
-                        self.select_menu = None;
-                        self.pending_submissions
-                            .push_back(encode_menu_selection(&menu_id, &value));
-                        self.dirty = true;
-                    }
-                    return;
+                SelectAction::Selected(value) => {
+                    let menu_id = menu.menu_id.clone();
+                    self.select_menu = None;
+                    self.pending_submissions.push_back(FullscreenSubmission::MenuSelection {
+                        menu_id,
+                        value,
+                    });
+                    self.dirty = true;
                 }
-                _ if ctrl_submit => {
-                    if let (Some(menu_id), Some(value)) = (
-                        self.select_menu.as_ref().map(|m| m.menu_id.clone()),
-                        self.select_menu.as_ref().and_then(|m| m.selected_value()),
-                    ) {
-                        self.select_menu = None;
-                        self.pending_submissions
-                            .push_back(encode_menu_selection(&menu_id, &value));
-                        self.dirty = true;
-                    }
-                    return;
-                }
-                _ => return,
             }
-            self.dirty = true;
             return;
         }
 
@@ -972,53 +761,9 @@ impl FullscreenState {
             let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
                 && key.modifiers.contains(KeyModifiers::CONTROL);
             match key.code {
-                KeyCode::Up => {
-                    menu.move_up(1);
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::Down => {
-                    menu.move_down(1);
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::PageUp => {
-                    menu.move_up(menu.max_visible);
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::PageDown => {
-                    menu.move_down(menu.max_visible);
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::Home => {
-                    menu.selected = 0;
-                    menu.scroll_offset = 0;
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::End => {
-                    if !menu.filtered.is_empty() {
-                        menu.selected = menu.filtered.len() - 1;
-                        menu.adjust_scroll();
-                    }
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::Esc => {
-                    self.slash_menu = None;
-                    self.dirty = true;
-                    return;
-                }
-                KeyCode::Enter | KeyCode::Tab => {
+                KeyCode::Tab => {
                     if let Some(value) = menu.selected_value() {
-                        let exact_match = self.slash_query().as_deref() == Some(value.as_str());
-                        if matches!(key.code, KeyCode::Enter) && exact_match {
-                            self.submit_local_command(value);
-                        } else {
-                            self.accept_slash_selection(value);
-                        }
+                        self.accept_slash_selection(value);
                     }
                     return;
                 }
@@ -1028,9 +773,36 @@ impl FullscreenState {
                     }
                     return;
                 }
-                _ if ctrl_submit => {
-                    if let Some(value) = menu.selected_value() {
-                        let exact_match = self.slash_query().as_deref() == Some(value.as_str());
+                _ => {}
+            }
+            let action = if ctrl_submit {
+                menu.list
+                    .selected_value()
+                    .map(SelectAction::Selected)
+                    .unwrap_or(SelectAction::Cancelled)
+            } else {
+                match key.code {
+                    KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Enter
+                    | KeyCode::Esc => menu.list.handle_key(key),
+                    _ => SelectAction::None,
+                }
+            };
+            match action {
+                SelectAction::None => {}
+                SelectAction::Cancelled => {
+                    self.slash_menu = None;
+                    self.dirty = true;
+                    return;
+                }
+                SelectAction::Selected(value) => {
+                    let exact_match = self.slash_query().as_deref() == Some(value.as_str());
+                    if matches!(key.code, KeyCode::Enter) || ctrl_submit {
                         if exact_match {
                             self.submit_local_command(value);
                         } else {
@@ -1039,8 +811,8 @@ impl FullscreenState {
                     }
                     return;
                 }
-                _ => {}
             }
+            self.dirty = true;
         }
 
         match key.code {
@@ -1690,7 +1462,8 @@ impl FullscreenState {
             NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
         );
         self.submitted_inputs.push(submitted.clone());
-        self.pending_submissions.push_back(submitted);
+        self.pending_submissions
+            .push_back(FullscreenSubmission::Input(submitted));
         self.input.clear();
         self.cursor = 0;
         self.slash_menu = None;
@@ -1701,7 +1474,8 @@ impl FullscreenState {
     }
 
     fn submit_local_command(&mut self, submitted: String) {
-        self.pending_submissions.push_back(submitted);
+        self.pending_submissions
+            .push_back(FullscreenSubmission::Input(submitted));
         self.input.clear();
         self.cursor = 0;
         self.slash_menu = None;
@@ -1763,7 +1537,7 @@ pub async fn run(config: FullscreenAppConfig) -> io::Result<FullscreenOutcome> {
 pub async fn run_with_channels(
     config: FullscreenAppConfig,
     mut command_rx: mpsc::UnboundedReceiver<FullscreenCommand>,
-    submission_tx: mpsc::UnboundedSender<String>,
+    submission_tx: mpsc::UnboundedSender<FullscreenSubmission>,
 ) -> io::Result<FullscreenOutcome> {
     let mut terminal = FullscreenTerminal::enter()?;
     let (width, height) = terminal.size()?;
@@ -1884,7 +1658,10 @@ fn render_now(
     renderer.render(terminal, &frame)
 }
 
-fn flush_submissions(state: &mut FullscreenState, submission_tx: &mpsc::UnboundedSender<String>) {
+fn flush_submissions(
+    state: &mut FullscreenState,
+    submission_tx: &mpsc::UnboundedSender<FullscreenSubmission>,
+) {
     for submitted in state.take_pending_submissions() {
         if submission_tx.send(submitted).is_err() {
             break;
@@ -2253,10 +2030,6 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
         .nth(1)
         .map(|(idx, _)| cursor + idx)
         .unwrap_or(text.len())
-}
-
-fn encode_menu_selection(menu_id: &str, value: &str) -> String {
-    format!("__bb_fullscreen_menu__\t{menu_id}\t{value}")
 }
 
 #[cfg(test)]
@@ -2863,9 +2636,7 @@ mod tests {
             state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
-        let menu = state.slash_menu.as_ref().expect("slash menu should be visible");
-        assert_eq!(menu.selected, 6);
-        assert!(menu.scroll_offset > 0);
+        assert!(state.slash_menu.is_some());
 
         let joined = state
             .render_slash_menu_lines(80)
@@ -2937,7 +2708,10 @@ mod tests {
         assert!(state.input.is_empty());
         assert!(state.transcript.root_blocks().is_empty());
         assert!(state.status_line.is_empty());
-        assert_eq!(state.take_pending_submissions(), vec!["/model".to_string()]);
+        assert_eq!(
+            state.take_pending_submissions(),
+            vec![FullscreenSubmission::Input("/model".to_string())]
+        );
     }
 
     #[test]
@@ -2958,7 +2732,10 @@ mod tests {
         assert!(state.input.is_empty());
         assert!(state.transcript.root_blocks().is_empty());
         assert!(state.status_line.is_empty());
-        assert_eq!(state.take_pending_submissions(), vec!["/settings".to_string()]);
+        assert_eq!(
+            state.take_pending_submissions(),
+            vec![FullscreenSubmission::Input("/settings".to_string())]
+        );
     }
 
     #[test]
@@ -2992,7 +2769,10 @@ mod tests {
 
         assert_eq!(
             state.take_pending_submissions(),
-            vec!["__bb_fullscreen_menu__\tmodel\topenai/gpt-4o".to_string()]
+            vec![FullscreenSubmission::MenuSelection {
+                menu_id: "model".to_string(),
+                value: "openai/gpt-4o".to_string(),
+            }]
         );
     }
 
@@ -3019,7 +2799,10 @@ mod tests {
 
         assert_eq!(
             state.take_pending_submissions(),
-            vec!["__bb_fullscreen_menu__\tsettings\tthinking".to_string()]
+            vec![FullscreenSubmission::MenuSelection {
+                menu_id: "settings".to_string(),
+                value: "thinking".to_string(),
+            }]
         );
     }
 

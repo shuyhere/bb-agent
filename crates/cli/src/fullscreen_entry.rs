@@ -13,7 +13,8 @@ use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::{compaction, context, store, tree};
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{
-    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel, Transcript,
+    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
+    FullscreenSubmission, Transcript,
 };
 use bb_tui::select_list::SelectItem;
 
@@ -163,7 +164,6 @@ fn copy_text_to_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
-const FULLSCREEN_MENU_PREFIX: &str = "__bb_fullscreen_menu__\t";
 const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
 const RESUME_SESSION_MENU_ID: &str = "resume-session";
@@ -204,14 +204,6 @@ fn fullscreen_auth_status_detail(provider: &str) -> String {
         Some(_) => format!("({}) [configured]", fullscreen_auth_method_label(provider)),
         None => format!("({}) [not authenticated]", fullscreen_auth_method_label(provider)),
     }
-}
-
-fn parse_fullscreen_menu_selection(text: &str) -> Option<(&str, &str)> {
-    let rest = text.strip_prefix(FULLSCREEN_MENU_PREFIX)?;
-    let mut parts = rest.splitn(2, '\t');
-    let menu_id = parts.next()?;
-    let value = parts.next()?;
-    Some((menu_id, value))
 }
 
 fn persist_fullscreen_retry_settings(
@@ -463,7 +455,10 @@ impl FullscreenController {
         }
     }
 
-    async fn run(mut self, mut submission_rx: mpsc::UnboundedReceiver<String>) -> Result<()> {
+    async fn run(
+        mut self,
+        mut submission_rx: mpsc::UnboundedReceiver<FullscreenSubmission>,
+    ) -> Result<()> {
         self.publish_footer();
 
         if let Some(initial_message) = self.options.initial_message.clone() {
@@ -477,20 +472,33 @@ impl FullscreenController {
         }
 
         while !self.shutdown_requested {
-            let Some(text) = submission_rx.recv().await else {
+            let Some(submission) = submission_rx.recv().await else {
                 self.abort_token.cancel();
                 break;
             };
-            self.handle_submitted_text(text, &mut submission_rx).await?;
+            self.handle_submission(submission, &mut submission_rx).await?;
         }
 
         Ok(())
     }
 
+    async fn handle_submission(
+        &mut self,
+        submission: FullscreenSubmission,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
+    ) -> Result<()> {
+        match submission {
+            FullscreenSubmission::Input(text) => self.handle_submitted_text(text, submission_rx).await,
+            FullscreenSubmission::MenuSelection { menu_id, value } => {
+                self.handle_menu_selection(&menu_id, &value).await
+            }
+        }
+    }
+
     async fn handle_submitted_text(
         &mut self,
         text: String,
-        submission_rx: &mut mpsc::UnboundedReceiver<String>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
         let text = text.trim().to_string();
         if text.is_empty() || text == "/" {
@@ -512,11 +520,6 @@ impl FullscreenController {
     }
 
     async fn handle_local_submission(&mut self, text: &str) -> Result<bool> {
-        if let Some((menu_id, value)) = parse_fullscreen_menu_selection(text) {
-            self.handle_menu_selection(menu_id, value).await?;
-            return Ok(true);
-        }
-
         dispatch_local_slash_command(self, text)
     }
 
@@ -1177,7 +1180,7 @@ impl FullscreenController {
     async fn dispatch_prompt(
         &mut self,
         prompt: String,
-        submission_rx: &mut mpsc::UnboundedReceiver<String>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
         self.runtime_host
             .session_mut()
@@ -1206,7 +1209,7 @@ impl FullscreenController {
 
     async fn drain_queued_prompts(
         &mut self,
-        submission_rx: &mut mpsc::UnboundedReceiver<String>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
         while !self.shutdown_requested {
             let Some(prompt) = self.queued_prompts.pop_front() else {
@@ -1459,7 +1462,7 @@ impl FullscreenController {
 
     async fn run_streaming_turn_loop(
         &mut self,
-        submission_rx: &mut mpsc::UnboundedReceiver<String>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
         user_prompt: String,
     ) -> Result<()> {
         self.streaming = true;
@@ -1497,7 +1500,7 @@ impl FullscreenController {
                 }
                 maybe_prompt = submission_rx.recv() => {
                     match maybe_prompt {
-                        Some(text) => {
+                        Some(FullscreenSubmission::Input(text)) => {
                             let text = text.trim().to_string();
                             if text.is_empty() || text == "/" {
                                 continue;
@@ -1512,6 +1515,14 @@ impl FullscreenController {
                             }
                             self.queued_prompts.push_back(text);
                             self.publish_status();
+                            if self.shutdown_requested {
+                                self.abort_token.cancel();
+                                aborted = true;
+                                break;
+                            }
+                        }
+                        Some(FullscreenSubmission::MenuSelection { menu_id, value }) => {
+                            self.handle_menu_selection(&menu_id, &value).await?;
                             if self.shutdown_requested {
                                 self.abort_token.cancel();
                                 aborted = true;
