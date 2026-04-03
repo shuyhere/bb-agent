@@ -401,14 +401,11 @@ fn render_boxed_ansi_line(content: &str, width: usize, bg: &str) -> String {
     format!("{bg} {content_with_bg}{} {}", " ".repeat(pad), t.reset)
 }
 
+const LOADER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 fn render_status(state: &FullscreenState, width: usize) -> String {
     let t = theme();
-    let spinner = match state.tick_count % 4 {
-        0 => "|",
-        1 => "/",
-        2 => "-",
-        _ => "\\",
-    };
+    let spinner = LOADER_FRAMES[state.tick_count as usize % LOADER_FRAMES.len()];
     let text = match state.mode {
         FullscreenMode::Normal => {
             if state.has_active_turn() {
@@ -603,10 +600,34 @@ fn blank_line(width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fullscreen::FullscreenAppConfig;
+    use crate::fullscreen::layout::Size;
+    use crate::fullscreen::runtime::{FullscreenCommand, FullscreenState};
 
     #[test]
     fn boxed_line_uses_full_width_background() {
         let line = render_boxed_ansi_line("hi", 20, &theme().user_msg_bg);
         assert!(!line.contains("\x1b[0m      "));
+    }
+
+    #[test]
+    fn working_status_uses_loader_spinner_frames() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        state.status_line = "Working...".to_string();
+
+        state.tick_count = 0;
+        let first = render_status(&state, 80);
+        assert!(first.contains("⠋ Working..."));
+
+        state.tick_count = 2;
+        let later = render_status(&state, 80);
+        assert!(later.contains("⠹ Working..."));
     }
 }

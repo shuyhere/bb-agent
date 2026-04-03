@@ -1642,7 +1642,7 @@ pub async fn run_with_channels(
     let mut events = spawn_event_reader();
     let mut scheduler = RenderScheduler::default();
     let mut command_open = true;
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let mut tick = tokio::time::interval(Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     render_now(&mut terminal, &mut renderer, &mut state)?;
