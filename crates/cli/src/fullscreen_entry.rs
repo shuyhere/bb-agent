@@ -140,6 +140,39 @@ const LOGIN_PROVIDERS: &[&str] = &[
 ];
 const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
+fn fullscreen_auth_method_label(provider: &str) -> &'static str {
+    if OAUTH_PROVIDERS.contains(&provider) {
+        "OAuth"
+    } else {
+        "API key"
+    }
+}
+
+fn fullscreen_auth_display_name(provider: &str) -> String {
+    match provider {
+        "anthropic" => "Anthropic".to_string(),
+        "openai-codex" => "OpenAI Codex".to_string(),
+        "google" => "Google".to_string(),
+        "groq" => "Groq".to_string(),
+        "xai" => "xAI".to_string(),
+        "openrouter" => "OpenRouter".to_string(),
+        _ => provider.to_string(),
+    }
+}
+
+fn fullscreen_auth_status_detail(provider: &str) -> String {
+    match crate::login::auth_source(provider) {
+        Some(source) => {
+            let mut detail = format!("({}) [via {}]", fullscreen_auth_method_label(provider), source.label());
+            if crate::login::is_oauth_entry(provider) {
+                detail.push_str(" [oauth]");
+            }
+            detail
+        }
+        None => format!("({}) [not authenticated]", fullscreen_auth_method_label(provider)),
+    }
+}
+
 fn parse_fullscreen_menu_selection(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix(FULLSCREEN_MENU_PREFIX)?;
     let mut parts = rest.splitn(2, '\t');
@@ -916,13 +949,8 @@ impl FullscreenController {
             items: LOGIN_PROVIDERS
                 .iter()
                 .map(|provider| SelectItem {
-                    label: (*provider).to_string(),
-                    detail: Some(if OAUTH_PROVIDERS.contains(provider) {
-                        "OAuth"
-                    } else {
-                        "API key"
-                    }
-                    .to_string()),
+                    label: fullscreen_auth_display_name(provider),
+                    detail: Some(fullscreen_auth_status_detail(provider)),
                     value: (*provider).to_string(),
                 })
                 .collect(),
@@ -943,8 +971,8 @@ impl FullscreenController {
             items: providers
                 .into_iter()
                 .map(|provider| SelectItem {
-                    label: provider.clone(),
-                    detail: Some("Remove saved credentials".to_string()),
+                    label: fullscreen_auth_display_name(&provider),
+                    detail: Some(fullscreen_auth_status_detail(&provider)),
                     value: provider,
                 })
                 .collect(),
