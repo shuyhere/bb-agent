@@ -1061,6 +1061,22 @@ impl InteractiveMode {
         self.session_setup.sibling_conn = Some(sibling_conn.clone());
         commands.bind_session_context(sibling_conn, self.session_setup.session_id.clone(), None);
         self.session_setup.extension_commands = commands;
+
+        // Rebuild system prompt with updated skill/prompt sections
+        let skill_section =
+            crate::extensions::build_skill_system_prompt_section(&session_resources);
+        let base = self
+            .session_setup
+            .system_prompt
+            .split("\n\n<available_skills>")
+            .next()
+            .unwrap_or(&self.session_setup.system_prompt);
+        let base = base
+            .split("\n\nAvailable prompt templates")
+            .next()
+            .unwrap_or(base);
+        self.session_setup.system_prompt = format!("{base}{skill_section}");
+
         self.controller
             .runtime_host
             .reload_resources(session_resources);

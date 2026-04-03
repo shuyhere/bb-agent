@@ -272,6 +272,7 @@ impl UiHandler for InteractiveUiHandler {
                     let tx_guard = dialog_tx.lock().await;
                     if let Some(tx) = tx_guard.as_ref() {
                         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        let options_for_response = options.clone();
                         if tx
                             .send(PendingUiDialog::Select {
                                 title,
@@ -285,7 +286,10 @@ impl UiHandler for InteractiveUiHandler {
                             return UiResponse {
                                 id: request.id.clone(),
                                 data: match selected {
-                                    Some(idx) => serde_json::json!({ "selectedIndex": idx }),
+                                    Some(idx) => {
+                                        let value = options_for_response.get(idx).cloned().unwrap_or_default();
+                                        serde_json::json!({ "value": value })
+                                    }
                                     None => serde_json::json!({ "cancelled": true }),
                                 },
                             };
@@ -294,9 +298,11 @@ impl UiHandler for InteractiveUiHandler {
                     // Fallback: return default
                 }
                 "input" => {
+                    // JS sends "title" and "placeholder"; use "title" as the prompt text
                     let prompt = request
                         .params
-                        .get("prompt")
+                        .get("title")
+                        .or_else(|| request.params.get("prompt"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -306,6 +312,37 @@ impl UiHandler for InteractiveUiHandler {
                         if tx
                             .send(PendingUiDialog::Input {
                                 prompt,
+                                responder: resp_tx,
+                            })
+                            .is_ok()
+                        {
+                            drop(tx_guard);
+                            let value = resp_rx.await.unwrap_or(None);
+                            return UiResponse {
+                                id: request.id.clone(),
+                                data: match value {
+                                    Some(text) => serde_json::json!({ "value": text }),
+                                    None => serde_json::json!({ "cancelled": true }),
+                                },
+                            };
+                        }
+                    }
+                    // Fallback: return default
+                }
+                "editor" => {
+                    // Treat editor like input with prefill text as context
+                    let title = request
+                        .params
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Editor")
+                        .to_string();
+                    let tx_guard = dialog_tx.lock().await;
+                    if let Some(tx) = tx_guard.as_ref() {
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(PendingUiDialog::Input {
+                                prompt: title,
                                 responder: resp_tx,
                             })
                             .is_ok()
@@ -501,6 +538,54 @@ impl Default for RuntimeExtensionSupport {
             tools: Vec::new(),
             commands: ExtensionCommandRegistry::default(),
         }
+    }
+}
+
+/// Build the system prompt appendix that lists available skills and prompt
+/// templates so the LLM knows what's available.
+///
+/// Returns an empty string when no skills or prompts are discovered.
+pub(crate) fn build_skill_system_prompt_section(
+    resources: &SessionResourceBootstrap,
+) -> String {
+    let mut sections = Vec::new();
+
+    if !resources.skills.is_empty() {
+        let mut skill_lines = Vec::new();
+        skill_lines.push("<available_skills>".to_string());
+        for skill in &resources.skills {
+            skill_lines.push(format!("  <skill>"));
+            skill_lines.push(format!("    <name>{}</name>", skill.info.name));
+            skill_lines.push(format!(
+                "    <description>{}</description>",
+                skill.info.description
+            ));
+            skill_lines.push(format!(
+                "    <location>{}</location>",
+                skill.info.source_info.path
+            ));
+            skill_lines.push(format!("  </skill>"));
+        }
+        skill_lines.push("</available_skills>".to_string());
+        sections.push(skill_lines.join("\n"));
+    }
+
+    if !resources.prompts.is_empty() {
+        let prompt_list: Vec<String> = resources
+            .prompts
+            .iter()
+            .map(|p| format!("- /{}: {}", p.info.name, p.info.description))
+            .collect();
+        sections.push(format!(
+            "Available prompt templates (invoke with /name):\n{}",
+            prompt_list.join("\n")
+        ));
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", sections.join("\n\n"))
     }
 }
 
@@ -2437,5 +2522,47 @@ mod tests {
 
         // Should attempt install and handle the failure without panicking.
         auto_install_missing_packages(cwd.path(), &settings);
+    }
+
+    #[test]
+    fn build_skill_section_includes_skills_and_prompts() {
+        let resources = SessionResourceBootstrap {
+            skills: vec![SkillDefinition {
+                info: SkillInfo {
+                    name: "demo-review".to_string(),
+                    description: "Review code carefully".to_string(),
+                    source_info: SourceInfo {
+                        path: "/skills/demo-review/SKILL.md".to_string(),
+                        source: "settings:project".to_string(),
+                    },
+                },
+                content: "Review the code.".to_string(),
+            }],
+            prompts: vec![PromptTemplateDefinition {
+                info: PromptTemplateInfo {
+                    name: "fix-tests".to_string(),
+                    description: "Fix all failing tests".to_string(),
+                    source_info: SourceInfo {
+                        path: "/prompts/fix-tests.md".to_string(),
+                        source: "settings:project".to_string(),
+                    },
+                },
+                content: "Fix tests.".to_string(),
+            }],
+            ..SessionResourceBootstrap::default()
+        };
+        let section = build_skill_system_prompt_section(&resources);
+        assert!(section.contains("<available_skills>"));
+        assert!(section.contains("demo-review"));
+        assert!(section.contains("Review code carefully"));
+        assert!(section.contains("/fix-tests"));
+        assert!(section.contains("Fix all failing tests"));
+    }
+
+    #[test]
+    fn build_skill_section_empty_when_no_resources() {
+        let resources = SessionResourceBootstrap::default();
+        let section = build_skill_system_prompt_section(&resources);
+        assert!(section.is_empty());
     }
 }

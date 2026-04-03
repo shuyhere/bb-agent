@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use crate::Cli;
 use crate::extensions::{
     ExtensionBootstrap, RuntimeExtensionSupport, auto_install_missing_packages,
-    load_runtime_extension_support,
+    build_skill_system_prompt_section, load_runtime_extension_support,
 };
 use crate::login;
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
@@ -107,6 +107,8 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let mut builtin_tools = select_tools(&cli);
     builtin_tools.append(&mut tools);
     let tool_defs = build_tool_defs(&builtin_tools);
+    let skill_section = build_skill_system_prompt_section(&session_resources);
+    let system_prompt = format!("{system_prompt}{skill_section}");
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir,

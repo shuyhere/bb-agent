@@ -20,7 +20,7 @@ use bb_tools::{Tool, ToolContext, builtin_tools};
 
 use crate::extensions::{
     ExtensionBootstrap, RuntimeExtensionSupport, auto_install_missing_packages,
-    load_runtime_extension_support_with_ui,
+    build_skill_system_prompt_section, load_runtime_extension_support_with_ui,
 };
 use crate::login;
 
@@ -150,6 +150,8 @@ pub(crate) async fn prepare_interactive_mode(
     let mut builtin_tools = select_tools_default();
     builtin_tools.append(&mut tools);
     let tool_defs = build_tool_defs(&builtin_tools);
+    let skill_section = build_skill_system_prompt_section(&session_resources);
+    let system_prompt = format!("{system_prompt}{skill_section}");
 
     let artifacts_dir = global_dir.join("artifacts");
     std::fs::create_dir_all(&artifacts_dir)?;
