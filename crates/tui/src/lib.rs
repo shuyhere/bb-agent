@@ -22,5 +22,6 @@ pub mod components;
 pub mod fuzzy;
 pub mod kill_ring;
 pub mod undo_stack;
+pub mod tool_preview;
 
 pub use components::{BgFn, BorderColorFn, BoxComponent, DynamicBorder};
