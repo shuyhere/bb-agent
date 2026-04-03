@@ -9,7 +9,9 @@ use crossterm::event::{
 use tokio::sync::mpsc;
 
 use crate::select_list::{SelectAction, SelectItem, SelectList};
-use crate::slash_commands::shared_slash_command_select_items;
+use crate::slash_commands::{
+    matches_shared_local_slash_submission, shared_slash_command_select_items,
+};
 
 use super::{
     frame::{build_frame, measure_input},
@@ -909,6 +911,14 @@ impl FullscreenState {
             (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
                 self.search_step(false);
             }
+            // Any other printable character: switch to Normal mode and
+            // insert into the input area so the user can just start typing.
+            (KeyCode::Char(ch), mods) if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) => {
+                self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
+                self.status_line = self.mode_help_text();
+                self.insert_char(ch);
+            }
             _ => {}
         }
     }
@@ -1378,9 +1388,14 @@ impl FullscreenState {
             self.projection_dirty = true;
             self.dirty = true;
         }
-        // Clear the stale "Working..." status so it doesn't persist after the
-        // turn ends.  Reset to the mode-appropriate help text (empty in Normal,
-        // help string in Transcript/Search).
+        // If still auto-following (user didn't manually scroll away), return
+        // to Normal mode so the input area is focused and the user can type
+        // immediately.  If the user deliberately entered Transcript mode and
+        // scrolled away, stay there so they can keep reading.
+        if self.viewport.auto_follow {
+            self.mode = FullscreenMode::Normal;
+        }
+        // Clear the stale "Working..." status.
         self.status_line = self.mode_help_text();
     }
 
@@ -1455,6 +1470,11 @@ impl FullscreenState {
         if submitted.trim().is_empty() {
             self.status_line = "empty input ignored".to_string();
             self.dirty = true;
+            return;
+        }
+
+        if matches_shared_local_slash_submission(&submitted) {
+            self.submit_local_command(submitted);
             return;
         }
 
@@ -2739,6 +2759,30 @@ mod tests {
     }
 
     #[test]
+    fn enter_submits_argument_slash_command_without_prompt_echo_or_working() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        for ch in "/name demo".chars() {
+            state.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(state.input.is_empty());
+        assert!(state.transcript.root_blocks().is_empty());
+        assert!(state.status_line.is_empty());
+        assert_eq!(
+            state.take_pending_submissions(),
+            vec![FullscreenSubmission::Input("/name demo".to_string())]
+        );
+    }
+
+    #[test]
     fn select_menu_enter_emits_control_submission() {
         let mut state = FullscreenState::new(
             FullscreenAppConfig::default(),
@@ -2852,5 +2896,54 @@ mod tests {
         state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         assert_eq!(state.mode, FullscreenMode::Search);
         assert!(build_frame(&state).cursor.is_none());
+    }
+
+    #[test]
+    fn turn_end_returns_to_normal_mode_when_auto_following() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size { width: 80, height: 24 },
+        );
+        // Start a turn
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        assert!(state.has_active_turn());
+        assert_eq!(state.mode, FullscreenMode::Normal);
+
+        // End the turn — should stay in Normal mode
+        let _ = state.apply_command(FullscreenCommand::TurnEnd);
+        assert!(!state.has_active_turn());
+        assert_eq!(state.mode, FullscreenMode::Normal);
+        assert!(state.status_line.trim().is_empty(), "status should be cleared");
+    }
+
+    #[test]
+    fn turn_end_stays_in_transcript_when_user_scrolled_away() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size { width: 80, height: 24 },
+        );
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+
+        // User scrolls up → enters Transcript mode, auto_follow off
+        state.mode = FullscreenMode::Transcript;
+        state.viewport.auto_follow = false;
+
+        let _ = state.apply_command(FullscreenCommand::TurnEnd);
+        // Should stay in Transcript since user explicitly scrolled away
+        assert_eq!(state.mode, FullscreenMode::Transcript);
+    }
+
+    #[test]
+    fn printable_char_in_transcript_mode_switches_to_normal_and_inserts() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size { width: 80, height: 24 },
+        );
+        state.mode = FullscreenMode::Transcript;
+
+        // Press 'a' — should switch to Normal and insert 'a'
+        state.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(state.mode, FullscreenMode::Normal);
+        assert_eq!(state.input, "a");
     }
 }
