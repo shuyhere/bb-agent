@@ -4,7 +4,6 @@ use crate::theme::theme;
 use crate::utils::{pad_to_width, truncate_to_width, visible_width};
 
 use super::{
-    layout::compute_layout,
     projection::{ProjectedRowKind, TranscriptProjection},
     renderer::FrameBuffer,
     runtime::{FullscreenMode, FullscreenState},
@@ -95,7 +94,7 @@ pub(crate) fn measure_input(text: &str, cursor: usize, width: usize) -> InputWra
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
     let input_inner_width = state.size.width.max(1) as usize;
     let input_wrap = measure_input(&state.input, state.cursor, input_inner_width);
-    let layout = compute_layout(state.size, input_wrap.lines.len());
+    let layout = state.current_layout();
 
     let mut lines = vec![blank_line(state.size.width as usize); state.size.height as usize];
 
@@ -521,6 +520,15 @@ fn render_input(
 fn render_footer(state: &FullscreenState, width: usize, height: usize) -> Vec<String> {
     if width == 0 || height == 0 {
         return Vec::new();
+    }
+
+    if let Some(menu_lines) = state.render_slash_menu_lines(width) {
+        let mut lines = menu_lines;
+        lines.truncate(height);
+        while lines.len() < height {
+            lines.push(blank_line(width));
+        }
+        return lines;
     }
 
     let t = theme();

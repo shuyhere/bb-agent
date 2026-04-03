@@ -8,9 +8,11 @@ use crossterm::event::{
 };
 use tokio::sync::mpsc;
 
+use crate::select_list::SelectItem;
+
 use super::{
     frame::{build_frame, measure_input},
-    layout::{FullscreenLayout, Size, compute_layout},
+    layout::{FullscreenLayout, Size, compute_layout_with_footer},
     projection::{ProjectedRowKind, TranscriptProjection, TranscriptProjector},
     renderer::FullscreenRenderer,
     scheduler::{RenderIntent, RenderScheduler},
@@ -142,6 +144,115 @@ struct ToolCallState {
     tool_result_id: Option<BlockId>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct FullscreenSlashMenuState {
+    items: Vec<SelectItem>,
+    filtered: Vec<usize>,
+    selected: usize,
+    max_visible: usize,
+}
+
+impl FullscreenSlashMenuState {
+    fn new() -> Self {
+        let items = default_slash_commands();
+        let filtered = (0..items.len()).collect();
+        Self {
+            items,
+            filtered,
+            selected: 0,
+            max_visible: 6,
+        }
+    }
+
+    fn set_search(&mut self, query: &str) {
+        let q = query.trim_start_matches('/').to_ascii_lowercase();
+        self.filtered = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                if q.is_empty() {
+                    true
+                } else {
+                    item.label
+                        .trim_start_matches('/')
+                        .to_ascii_lowercase()
+                        .starts_with(&q)
+                }
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+    }
+
+    fn move_up(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = self.selected.saturating_sub(1);
+        }
+    }
+
+    fn move_down(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = (self.selected + 1).min(self.filtered.len().saturating_sub(1));
+        }
+    }
+
+    fn selected_value(&self) -> Option<String> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|idx| self.items.get(*idx))
+            .map(|item| item.value.clone())
+    }
+
+    fn render(&self, width: usize) -> Vec<String> {
+        use crossterm::style::{Attribute, Color, Stylize};
+        let mut lines = Vec::new();
+        if self.filtered.is_empty() {
+            lines.push(format!(
+                "  {}",
+                "(no matching commands)"
+                    .with(Color::DarkGrey)
+                    .attribute(Attribute::Dim)
+            ));
+            return lines;
+        }
+
+        let visible_count = self.filtered.len().min(self.max_visible);
+        for (visible_index, item_idx) in self.filtered.iter().take(visible_count).enumerate() {
+            let item = &self.items[*item_idx];
+            let is_selected = visible_index == self.selected;
+            let marker = if is_selected { ">" } else { " " };
+            let label = if is_selected {
+                format!("{}", item.label.clone().bold().attribute(Attribute::Reverse))
+            } else {
+                item.label.clone()
+            };
+            let detail = item
+                .detail
+                .as_ref()
+                .map(|detail| format!(" {}", detail.clone().with(Color::DarkGrey).attribute(Attribute::Dim)))
+                .unwrap_or_default();
+            let line = format!("{marker} {label}{detail}");
+            lines.push(crate::utils::pad_to_width(
+                &crate::utils::truncate_to_width(&line, width),
+                width,
+            ));
+        }
+        lines.push(crate::utils::pad_to_width(
+            &crate::utils::truncate_to_width(
+                &format!(" {}/{} commands", self.filtered.len(), self.items.len()),
+                width,
+            ),
+            width,
+        ));
+        lines
+    }
+
+    fn rendered_height(&self) -> u16 {
+        self.render(80).len() as u16
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FullscreenState {
     pub title: String,
@@ -162,6 +273,7 @@ pub struct FullscreenState {
     pub tick_count: u64,
     pub submitted_inputs: Vec<String>,
     projector: TranscriptProjector,
+    slash_menu: Option<FullscreenSlashMenuState>,
     projection_dirty: bool,
     pending_submissions: VecDeque<String>,
     active_turn: Option<ActiveTurnState>,
@@ -188,6 +300,7 @@ impl FullscreenState {
             tick_count: 0,
             submitted_inputs: Vec::new(),
             projector: TranscriptProjector::new(),
+            slash_menu: None,
             projection_dirty: true,
             pending_submissions: VecDeque::new(),
             active_turn: None,
@@ -548,6 +661,39 @@ impl FullscreenState {
     }
 
     fn on_normal_key(&mut self, key: KeyEvent) {
+        if let Some(menu) = self.slash_menu.as_mut() {
+            match (key.code, key.modifiers) {
+                (KeyCode::Up, _)
+                | (KeyCode::Down, _)
+                | (KeyCode::PageUp, _)
+                | (KeyCode::PageDown, _)
+                | (KeyCode::Home, _)
+                | (KeyCode::End, _) => {
+                    match key.code {
+                        KeyCode::Up | KeyCode::PageUp | KeyCode::Home => menu.move_up(),
+                        KeyCode::Down | KeyCode::PageDown | KeyCode::End => menu.move_down(),
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return;
+                }
+                (KeyCode::Esc, _) => {
+                    self.slash_menu = None;
+                    self.dirty = true;
+                    return;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE)
+                | (KeyCode::Tab, KeyModifiers::NONE)
+                | (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                    if let Some(value) = menu.selected_value() {
+                        self.accept_slash_selection(value);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.should_quit = true;
@@ -576,16 +722,19 @@ impl FullscreenState {
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.update_slash_menu();
                 self.dirty = true;
             }
             KeyCode::End => {
                 self.cursor = self.input.len();
+                self.update_slash_menu();
                 self.dirty = true;
             }
             KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.status_line = format!("ignored Ctrl+{ch}");
                 self.dirty = true;
             }
+            KeyCode::Tab => {}
             KeyCode::Char(ch) => {
                 self.insert_char(ch);
             }
@@ -724,10 +873,52 @@ impl FullscreenState {
         }
     }
 
-    fn current_layout(&self) -> FullscreenLayout {
+    pub(crate) fn current_layout(&self) -> FullscreenLayout {
         let input_inner_width = self.size.width.max(1) as usize;
         let input_wrap = measure_input(&self.input, self.cursor, input_inner_width);
-        compute_layout(self.size, input_wrap.lines.len())
+        compute_layout_with_footer(self.size, input_wrap.lines.len(), self.requested_footer_height())
+    }
+
+    pub(crate) fn requested_footer_height(&self) -> u16 {
+        self.slash_menu
+            .as_ref()
+            .map(|menu| menu.rendered_height())
+            .unwrap_or_else(|| if self.size.height >= 14 { 2 } else { 0 })
+    }
+
+    pub(crate) fn render_slash_menu_lines(&self, width: usize) -> Option<Vec<String>> {
+        self.slash_menu.as_ref().map(|menu| menu.render(width))
+    }
+
+    fn slash_query(&self) -> Option<String> {
+        let before = self.input.get(..self.cursor)?;
+        if before.contains('\n') {
+            return None;
+        }
+        if !before.starts_with('/') {
+            return None;
+        }
+        if before.contains(' ') {
+            return None;
+        }
+        Some(before.to_string())
+    }
+
+    fn update_slash_menu(&mut self) {
+        let Some(query) = self.slash_query() else {
+            self.slash_menu = None;
+            return;
+        };
+        let mut menu = self.slash_menu.take().unwrap_or_else(FullscreenSlashMenuState::new);
+        menu.set_search(&query);
+        self.slash_menu = Some(menu);
+    }
+
+    fn accept_slash_selection(&mut self, value: String) {
+        self.input = value;
+        self.cursor = self.input.len();
+        self.slash_menu = None;
+        self.dirty = true;
     }
 
     fn sync_focus_tracking(&mut self) {
@@ -1135,6 +1326,7 @@ impl FullscreenState {
         self.pending_submissions.push_back(submitted);
         self.input.clear();
         self.cursor = 0;
+        self.slash_menu = None;
         self.status_line = "Working...".to_string();
         self.projection_dirty = true;
         self.dirty = true;
@@ -1143,12 +1335,14 @@ impl FullscreenState {
     fn insert_char(&mut self, ch: char) {
         self.input.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
+        self.update_slash_menu();
         self.dirty = true;
     }
 
     fn insert_str(&mut self, text: &str) {
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
+        self.update_slash_menu();
         self.dirty = true;
     }
 
@@ -1159,6 +1353,7 @@ impl FullscreenState {
         let prev = previous_boundary(&self.input, self.cursor);
         self.input.drain(prev..self.cursor);
         self.cursor = prev;
+        self.update_slash_menu();
         self.dirty = true;
     }
 
@@ -1167,6 +1362,7 @@ impl FullscreenState {
             return;
         }
         self.cursor = previous_boundary(&self.input, self.cursor);
+        self.update_slash_menu();
         self.dirty = true;
     }
 
@@ -1175,6 +1371,7 @@ impl FullscreenState {
             return;
         }
         self.cursor = next_boundary(&self.input, self.cursor);
+        self.update_slash_menu();
         self.dirty = true;
     }
 }
@@ -1674,6 +1871,31 @@ fn next_boundary(text: &str, cursor: usize) -> usize {
         .nth(1)
         .map(|(idx, _)| cursor + idx)
         .unwrap_or(text.len())
+}
+
+fn default_slash_commands() -> Vec<SelectItem> {
+    vec![
+        ("help", "Show help"),
+        ("new", "Start a new session"),
+        ("resume", "Resume a previous session"),
+        ("model", "Switch model"),
+        ("compact", "Compact conversation context"),
+        ("tree", "Navigate session tree"),
+        ("fork", "Fork current session"),
+        ("name", "Set session display name"),
+        ("session", "Show current session info"),
+        ("login", "Login to a provider"),
+        ("logout", "Logout from a provider"),
+        ("settings", "Show settings info"),
+        ("quit", "Exit"),
+    ]
+    .into_iter()
+    .map(|(label, detail)| SelectItem {
+        label: format!("/{label}"),
+        detail: Some(detail.to_string()),
+        value: format!("/{label}"),
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -2236,6 +2458,50 @@ mod tests {
         );
         assert!(grep.contains("match 15"));
         assert!(grep.contains("... (1 more lines)"));
+    }
+
+    #[test]
+    fn typing_slash_in_normal_mode_shows_fullscreen_command_menu() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        let lines = state
+            .render_slash_menu_lines(80)
+            .expect("slash menu should be visible");
+        let joined = lines.join("\n");
+        assert!(joined.contains("/model"));
+        assert!(state.requested_footer_height() >= 6);
+
+        state.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        let lines = state
+            .render_slash_menu_lines(80)
+            .expect("filtered slash menu should be visible");
+        let joined = lines.join("\n");
+        assert!(joined.contains("/settings"));
+    }
+
+    #[test]
+    fn tab_accepts_slash_menu_selection() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        state.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        state.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(state.input, "/model");
+        assert!(state.slash_menu.is_none());
     }
 
     #[test]

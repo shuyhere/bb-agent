@@ -22,12 +22,21 @@ pub struct FullscreenLayout {
 }
 
 pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLayout {
+    compute_layout_with_footer(size, requested_input_lines, if size.height >= 14 { 2 } else { 0 })
+}
+
+pub fn compute_layout_with_footer(
+    size: Size,
+    requested_input_lines: usize,
+    requested_footer_lines: u16,
+) -> FullscreenLayout {
     if size.height == 0 || size.width == 0 {
         return FullscreenLayout::default();
     }
 
     let header_height = if size.height >= 8 { 3 } else { 0 };
-    let footer_height = if size.height >= 14 { 2 } else { 0 };
+    let max_footer_height = size.height.saturating_sub(header_height + 1);
+    let footer_height = requested_footer_lines.min(max_footer_height);
     let status_height = 1u16.min(size.height.saturating_sub(header_height + footer_height));
     let available_for_input = size.height.saturating_sub(header_height + status_height + footer_height);
     let min_input_height = available_for_input.min(3);
@@ -141,5 +150,20 @@ mod tests {
         assert_eq!(layout.footer.height, 0);
         assert_eq!(layout.input.y + layout.input.height, 6);
         assert_eq!(layout.status.y + layout.status.height, layout.input.y);
+    }
+
+    #[test]
+    fn reserves_extra_footer_space_for_menus() {
+        let layout = compute_layout_with_footer(
+            Size {
+                width: 80,
+                height: 20,
+            },
+            1,
+            8,
+        );
+
+        assert_eq!(layout.footer.height, 8);
+        assert_eq!(layout.input.y + layout.input.height, layout.footer.y);
     }
 }
