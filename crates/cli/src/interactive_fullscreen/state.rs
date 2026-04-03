@@ -1,4 +1,4 @@
-use bb_tui::fullscreen::{FullscreenAppConfig, TranscriptItem, TranscriptRole};
+use bb_tui::fullscreen::{BlockKind, FullscreenAppConfig, NewBlock, Transcript};
 
 use crate::interactive::InteractiveEntryOptions;
 
@@ -8,27 +8,27 @@ pub(super) struct InteractiveFullscreenState {
 
 impl InteractiveFullscreenState {
     pub(super) fn from_entry(entry: &InteractiveEntryOptions) -> Self {
-        let mut transcript = vec![TranscriptItem::new(
-            TranscriptRole::System,
-            "Fullscreen transcript foundation active. This path owns the terminal with an alternate screen, raw mode, mouse capture, a fixed bottom input box, a dedicated transcript viewport, and a dedicated status line.",
-        )];
+        let mut transcript = Transcript::new();
+        transcript.append_root_block(
+            NewBlock::new(BlockKind::SystemNote, "fullscreen foundation").with_content(
+                "Fullscreen transcript foundation active. This path owns the terminal with an alternate screen, raw mode, mouse capture, a fixed bottom input box, a dedicated transcript viewport, a dedicated status line, and a shared structured transcript block model.",
+            ),
+        );
 
         if !entry.messages.is_empty() {
-            transcript.push(TranscriptItem::new(
-                TranscriptRole::Status,
-                format!(
-                    "Loaded {} startup message(s) into the transcript shell. Agent turn execution stays on the legacy interactive path for now.",
+            transcript.append_root_block(
+                NewBlock::new(BlockKind::SystemNote, "startup messages").with_content(format!(
+                    "Loaded {} startup message(s) into the shared fullscreen transcript shell. Agent turn execution stays on the legacy interactive path for now.",
                     entry.messages.len()
-                ),
-            ));
-
-            transcript.extend(
-                entry
-                    .messages
-                    .iter()
-                    .cloned()
-                    .map(|message| TranscriptItem::new(TranscriptRole::User, message)),
+                )),
             );
+
+            for message in &entry.messages {
+                transcript.append_root_block(
+                    NewBlock::new(BlockKind::UserMessage, "startup prompt")
+                        .with_content(message.clone()),
+                );
+            }
         }
 
         let config = FullscreenAppConfig {
