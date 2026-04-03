@@ -1590,29 +1590,8 @@ fn format_tool_result_content(
         }
     }
 
-    let mut text_lines = 0usize;
-    let max_lines = 20usize;
-    for block in content {
-        match block {
-            ContentBlock::Text { text } => {
-                for line in text.lines() {
-                    lines.push(line.to_string());
-                    text_lines += 1;
-                    if text_lines >= max_lines {
-                        lines.push("… output truncated".to_string());
-                        break;
-                    }
-                }
-            }
-            ContentBlock::Image { mime_type, .. } => {
-                lines.push(format!("[image: {mime_type}]"));
-                text_lines += 1;
-            }
-        }
-        if text_lines >= max_lines {
-            break;
-        }
-    }
+    let preview_lines = preview_tool_result_lines(name, content);
+    lines.extend(preview_lines);
 
     if let Some(details) = details {
         let rendered = serde_json::to_string_pretty(&details).unwrap_or_else(|_| details.to_string());
@@ -1637,6 +1616,41 @@ fn format_tool_result_content(
         }
     } else {
         lines.join("\n")
+    }
+}
+
+fn preview_tool_result_lines(name: &str, content: &[ContentBlock]) -> Vec<String> {
+    let max_lines = tool_result_preview_limit(name);
+    let mut all_lines = Vec::new();
+
+    for block in content {
+        match block {
+            ContentBlock::Text { text } => {
+                all_lines.extend(text.lines().map(|line| line.replace('\t', "   ")));
+            }
+            ContentBlock::Image { mime_type, .. } => {
+                all_lines.push(format!("[image: {mime_type}]"));
+            }
+        }
+    }
+
+    if all_lines.len() <= max_lines {
+        return all_lines;
+    }
+
+    let remaining = all_lines.len() - max_lines;
+    let mut preview = all_lines.into_iter().take(max_lines).collect::<Vec<_>>();
+    preview.push(format!("... ({remaining} more lines)"));
+    preview
+}
+
+fn tool_result_preview_limit(name: &str) -> usize {
+    match name {
+        "read" => 10,
+        "bash" => 12,
+        "grep" => 15,
+        "ls" | "find" => 20,
+        _ => 20,
     }
 }
 
@@ -2182,6 +2196,40 @@ mod tests {
         assert!(edit.contains("+ beta"));
         assert!(edit.contains("line1\\nline2"));
         assert!(!edit.contains("\"oldText\""));
+    }
+
+    #[test]
+    fn tool_result_previews_use_interactive_limits_and_truncation() {
+        let bash_lines = (1..=14)
+            .map(|i| format!("line\t{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bash = format_tool_result_content(
+            "bash",
+            &[ContentBlock::Text { text: bash_lines }],
+            None,
+            None,
+            false,
+        );
+        assert!(bash.contains("line   1"));
+        assert!(bash.contains("line   12"));
+        assert!(bash.contains("... (2 more lines)"));
+        assert!(!bash.contains("… output truncated"));
+        assert!(!bash.contains("line   13\nline   14"));
+
+        let grep_lines = (1..=16)
+            .map(|i| format!("match {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let grep = format_tool_result_content(
+            "grep",
+            &[ContentBlock::Text { text: grep_lines }],
+            None,
+            None,
+            false,
+        );
+        assert!(grep.contains("match 15"));
+        assert!(grep.contains("... (1 more lines)"));
     }
 
     #[test]
