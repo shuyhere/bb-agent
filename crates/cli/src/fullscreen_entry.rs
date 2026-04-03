@@ -5,8 +5,9 @@ use bb_core::agent_session::PromptOptions;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
 use bb_core::types::{AgentMessage, ContentBlock, EntryBase, EntryId, SessionEntry, UserMessage};
 use bb_session::store;
+use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{
-    FullscreenAppConfig, FullscreenCommand, FullscreenNoteLevel, Transcript,
+    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel, Transcript,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -20,8 +21,8 @@ use crate::interactive::{
 use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
 pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> {
-    let config = build_fullscreen_config(&entry);
     let (runtime_host, options, session_setup) = prepare_interactive_mode(entry).await?;
+    let config = build_fullscreen_config(&session_setup);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (submission_tx, submission_rx) = mpsc::unbounded_channel();
     let controller_command_tx = command_tx.clone();
@@ -48,7 +49,7 @@ pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> 
     Ok(())
 }
 
-fn build_fullscreen_config(_entry: &InteractiveEntryOptions) -> FullscreenAppConfig {
+fn build_fullscreen_config(session_setup: &InteractiveSessionSetup) -> FullscreenAppConfig {
     let transcript = Transcript::new();
 
     FullscreenAppConfig {
@@ -57,7 +58,61 @@ fn build_fullscreen_config(_entry: &InteractiveEntryOptions) -> FullscreenAppCon
         status_line:
             "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel/click transcript"
                 .to_string(),
+        footer: build_footer_data(session_setup),
         transcript,
+    }
+}
+
+fn build_footer_data(session_setup: &InteractiveSessionSetup) -> FullscreenFooterData {
+    let cwd_display = shorten_home_path(&session_setup.tool_ctx.cwd.display().to_string());
+    let line1 = if let Some(branch) = detect_git_branch(&session_setup.tool_ctx.cwd.display().to_string()) {
+        format!("{cwd_display} ({branch})")
+    } else {
+        cwd_display
+    };
+
+    let line2_left = format!(
+        "?/{ctx} (auto)",
+        ctx = format_tokens(session_setup.model.context_window)
+    );
+    let line2_right = format!(
+        "({}) {}{}",
+        session_setup.model.provider,
+        session_setup.model.id,
+        if session_setup.thinking_level == "off" {
+            " • thinking off".to_string()
+        } else {
+            format!(" • {}", session_setup.thinking_level)
+        }
+    );
+
+    FullscreenFooterData {
+        line1,
+        line2_left,
+        line2_right,
+    }
+}
+
+fn shorten_home_path(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if path.starts_with(&home) {
+            return format!("~{}", &path[home.len()..]);
+        }
+    }
+    path.to_string()
+}
+
+fn format_tokens(count: u64) -> String {
+    if count < 1_000 {
+        count.to_string()
+    } else if count < 10_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else if count < 1_000_000 {
+        format!("{}k", (count as f64 / 1_000.0).round() as u64)
+    } else if count < 10_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else {
+        format!("{}M", (count as f64 / 1_000_000.0).round() as u64)
     }
 }
 
@@ -92,6 +147,8 @@ impl FullscreenController {
     }
 
     async fn run(mut self, mut submission_rx: mpsc::UnboundedReceiver<String>) -> Result<()> {
+        self.publish_footer();
+
         let startup_prompts = self.options.initial_messages.len()
             + usize::from(self.options.initial_message.is_some());
         if startup_prompts > 0 {
@@ -177,6 +234,7 @@ impl FullscreenController {
         self.ensure_session_row_created()?;
         self.append_user_entry_to_db(&prompt)?;
         self.auto_name_session(&prompt);
+        self.publish_footer();
         self.publish_status();
         self.run_streaming_turn_loop(submission_rx).await
     }
@@ -203,6 +261,88 @@ impl FullscreenController {
 
     fn publish_status(&mut self) {
         self.send_command(FullscreenCommand::SetStatusLine(self.status_line()));
+    }
+
+    fn publish_footer(&mut self) {
+        self.send_command(FullscreenCommand::SetFooter(self.current_footer_data()));
+    }
+
+    fn current_footer_data(&self) -> FullscreenFooterData {
+        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+        let mut line1 = if let Some(branch) = detect_git_branch(&cwd) {
+            format!("{} ({branch})", shorten_home_path(&cwd))
+        } else {
+            shorten_home_path(&cwd)
+        };
+
+        if let Ok(Some(row)) = store::get_session(&self.session_setup.conn, &self.session_setup.session_id) {
+            if let Some(name) = row.name {
+                if !name.is_empty() {
+                    line1.push_str(" • ");
+                    line1.push_str(&name);
+                }
+            }
+        }
+
+        let (input_tokens, output_tokens, cache_read, cache_write, cost) = self.footer_usage_totals();
+        let mut left_parts = Vec::new();
+        if input_tokens > 0 {
+            left_parts.push(format!("↑{}", format_tokens(input_tokens)));
+        }
+        if output_tokens > 0 {
+            left_parts.push(format!("↓{}", format_tokens(output_tokens)));
+        }
+        if cache_read > 0 {
+            left_parts.push(format!("R{}", format_tokens(cache_read)));
+        }
+        if cache_write > 0 {
+            left_parts.push(format!("W{}", format_tokens(cache_write)));
+        }
+        if cost > 0.0 {
+            left_parts.push(format!("${cost:.3}"));
+        }
+        let context_window = self.session_setup.model.context_window;
+        left_parts.push(format!("?/{ctx} (auto)", ctx = format_tokens(context_window)));
+
+        let right = if self.session_setup.thinking_level == "off" {
+            format!("({}) {} • thinking off", self.session_setup.model.provider, self.session_setup.model.id)
+        } else {
+            format!("({}) {} • {}", self.session_setup.model.provider, self.session_setup.model.id, self.session_setup.thinking_level)
+        };
+
+        FullscreenFooterData {
+            line1,
+            line2_left: left_parts.join(" "),
+            line2_right: right,
+        }
+    }
+
+    fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
+        let mut total_input = 0_u64;
+        let mut total_output = 0_u64;
+        let mut total_cache_read = 0_u64;
+        let mut total_cache_write = 0_u64;
+        let mut total_cost = 0.0_f64;
+
+        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+            for row in rows {
+                if let Ok(entry) = store::parse_entry(&row) {
+                    if let bb_core::types::SessionEntry::Message {
+                        message: bb_core::types::AgentMessage::Assistant(message),
+                        ..
+                    } = entry
+                    {
+                        total_input += message.usage.input;
+                        total_output += message.usage.output;
+                        total_cache_read += message.usage.cache_read;
+                        total_cache_write += message.usage.cache_write;
+                        total_cost += message.usage.cost.total;
+                    }
+                }
+            }
+        }
+
+        (total_input, total_output, total_cache_read, total_cache_write, total_cost)
     }
 
     fn status_line(&self) -> String {
@@ -434,6 +574,7 @@ impl FullscreenController {
         }
 
         self.streaming = false;
+        self.publish_footer();
         self.publish_status();
         Ok(())
     }

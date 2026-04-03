@@ -19,11 +19,19 @@ use super::{
     viewport::ViewportState,
 };
 
+#[derive(Clone, Debug, Default)]
+pub struct FullscreenFooterData {
+    pub line1: String,
+    pub line2_left: String,
+    pub line2_right: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct FullscreenAppConfig {
     pub title: String,
     pub input_placeholder: String,
     pub status_line: String,
+    pub footer: FullscreenFooterData,
     pub transcript: Transcript,
 }
 
@@ -35,6 +43,7 @@ impl Default for FullscreenAppConfig {
             status_line:
                 "Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript"
                     .to_string(),
+            footer: FullscreenFooterData::default(),
             transcript: Transcript::new(),
         }
     }
@@ -55,6 +64,7 @@ pub enum FullscreenNoteLevel {
 #[derive(Clone, Debug)]
 pub enum FullscreenCommand {
     SetStatusLine(String),
+    SetFooter(FullscreenFooterData),
     PushNote {
         level: FullscreenNoteLevel,
         text: String,
@@ -137,6 +147,7 @@ pub struct FullscreenState {
     pub input_placeholder: String,
     pub status_line: String,
     pub transcript: Transcript,
+    pub footer: FullscreenFooterData,
     pub input: String,
     pub cursor: usize,
     pub size: Size,
@@ -162,6 +173,7 @@ impl FullscreenState {
             input_placeholder: config.input_placeholder,
             status_line: config.status_line,
             transcript: config.transcript,
+            footer: config.footer,
             input: String::new(),
             cursor: 0,
             size,
@@ -301,6 +313,10 @@ impl FullscreenState {
         }
     }
 
+    pub(crate) fn has_active_turn(&self) -> bool {
+        self.active_turn.is_some()
+    }
+
     pub fn prepare_for_render(&mut self) {
         self.refresh_projection(!self.viewport.auto_follow);
     }
@@ -368,6 +384,11 @@ impl FullscreenState {
         match command {
             FullscreenCommand::SetStatusLine(status) => {
                 self.status_line = status;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::SetFooter(footer) => {
+                self.footer = footer;
                 self.dirty = true;
                 RenderIntent::Render
             }

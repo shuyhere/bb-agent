@@ -18,6 +18,7 @@ pub struct FullscreenLayout {
     pub transcript: Rect,
     pub status: Rect,
     pub input: Rect,
+    pub footer: Rect,
 }
 
 pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLayout {
@@ -26,8 +27,9 @@ pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLay
     }
 
     let header_height = if size.height >= 8 { 3 } else { 0 };
-    let status_height = 1u16.min(size.height.saturating_sub(header_height));
-    let available_for_input = size.height.saturating_sub(header_height + status_height);
+    let footer_height = if size.height >= 14 { 2 } else { 0 };
+    let status_height = 1u16.min(size.height.saturating_sub(header_height + footer_height));
+    let available_for_input = size.height.saturating_sub(header_height + status_height + footer_height);
     let min_input_height = available_for_input.min(3);
     let max_input_height = available_for_input.min(10).max(min_input_height);
     let requested_input_height = requested_input_lines as u16 + 2;
@@ -38,7 +40,7 @@ pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLay
     };
     let transcript_height = size
         .height
-        .saturating_sub(header_height + status_height + input_height);
+        .saturating_sub(header_height + status_height + input_height + footer_height);
 
     let header = Rect {
         x: 0,
@@ -64,12 +66,19 @@ pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLay
         width: size.width,
         height: input_height,
     };
+    let footer = Rect {
+        x: 0,
+        y: header_height + transcript_height + status_height + input_height,
+        width: size.width,
+        height: footer_height,
+    };
 
     FullscreenLayout {
         header,
         transcript,
         status,
         input,
+        footer,
     }
 }
 
@@ -88,13 +97,16 @@ mod tests {
         );
 
         assert_eq!(layout.header.height, 3);
-        assert_eq!(layout.input.y + layout.input.height, 30);
+        assert_eq!(layout.footer.height, 2);
+        assert_eq!(layout.footer.y + layout.footer.height, 30);
+        assert_eq!(layout.input.y + layout.input.height, layout.footer.y);
         assert_eq!(layout.status.y + layout.status.height, layout.input.y);
         assert_eq!(
             layout.header.height
                 + layout.transcript.height
                 + layout.status.height
-                + layout.input.height,
+                + layout.input.height
+                + layout.footer.height,
             30
         );
     }
@@ -110,6 +122,7 @@ mod tests {
         );
 
         assert_eq!(layout.header.height, 3);
+        assert_eq!(layout.footer.height, 0);
         assert_eq!(layout.input.height, 8);
         assert_eq!(layout.transcript.height, 0);
     }
@@ -125,6 +138,7 @@ mod tests {
         );
 
         assert_eq!(layout.header.height, 0);
+        assert_eq!(layout.footer.height, 0);
         assert_eq!(layout.input.y + layout.input.height, 6);
         assert_eq!(layout.status.y + layout.status.height, layout.input.y);
     }

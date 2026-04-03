@@ -1,5 +1,6 @@
 use unicode_width::UnicodeWidthChar;
 
+use crate::theme::theme;
 use crate::utils::{pad_to_width, truncate_to_width, visible_width};
 
 use super::{
@@ -92,7 +93,7 @@ pub(crate) fn measure_input(text: &str, cursor: usize, width: usize) -> InputWra
 }
 
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
-    let input_inner_width = state.size.width.saturating_sub(2).max(1) as usize;
+    let input_inner_width = state.size.width.max(1) as usize;
     let input_wrap = measure_input(&state.input, state.cursor, input_inner_width);
     let layout = compute_layout(state.size, input_wrap.lines.len());
 
@@ -132,6 +133,14 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
         layout.input.height as usize,
         input_wrap,
     );
+    render_footer(state, layout.footer.width as usize, layout.footer.height as usize)
+        .into_iter()
+        .enumerate()
+        .for_each(|(offset, line)| {
+            if let Some(slot) = lines.get_mut(layout.footer.y as usize + offset) {
+                *slot = line;
+            }
+        });
     input_lines
         .into_iter()
         .enumerate()
@@ -184,29 +193,86 @@ fn render_transcript(
         lines.push(blank_line(width));
     }
 
-    lines.extend(visible_rows.iter().map(|row| {
-        let body = pad_to_width(&truncate_to_width(&row.text, width), width);
-        if focused_block == Some(row.block_id) && row.kind == ProjectedRowKind::Header {
-            format!("\x1b[7m{body}\x1b[0m")
-        } else {
-            body
-        }
-    }));
+    lines.extend(
+        visible_rows
+            .iter()
+            .map(|row| render_transcript_row(state, row, width, focused_block)),
+    );
 
     lines.truncate(height);
     lines
 }
 
+fn render_transcript_row(
+    state: &FullscreenState,
+    row: &super::projection::ProjectedRow,
+    width: usize,
+    focused_block: Option<super::transcript::BlockId>,
+) -> String {
+    let kind = state.transcript.block(row.block_id).map(|block| block.kind.clone());
+    let t = theme();
+
+    let plain = match (&state.mode, row.kind, kind.as_ref()) {
+        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::UserMessage)) => String::new(),
+        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::AssistantMessage)) => String::new(),
+        (FullscreenMode::Normal, ProjectedRowKind::Header, Some(super::transcript::BlockKind::Thinking)) => String::new(),
+        _ => row.text.clone(),
+    };
+
+    let body = pad_to_width(&truncate_to_width(&plain, width), width);
+    if body.trim().is_empty() {
+        return blank_line(width);
+    }
+
+    if focused_block == Some(row.block_id) && row.kind == ProjectedRowKind::Header {
+        return format!("\x1b[7m{body}\x1b[0m");
+    }
+
+    match kind {
+        Some(super::transcript::BlockKind::UserMessage) => {
+            format!("{}{body}{}", t.user_msg_bg, t.reset)
+        }
+        Some(super::transcript::BlockKind::Thinking) => {
+            format!("{}{}{body}{}", t.italic, t.thinking_text, t.reset)
+        }
+        Some(super::transcript::BlockKind::ToolUse) => {
+            let content = if row.kind == ProjectedRowKind::Header {
+                format!("{}{}{}", t.bold, body, t.reset)
+            } else {
+                body
+            };
+            format!("{}{content}{}", t.tool_pending_bg, t.reset)
+        }
+        Some(super::transcript::BlockKind::ToolResult) => {
+            format!("{}{body}{}", t.tool_success_bg, t.reset)
+        }
+        Some(super::transcript::BlockKind::SystemNote) => {
+            format!("{}{}{}{}", t.dim, t.yellow, body, t.reset)
+        }
+        _ => body,
+    }
+}
+
 fn render_status(state: &FullscreenState, width: usize) -> String {
+    let t = theme();
     let spinner = match state.tick_count % 4 {
         0 => "|",
         1 => "/",
         2 => "-",
         _ => "\\",
     };
-    let mode = match state.mode {
-        FullscreenMode::Normal => "normal".to_string(),
-        FullscreenMode::Transcript => "transcript".to_string(),
+    let text = match state.mode {
+        FullscreenMode::Normal => {
+            if state.has_active_turn() {
+                format!("{spinner} {}", state.status_line)
+            } else {
+                state.status_line.clone()
+            }
+        }
+        FullscreenMode::Transcript => {
+            let follow = if state.viewport.auto_follow { "follow on" } else { "follow paused" };
+            format!("{} • {}", state.status_line, follow)
+        }
         FullscreenMode::Search => {
             if state.search.query.is_empty() {
                 "search /".to_string()
@@ -215,21 +281,12 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
             }
         }
     };
-    let follow = if state.viewport.auto_follow {
-        "follow on"
-    } else {
-        "follow paused"
-    };
-    let text = format!(
-        " {spinner} [{mode}] {} • {} • size {}x{} • row {} of {} ",
-        state.status_line,
-        follow,
-        state.size.width,
-        state.size.height,
-        state.viewport.viewport_top,
-        state.viewport.total_projected_rows,
-    );
-    pad_to_width(&truncate_to_width(&text, width), width)
+    format!(
+        "{}{}{}",
+        t.dim,
+        pad_to_width(&truncate_to_width(&text, width), width),
+        t.reset
+    )
 }
 
 fn render_input(
@@ -253,13 +310,11 @@ fn render_input(
         cursor_col,
     } = input_wrap;
 
-    let inner_width = width.saturating_sub(2).max(1);
+    let inner_width = width.max(1);
     let inner_height = height.saturating_sub(2);
-    let top = format_border_top(width);
-    let bottom = format_border_bottom(width);
 
     let display_lines = if state.input.is_empty() {
-        vec![state.input_placeholder.clone()]
+        vec![format!("{}{}{}", theme().dim, state.input_placeholder, theme().reset)]
     } else {
         wrapped_lines
     };
@@ -270,27 +325,28 @@ fn render_input(
         .min(max_start);
     let visible_end = (visible_start + inner_height).min(display_lines.len());
     let visible_slice = &display_lines[visible_start..visible_end];
+    let lines_below = display_lines.len().saturating_sub(visible_end);
 
     let mut lines = Vec::with_capacity(height);
-    lines.push(top);
+    lines.push(format_border_top(width, visible_start));
 
     for row in 0..inner_height {
         let content = visible_slice.get(row).map(String::as_str).unwrap_or("");
         let body = truncate_to_width(content, inner_width);
-        lines.push(format!("│{}│", pad_to_width(&body, inner_width)));
+        lines.push(pad_to_width(&body, inner_width));
     }
 
-    lines.push(bottom);
+    lines.push(format_border_bottom(width, lines_below));
 
     let cursor = if state.mode != FullscreenMode::Normal {
         None
     } else if state.input.is_empty() {
-        Some((1, input_y + 1))
+        Some((0, input_y + 1))
     } else {
         let visible_cursor_row = cursor_row.saturating_sub(visible_start);
         if visible_cursor_row < inner_height {
             Some((
-                (1 + cursor_col.min(inner_width)) as u16,
+                cursor_col.min(inner_width) as u16,
                 input_y + 1 + visible_cursor_row as u16,
             ))
         } else {
@@ -301,24 +357,65 @@ fn render_input(
     (lines, cursor)
 }
 
-fn format_border_top(width: usize) -> String {
-    if width <= 2 {
-        return "─".repeat(width);
+fn render_footer(state: &FullscreenState, width: usize, height: usize) -> Vec<String> {
+    if width == 0 || height == 0 {
+        return Vec::new();
     }
 
-    let title = " Input ";
-    let remaining = width.saturating_sub(2 + visible_width(title));
-    format!("┌{}{}┐", title, "─".repeat(remaining))
+    let t = theme();
+    let mut lines = Vec::with_capacity(height);
+    let line1 = if state.footer.line1.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}{}", t.dim, truncate_to_width(&state.footer.line1, width), t.reset)
+    };
+    lines.push(pad_to_width(&line1, width));
+
+    let second = if state.footer.line2_right.is_empty() {
+        state.footer.line2_left.clone()
+    } else {
+        let left = truncate_to_width(&state.footer.line2_left, width);
+        let right = truncate_to_width(&state.footer.line2_right, width);
+        let used = visible_width(&left) + visible_width(&right);
+        if used + 2 <= width {
+            let gap = " ".repeat(width - used);
+            format!("{left}{gap}{right}")
+        } else {
+            truncate_to_width(&format!("{left}  {right}"), width)
+        }
+    };
+    if height > 1 {
+        lines.push(format!("{}{}{}", t.dim, pad_to_width(&second, width), t.reset));
+    }
+    lines.truncate(height);
+    while lines.len() < height {
+        lines.push(blank_line(width));
+    }
+    lines
 }
 
-fn format_border_bottom(width: usize) -> String {
-    if width <= 2 {
-        return "─".repeat(width);
-    }
+fn format_border_top(width: usize, lines_above: usize) -> String {
+    let t = theme();
+    let border = if lines_above > 0 {
+        let indicator = format!("─── ↑ {} more ", lines_above);
+        let remaining = width.saturating_sub(visible_width(&indicator));
+        format!("{}{}", indicator, "─".repeat(remaining))
+    } else {
+        "─".repeat(width)
+    };
+    format!("{}{}{}", t.border_accent, border, t.reset)
+}
 
-    let hint = " Enter submit • Shift+Enter newline ";
-    let remaining = width.saturating_sub(2 + visible_width(hint));
-    format!("└{}{}┘", hint, "─".repeat(remaining))
+fn format_border_bottom(width: usize, lines_below: usize) -> String {
+    let t = theme();
+    let border = if lines_below > 0 {
+        let indicator = format!("─── ↓ {} more ", lines_below);
+        let remaining = width.saturating_sub(visible_width(&indicator));
+        format!("{}{}", indicator, "─".repeat(remaining))
+    } else {
+        "─".repeat(width)
+    };
+    format!("{}{}{}", t.border_accent, border, t.reset)
 }
 
 fn blank_line(width: usize) -> String {

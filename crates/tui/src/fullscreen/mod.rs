@@ -15,7 +15,7 @@ mod transcript;
 mod viewport;
 
 pub use runtime::{
-    FullscreenAppConfig, FullscreenCommand, FullscreenNoteLevel, FullscreenOutcome, run,
-    run_with_channels,
+    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
+    FullscreenOutcome, run, run_with_channels,
 };
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
