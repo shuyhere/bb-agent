@@ -131,44 +131,35 @@ impl FullscreenController {
 
     fn show_startup_resources(&mut self) {
         let bootstrap = &self.runtime_host.bootstrap().resource_bootstrap;
+        tracing::debug!(
+            "show_startup_resources: skills={} prompts={} extensions={}",
+            bootstrap.skills.len(),
+            bootstrap.prompts.len(),
+            bootstrap.extensions.extensions.len()
+        );
         let mut sections: Vec<String> = Vec::new();
 
-        // Skills section (pi-style)
+        // Skills section (pi-style: show path grouped by scope)
         if !bootstrap.skills.is_empty() {
-            let mut skill_lines = vec!["Skills".to_string()];
+            let mut skill_lines = vec!["[Skills]".to_string()];
             for skill in &bootstrap.skills {
-                let scope = super::format_source_scope(&skill.info.source_info.source);
-                let desc = if skill.info.description.is_empty() {
-                    String::new()
-                } else {
-                    format!("  {}", skill.info.description)
-                };
-                skill_lines.push(format!(
-                    "  /skill:{}{}{}",
-                    skill.info.name,
-                    desc,
-                    if scope.is_empty() { String::new() } else { format!(" ({})", scope) }
-                ));
+                let path = super::shorten_path(&skill.info.source_info.path);
+                skill_lines.push(format!("  /skill:{}", skill.info.name));
+                skill_lines.push(format!("    {}", path));
+                if !skill.info.description.is_empty() {
+                    skill_lines.push(format!("    {}", skill.info.description));
+                }
             }
             sections.push(skill_lines.join("\n"));
         }
 
         // Prompts section
         if !bootstrap.prompts.is_empty() {
-            let mut prompt_lines = vec!["Prompts".to_string()];
+            let mut prompt_lines = vec!["[Prompts]".to_string()];
             for prompt in &bootstrap.prompts {
-                let scope = super::format_source_scope(&prompt.info.source_info.source);
-                let desc = if prompt.info.description.is_empty() {
-                    String::new()
-                } else {
-                    format!("  {}", prompt.info.description)
-                };
-                prompt_lines.push(format!(
-                    "  /{}{}{}",
-                    prompt.info.name,
-                    desc,
-                    if scope.is_empty() { String::new() } else { format!(" ({})", scope) }
-                ));
+                let path = super::shorten_path(&prompt.info.source_info.path);
+                prompt_lines.push(format!("  /{}", prompt.info.name));
+                prompt_lines.push(format!("    {}", path));
             }
             sections.push(prompt_lines.join("\n"));
         }
@@ -176,24 +167,33 @@ impl FullscreenController {
         // Extensions section
         let extensions = &bootstrap.extensions;
         if !extensions.extensions.is_empty() {
-            let mut ext_lines = vec!["Extensions".to_string()];
+            let mut ext_lines = vec!["[Extensions]".to_string()];
             for ext in &extensions.extensions {
                 ext_lines.push(format!("  {}", super::shorten_path(&ext.path)));
             }
-            for cmd in &extensions.registered_commands {
-                ext_lines.push(format!("    /{:<20} {}", cmd.invocation_name, cmd.description));
+            if !extensions.registered_commands.is_empty() {
+                for cmd in &extensions.registered_commands {
+                    ext_lines.push(format!("  /{:<24} {}", cmd.invocation_name, cmd.description));
+                }
             }
-            for tool in &extensions.registered_tools {
-                ext_lines.push(format!("    tool: {}", tool.definition.name));
+            if !extensions.registered_tools.is_empty() {
+                for tool in &extensions.registered_tools {
+                    ext_lines.push(format!("  tool: {}", tool.definition.name));
+                }
             }
             sections.push(ext_lines.join("\n"));
         }
 
         if !sections.is_empty() {
+            let text = sections.join("\n\n");
+            tracing::info!("Startup resources: {} sections, {} chars", sections.len(), text.len());
             self.send_command(FullscreenCommand::PushNote {
                 level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
-                text: sections.join("\n\n"),
+                text,
             });
+        } else {
+            tracing::info!("No startup resources to display (skills={}, prompts={}, ext={})",
+                bootstrap.skills.len(), bootstrap.prompts.len(), bootstrap.extensions.extensions.len());
         }
     }
 

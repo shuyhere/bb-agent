@@ -1,7 +1,9 @@
+use super::types::FullscreenNoteLevel;
 use std::time::{Duration, Instant};
 
 use bb_core::types::ContentBlock;
 use crossterm::event::{
+
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
@@ -995,4 +997,21 @@ fn mouse_scroll_does_not_enter_transcript_mode() {
     });
     assert_eq!(state.mode, FullscreenMode::Normal, "scroll should not enter transcript");
     assert!(!state.viewport.auto_follow, "auto_follow should be off after scroll up");
+}
+
+#[test]
+fn push_note_creates_visible_content_in_frame() {
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size { width: 80, height: 24 },
+    );
+    let _ = state.apply_command(FullscreenCommand::PushNote {
+        level: FullscreenNoteLevel::Status,
+        text: "[Skills]\n  /skill:demo-review\n    ~/skills/demo/SKILL.md".to_string(),
+    });
+    state.prepare_for_render();
+    let frame = build_frame(&state);
+    let all_text = frame.lines.join("\n");
+    assert!(all_text.contains("Skills"), "frame should show Skills header: got {:?}", &frame.lines[..5.min(frame.lines.len())]);
+    assert!(all_text.contains("/skill:demo-review"), "frame should show skill name");
 }
