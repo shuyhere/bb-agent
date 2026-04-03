@@ -67,6 +67,8 @@ pub enum FullscreenNoteLevel {
 pub enum FullscreenCommand {
     SetStatusLine(String),
     SetFooter(FullscreenFooterData),
+    SetTranscript(Transcript),
+    SetInput(String),
     OpenSelectMenu {
         menu_id: String,
         title: String,
@@ -459,6 +461,9 @@ impl FullscreenState {
 
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
+        if self.should_animate_status() {
+            self.dirty = true;
+        }
     }
 
     pub fn on_resize(&mut self, width: u16, height: u16) {
@@ -637,6 +642,25 @@ impl FullscreenState {
             }
             FullscreenCommand::SetFooter(footer) => {
                 self.footer = footer;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::SetTranscript(transcript) => {
+                self.transcript = transcript;
+                self.active_turn = None;
+                self.focused_block = None;
+                self.search = FullscreenSearchState::default();
+                self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
+                self.projection_dirty = true;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::SetInput(input) => {
+                self.input = input;
+                self.cursor = self.input.len();
+                self.slash_menu = None;
+                self.select_menu = None;
                 self.dirty = true;
                 RenderIntent::Render
             }
@@ -1071,6 +1095,13 @@ impl FullscreenState {
 
         self.status_line = self.mode_help_text();
         self.dirty = true;
+    }
+
+    fn should_animate_status(&self) -> bool {
+        matches!(self.mode, FullscreenMode::Normal)
+            && (self.has_active_turn()
+                || self.status_line.trim() == "Working..."
+                || self.status_line.starts_with("Retrying ("))
     }
 
     fn mode_help_text(&self) -> String {
@@ -1705,6 +1736,10 @@ pub async fn run_with_channels(
             }
             _ = tick.tick() => {
                 state.on_tick();
+                if state.dirty {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.clear();
+                }
             }
         }
 

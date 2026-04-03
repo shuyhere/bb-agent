@@ -1,15 +1,15 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use anyhow::Result;
 use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
 use bb_core::agent_session_runtime::{AgentSessionRuntimeHost, RuntimeModelRef};
 use bb_core::settings::Settings;
-use bb_core::types::{AgentMessage, ContentBlock, EntryBase, EntryId, SessionEntry, UserMessage};
+use bb_core::types::{AgentMessage, AssistantContent, ContentBlock, EntryBase, EntryId, SessionEntry, StopReason, UserMessage};
 use bb_provider::anthropic::AnthropicProvider;
 use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
-use bb_session::store;
+use bb_session::{compaction, context, store, tree};
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{
     FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel, Transcript,
@@ -125,6 +125,20 @@ fn format_tokens(count: u64) -> String {
 }
 
 const FULLSCREEN_MENU_PREFIX: &str = "__bb_fullscreen_menu__\t";
+const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
+const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
+const RESUME_SESSION_MENU_ID: &str = "resume-session";
+const TREE_ENTRY_MENU_ID: &str = "tree-entry";
+const FORK_ENTRY_MENU_ID: &str = "fork-entry";
+const LOGIN_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "openai-codex",
+    "google",
+    "groq",
+    "xai",
+    "openrouter",
+];
+const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
 fn parse_fullscreen_menu_selection(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix(FULLSCREEN_MENU_PREFIX)?;
@@ -147,6 +161,208 @@ fn persist_fullscreen_retry_settings(
     settings.retry.max_delay_ms = max_delay_ms.max(settings.retry.base_delay_ms);
     settings.save_global()?;
     Ok(())
+}
+
+fn text_from_blocks(blocks: &[ContentBlock], separator: &str) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn format_assistant_text(message: &bb_core::types::AssistantMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_tool_arguments(arguments: &serde_json::Value) -> String {
+    match arguments {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other)
+            .unwrap_or_else(|_| other.to_string()),
+    }
+}
+
+fn format_tool_result_blocks(blocks: &[ContentBlock]) -> String {
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => parts.push(text.clone()),
+            ContentBlock::Image { mime_type, .. } => {
+                parts.push(format!("[image: {mime_type}]"));
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn build_fullscreen_transcript(conn: &rusqlite::Connection, session_id: &str) -> Result<Transcript> {
+    let session_context = context::build_context(conn, session_id)?;
+    let mut transcript = Transcript::new();
+    let mut tool_map: HashMap<String, bb_tui::fullscreen::BlockId> = HashMap::new();
+    let mut last_assistant_root: Option<bb_tui::fullscreen::BlockId> = None;
+
+    for message in session_context.messages {
+        match message {
+            AgentMessage::User(user) => {
+                transcript.append_root_block(
+                    bb_tui::fullscreen::NewBlock::new(bb_tui::fullscreen::BlockKind::UserMessage, "prompt")
+                        .with_content(text_from_blocks(&user.content, "\n")),
+                );
+                last_assistant_root = None;
+            }
+            AgentMessage::Assistant(message) => {
+                let content = format_assistant_text(&message);
+                let root_id = transcript.append_root_block(
+                    bb_tui::fullscreen::NewBlock::new(
+                        bb_tui::fullscreen::BlockKind::AssistantMessage,
+                        match message.stop_reason {
+                            StopReason::Aborted => "aborted",
+                            StopReason::Error => "error",
+                            _ => "assistant",
+                        },
+                    )
+                    .with_content(content),
+                );
+                for block in &message.content {
+                    match block {
+                        AssistantContent::Thinking { thinking } => {
+                            let _ = transcript.append_child_block(
+                                root_id,
+                                bb_tui::fullscreen::NewBlock::new(
+                                    bb_tui::fullscreen::BlockKind::Thinking,
+                                    "thinking",
+                                )
+                                .with_content(thinking.clone()),
+                            );
+                        }
+                        AssistantContent::ToolCall { id, name, arguments } => {
+                            let tool_id = transcript
+                                .append_child_block(
+                                    root_id,
+                                    bb_tui::fullscreen::NewBlock::new(
+                                        bb_tui::fullscreen::BlockKind::ToolUse,
+                                        name.clone(),
+                                    )
+                                    .with_content(format_tool_arguments(arguments))
+                                    .with_expandable(true),
+                                )?;
+                            tool_map.insert(id.clone(), tool_id);
+                        }
+                        AssistantContent::Text { .. } => {}
+                    }
+                }
+                last_assistant_root = Some(root_id);
+            }
+            AgentMessage::ToolResult(result) => {
+                let body = format_tool_result_blocks(&result.content);
+                if let Some(tool_use_id) = tool_map.get(&result.tool_call_id).copied() {
+                    let _ = transcript.append_child_block(
+                        tool_use_id,
+                        bb_tui::fullscreen::NewBlock::new(
+                            bb_tui::fullscreen::BlockKind::ToolResult,
+                            if result.is_error { "error" } else { "output" },
+                        )
+                        .with_content(body),
+                    );
+                } else if let Some(root_id) = last_assistant_root {
+                    let tool_use_id = transcript.append_child_block(
+                        root_id,
+                        bb_tui::fullscreen::NewBlock::new(
+                            bb_tui::fullscreen::BlockKind::ToolUse,
+                            result.tool_name.clone(),
+                        )
+                        .with_expandable(true),
+                    )?;
+                    let _ = transcript.append_child_block(
+                        tool_use_id,
+                        bb_tui::fullscreen::NewBlock::new(
+                            bb_tui::fullscreen::BlockKind::ToolResult,
+                            if result.is_error { "error" } else { "output" },
+                        )
+                        .with_content(body),
+                    );
+                } else {
+                    transcript.append_root_block(
+                        bb_tui::fullscreen::NewBlock::new(
+                            bb_tui::fullscreen::BlockKind::SystemNote,
+                            if result.is_error { "error" } else { "tool" },
+                        )
+                        .with_content(body),
+                    );
+                }
+            }
+            AgentMessage::BashExecution(message) => {
+                let tool_id = transcript.append_root_block(
+                    bb_tui::fullscreen::NewBlock::new(
+                        bb_tui::fullscreen::BlockKind::ToolUse,
+                        message.command.clone(),
+                    )
+                    .with_expandable(true),
+                );
+                let output = if message.output.is_empty() {
+                    String::new()
+                } else {
+                    message.output
+                };
+                let _ = transcript.append_child_block(
+                    tool_id,
+                    bb_tui::fullscreen::NewBlock::new(
+                        bb_tui::fullscreen::BlockKind::ToolResult,
+                        if message.cancelled { "cancelled" } else { "output" },
+                    )
+                    .with_content(output),
+                );
+                last_assistant_root = None;
+            }
+            AgentMessage::Custom(message) => {
+                if message.display {
+                    transcript.append_root_block(
+                        bb_tui::fullscreen::NewBlock::new(
+                            bb_tui::fullscreen::BlockKind::SystemNote,
+                            message.custom_type,
+                        )
+                        .with_content(text_from_blocks(&message.content, "\n")),
+                    );
+                }
+                last_assistant_root = None;
+            }
+            AgentMessage::BranchSummary(message) => {
+                transcript.append_root_block(
+                    bb_tui::fullscreen::NewBlock::new(
+                        bb_tui::fullscreen::BlockKind::SystemNote,
+                        "branch summary",
+                    )
+                    .with_content(message.summary),
+                );
+                last_assistant_root = None;
+            }
+            AgentMessage::CompactionSummary(message) => {
+                transcript.append_root_block(
+                    bb_tui::fullscreen::NewBlock::new(
+                        bb_tui::fullscreen::BlockKind::SystemNote,
+                        "compaction",
+                    )
+                    .with_content(message.summary),
+                );
+                last_assistant_root = None;
+            }
+        }
+    }
+
+    Ok(transcript)
 }
 
 struct FullscreenController {
@@ -249,8 +465,36 @@ impl FullscreenController {
                 });
                 Ok(true)
             }
+            SlashResult::NewSession => {
+                self.handle_new_session();
+                Ok(true)
+            }
+            SlashResult::Compact(instructions) => {
+                self.handle_compact_command(instructions.as_deref())?;
+                Ok(true)
+            }
             SlashResult::ModelSelect(search) => {
                 self.handle_model_selection_command(search.as_deref())?;
+                Ok(true)
+            }
+            SlashResult::Resume => {
+                self.open_resume_menu()?;
+                Ok(true)
+            }
+            SlashResult::Tree => {
+                self.open_tree_menu()?;
+                Ok(true)
+            }
+            SlashResult::Fork => {
+                self.open_fork_menu()?;
+                Ok(true)
+            }
+            SlashResult::Login => {
+                self.open_login_provider_menu();
+                Ok(true)
+            }
+            SlashResult::Logout => {
+                self.open_logout_provider_menu();
                 Ok(true)
             }
             SlashResult::SetName(name) => {
@@ -287,16 +531,9 @@ impl FullscreenController {
                 ));
                 Ok(true)
             }
-            SlashResult::NewSession
-            | SlashResult::Compact(_)
-            | SlashResult::Resume
-            | SlashResult::Tree
-            | SlashResult::Fork
-            | SlashResult::Login
-            | SlashResult::Logout
-            | SlashResult::Handled => {
+            SlashResult::Handled => {
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
-                    "{text} is not wired in fullscreen yet; use the legacy interactive mode for that flow"
+                    "Handled local command: {text}"
                 )));
                 Ok(true)
             }
@@ -418,6 +655,302 @@ impl FullscreenController {
         });
     }
 
+    fn rebuild_current_transcript(&mut self) -> Result<()> {
+        let transcript = build_fullscreen_transcript(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        )?;
+        self.send_command(FullscreenCommand::SetTranscript(transcript));
+        Ok(())
+    }
+
+    fn handle_new_session(&mut self) {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        self.session_setup.session_id = new_id.clone();
+        self.session_setup.session_created = false;
+        self.options.session_id = Some(new_id);
+        let _ = self.runtime_host.session_mut().clear_queue();
+        self.queued_prompts.clear();
+        self.retry_status = None;
+        self.send_command(FullscreenCommand::SetTranscript(Transcript::new()));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.publish_footer();
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: "New session started".to_string(),
+        });
+    }
+
+    fn open_resume_menu(&mut self) -> Result<()> {
+        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
+        let sessions = store::list_sessions(&self.session_setup.conn, &cwd)?;
+        if sessions.is_empty() {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "No sessions found in this directory.".to_string(),
+            ));
+            return Ok(());
+        }
+        let items = sessions
+            .into_iter()
+            .map(|row| SelectItem {
+                label: row
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| row.session_id.chars().take(8).collect()),
+                detail: Some(format!("{} entries • {}", row.entry_count, row.updated_at)),
+                value: row.session_id,
+            })
+            .collect();
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: RESUME_SESSION_MENU_ID.to_string(),
+            title: "Resume session".to_string(),
+            items,
+        });
+        Ok(())
+    }
+
+    fn handle_resume_session(&mut self, session_id: &str) -> Result<()> {
+        self.session_setup.session_id = session_id.to_string();
+        self.session_setup.session_created = true;
+        self.options.session_id = Some(session_id.to_string());
+        let _ = self.runtime_host.session_mut().clear_queue();
+        self.rebuild_current_transcript()?;
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.publish_footer();
+        self.send_command(FullscreenCommand::SetStatusLine("Resumed session".to_string()));
+        Ok(())
+    }
+
+    fn entry_preview_text(entry: &SessionEntry) -> String {
+        match entry {
+            SessionEntry::Message { message: AgentMessage::User(user), .. } => {
+                text_from_blocks(&user.content, " ")
+            }
+            SessionEntry::Message { message: AgentMessage::Assistant(msg), .. } => {
+                let text = format_assistant_text(msg);
+                if text.is_empty() {
+                    "assistant".to_string()
+                } else {
+                    text
+                }
+            }
+            SessionEntry::Compaction { summary, .. } => summary.clone(),
+            SessionEntry::BranchSummary { summary, .. } => summary.clone(),
+            SessionEntry::CustomMessage { custom_type, .. } => custom_type.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn open_tree_menu(&mut self) -> Result<()> {
+        let tree_nodes = tree::get_tree(&self.session_setup.conn, &self.session_setup.session_id)?;
+        if tree_nodes.is_empty() {
+            self.send_command(FullscreenCommand::SetStatusLine("No entries in session".to_string()));
+            return Ok(());
+        }
+        let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+        let mut previews = HashMap::new();
+        for row in &entries {
+            if let Ok(entry) = store::parse_entry(row) {
+                previews.insert(row.entry_id.clone(), Self::entry_preview_text(&entry));
+            }
+        }
+        let leaf_id = store::get_session(&self.session_setup.conn, &self.session_setup.session_id)?
+            .and_then(|row| row.leaf_id);
+
+        fn flatten(
+            node: &bb_session::tree::TreeNode,
+            depth: usize,
+            previews: &HashMap<String, String>,
+            leaf_id: Option<&str>,
+            out: &mut Vec<SelectItem>,
+        ) {
+            let prefix = if depth == 0 { String::new() } else { format!("{}", "  ".repeat(depth)) };
+            let marker = if leaf_id == Some(node.entry_id.as_str()) { "* " } else { "" };
+            let preview = previews
+                .get(&node.entry_id)
+                .cloned()
+                .unwrap_or_else(|| node.entry_type.clone());
+            out.push(SelectItem {
+                label: format!("{prefix}{marker}{preview}"),
+                detail: Some(node.entry_type.clone()),
+                value: node.entry_id.clone(),
+            });
+            for child in &node.children {
+                flatten(child, depth + 1, previews, leaf_id, out);
+            }
+        }
+
+        let mut items = Vec::new();
+        for node in &tree_nodes {
+            flatten(node, 0, &previews, leaf_id.as_deref(), &mut items);
+        }
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: TREE_ENTRY_MENU_ID.to_string(),
+            title: "Session tree".to_string(),
+            items,
+        });
+        Ok(())
+    }
+
+    fn handle_tree_navigate(&mut self, entry_id: &str) -> Result<()> {
+        store::set_leaf(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            Some(entry_id),
+        )?;
+        self.rebuild_current_transcript()?;
+        self.publish_footer();
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Navigated to selected point".to_string(),
+        ));
+        Ok(())
+    }
+
+    fn open_fork_menu(&mut self) -> Result<()> {
+        let rows = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+        let items: Vec<SelectItem> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let entry = store::parse_entry(&row).ok()?;
+                match entry {
+                    SessionEntry::Message {
+                        base,
+                        message: AgentMessage::User(user),
+                        ..
+                    } => {
+                        let text = text_from_blocks(&user.content, " ").trim().replace('\n', " ");
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(SelectItem {
+                                label: text.clone(),
+                                detail: None,
+                                value: base.id.0,
+                            })
+                        }
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        if items.is_empty() {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "No messages to fork from".to_string(),
+            ));
+            return Ok(());
+        }
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: FORK_ENTRY_MENU_ID.to_string(),
+            title: "Select a user message to fork from".to_string(),
+            items,
+        });
+        Ok(())
+    }
+
+    fn handle_fork_from_entry(&mut self, entry_id: &str) -> Result<()> {
+        let row = store::get_entry(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            entry_id,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
+        let entry = store::parse_entry(&row)?;
+        let editor_text = match entry {
+            SessionEntry::Message {
+                message: AgentMessage::User(user),
+                ..
+            } => text_from_blocks(&user.content, "\n"),
+            _ => String::new(),
+        };
+        store::set_leaf(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            row.parent_id.as_deref(),
+        )?;
+        self.rebuild_current_transcript()?;
+        self.publish_footer();
+        self.send_command(FullscreenCommand::SetInput(editor_text));
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Forked — edit and send to create a new branch".to_string(),
+        ));
+        Ok(())
+    }
+
+    fn handle_compact_command(&mut self, instructions: Option<&str>) -> Result<()> {
+        let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+        let merged_settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+        let settings = bb_core::types::CompactionSettings {
+            enabled: merged_settings.compaction.enabled,
+            reserve_tokens: merged_settings.compaction.reserve_tokens,
+            keep_recent_tokens: merged_settings.compaction.keep_recent_tokens,
+        };
+        let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
+        let text = match compaction::prepare_compaction(&entries, &settings) {
+            Some(prep) => {
+                let mut text = format!(
+                    "Compaction prepared ({total_tokens} estimated tokens, {} messages to summarize, {} kept)",
+                    prep.messages_to_summarize.len(),
+                    prep.kept_messages.len()
+                );
+                if let Some(inst) = instructions.filter(|s| !s.trim().is_empty()) {
+                    text.push_str(&format!("\nInstructions: {inst}"));
+                }
+                text
+            }
+            None => format!(
+                "Nothing to compact ({total_tokens} estimated tokens, {} entries)",
+                entries.len()
+            ),
+        };
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text,
+        });
+        Ok(())
+    }
+
+    fn open_login_provider_menu(&mut self) {
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: LOGIN_PROVIDER_MENU_ID.to_string(),
+            title: "Login provider".to_string(),
+            items: LOGIN_PROVIDERS
+                .iter()
+                .map(|provider| SelectItem {
+                    label: (*provider).to_string(),
+                    detail: Some(if OAUTH_PROVIDERS.contains(provider) {
+                        "OAuth"
+                    } else {
+                        "API key"
+                    }
+                    .to_string()),
+                    value: (*provider).to_string(),
+                })
+                .collect(),
+        });
+    }
+
+    fn open_logout_provider_menu(&mut self) {
+        let providers = crate::login::authenticated_providers();
+        if providers.is_empty() {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "No logged-in providers".to_string(),
+            ));
+            return;
+        }
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: LOGOUT_PROVIDER_MENU_ID.to_string(),
+            title: "Logout provider".to_string(),
+            items: providers
+                .into_iter()
+                .map(|provider| SelectItem {
+                    label: provider.clone(),
+                    detail: Some("Remove saved credentials".to_string()),
+                    value: provider,
+                })
+                .collect(),
+        });
+    }
+
     async fn handle_menu_selection(&mut self, menu_id: &str, value: &str) -> Result<()> {
         match menu_id {
             "model" => {
@@ -430,6 +963,30 @@ impl FullscreenController {
                 }
             }
             "settings" => self.open_setting_values_menu(value),
+            RESUME_SESSION_MENU_ID => self.handle_resume_session(value)?,
+            TREE_ENTRY_MENU_ID => self.handle_tree_navigate(value)?,
+            FORK_ENTRY_MENU_ID => self.handle_fork_from_entry(value)?,
+            LOGIN_PROVIDER_MENU_ID => {
+                let (_env_var, url) = crate::login::provider_meta(value);
+                let mode = if OAUTH_PROVIDERS.contains(&value) { "OAuth" } else { "API key" };
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: format!(
+                        "Login provider: {value}\nMode: {mode}\nOpen: {url}\nUse `bb login {value}` in a normal terminal to complete authentication."
+                    ),
+                });
+            }
+            LOGOUT_PROVIDER_MENU_ID => {
+                if crate::login::remove_auth(value)? {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Logged out of {value}"
+                    )));
+                } else {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "No saved credentials for {value}"
+                    )));
+                }
+            }
             _ if menu_id.starts_with("settings:") => {
                 let setting_id = menu_id.trim_start_matches("settings:");
                 self.apply_setting_value(setting_id, value)?;
