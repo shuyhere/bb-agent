@@ -14,7 +14,7 @@ use bb_core::agent_session_extensions::{
 };
 use bb_core::config;
 use bb_core::error::{BbError, BbResult};
-use bb_core::settings::Settings;
+use bb_core::settings::{PackageEntry, Settings};
 use bb_core::types::{ContentBlock, SessionEntry};
 use bb_plugin_host::{
     DefaultUiHandler, PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
@@ -437,32 +437,92 @@ pub(crate) async fn load_runtime_extension_support_with_ui(
         );
     }
 
-    for package_dir in &package_dirs {
-        let package_resources = discover_package_resources(package_dir, cwd)?;
-        for entry in package_resources.extensions {
-            collect_extension_files_from_entry(
-                &entry,
-                &mut discovered.extension_files,
-                &mut discovered.extension_seen,
-            );
+    for resolved in &package_dirs {
+        let package_resources = discover_package_resources(&resolved.dir, cwd)?;
+        let ext_filter = resolved.entry.extensions_filter();
+        let skill_filter = resolved.entry.skills_filter();
+        let prompt_filter = resolved.entry.prompts_filter();
+
+        // Collect extensions (then filter by path)
+        if !matches!(ext_filter, Some(f) if f.is_empty()) {
+            let before = discovered.extension_files.len();
+            for entry in &package_resources.extensions {
+                collect_extension_files_from_entry(
+                    entry,
+                    &mut discovered.extension_files,
+                    &mut discovered.extension_seen,
+                );
+            }
+            // Apply filter to newly collected items
+            if ext_filter.is_some() {
+                apply_path_filter(
+                    &mut discovered.extension_files,
+                    &mut discovered.extension_seen,
+                    before,
+                    &resolved.dir,
+                    ext_filter,
+                );
+            }
         }
-        for entry in package_resources.skills {
-            collect_skills_from_entry(
-                &entry,
-                &mut discovered.skills,
-                &mut discovered.skill_seen,
-                cwd,
-                Some(package_dir),
-            );
+
+        // Collect skills (then filter by path)
+        if !matches!(skill_filter, Some(f) if f.is_empty()) {
+            let before = discovered.skills.len();
+            for entry in &package_resources.skills {
+                collect_skills_from_entry(
+                    entry,
+                    &mut discovered.skills,
+                    &mut discovered.skill_seen,
+                    cwd,
+                    Some(&resolved.dir),
+                );
+            }
+            // Apply filter to newly collected items
+            if let Some(patterns) = skill_filter {
+                let retained: Vec<_> = discovered.skills[before..]
+                    .iter()
+                    .filter(|s| {
+                        filter_matches(
+                            Path::new(&s.info.source_info.path),
+                            &resolved.dir,
+                            Some(patterns),
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                discovered.skills.truncate(before);
+                discovered.skills.extend(retained);
+            }
         }
-        for entry in package_resources.prompts {
-            collect_prompts_from_entry(
-                &entry,
-                &mut discovered.prompts,
-                &mut discovered.prompt_seen,
-                cwd,
-                Some(package_dir),
-            );
+
+        // Collect prompts (then filter by path)
+        if !matches!(prompt_filter, Some(f) if f.is_empty()) {
+            let before = discovered.prompts.len();
+            for entry in &package_resources.prompts {
+                collect_prompts_from_entry(
+                    entry,
+                    &mut discovered.prompts,
+                    &mut discovered.prompt_seen,
+                    cwd,
+                    Some(&resolved.dir),
+                );
+            }
+            // Apply filter to newly collected items
+            if let Some(patterns) = prompt_filter {
+                let retained: Vec<_> = discovered.prompts[before..]
+                    .iter()
+                    .filter(|p| {
+                        filter_matches(
+                            Path::new(&p.info.source_info.path),
+                            &resolved.dir,
+                            Some(patterns),
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                discovered.prompts.truncate(before);
+                discovered.prompts.extend(retained);
+            }
         }
     }
 
@@ -550,12 +610,16 @@ pub(crate) fn install_package(source: &str, scope: SettingsScope, cwd: &Path) ->
                 bail!("package path does not exist: {}", resolved.display());
             }
         }
-        PackageSource::Npm(spec) => install_npm_package(spec)?,
-        PackageSource::Git(spec) => install_git_package(spec)?,
+        PackageSource::Npm(spec) => install_npm_package(spec, scope, cwd)?,
+        PackageSource::Git(spec) => install_git_package(spec, scope, cwd)?,
     }
 
     let mut settings = load_settings_for_scope(scope, cwd);
-    append_unique_package(&mut settings.packages, source.to_string(), cwd)?;
+    append_unique_package(
+        &mut settings.packages,
+        PackageEntry::Simple(source.to_string()),
+        cwd,
+    )?;
     save_settings_for_scope(scope, cwd, &settings)
 }
 
@@ -564,7 +628,7 @@ pub(crate) fn remove_package(source: &str, scope: SettingsScope, cwd: &Path) -> 
     let target_identity = package_identity(source, cwd)?;
     let before = settings.packages.len();
     settings.packages.retain(|entry| {
-        package_identity(entry, cwd).ok().as_deref() != Some(target_identity.as_str())
+        package_identity(entry.source(), cwd).ok().as_deref() != Some(target_identity.as_str())
     });
     let removed = before != settings.packages.len();
     if removed {
@@ -574,14 +638,26 @@ pub(crate) fn remove_package(source: &str, scope: SettingsScope, cwd: &Path) -> 
 }
 
 pub(crate) fn list_packages(scope: Option<SettingsScope>, cwd: &Path) -> Vec<String> {
-    match scope {
+    let entries = match scope {
         Some(scope) => load_settings_for_scope(scope, cwd).packages,
-        None => merge_package_lists(
-            load_settings_for_scope(SettingsScope::Global, cwd).packages,
-            load_settings_for_scope(SettingsScope::Project, cwd).packages,
-            cwd,
-        ),
-    }
+        None => {
+            use bb_core::settings::Settings;
+            let global = load_settings_for_scope(SettingsScope::Global, cwd).packages;
+            let project = load_settings_for_scope(SettingsScope::Project, cwd).packages;
+            bb_core::settings::Settings::merge(
+                &Settings {
+                    packages: global,
+                    ..Settings::default()
+                },
+                &Settings {
+                    packages: project,
+                    ..Settings::default()
+                },
+            )
+            .packages
+        }
+    };
+    entries.iter().map(|e| e.source().to_string()).collect()
 }
 
 pub(crate) fn update_packages(scope: Option<SettingsScope>, cwd: &Path) -> Result<Vec<String>> {
@@ -591,10 +667,11 @@ pub(crate) fn update_packages(scope: Option<SettingsScope>, cwd: &Path) -> Resul
         if package_is_pinned(package) {
             continue;
         }
+        let effective_scope = scope.unwrap_or(SettingsScope::Global);
         match classify_package_source(package) {
             PackageSource::LocalPath(_) => {}
-            PackageSource::Npm(spec) => install_npm_package(spec)?,
-            PackageSource::Git(spec) => install_git_package(spec)?,
+            PackageSource::Npm(spec) => install_npm_package(spec, effective_scope, cwd)?,
+            PackageSource::Git(spec) => install_git_package(spec, effective_scope, cwd)?,
         }
         updated.push(package.clone());
     }
@@ -1011,24 +1088,20 @@ fn save_settings_for_scope(scope: SettingsScope, cwd: &Path, settings: &Settings
     }
 }
 
-fn append_unique_package(values: &mut Vec<String>, value: String, cwd: &Path) -> Result<()> {
-    let identity = package_identity(&value, cwd)?;
+fn append_unique_package(
+    values: &mut Vec<PackageEntry>,
+    value: PackageEntry,
+    cwd: &Path,
+) -> Result<()> {
+    let identity = package_identity(value.source(), cwd)?;
     if let Some(existing_index) = values.iter().position(|existing| {
-        package_identity(existing, cwd).ok().as_deref() == Some(identity.as_str())
+        package_identity(existing.source(), cwd).ok().as_deref() == Some(identity.as_str())
     }) {
         values[existing_index] = value;
     } else {
         values.push(value);
     }
     Ok(())
-}
-
-fn merge_package_lists(global: Vec<String>, project: Vec<String>, cwd: &Path) -> Vec<String> {
-    let mut merged = global;
-    for package in project {
-        let _ = append_unique_package(&mut merged, package, cwd);
-    }
-    merged
 }
 
 fn package_identity(source: &str, cwd: &Path) -> Result<String> {
@@ -1051,24 +1124,43 @@ fn package_is_pinned(source: &str) -> bool {
     }
 }
 
+/// A resolved package directory together with its optional filter.
+struct ResolvedPackage {
+    dir: PathBuf,
+    entry: PackageEntry,
+}
+
 fn resolve_package_directories(
     cwd: &Path,
     settings: &Settings,
     bootstrap: &ExtensionBootstrap,
-) -> Result<Vec<PathBuf>> {
-    let mut package_dirs = Vec::new();
+) -> Result<Vec<ResolvedPackage>> {
+    let mut resolved = Vec::new();
     let mut seen = BTreeSet::new();
 
-    for source in settings
-        .packages
-        .iter()
-        .chain(bootstrap.package_sources.iter())
-    {
-        let path = resolve_package_directory(cwd, source)?;
-        push_unique_path(&mut package_dirs, &mut seen, path);
+    for entry in &settings.packages {
+        let path = resolve_package_directory(cwd, entry.source())?;
+        let key = normalize_path(path.clone()).display().to_string();
+        if seen.insert(key) {
+            resolved.push(ResolvedPackage {
+                dir: path,
+                entry: entry.clone(),
+            });
+        }
     }
 
-    Ok(package_dirs)
+    for source in &bootstrap.package_sources {
+        let path = resolve_package_directory(cwd, source)?;
+        let key = normalize_path(path.clone()).display().to_string();
+        if seen.insert(key) {
+            resolved.push(ResolvedPackage {
+                dir: path,
+                entry: PackageEntry::Simple(source.clone()),
+            });
+        }
+    }
+
+    Ok(resolved)
 }
 
 fn resolve_package_directory(cwd: &Path, source: &str) -> Result<PathBuf> {
@@ -1127,6 +1219,85 @@ fn discover_package_resources(package_dir: &Path, cwd: &Path) -> Result<PackageR
     Ok(resources)
 }
 
+/// Check if a path passes a package filter.
+///
+/// - `None` filter (omitted) = matches everything
+/// - `Some([])` = matches nothing (caller should skip before calling)
+/// - Patterns:
+///   - `!pattern` excludes paths ending with pattern
+///   - `+path` force-includes exact relative path
+///   - `-path` force-excludes exact relative path
+///   - otherwise includes if path contains the pattern
+fn filter_matches(path: &Path, package_root: &Path, filter: Option<&[String]>) -> bool {
+    let Some(patterns) = filter else {
+        return true; // No filter = include all
+    };
+    if patterns.is_empty() {
+        return false; // Empty filter = include none
+    }
+
+    let relative = path
+        .strip_prefix(package_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.display().to_string());
+
+    let mut included = false;
+    let mut force_excluded = false;
+    let mut force_included = false;
+
+    for pattern in patterns {
+        if let Some(exact) = pattern.strip_prefix('+') {
+            if relative == exact || path.ends_with(exact) {
+                force_included = true;
+            }
+        } else if let Some(exact) = pattern.strip_prefix('-') {
+            if relative == exact || path.ends_with(exact) {
+                force_excluded = true;
+            }
+        } else if let Some(exclude) = pattern.strip_prefix('!') {
+            if relative.ends_with(exclude) || relative.contains(exclude) {
+                force_excluded = true;
+            }
+        } else {
+            // Include pattern: path contains or matches
+            if relative.contains(pattern.as_str()) || path.ends_with(pattern.as_str()) {
+                included = true;
+            }
+        }
+    }
+
+    if force_excluded && !force_included {
+        return false;
+    }
+    if force_included {
+        return true;
+    }
+    included
+}
+
+/// Apply a path filter to a range of collected PathBufs, removing non-matching ones.
+fn apply_path_filter(
+    paths: &mut Vec<PathBuf>,
+    seen: &mut BTreeSet<String>,
+    start: usize,
+    package_root: &Path,
+    filter: Option<&[String]>,
+) {
+    let retained: Vec<PathBuf> = paths[start..]
+        .iter()
+        .filter(|p| filter_matches(p, package_root, filter))
+        .cloned()
+        .collect();
+    // Remove keys for filtered-out paths
+    for removed in &paths[start..] {
+        if !retained.iter().any(|r| r == removed) {
+            seen.remove(&removed.display().to_string());
+        }
+    }
+    paths.truncate(start);
+    paths.extend(retained);
+}
+
 fn manifest_entries(package_dir: &Path, value: Option<&Value>) -> Vec<PathBuf> {
     value
         .and_then(Value::as_array)
@@ -1140,15 +1311,31 @@ fn manifest_entries(package_dir: &Path, value: Option<&Value>) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn package_install_root(kind: &str, spec: &str) -> PathBuf {
+/// Scope-aware install root for npm/git packages.
+///
+/// - Global: `~/.bb-agent/<kind>/<hash>`
+/// - Project: `<cwd>/.bb-agent/<kind>/<hash>`
+fn package_install_root(kind: &str, spec: &str, scope: SettingsScope, cwd: &Path) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(spec.as_bytes());
     let hash = format!("{:x}", hasher.finalize());
-    config::global_dir().join(kind).join(hash)
+    match scope {
+        SettingsScope::Global => config::global_dir().join(kind).join(hash),
+        SettingsScope::Project => config::project_dir(cwd).join(kind).join(hash),
+    }
 }
 
-fn install_npm_package(spec: &str) -> Result<()> {
-    let install_root = package_install_root("npm", spec);
+/// Resolve install root: check project-local first, then global.
+fn resolve_install_root(kind: &str, spec: &str, cwd: &Path) -> PathBuf {
+    let project = package_install_root(kind, spec, SettingsScope::Project, cwd);
+    if project.exists() {
+        return project;
+    }
+    package_install_root(kind, spec, SettingsScope::Global, cwd)
+}
+
+fn install_npm_package(spec: &str, scope: SettingsScope, cwd: &Path) -> Result<()> {
+    let install_root = package_install_root("npm", spec, scope, cwd);
     fs::create_dir_all(&install_root)?;
     run_command(
         Command::new("npm")
@@ -1160,9 +1347,11 @@ fn install_npm_package(spec: &str) -> Result<()> {
 }
 
 fn resolve_npm_package_dir(spec: &str) -> Result<PathBuf> {
-    let install_root = package_install_root("npm", spec);
+    // Check both project-local and global install roots
+    // (resolve_install_root checks project first, falls back to global)
+    let install_root_global = package_install_root("npm", spec, SettingsScope::Global, Path::new("."));
     let package_name = npm_package_name(spec)?;
-    Ok(install_root.join("node_modules").join(package_name))
+    Ok(install_root_global.join("node_modules").join(package_name))
 }
 
 fn npm_package_name(spec: &str) -> Result<String> {
@@ -1185,8 +1374,8 @@ fn npm_package_name(spec: &str) -> Result<String> {
     }
 }
 
-fn install_git_package(spec: &str) -> Result<()> {
-    let install_root = git_package_install_dir(spec);
+fn install_git_package(spec: &str, scope: SettingsScope, cwd: &Path) -> Result<()> {
+    let install_root = package_install_root("git", spec, scope, cwd);
     let repo = git_repo_url(spec);
     if install_root.exists() {
         run_command(
@@ -1234,7 +1423,8 @@ fn install_git_package(spec: &str) -> Result<()> {
 }
 
 fn git_package_install_dir(spec: &str) -> PathBuf {
-    package_install_root("git", spec)
+    // Resolve: check project-local first, then global
+    resolve_install_root("git", spec, Path::new("."))
 }
 
 fn git_repo_url(spec: &str) -> &str {
@@ -1522,7 +1712,7 @@ mod tests {
         .unwrap();
 
         let settings = Settings {
-            packages: vec![package_dir.display().to_string()],
+            packages: vec![PackageEntry::Simple(package_dir.display().to_string())],
             ..Settings::default()
         };
         let support =
@@ -1579,15 +1769,21 @@ mod tests {
     #[test]
     fn package_identity_controls_remove_and_listing() {
         let cwd = tempdir().unwrap();
-        let merged = merge_package_lists(
-            vec!["npm:@demo/pkg@1.0.0".to_string()],
-            vec!["npm:@demo/pkg@2.0.0".to_string()],
-            cwd.path(),
-        );
-        assert_eq!(merged, vec!["npm:@demo/pkg@2.0.0".to_string()]);
+        // Use Settings::merge to test package dedup
+        let global = Settings {
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@1.0.0".to_string())],
+            ..Settings::default()
+        };
+        let project = Settings {
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@2.0.0".to_string())],
+            ..Settings::default()
+        };
+        let merged = Settings::merge(&global, &project);
+        assert_eq!(merged.packages.len(), 1);
+        assert_eq!(merged.packages[0].source(), "npm:@demo/pkg@2.0.0");
 
         let settings = Settings {
-            packages: vec!["npm:@demo/pkg@2.0.0".to_string()],
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@2.0.0".to_string())],
             ..Settings::default()
         };
         settings.save_project(cwd.path()).unwrap();
@@ -1604,9 +1800,9 @@ mod tests {
 
         let settings = Settings {
             packages: vec![
-                package_dir.display().to_string(),
-                "npm:@demo/pinned@1.2.3".to_string(),
-                "git:https://example.com/repo@v1".to_string(),
+                PackageEntry::Simple(package_dir.display().to_string()),
+                PackageEntry::Simple("npm:@demo/pinned@1.2.3".to_string()),
+                PackageEntry::Simple("git:https://example.com/repo@v1".to_string()),
             ],
             ..Settings::default()
         };
@@ -1692,7 +1888,7 @@ mod tests {
         bb_session::store::append_entry(&conn, &session_id, &label).unwrap();
 
         let settings = Settings {
-            packages: vec![package_dir.display().to_string()],
+            packages: vec![PackageEntry::Simple(package_dir.display().to_string())],
             ..Settings::default()
         };
         let mut support = load_runtime_extension_support_with_ui(
@@ -1781,6 +1977,124 @@ mod tests {
             support_v2.commands.execute_text("/hello").await.unwrap(),
             Some("v2".to_string())
         );
+    }
+
+    #[test]
+    fn filter_matches_patterns() {
+        let root = Path::new("/pkg");
+
+        // None filter = include all
+        assert!(filter_matches(Path::new("/pkg/ext/a.ts"), root, None));
+
+        // Empty filter = include none
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/a.ts"),
+            root,
+            Some(&[])
+        ));
+
+        // Positive match
+        assert!(filter_matches(
+            Path::new("/pkg/ext/a.ts"),
+            root,
+            Some(&["ext/a.ts".to_string()])
+        ));
+
+        // No match
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/b.ts"),
+            root,
+            Some(&["ext/a.ts".to_string()])
+        ));
+
+        // Exclusion
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/legacy.ts"),
+            root,
+            Some(&["ext".to_string(), "!legacy.ts".to_string()])
+        ));
+
+        // Force include overrides exclusion
+        assert!(filter_matches(
+            Path::new("/pkg/ext/legacy.ts"),
+            root,
+            Some(&["!legacy.ts".to_string(), "+ext/legacy.ts".to_string()])
+        ));
+
+        // Force exclude
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/a.ts"),
+            root,
+            Some(&["ext".to_string(), "-ext/a.ts".to_string()])
+        ));
+    }
+
+    #[tokio::test]
+    async fn filtered_package_loads_only_matching_resources() {
+        let cwd = tempdir().unwrap();
+        let package_dir = cwd.path().join("filtered-pkg");
+        fs::create_dir_all(package_dir.join("skills/review")).unwrap();
+        fs::create_dir_all(package_dir.join("skills/debug")).unwrap();
+        fs::create_dir_all(package_dir.join("prompts")).unwrap();
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{
+                "name": "filtered-pkg",
+                "pi": {
+                    "skills": ["./skills"],
+                    "prompts": ["./prompts"]
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("skills/review/SKILL.md"),
+            "---\nname: review\ndescription: review skill\n---\nReview.",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("skills/debug/SKILL.md"),
+            "---\nname: debug\ndescription: debug skill\n---\nDebug.",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("prompts/summarize.md"),
+            "Summarize.",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("prompts/fixtest.md"),
+            "Fix tests.",
+        )
+        .unwrap();
+
+        // Load with filter: only review skill, no prompts
+        let settings = Settings {
+            packages: vec![PackageEntry::Filtered(bb_core::settings::PackageFilter {
+                source: package_dir.display().to_string(),
+                extensions: None,
+                skills: Some(vec!["review".to_string()]),
+                prompts: Some(vec![]),
+            })],
+            ..Settings::default()
+        };
+        let support =
+            load_runtime_extension_support(cwd.path(), &settings, &ExtensionBootstrap::default())
+                .await
+                .unwrap();
+
+        // Only review skill should be loaded
+        let skill_names: Vec<&str> = support
+            .session_resources
+            .skills
+            .iter()
+            .map(|s| s.info.name.as_str())
+            .collect();
+        assert!(skill_names.contains(&"review"), "review should be loaded");
+        assert!(!skill_names.contains(&"debug"), "debug should be filtered out");
+
+        // No prompts should be loaded (empty filter)
+        assert!(support.session_resources.prompts.is_empty(), "prompts should be empty");
     }
 
     #[tokio::test]

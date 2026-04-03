@@ -35,6 +35,86 @@ fn default_enable_skill_commands() -> bool {
 }
 
 // =============================================================================
+// Package entry types
+// =============================================================================
+
+/// A package entry in settings — either a simple source string or a
+/// filtered object with per-resource-type filters.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PackageEntry {
+    Simple(String),
+    Filtered(PackageFilter),
+}
+
+impl PackageEntry {
+    /// Get the package source string.
+    pub fn source(&self) -> &str {
+        match self {
+            PackageEntry::Simple(s) => s,
+            PackageEntry::Filtered(f) => &f.source,
+        }
+    }
+
+    /// Get the optional filter for extensions.
+    pub fn extensions_filter(&self) -> Option<&[String]> {
+        match self {
+            PackageEntry::Simple(_) => None,
+            PackageEntry::Filtered(f) => f.extensions.as_deref(),
+        }
+    }
+
+    /// Get the optional filter for skills.
+    pub fn skills_filter(&self) -> Option<&[String]> {
+        match self {
+            PackageEntry::Simple(_) => None,
+            PackageEntry::Filtered(f) => f.skills.as_deref(),
+        }
+    }
+
+    /// Get the optional filter for prompts.
+    pub fn prompts_filter(&self) -> Option<&[String]> {
+        match self {
+            PackageEntry::Simple(_) => None,
+            PackageEntry::Filtered(f) => f.prompts.as_deref(),
+        }
+    }
+}
+
+impl From<String> for PackageEntry {
+    fn from(s: String) -> Self {
+        PackageEntry::Simple(s)
+    }
+}
+
+impl From<&str> for PackageEntry {
+    fn from(s: &str) -> Self {
+        PackageEntry::Simple(s.to_string())
+    }
+}
+
+/// Filtered package entry with optional per-resource-type filters.
+///
+/// Filters layer on top of the manifest. They narrow down what is already
+/// allowed:
+/// - `None` (omitted key) = load all of that type
+/// - `[]` (empty array) = load none of that type
+/// - Patterns match relative paths from the package root
+/// - `!pattern` excludes matches
+/// - `+path` force-includes an exact path
+/// - `-path` force-excludes an exact path
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PackageFilter {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<Vec<String>>,
+}
+
+// =============================================================================
 // Settings
 // =============================================================================
 
@@ -61,7 +141,7 @@ pub struct Settings {
     #[serde(default)]
     pub prompts: Vec<String>,
     #[serde(default)]
-    pub packages: Vec<String>,
+    pub packages: Vec<PackageEntry>,
     #[serde(
         default = "default_enable_skill_commands",
         alias = "enableSkillCommands"
@@ -242,7 +322,7 @@ impl Settings {
             extensions: merge_string_lists(&global.extensions, &project.extensions),
             skills: merge_string_lists(&global.skills, &project.skills),
             prompts: merge_string_lists(&global.prompts, &project.prompts),
-            packages: merge_string_lists(&global.packages, &project.packages),
+            packages: merge_package_lists(&global.packages, &project.packages),
             enable_skill_commands: merge_bool_with_default(
                 global.enable_skill_commands,
                 project.enable_skill_commands,
@@ -341,6 +421,90 @@ fn merge_string_lists(global: &[String], project: &[String]) -> Vec<String> {
 
 fn merge_bool_with_default(global: bool, project: bool, default: bool) -> bool {
     if project != default { project } else { global }
+}
+
+/// Merge package entry lists: project entries override global entries with
+/// the same identity (npm name, git repo URL, or resolved local path).
+fn merge_package_lists(global: &[PackageEntry], project: &[PackageEntry]) -> Vec<PackageEntry> {
+    let mut merged = Vec::new();
+    let mut seen_sources = BTreeSet::new();
+
+    // Add global entries first
+    for entry in global {
+        let source = entry.source().trim();
+        if source.is_empty() {
+            continue;
+        }
+        if seen_sources.insert(source.to_owned()) {
+            merged.push(entry.clone());
+        }
+    }
+
+    // Project entries override by identity:
+    // Same npm package name, same git repo URL, or same local path
+    for entry in project {
+        let source = entry.source().trim();
+        if source.is_empty() {
+            continue;
+        }
+        let identity = package_entry_identity(source);
+        if let Some(pos) = merged
+            .iter()
+            .position(|e| package_entry_identity(e.source().trim()) == identity)
+        {
+            merged[pos] = entry.clone();
+        } else if seen_sources.insert(source.to_owned()) {
+            merged.push(entry.clone());
+        }
+    }
+
+    merged
+}
+
+/// Derive a rough identity from a package source for dedup purposes.
+///
+/// - npm: strip version → `npm:<name>`
+/// - git: strip ref → `git:<url>`
+/// - local: use as-is
+fn package_entry_identity(source: &str) -> String {
+    if let Some(spec) = source.strip_prefix("npm:") {
+        let name = if let Some(rest) = spec.strip_prefix('@') {
+            // Scoped: @scope/pkg[@version]
+            match rest.rfind('@') {
+                Some(idx) if rest[..idx].contains('/') => &spec[..idx + 1],
+                _ => spec,
+            }
+        } else {
+            spec.rsplit_once('@').map(|(n, _)| n).unwrap_or(spec)
+        };
+        return format!("npm:{name}");
+    }
+    if source.starts_with("git:")
+        || source.starts_with("https://")
+        || source.starts_with("http://")
+        || source.starts_with("ssh://")
+        || source.starts_with("git://")
+    {
+        let stripped = source.strip_prefix("git:").unwrap_or(source);
+        let (url, _ref) = strip_git_ref_simple(stripped);
+        return format!("git:{url}");
+    }
+    format!("local:{source}")
+}
+
+/// Simple git ref stripping for identity purposes.
+fn strip_git_ref_simple(spec: &str) -> (&str, Option<&str>) {
+    let last_at = spec.rfind('@');
+    let Some(index) = last_at else {
+        return (spec, None);
+    };
+    let slash_index = spec.rfind('/').unwrap_or(0);
+    let colon_index = spec.rfind(':').unwrap_or(0);
+    if index > slash_index.max(colon_index) {
+        (&spec[..index], Some(&spec[index + 1..]))
+    } else {
+        (spec, None)
+    }
 }
 
 /// Merge model overrides: project models override global models with the
@@ -577,5 +741,118 @@ mod tests {
         let s = Settings::parse("{}");
         assert!(s.compaction.enabled);
         assert_eq!(s.compaction.reserve_tokens, 16384);
+    }
+
+    #[test]
+    fn test_package_entry_simple_string() {
+        let json = r#"{"packages": ["npm:demo", "./local"]}
+"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.packages.len(), 2);
+        assert_eq!(s.packages[0].source(), "npm:demo");
+        assert_eq!(s.packages[1].source(), "./local");
+        assert!(s.packages[0].extensions_filter().is_none());
+    }
+
+    #[test]
+    fn test_package_entry_filtered_object() {
+        let json = r#"{
+            "packages": [
+                "npm:simple",
+                {
+                    "source": "npm:filtered-pkg",
+                    "extensions": ["ext/*.ts", "!ext/legacy.ts"],
+                    "skills": [],
+                    "prompts": ["prompts/review.md"]
+                }
+            ]
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.packages.len(), 2);
+
+        assert!(matches!(&s.packages[0], PackageEntry::Simple(src) if src == "npm:simple"));
+
+        let filtered = match &s.packages[1] {
+            PackageEntry::Filtered(f) => f,
+            _ => panic!("expected filtered entry"),
+        };
+        assert_eq!(filtered.source, "npm:filtered-pkg");
+        assert_eq!(
+            filtered.extensions,
+            Some(vec!["ext/*.ts".to_string(), "!ext/legacy.ts".to_string()])
+        );
+        assert_eq!(filtered.skills, Some(vec![])); // empty = load none
+        assert_eq!(
+            filtered.prompts,
+            Some(vec!["prompts/review.md".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_package_merge_dedup_by_identity() {
+        let global = Settings {
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@1.0.0".into())],
+            ..Settings::default()
+        };
+        let project = Settings {
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@2.0.0".into())],
+            ..Settings::default()
+        };
+        let merged = Settings::merge(&global, &project);
+        assert_eq!(merged.packages.len(), 1);
+        assert_eq!(merged.packages[0].source(), "npm:@demo/pkg@2.0.0");
+    }
+
+    #[test]
+    fn test_package_merge_different_packages_preserved() {
+        let global = Settings {
+            packages: vec![PackageEntry::Simple("npm:pkg-a".into())],
+            ..Settings::default()
+        };
+        let project = Settings {
+            packages: vec![PackageEntry::Simple("npm:pkg-b".into())],
+            ..Settings::default()
+        };
+        let merged = Settings::merge(&global, &project);
+        assert_eq!(merged.packages.len(), 2);
+        assert_eq!(merged.packages[0].source(), "npm:pkg-a");
+        assert_eq!(merged.packages[1].source(), "npm:pkg-b");
+    }
+
+    #[test]
+    fn test_package_merge_filtered_overrides_simple() {
+        let global = Settings {
+            packages: vec![PackageEntry::Simple("npm:@demo/pkg@1.0.0".into())],
+            ..Settings::default()
+        };
+        let project = Settings {
+            packages: vec![PackageEntry::Filtered(PackageFilter {
+                source: "npm:@demo/pkg@2.0.0".into(),
+                extensions: Some(vec!["ext/main.ts".into()]),
+                skills: Some(vec![]),
+                prompts: None,
+            })],
+            ..Settings::default()
+        };
+        let merged = Settings::merge(&global, &project);
+        assert_eq!(merged.packages.len(), 1);
+        assert_eq!(merged.packages[0].source(), "npm:@demo/pkg@2.0.0");
+        assert_eq!(
+            merged.packages[0].skills_filter(),
+            Some([].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_package_entry_roundtrip() {
+        let entry = PackageEntry::Filtered(PackageFilter {
+            source: "npm:test".into(),
+            extensions: Some(vec!["a.ts".into()]),
+            skills: None,
+            prompts: Some(vec![]),
+        });
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: PackageEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, entry);
     }
 }
