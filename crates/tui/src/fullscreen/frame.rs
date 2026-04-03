@@ -219,10 +219,10 @@ fn render_transcript_row(
                 render_boxed_ansi_line("", width, &t.user_msg_bg)
             }
             super::transcript::BlockKind::ToolUse => {
-                render_boxed_ansi_line("", width, tool_use_bg(block, t))
+                render_boxed_ansi_line("", width, tool_group_bg(state, block, t))
             }
             super::transcript::BlockKind::ToolResult if !block.content.trim().is_empty() => {
-                render_boxed_ansi_line("", width, tool_result_bg(block, t))
+                render_boxed_ansi_line("", width, tool_group_bg(state, block, t))
             }
             _ => blank_line(width),
         };
@@ -233,11 +233,11 @@ fn render_transcript_row(
         return match &block.kind {
             super::transcript::BlockKind::ToolUse => {
                 let content = format!("{}\x1b[7m{}\x1b[0m{}", t.bold, truncate_to_width(&plain, width), t.reset);
-                render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
+                render_boxed_ansi_line(&content, width, tool_group_bg(state, block, t))
             }
             super::transcript::BlockKind::ToolResult => {
                 let content = format!("{}\x1b[7m{}\x1b[0m{}", t.bold, truncate_to_width(&plain, width), t.reset);
-                render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
+                render_boxed_ansi_line(&content, width, tool_group_bg(state, block, t))
             }
             _ => format!("\x1b[7m{padded}\x1b[0m"),
         };
@@ -258,11 +258,11 @@ fn render_transcript_row(
         }
         super::transcript::BlockKind::ToolUse => {
             let content = if row.kind == ProjectedRowKind::Header {
-                format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
+                style_tool_header(block, &plain, width)
             } else {
                 style_tool_use_line(&plain, width)
             };
-            render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
+            render_boxed_ansi_line(&content, width, tool_group_bg(state, block, t))
         }
         super::transcript::BlockKind::ToolResult => {
             let content = if row.kind == ProjectedRowKind::Header {
@@ -270,7 +270,7 @@ fn render_transcript_row(
             } else {
                 style_tool_result_line(block, &plain, width)
             };
-            render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
+            render_boxed_ansi_line(&content, width, tool_group_bg(state, block, t))
         }
         super::transcript::BlockKind::SystemNote => render_note_line(block, &plain, width),
         super::transcript::BlockKind::AssistantMessage => {
@@ -309,11 +309,43 @@ fn tool_use_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::the
     }
 }
 
-fn tool_result_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::theme::Theme) -> &'a str {
-    if block.title.contains("error") {
-        &t.tool_error_bg
+fn tool_group_bg<'a>(
+    state: &FullscreenState,
+    block: &super::transcript::TranscriptBlock,
+    t: &'a crate::theme::Theme,
+) -> &'a str {
+    match block.kind {
+        super::transcript::BlockKind::ToolUse => tool_use_bg(block, t),
+        super::transcript::BlockKind::ToolResult => block
+            .parent
+            .and_then(|parent_id| state.transcript.block(parent_id))
+            .filter(|parent| parent.kind == super::transcript::BlockKind::ToolUse)
+            .map(|parent| tool_use_bg(parent, t))
+            .unwrap_or(&t.tool_success_bg),
+        _ => &t.tool_success_bg,
+    }
+}
+
+fn style_tool_header(block: &super::transcript::TranscriptBlock, text: &str, width: usize) -> String {
+    let t = theme();
+    let (title, marker) = if let Some((base, status)) = text.rsplit_once(" • ") {
+        let marker = match status {
+            "collecting" => format!("{}>{}", t.dim, t.reset),
+            "running" => format!("{}..{}", t.dim, t.reset),
+            "done" => format!("{}*{}", t.success, t.reset),
+            "error" => format!("{}x{}", t.error, t.reset),
+            _ => format!("{}>{}", t.dim, t.reset),
+        };
+        (base, marker)
     } else {
-        &t.tool_success_bg
+        (text, format!("{}>{}", t.dim, t.reset))
+    };
+
+    let body = truncate_to_width(&format!("{marker} {}{}{}", t.bold, title, t.reset), width);
+    if block.collapsed {
+        body
+    } else {
+        body
     }
 }
 
@@ -695,5 +727,44 @@ mod tests {
 
         assert!(tool_line.starts_with(&theme().tool_pending_bg));
         assert!(!tool_line.starts_with("\x1b[7m"));
+    }
+
+    #[test]
+    fn running_tool_uses_old_style_header_marker_and_pending_group_bg() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        let _ = state.apply_command(FullscreenCommand::ToolCallStart {
+            id: "tool-1".into(),
+            name: "bash".into(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolCallDelta {
+            id: "tool-1".into(),
+            args: serde_json::json!({"command":"echo hi"}).to_string(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolExecuting {
+            id: "tool-1".into(),
+        });
+        state.prepare_for_render();
+
+        let lines = render_transcript(&state, &state.projection, 80, 24);
+        let header = lines
+            .iter()
+            .find(|line| line.contains("echo hi"))
+            .expect("tool header");
+        let executing = lines
+            .iter()
+            .find(|line| line.contains("executing..."))
+            .expect("executing placeholder");
+
+        assert!(header.contains(".."));
+        assert!(!header.contains("running"));
+        assert!(executing.starts_with(&theme().tool_pending_bg));
     }
 }
