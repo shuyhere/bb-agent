@@ -1232,10 +1232,10 @@ fn discover_package_resources(package_dir: &Path, cwd: &Path) -> Result<PackageR
 /// - `None` filter (omitted) = matches everything
 /// - `Some([])` = matches nothing (caller should skip before calling)
 /// - Patterns:
-///   - `!pattern` excludes paths ending with pattern
 ///   - `+path` force-includes exact relative path
 ///   - `-path` force-excludes exact relative path
-///   - otherwise includes if path contains the pattern
+///   - `!pattern` excludes paths matching the glob pattern
+///   - otherwise includes if relative path matches the glob pattern
 fn filter_matches(path: &Path, package_root: &Path, filter: Option<&[String]>) -> bool {
     let Some(patterns) = filter else {
         return true; // No filter = include all
@@ -1262,13 +1262,13 @@ fn filter_matches(path: &Path, package_root: &Path, filter: Option<&[String]>) -
             if relative == exact || path.ends_with(exact) {
                 force_excluded = true;
             }
-        } else if let Some(exclude) = pattern.strip_prefix('!') {
-            if relative.ends_with(exclude) || relative.contains(exclude) {
+        } else if let Some(glob_pat) = pattern.strip_prefix('!') {
+            if glob_pattern_matches(glob_pat, &relative) {
                 force_excluded = true;
             }
         } else {
-            // Include pattern: path contains or matches
-            if relative.contains(pattern.as_str()) || path.ends_with(pattern.as_str()) {
+            // Include pattern: match via glob
+            if glob_pattern_matches(pattern, &relative) {
                 included = true;
             }
         }
@@ -1281,6 +1281,21 @@ fn filter_matches(path: &Path, package_root: &Path, filter: Option<&[String]>) -
         return true;
     }
     included
+}
+
+/// Match a glob pattern against a relative path string.
+///
+/// Uses `glob::Pattern` with `MatchOptions` that allows `/` matching
+/// for `**` style patterns.
+fn glob_pattern_matches(pattern: &str, relative: &str) -> bool {
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    glob::Pattern::new(pattern)
+        .map(|p| p.matches_with(relative, opts))
+        .unwrap_or(false)
 }
 
 /// Apply a path filter to a range of collected PathBufs, removing non-matching ones.
@@ -2001,7 +2016,7 @@ mod tests {
             Some(&[])
         ));
 
-        // Positive match
+        // Exact positive match
         assert!(filter_matches(
             Path::new("/pkg/ext/a.ts"),
             root,
@@ -2015,25 +2030,60 @@ mod tests {
             Some(&["ext/a.ts".to_string()])
         ));
 
-        // Exclusion
+        // Glob exclusion
         assert!(!filter_matches(
             Path::new("/pkg/ext/legacy.ts"),
             root,
-            Some(&["ext".to_string(), "!legacy.ts".to_string()])
+            Some(&["ext/*".to_string(), "!ext/legacy*".to_string()])
         ));
 
         // Force include overrides exclusion
         assert!(filter_matches(
             Path::new("/pkg/ext/legacy.ts"),
             root,
-            Some(&["!legacy.ts".to_string(), "+ext/legacy.ts".to_string()])
+            Some(&["!ext/legacy*".to_string(), "+ext/legacy.ts".to_string()])
         ));
 
         // Force exclude
         assert!(!filter_matches(
             Path::new("/pkg/ext/a.ts"),
             root,
-            Some(&["ext".to_string(), "-ext/a.ts".to_string()])
+            Some(&["ext/*".to_string(), "-ext/a.ts".to_string()])
+        ));
+
+        // Glob: *.ts matches .ts files
+        assert!(filter_matches(
+            Path::new("/pkg/ext/a.ts"),
+            root,
+            Some(&["ext/*.ts".to_string()])
+        ));
+
+        // Glob: *.ts should NOT match .js files
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/a.js"),
+            root,
+            Some(&["ext/*.ts".to_string()])
+        ));
+
+        // Glob: **/*.md matches nested .md files
+        assert!(filter_matches(
+            Path::new("/pkg/skills/review/SKILL.md"),
+            root,
+            Some(&["**/*.md".to_string()])
+        ));
+
+        // Glob: **/*.md matches top-level .md files too
+        assert!(filter_matches(
+            Path::new("/pkg/README.md"),
+            root,
+            Some(&["**/*.md".to_string()])
+        ));
+
+        // Glob: **/*.md should NOT match .ts files
+        assert!(!filter_matches(
+            Path::new("/pkg/ext/a.ts"),
+            root,
+            Some(&["**/*.md".to_string()])
         ));
     }
 
@@ -2081,7 +2131,7 @@ mod tests {
             packages: vec![PackageEntry::Filtered(bb_core::settings::PackageFilter {
                 source: package_dir.display().to_string(),
                 extensions: None,
-                skills: Some(vec!["review".to_string()]),
+                skills: Some(vec!["**/review/**".to_string()]),
                 prompts: Some(vec![]),
             })],
             ..Settings::default()
