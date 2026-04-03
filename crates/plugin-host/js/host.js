@@ -78,6 +78,7 @@ function buildContext(raw) {
     const context = raw || {};
     const entries = context.session_entries || [];
     const branch = context.session_branch || entries;
+    const labels = context.labels || {};
     return {
         cwd: context.cwd || process.cwd(),
         hasUI: !!context.has_ui || !!context.hasUI,
@@ -86,6 +87,10 @@ function buildContext(raw) {
             getEntries: () => entries,
             getBranch: () => branch,
             getLeafId: () => context.leaf_id || context.leafId || null,
+            getSessionFile: () => context.session_file || context.sessionFile || undefined,
+            getLabel: (id) => labels[id] ?? undefined,
+            getSessionId: () => context.session_id || context.sessionId || undefined,
+            getSessionName: () => context.session_name || context.sessionName || undefined,
         },
         ui: {
             notify: async () => undefined,

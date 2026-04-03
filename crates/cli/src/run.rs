@@ -93,8 +93,13 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let RuntimeExtensionSupport {
         session_resources,
         mut tools,
-        commands,
+        mut commands,
     } = load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    commands.bind_session_context(
+        turn_runner::open_sibling_conn(&conn)?,
+        session_id.clone(),
+        None,
+    );
     let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
     let mut builtin_tools = select_tools(&cli);
     builtin_tools.append(&mut tools);

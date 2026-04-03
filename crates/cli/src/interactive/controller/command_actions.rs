@@ -1021,7 +1021,7 @@ impl InteractiveMode {
         let crate::extensions::RuntimeExtensionSupport {
             session_resources,
             mut tools,
-            commands,
+            mut commands,
         } = crate::extensions::load_runtime_extension_support_with_ui(
             &cwd,
             &settings,
@@ -1049,6 +1049,17 @@ impl InteractiveMode {
             })
             .collect();
         self.session_setup.tools = builtin_tools;
+        let sibling_conn = if let Some(conn) = self.session_setup.sibling_conn.clone() {
+            conn
+        } else {
+            crate::turn_runner::open_sibling_conn(&self.session_setup.conn).map_err(
+                |err| -> Box<dyn Error + Send + Sync> {
+                    Box::new(std::io::Error::other(err.to_string()))
+                },
+            )?
+        };
+        self.session_setup.sibling_conn = Some(sibling_conn.clone());
+        commands.bind_session_context(sibling_conn, self.session_setup.session_id.clone(), None);
         self.session_setup.extension_commands = commands;
         self.controller
             .runtime_host

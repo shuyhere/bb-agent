@@ -19,12 +19,28 @@ pub struct RegisteredCommand {
 }
 
 /// Minimal execution context exposed to plugin handlers and commands.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct PluginContext {
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default, alias = "hasUI")]
     pub has_ui: bool,
+    #[serde(default)]
+    pub session_entries: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub session_branch: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub leaf_id: Option<String>,
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub session_file: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 /// Errors from the plugin host.

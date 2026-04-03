@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +15,7 @@ use bb_core::agent_session_extensions::{
 use bb_core::config;
 use bb_core::error::{BbError, BbResult};
 use bb_core::settings::Settings;
-use bb_core::types::ContentBlock;
+use bb_core::types::{ContentBlock, SessionEntry};
 use bb_plugin_host::{
     PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
     RegisteredTool as HostRegisteredTool,
@@ -58,14 +59,79 @@ pub(crate) struct InputHookOutcome {
     pub output: Option<String>,
 }
 
+#[derive(Clone)]
+struct SessionSnapshotSource {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    session_id: String,
+    session_file: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ExtensionCommandRegistry {
     host: Option<Arc<Mutex<PluginHost>>>,
     commands: BTreeSet<String>,
     context: PluginContext,
+    session: Option<SessionSnapshotSource>,
+}
+
+impl fmt::Debug for ExtensionCommandRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtensionCommandRegistry")
+            .field("commands", &self.commands)
+            .field("context", &self.context)
+            .field("has_host", &self.host.is_some())
+            .field("has_session", &self.session.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExtensionCommandRegistry {
+    pub(crate) fn bind_session_context(
+        &mut self,
+        conn: Arc<Mutex<rusqlite::Connection>>,
+        session_id: impl Into<String>,
+        session_file: Option<String>,
+    ) {
+        self.session = Some(SessionSnapshotSource {
+            conn,
+            session_id: session_id.into(),
+            session_file,
+        });
+    }
+
+    async fn build_context(&self) -> PluginContext {
+        let mut context = self.context.clone();
+        let Some(session) = &self.session else {
+            return context;
+        };
+
+        let conn = session.conn.lock().await;
+        let entries =
+            bb_session::store::get_entries(&conn, &session.session_id).unwrap_or_default();
+        let branch = bb_session::tree::active_path(&conn, &session.session_id).unwrap_or_default();
+        let session_row = bb_session::store::get_session(&conn, &session.session_id)
+            .ok()
+            .flatten();
+        drop(conn);
+
+        context.session_entries = entries
+            .into_iter()
+            .filter_map(|row| bb_session::store::parse_entry(&row).ok())
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect();
+        context.session_branch = branch
+            .into_iter()
+            .filter_map(|row| bb_session::store::parse_entry(&row).ok())
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect();
+        context.leaf_id = session_row.as_ref().and_then(|row| row.leaf_id.clone());
+        context.session_name = session_row.as_ref().and_then(|row| row.name.clone());
+        context.session_file = session.session_file.clone();
+        context.session_id = Some(session.session_id.clone());
+        context.labels = build_labels_map(&context.session_entries);
+        context
+    }
+
     pub(crate) fn is_registered(&self, text: &str) -> bool {
         parse_command_invocation(text)
             .map(|(name, _)| self.commands.contains(name))
@@ -83,17 +149,19 @@ impl ExtensionCommandRegistry {
         let Some(host) = &self.host else {
             bail!("extension command runtime is not available");
         };
+        let context = self.build_context().await;
         let mut host = host.lock().await;
         let result = host
-            .execute_command_with_context(name, args.unwrap_or_default(), &self.context)
+            .execute_command_with_context(name, args.unwrap_or_default(), &context)
             .await?;
         Ok(render_command_result(&result))
     }
 
     pub(crate) async fn send_event(&self, event: &bb_hooks::Event) -> Option<bb_hooks::HookResult> {
         let host = self.host.as_ref()?;
+        let context = self.build_context().await;
         let mut host = host.lock().await;
-        host.send_event_with_context(event, &self.context).await
+        host.send_event_with_context(event, &context).await
     }
 
     pub(crate) async fn apply_input_hooks(
@@ -296,7 +364,9 @@ pub(crate) async fn load_runtime_extension_support_with_ui(
             context: PluginContext {
                 cwd: Some(cwd.display().to_string()),
                 has_ui,
+                ..PluginContext::default()
             },
+            session: None,
         };
 
         session_resources.extensions = ExtensionsResult {
@@ -1053,6 +1123,26 @@ fn run_command(command: &mut Command, description: &str) -> Result<()> {
     Ok(())
 }
 
+fn build_labels_map(entries: &[Value]) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    for entry in entries {
+        if let Ok(SessionEntry::Label {
+            target_id, label, ..
+        }) = serde_json::from_value::<SessionEntry>(entry.clone())
+        {
+            match label {
+                Some(label) => {
+                    labels.insert(target_id.to_string(), label);
+                }
+                None => {
+                    labels.remove(&target_id.to_string());
+                }
+            }
+        }
+    }
+    labels
+}
+
 fn map_plugin_command_registration(command: &HostRegisteredCommand) -> RegisteredCommand {
     RegisteredCommand {
         invocation_name: command.name.clone(),
@@ -1409,7 +1499,16 @@ mod tests {
                     bb.registerCommand('pkghello', {
                         description: 'package hello',
                         handler: async (args, ctx) => ({
-                            message: `pkg:${args}|ui:${ctx.hasUI}|cwd:${ctx.cwd}`,
+                            message: [
+                                `pkg:${args}`,
+                                `ui:${ctx.hasUI}`,
+                                `cwd:${ctx.cwd}`,
+                                `entries:${ctx.sessionManager.getEntries().length}`,
+                                `branch:${ctx.sessionManager.getBranch().length}`,
+                                `leaf:${ctx.sessionManager.getLeafId()}`,
+                                `label:${ctx.sessionManager.getLabel(ctx.sessionManager.getEntries()[0]?.id)}`,
+                                `session:${ctx.sessionManager.getSessionId()}`,
+                            ].join('|'),
                         }),
                     });
                 };
@@ -1417,11 +1516,40 @@ mod tests {
         )
         .unwrap();
 
+        let conn = bb_session::store::open_db(&cwd.path().join("sessions.db")).unwrap();
+        let session_id =
+            bb_session::store::create_session(&conn, cwd.path().to_str().unwrap()).unwrap();
+        let root = bb_core::types::SessionEntry::Message {
+            base: bb_core::types::EntryBase {
+                id: bb_core::types::EntryId::generate(),
+                parent_id: None,
+                timestamp: chrono::Utc::now(),
+            },
+            message: bb_core::types::AgentMessage::User(bb_core::types::UserMessage {
+                content: vec![bb_core::types::ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            }),
+        };
+        let root_id = root.base().id.to_string();
+        bb_session::store::append_entry(&conn, &session_id, &root).unwrap();
+        let label = bb_core::types::SessionEntry::Label {
+            base: bb_core::types::EntryBase {
+                id: bb_core::types::EntryId::generate(),
+                parent_id: Some(bb_core::types::EntryId(root_id.clone())),
+                timestamp: chrono::Utc::now(),
+            },
+            target_id: bb_core::types::EntryId(root_id.clone()),
+            label: Some("root-label".to_string()),
+        };
+        bb_session::store::append_entry(&conn, &session_id, &label).unwrap();
+
         let settings = Settings {
             packages: vec![package_dir.display().to_string()],
             ..Settings::default()
         };
-        let support = load_runtime_extension_support_with_ui(
+        let mut support = load_runtime_extension_support_with_ui(
             cwd.path(),
             &settings,
             &ExtensionBootstrap::default(),
@@ -1429,6 +1557,11 @@ mod tests {
         )
         .await
         .unwrap();
+        support.commands.bind_session_context(
+            crate::turn_runner::open_sibling_conn(&conn).unwrap(),
+            session_id.clone(),
+            None,
+        );
 
         assert!(support.commands.is_registered("/pkghello world"));
         let output = support
@@ -1440,6 +1573,11 @@ mod tests {
         assert!(output.contains("pkg:world"));
         assert!(output.contains("ui:true"));
         assert!(output.contains(cwd.path().to_str().unwrap()));
+        assert!(output.contains("entries:2"));
+        assert!(output.contains("branch:2"));
+        assert!(output.contains(&format!("leaf:{}", label.base().id)));
+        assert!(output.contains("label:root-label"));
+        assert!(output.contains(&format!("session:{session_id}")));
     }
 
     #[tokio::test]

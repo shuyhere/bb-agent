@@ -139,8 +139,10 @@ pub(crate) async fn prepare_interactive_mode(
     let RuntimeExtensionSupport {
         session_resources,
         mut tools,
-        commands,
+        mut commands,
     } = load_runtime_extension_support_with_ui(&cwd, &settings, &extension_bootstrap, true).await?;
+    let sibling_conn = crate::turn_runner::open_sibling_conn(&conn)?;
+    commands.bind_session_context(sibling_conn.clone(), session_id.clone(), None);
     let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
     let mut builtin_tools = select_tools_default();
     builtin_tools.append(&mut tools);
@@ -192,7 +194,7 @@ pub(crate) async fn prepare_interactive_mode(
         retry_base_delay_ms: settings.retry.base_delay_ms,
         retry_max_delay_ms: settings.retry.max_delay_ms,
         session_created: false,
-        sibling_conn: None,
+        sibling_conn: Some(sibling_conn),
         extension_commands: commands,
         extension_bootstrap: extension_bootstrap.clone(),
     };
