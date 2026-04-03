@@ -157,6 +157,7 @@ struct FullscreenSlashMenuState {
     items: Vec<SelectItem>,
     filtered: Vec<usize>,
     selected: usize,
+    scroll_offset: usize,
     max_visible: usize,
 }
 
@@ -314,6 +315,7 @@ impl FullscreenSlashMenuState {
             items,
             filtered,
             selected: 0,
+            scroll_offset: 0,
             max_visible: 6,
         }
     }
@@ -332,22 +334,40 @@ impl FullscreenSlashMenuState {
                         .trim_start_matches('/')
                         .to_ascii_lowercase()
                         .starts_with(&q)
+                        || item
+                            .value
+                            .trim_start_matches('/')
+                            .to_ascii_lowercase()
+                            .starts_with(&q)
                 }
             })
             .map(|(idx, _)| idx)
             .collect();
-        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+        self.selected = 0;
+        self.scroll_offset = 0;
     }
 
-    fn move_up(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = self.selected.saturating_sub(1);
+    fn move_up(&mut self, n: usize) {
+        if self.filtered.is_empty() {
+            return;
         }
+        self.selected = self.selected.saturating_sub(n);
+        self.adjust_scroll();
     }
 
-    fn move_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1).min(self.filtered.len().saturating_sub(1));
+    fn move_down(&mut self, n: usize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + n).min(self.filtered.len().saturating_sub(1));
+        self.adjust_scroll();
+    }
+
+    fn adjust_scroll(&mut self) {
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = self.selected + 1 - self.max_visible;
         }
     }
 
@@ -371,9 +391,21 @@ impl FullscreenSlashMenuState {
             return lines;
         }
 
-        let visible_count = self.filtered.len().min(self.max_visible);
-        for (visible_index, item_idx) in self.filtered.iter().take(visible_count).enumerate() {
-            let item = &self.items[*item_idx];
+        let total = self.filtered.len();
+        let end = (self.scroll_offset + self.max_visible).min(total);
+        if self.scroll_offset > 0 {
+            lines.push(crate::utils::pad_to_width(
+                &format!(
+                    "  {} {} more above",
+                    "^".with(Color::DarkGrey),
+                    self.scroll_offset.to_string().with(Color::DarkGrey)
+                ),
+                width,
+            ));
+        }
+        for visible_index in self.scroll_offset..end {
+            let item_idx = self.filtered[visible_index];
+            let item = &self.items[item_idx];
             let is_selected = visible_index == self.selected;
             let marker = if is_selected { ">" } else { " " };
             let label = if is_selected {
@@ -389,6 +421,16 @@ impl FullscreenSlashMenuState {
             let line = format!("{marker} {label}{detail}");
             lines.push(crate::utils::pad_to_width(
                 &crate::utils::truncate_to_width(&line, width),
+                width,
+            ));
+        }
+        if end < total {
+            lines.push(crate::utils::pad_to_width(
+                &format!(
+                    "  {} {} more below",
+                    "v".with(Color::DarkGrey),
+                    (total - end).to_string().with(Color::DarkGrey)
+                ),
                 width,
             ));
         }
@@ -911,13 +953,37 @@ impl FullscreenState {
             let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
                 && key.modifiers.contains(KeyModifiers::CONTROL);
             match key.code {
-                KeyCode::Up | KeyCode::PageUp | KeyCode::Home => {
-                    menu.move_up();
+                KeyCode::Up => {
+                    menu.move_up(1);
                     self.dirty = true;
                     return;
                 }
-                KeyCode::Down | KeyCode::PageDown | KeyCode::End => {
-                    menu.move_down();
+                KeyCode::Down => {
+                    menu.move_down(1);
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::PageUp => {
+                    menu.move_up(menu.max_visible);
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::PageDown => {
+                    menu.move_down(menu.max_visible);
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::Home => {
+                    menu.selected = 0;
+                    menu.scroll_offset = 0;
+                    self.dirty = true;
+                    return;
+                }
+                KeyCode::End => {
+                    if !menu.filtered.is_empty() {
+                        menu.selected = menu.filtered.len() - 1;
+                        menu.adjust_scroll();
+                    }
                     self.dirty = true;
                     return;
                 }
@@ -2789,6 +2855,59 @@ mod tests {
             .expect("filtered slash menu should be visible");
         let joined = lines.join("\n");
         assert!(joined.contains("/settings"));
+    }
+
+    #[test]
+    fn slash_menu_scrolls_when_selection_moves_past_visible_window() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for _ in 0..6 {
+            state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+
+        let menu = state.slash_menu.as_ref().expect("slash menu should be visible");
+        assert_eq!(menu.selected, 6);
+        assert!(menu.scroll_offset > 0);
+
+        let joined = state
+            .render_slash_menu_lines(80)
+            .expect("slash menu should render")
+            .join("\n");
+        assert!(joined.contains("more above"));
+        assert!(joined.contains("/tree") || joined.contains("/fork") || joined.contains("/new"));
+    }
+
+    #[test]
+    fn enter_on_hidden_scrolled_slash_item_accepts_that_item() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 20,
+            },
+        );
+
+        state.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for _ in 0..6 {
+            state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let expected = state
+            .slash_menu
+            .as_ref()
+            .and_then(|menu| menu.selected_value())
+            .expect("selected slash command");
+
+        state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(state.input, expected);
+        assert!(state.slash_menu.is_none());
     }
 
     #[test]
