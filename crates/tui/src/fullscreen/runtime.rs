@@ -139,7 +139,7 @@ struct ToolCallState {
     name: String,
     raw_args: String,
     tool_use_id: BlockId,
-    tool_result_id: BlockId,
+    tool_result_id: Option<BlockId>,
 }
 
 #[derive(Clone, Debug)]
@@ -450,12 +450,6 @@ impl FullscreenState {
                 ) else {
                     return RenderIntent::None;
                 };
-                let Ok(tool_result_id) = self.transcript.append_child_block(
-                    tool_use_id,
-                    NewBlock::new(BlockKind::ToolResult, "pending"),
-                ) else {
-                    return RenderIntent::None;
-                };
                 if let Some(active_turn) = self.active_turn.as_mut() {
                     active_turn.tools.insert(
                         id,
@@ -463,7 +457,7 @@ impl FullscreenState {
                             name,
                             raw_args: String::new(),
                             tool_use_id,
-                            tool_result_id,
+                            tool_result_id: None,
                         },
                     );
                 }
@@ -499,7 +493,6 @@ impl FullscreenState {
                 let _ = self
                     .transcript
                     .replace_content(tool.tool_use_id, format_tool_call_content(&tool.name, &tool.raw_args));
-                let _ = self.transcript.update_title(tool.tool_result_id, "running");
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Render
@@ -523,14 +516,17 @@ impl FullscreenState {
                 let _ = self
                     .transcript
                     .replace_content(tool.tool_use_id, format_tool_call_content(&name, &tool.raw_args));
+                let Some(tool_result_id) = self.ensure_tool_result_block(&id) else {
+                    return RenderIntent::None;
+                };
                 let _ = self.transcript.update_title(
-                    tool.tool_result_id,
+                    tool_result_id,
                     if is_error { "error output" } else { "output" },
                 );
                 let formatted = format_tool_result_content(&name, &content, details, artifact_path, is_error);
                 let _ = self
                     .transcript
-                    .replace_tool_result_content(tool.tool_result_id, formatted);
+                    .replace_tool_result_content(tool_result_id, formatted);
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Render
@@ -1099,6 +1095,23 @@ impl FullscreenState {
 
     fn tool_call_state_mut(&mut self, id: &str) -> Option<&mut ToolCallState> {
         self.active_turn.as_mut()?.tools.get_mut(id)
+    }
+
+    fn ensure_tool_result_block(&mut self, id: &str) -> Option<BlockId> {
+        let existing = self.tool_call_state(id)?.tool_result_id;
+        if existing.is_some() {
+            return existing;
+        }
+
+        let tool_use_id = self.tool_call_state(id)?.tool_use_id;
+        let tool_result_id = self
+            .transcript
+            .append_child_block(tool_use_id, NewBlock::new(BlockKind::ToolResult, "output"))
+            .ok()?;
+        if let Some(tool) = self.tool_call_state_mut(id) {
+            tool.tool_result_id = Some(tool_result_id);
+        }
+        Some(tool_result_id)
     }
 
     fn submit_input(&mut self) {
@@ -1778,6 +1791,18 @@ mod tests {
             id: "tool-1".into(),
             args: "{\"command\":\"ls\"}".into(),
         });
+
+        let assistant = state.transcript.root_blocks()[0];
+        let assistant_block = state
+            .transcript
+            .block(assistant)
+            .expect("assistant root should exist");
+        let tool_use_before_result = state
+            .transcript
+            .block(assistant_block.children[1])
+            .expect("tool use block should exist before result");
+        assert!(tool_use_before_result.children.is_empty());
+
         let _ = state.apply_command(FullscreenCommand::ToolResult {
             id: "tool-1".into(),
             name: "bash".into(),
