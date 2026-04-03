@@ -1057,6 +1057,13 @@ fn collect_skills_from_entry(
         return;
     }
 
+    // Check if this is a .agents/skills directory — if so, skip root .md
+    // files (per pi spec, only SKILL.md directories are discovered there).
+    let is_agents_root = entry
+        .to_str()
+        .map(|s| s.contains(".agents/skills"))
+        .unwrap_or(false);
+
     let Ok(entries) = fs::read_dir(entry) else {
         return;
     };
@@ -1064,10 +1071,19 @@ fn collect_skills_from_entry(
         if child.is_dir() {
             let skill_file = child.join("SKILL.md");
             if skill_file.is_file() {
+                // Found a skill directory — load SKILL.md but do NOT recurse
+                // into subdirectories (those are the skill's own resources
+                // like references/, agents/, scripts/).
                 push_skill_definition(&skill_file, definitions, seen, cwd, package_root);
+            } else {
+                // No SKILL.md — recurse to find nested skill directories.
+                collect_skills_from_entry(&child, definitions, seen, cwd, package_root);
             }
-            collect_skills_from_entry(&child, definitions, seen, cwd, package_root);
-        } else if child.is_file() && child.extension().and_then(|ext| ext.to_str()) == Some("md") {
+        } else if child.is_file()
+            && !is_agents_root
+            && child.extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
+            // Root .md files are individual skills (except in .agents/skills)
             push_skill_definition(&child, definitions, seen, cwd, package_root);
         }
     }

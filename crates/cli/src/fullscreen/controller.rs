@@ -139,27 +139,22 @@ impl FullscreenController {
         );
         let mut sections: Vec<String> = Vec::new();
 
-        // Skills section (pi-style: show path grouped by scope)
+        // Skills section — one line per skill: path (pi-style)
         if !bootstrap.skills.is_empty() {
             let mut skill_lines = vec!["[Skills]".to_string()];
             for skill in &bootstrap.skills {
                 let path = super::shorten_path(&skill.info.source_info.path);
-                skill_lines.push(format!("  /skill:{}", skill.info.name));
-                skill_lines.push(format!("    {}", path));
-                if !skill.info.description.is_empty() {
-                    skill_lines.push(format!("    {}", skill.info.description));
-                }
+                skill_lines.push(format!("  {}", path));
             }
             sections.push(skill_lines.join("\n"));
         }
 
-        // Prompts section
+        // Prompts section — one line per prompt: /name
         if !bootstrap.prompts.is_empty() {
             let mut prompt_lines = vec!["[Prompts]".to_string()];
             for prompt in &bootstrap.prompts {
                 let path = super::shorten_path(&prompt.info.source_info.path);
-                prompt_lines.push(format!("  /{}", prompt.info.name));
-                prompt_lines.push(format!("    {}", path));
+                prompt_lines.push(format!("  {}", path));
             }
             sections.push(prompt_lines.join("\n"));
         }
@@ -171,42 +166,23 @@ impl FullscreenController {
             for ext in &extensions.extensions {
                 ext_lines.push(format!("  {}", super::shorten_path(&ext.path)));
             }
-            if !extensions.registered_commands.is_empty() {
-                for cmd in &extensions.registered_commands {
-                    ext_lines.push(format!("  /{:<24} {}", cmd.invocation_name, cmd.description));
-                }
-            }
-            if !extensions.registered_tools.is_empty() {
-                for tool in &extensions.registered_tools {
-                    ext_lines.push(format!("  tool: {}", tool.definition.name));
-                }
-            }
             sections.push(ext_lines.join("\n"));
         }
 
-        // Build the startup header: version + keybindings + resources
-        let version = env!("CARGO_PKG_VERSION");
-        let mut header_lines = vec![
-            format!("BB-Agent v{version}"),
-            String::new(),
-            "  Ctrl+C to interrupt • Ctrl+O transcript • Esc to exit".to_string(),
-            "  Enter to submit • Shift+Enter newline • / for commands • ! for bash".to_string(),
-        ];
+        if sections.is_empty() {
+            return;
+        }
 
-        if !sections.is_empty() {
-            header_lines.push(String::new());
-            for section in &sections {
-                for line in section.lines() {
-                    header_lines.push(format!("  {line}"));
-                }
-                header_lines.push(String::new());
+        let mut resource_lines = Vec::new();
+        for section in &sections {
+            for line in section.lines() {
+                resource_lines.push(line.to_string());
             }
         }
 
-        // Render as transcript content that's always visible
         self.send_command(FullscreenCommand::PushNote {
             level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
-            text: header_lines.join("\n"),
+            text: resource_lines.join("\n"),
         });
     }
 
