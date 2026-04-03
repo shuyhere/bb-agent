@@ -568,4 +568,74 @@ impl LocalSlashCommandHost for FullscreenController {
         self.open_settings_menu();
         Ok(())
     }
+
+    fn slash_hotkeys(&mut self) -> Result<()> {
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: [
+                "Keyboard Shortcuts",
+                "  Ctrl+C          Interrupt / quit",
+                "  Ctrl+O          Toggle transcript mode",
+                "  Esc             Exit transcript / quit",
+                "  Enter           Submit prompt",
+                "  Shift+Enter     Insert newline",
+                "  Ctrl+J          Submit prompt (alt)",
+                "  /               Open command menu",
+                "  !command        Run bash command",
+                "",
+                "Transcript Mode (Ctrl+O)",
+                "  j/k             Navigate blocks",
+                "  Enter/Space     Toggle expand/collapse",
+                "  o               Expand focused block",
+                "  c               Collapse focused block",
+                "  g/G             Jump to first/last",
+                "  Ctrl+O          Toggle tool output",
+                "  Esc             Return to input",
+            ]
+            .join("\n"),
+        });
+        Ok(())
+    }
+
+    fn slash_reload(&mut self) -> Result<()> {
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Reload not yet supported in fullscreen mode. Use /quit and restart.".to_string(),
+        ));
+        Ok(())
+    }
+
+    fn slash_export(&mut self, path: Option<&str>) -> Result<()> {
+        let file_path = path.unwrap_or("session-export.jsonl").to_string();
+        match crate::fullscreen::session::export_session(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &file_path,
+        ) {
+            Ok(abs_path) => {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    format!("Exported to: {abs_path}"),
+                ));
+            }
+            Err(e) => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Export failed: {e}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn slash_import(&mut self, path: Option<&str>) -> Result<()> {
+        let Some(path) = path else {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "Usage: /import <path.jsonl>".to_string(),
+            ));
+            return Ok(());
+        };
+        self.send_command(FullscreenCommand::SetStatusLine(
+            format!("Import from {path} not yet supported in fullscreen mode."),
+        ));
+        Ok(())
+    }
 }

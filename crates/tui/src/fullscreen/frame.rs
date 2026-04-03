@@ -433,7 +433,7 @@ fn render_note_line(
     match block.title.as_str() {
         "error" => format!("{}{}{}", t.error, body, t.reset),
         "warning" => format!("{}{}{}{}", t.dim, t.warning, body, t.reset),
-        "status" => format!("{}{}{}", t.dim, body, t.reset),
+        "status" => format!("{}{}{}", t.text, body, t.reset),
         _ => format!("{}{}{}{}", t.dim, t.yellow, body, t.reset),
     }
 }

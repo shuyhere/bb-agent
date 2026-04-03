@@ -597,4 +597,25 @@ impl LocalSlashCommandHost for InteractiveMode {
         self.show_settings_selector();
         Ok(())
     }
+
+    fn slash_hotkeys(&mut self) -> anyhow::Result<()> {
+        self.handle_hotkeys_command();
+        Ok(())
+    }
+
+    fn slash_reload(&mut self) -> anyhow::Result<()> {
+        // handle_reload_command is async; for now show status
+        self.show_status("Use Ctrl+C and restart to reload. Async /reload pending.");
+        Ok(())
+    }
+
+    fn slash_export(&mut self, _path: Option<&str>) -> anyhow::Result<()> {
+        self.handle_export_command("/export");
+        Ok(())
+    }
+
+    fn slash_import(&mut self, _path: Option<&str>) -> anyhow::Result<()> {
+        self.handle_import_command("/import");
+        Ok(())
+    }
 }

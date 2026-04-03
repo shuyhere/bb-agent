@@ -184,17 +184,30 @@ impl FullscreenController {
             sections.push(ext_lines.join("\n"));
         }
 
+        // Build the startup header: version + keybindings + resources
+        let version = env!("CARGO_PKG_VERSION");
+        let mut header_lines = vec![
+            format!("BB-Agent v{version}"),
+            String::new(),
+            "  Ctrl+C to interrupt • Ctrl+O transcript • Esc to exit".to_string(),
+            "  Enter to submit • Shift+Enter newline • / for commands • ! for bash".to_string(),
+        ];
+
         if !sections.is_empty() {
-            let text = sections.join("\n\n");
-            tracing::info!("Startup resources: {} sections, {} chars", sections.len(), text.len());
-            self.send_command(FullscreenCommand::PushNote {
-                level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
-                text,
-            });
-        } else {
-            tracing::info!("No startup resources to display (skills={}, prompts={}, ext={})",
-                bootstrap.skills.len(), bootstrap.prompts.len(), bootstrap.extensions.extensions.len());
+            header_lines.push(String::new());
+            for section in &sections {
+                for line in section.lines() {
+                    header_lines.push(format!("  {line}"));
+                }
+                header_lines.push(String::new());
+            }
         }
+
+        // Render as transcript content that's always visible
+        self.send_command(FullscreenCommand::PushNote {
+            level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
+            text: header_lines.join("\n"),
+        });
     }
 
     pub(super) fn publish_footer(&mut self) {

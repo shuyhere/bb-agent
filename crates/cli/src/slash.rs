@@ -26,10 +26,22 @@ pub fn handle_slash_command(text: &str) -> SlashResult {
         "/session" => SlashResult::SessionInfo,
         "/copy" => SlashResult::Copy,
         "/settings" => SlashResult::Settings,
+        "/hotkeys" => SlashResult::Hotkeys,
+        "/reload" => SlashResult::Reload,
         "/name" => SlashResult::Name(None),
         cmd if cmd.starts_with("/name ") => {
             let name = cmd.strip_prefix("/name ").unwrap().trim();
             SlashResult::Name(Some(name.to_string()))
+        }
+        "/export" => SlashResult::Export(None),
+        cmd if cmd.starts_with("/export ") => {
+            let path = cmd.strip_prefix("/export ").unwrap().trim();
+            SlashResult::Export(Some(path.to_string()))
+        }
+        "/import" => SlashResult::Import(None),
+        cmd if cmd.starts_with("/import ") => {
+            let path = cmd.strip_prefix("/import ").unwrap().trim();
+            SlashResult::Import(Some(path.to_string()))
         }
         _ => SlashResult::NotCommand,
     }
@@ -51,6 +63,10 @@ pub enum SlashResult {
     SessionInfo,
     Copy,
     Settings,
+    Hotkeys,
+    Reload,
+    Export(Option<String>),
+    Import(Option<String>),
     NotCommand,
 }
 
@@ -69,6 +85,10 @@ pub trait LocalSlashCommandHost {
     fn slash_session_info(&mut self) -> Result<()>;
     fn slash_copy(&mut self) -> Result<()>;
     fn slash_settings(&mut self) -> Result<()>;
+    fn slash_hotkeys(&mut self) -> Result<()>;
+    fn slash_reload(&mut self) -> Result<()>;
+    fn slash_export(&mut self, path: Option<&str>) -> Result<()>;
+    fn slash_import(&mut self, path: Option<&str>) -> Result<()>;
 }
 
 pub fn dispatch_local_slash_command<H: LocalSlashCommandHost>(host: &mut H, text: &str) -> Result<bool> {
@@ -88,6 +108,10 @@ pub fn dispatch_local_slash_command<H: LocalSlashCommandHost>(host: &mut H, text
         SlashResult::SessionInfo => host.slash_session_info()?,
         SlashResult::Copy => host.slash_copy()?,
         SlashResult::Settings => host.slash_settings()?,
+        SlashResult::Hotkeys => host.slash_hotkeys()?,
+        SlashResult::Reload => host.slash_reload()?,
+        SlashResult::Export(path) => host.slash_export(path.as_deref())?,
+        SlashResult::Import(path) => host.slash_import(path.as_deref())?,
     }
     Ok(true)
 }
@@ -130,6 +154,10 @@ mod tests {
         fn slash_session_info(&mut self) -> anyhow::Result<()> { self.calls.push("session".into()); Ok(()) }
         fn slash_copy(&mut self) -> anyhow::Result<()> { self.calls.push("copy".into()); Ok(()) }
         fn slash_settings(&mut self) -> anyhow::Result<()> { self.calls.push("settings".into()); Ok(()) }
+        fn slash_hotkeys(&mut self) -> anyhow::Result<()> { self.calls.push("hotkeys".into()); Ok(()) }
+        fn slash_reload(&mut self) -> anyhow::Result<()> { self.calls.push("reload".into()); Ok(()) }
+        fn slash_export(&mut self, path: Option<&str>) -> anyhow::Result<()> { self.calls.push(format!("export:{:?}", path)); Ok(()) }
+        fn slash_import(&mut self, path: Option<&str>) -> anyhow::Result<()> { self.calls.push(format!("import:{:?}", path)); Ok(()) }
     }
 
     #[test]
