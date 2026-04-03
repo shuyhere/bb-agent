@@ -252,7 +252,7 @@ impl FullscreenSelectMenuState {
             lines.push(crate::utils::pad_to_width(
                 &format!(
                     "  {} {} more above",
-                    "^".with(Color::DarkGrey),
+                    "▲".with(Color::DarkGrey),
                     self.scroll_offset.to_string().with(Color::DarkGrey)
                 ),
                 width,
@@ -278,8 +278,13 @@ impl FullscreenSelectMenuState {
                 .as_ref()
                 .map(|detail| format!(" {}", detail.clone().with(Color::DarkGrey).attribute(Attribute::Dim)))
                 .unwrap_or_default();
+            let marker_styled = if is_selected {
+                format!("{}", marker.with(Color::Cyan).bold())
+            } else {
+                marker.to_string()
+            };
             lines.push(crate::utils::pad_to_width(
-                &crate::utils::truncate_to_width(&format!("{marker} {label}{detail}"), width),
+                &crate::utils::truncate_to_width(&format!("{marker_styled} {label}{detail}"), width),
                 width,
             ));
         }
@@ -288,7 +293,7 @@ impl FullscreenSelectMenuState {
             lines.push(crate::utils::pad_to_width(
                 &format!(
                     "  {} {} more below",
-                    "v".with(Color::DarkGrey),
+                    "▼".with(Color::DarkGrey),
                     (total - end).to_string().with(Color::DarkGrey)
                 ),
                 width,
@@ -296,7 +301,10 @@ impl FullscreenSelectMenuState {
         }
 
         lines.push(crate::utils::pad_to_width(
-            &crate::utils::truncate_to_width(&format!(" {}/{} items", total, total), width),
+            &crate::utils::truncate_to_width(
+                &format!("{}", format!(" {}/{} items", total, total).with(Color::DarkGrey).attribute(Attribute::Dim)),
+                width,
+            ),
             width,
         ));
         lines
@@ -397,7 +405,7 @@ impl FullscreenSlashMenuState {
             lines.push(crate::utils::pad_to_width(
                 &format!(
                     "  {} {} more above",
-                    "^".with(Color::DarkGrey),
+                    "▲".with(Color::DarkGrey),
                     self.scroll_offset.to_string().with(Color::DarkGrey)
                 ),
                 width,
@@ -418,7 +426,12 @@ impl FullscreenSlashMenuState {
                 .as_ref()
                 .map(|detail| format!(" {}", detail.clone().with(Color::DarkGrey).attribute(Attribute::Dim)))
                 .unwrap_or_default();
-            let line = format!("{marker} {label}{detail}");
+            let marker_styled = if is_selected {
+                format!("{}", marker.with(Color::Cyan).bold())
+            } else {
+                marker.to_string()
+            };
+            let line = format!("{marker_styled} {label}{detail}");
             lines.push(crate::utils::pad_to_width(
                 &crate::utils::truncate_to_width(&line, width),
                 width,
@@ -428,7 +441,7 @@ impl FullscreenSlashMenuState {
             lines.push(crate::utils::pad_to_width(
                 &format!(
                     "  {} {} more below",
-                    "v".with(Color::DarkGrey),
+                    "▼".with(Color::DarkGrey),
                     (total - end).to_string().with(Color::DarkGrey)
                 ),
                 width,
@@ -436,7 +449,12 @@ impl FullscreenSlashMenuState {
         }
         lines.push(crate::utils::pad_to_width(
             &crate::utils::truncate_to_width(
-                &format!(" {}/{} commands", self.filtered.len(), self.items.len()),
+                &format!(
+                    "{}",
+                    format!(" {}/{} commands", self.filtered.len(), self.items.len())
+                        .with(Color::DarkGrey)
+                        .attribute(Attribute::Dim)
+                ),
                 width,
             ),
             width,
@@ -2243,6 +2261,7 @@ fn default_slash_commands() -> Vec<SelectItem> {
         ("resume", "Resume a previous session"),
         ("model", "Switch model"),
         ("compact", "Compact conversation context"),
+        ("copy", "Copy last response to clipboard"),
         ("tree", "Navigate session tree"),
         ("fork", "Fork current session"),
         ("name", "Set session display name"),
@@ -2843,6 +2862,7 @@ mod tests {
             .expect("slash menu should be visible");
         let joined = lines.join("\n");
         assert!(joined.contains("/model"));
+        assert!(joined.contains("/copy"));
         assert!(state.requested_footer_height() >= 6);
 
         state.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));

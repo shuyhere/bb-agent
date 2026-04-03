@@ -184,6 +184,7 @@ fn default_slash_commands() -> Vec<SelectItem> {
         ("resume", "Resume a previous session"),
         ("model", "Switch model"),
         ("compact", "Compact conversation context"),
+        ("copy", "Copy last response to clipboard"),
         ("tree", "Navigate session tree"),
         ("fork", "Fork current session"),
         ("name", "Set session display name"),

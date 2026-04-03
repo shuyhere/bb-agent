@@ -22,6 +22,7 @@ pub fn handle_slash_command(text: &str) -> SlashResult {
         "/login" => SlashResult::Login,
         "/logout" => SlashResult::Logout,
         "/session" => SlashResult::SessionInfo,
+        "/copy" => SlashResult::Copy,
         "/settings" => SlashResult::Handled,
         "/name" => SlashResult::Handled,
         cmd if cmd.starts_with("/name ") => {
@@ -59,6 +60,8 @@ pub enum SlashResult {
     SetName(String),
     /// Show session info
     SessionInfo,
+    /// Copy last assistant response to clipboard
+    Copy,
     /// Not a slash command — send to LLM
     NotCommand,
 }
@@ -72,6 +75,7 @@ pub fn help_lines() -> Vec<String> {
         "    /resume        Resume a previous session".into(),
         "    /model [name]  Switch model".into(),
         "    /compact       Compact conversation context".into(),
+        "    /copy          Copy last response to clipboard".into(),
         "    /tree          Navigate session tree".into(),
         "    /fork          Fork current session".into(),
         "    /name <name>   Set session display name".into(),
@@ -86,4 +90,14 @@ pub fn help_lines() -> Vec<String> {
         "    Ctrl+D         Exit (empty editor)".into(),
         "    !command       Run bash directly".into(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{handle_slash_command, SlashResult};
+
+    #[test]
+    fn parses_copy_command() {
+        assert!(matches!(handle_slash_command("/copy"), SlashResult::Copy));
+    }
 }

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::io::Write;
 
 use anyhow::Result;
 use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
@@ -122,6 +123,44 @@ fn format_tokens(count: u64) -> String {
     } else {
         format!("{}M", (count as f64 / 1_000_000.0).round() as u64)
     }
+}
+
+fn base64_encode_simple(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < data.len() {
+        let b0 = data[i] as u32;
+        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        let c0 = ((n >> 18) & 0x3F) as usize;
+        let c1 = ((n >> 12) & 0x3F) as usize;
+        let c2 = ((n >> 6) & 0x3F) as usize;
+        let c3 = (n & 0x3F) as usize;
+        out.push(TABLE[c0] as char);
+        out.push(TABLE[c1] as char);
+        if i + 1 < data.len() {
+            out.push(TABLE[c2] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < data.len() {
+            out.push(TABLE[c3] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    out
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<()> {
+    let encoded = base64_encode_simple(text.as_bytes());
+    let mut stdout = std::io::stdout();
+    write!(stdout, "\x1b]52;c;{encoded}\x07")?;
+    stdout.flush()?;
+    Ok(())
 }
 
 const FULLSCREEN_MENU_PREFIX: &str = "__bb_fullscreen_menu__\t";
@@ -548,6 +587,10 @@ impl FullscreenController {
                 });
                 Ok(true)
             }
+            SlashResult::Copy => {
+                self.copy_last_assistant_message()?;
+                Ok(true)
+            }
             SlashResult::Handled if text == "/settings" => {
                 self.open_settings_menu();
                 Ok(true)
@@ -565,6 +608,40 @@ impl FullscreenController {
                 Ok(true)
             }
         }
+    }
+
+    fn copy_last_assistant_message(&mut self) -> Result<()> {
+        let session_context = context::build_context(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        )?;
+        let last_text = session_context
+            .messages
+            .into_iter()
+            .rev()
+            .find_map(|message| match message {
+                AgentMessage::Assistant(message) => {
+                    let text = format_assistant_text(&message);
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(text)
+                    }
+                }
+                _ => None,
+            });
+
+        if let Some(text) = last_text {
+            copy_text_to_clipboard(&text)?;
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "Copied last assistant message to clipboard".to_string(),
+            ));
+        } else {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "No assistant messages to copy".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn handle_model_selection_command(&mut self, search: Option<&str>) -> Result<()> {
