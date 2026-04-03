@@ -4,9 +4,9 @@ use clap::{Parser, Subcommand};
 mod error;
 mod extensions;
 
+mod fullscreen_entry;
 #[path = "interactive.rs"]
 mod interactive;
-mod fullscreen_entry;
 mod login;
 mod models;
 mod oauth;
@@ -130,6 +130,40 @@ enum Commands {
         /// Provider name
         provider: Option<String>,
     },
+    /// Install a package source into settings
+    Install {
+        /// Install into project-local settings instead of global settings
+        #[arg(short = 'l', long = "local")]
+        local: bool,
+        /// Package source: local path, npm:pkg, git:repo, or URL
+        source: String,
+    },
+    /// Remove a package source from settings
+    Remove {
+        /// Remove from project-local settings instead of global settings
+        #[arg(short = 'l', long = "local")]
+        local: bool,
+        /// Package source to remove
+        source: String,
+    },
+    /// List configured package sources
+    List {
+        /// Only show project-local settings
+        #[arg(short = 'l', long = "local")]
+        local: bool,
+        /// Only show global settings
+        #[arg(long = "global")]
+        global: bool,
+    },
+    /// Update installed package sources
+    Update {
+        /// Only update project-local settings
+        #[arg(short = 'l', long = "local")]
+        local: bool,
+        /// Only update global settings
+        #[arg(long = "global")]
+        global: bool,
+    },
 }
 
 #[tokio::main]
@@ -157,9 +191,60 @@ async fn main() -> Result<()> {
 
     // Handle subcommands
     if let Some(cmd) = &cli.command {
+        let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
         return match cmd {
             Commands::Login { provider } => login::handle_login(provider.as_deref()).await,
             Commands::Logout { provider } => login::handle_logout(provider.as_deref()).await,
+            Commands::Install { local, source } => {
+                let scope = if *local {
+                    extensions::SettingsScope::Project
+                } else {
+                    extensions::SettingsScope::Global
+                };
+                extensions::install_package(source, scope, &cwd)?;
+                println!("Installed package source: {source}");
+                Ok(())
+            }
+            Commands::Remove { local, source } => {
+                let scope = if *local {
+                    extensions::SettingsScope::Project
+                } else {
+                    extensions::SettingsScope::Global
+                };
+                if extensions::remove_package(source, scope, &cwd)? {
+                    println!("Removed package source: {source}");
+                } else {
+                    println!("Package source not found: {source}");
+                }
+                Ok(())
+            }
+            Commands::List { local, global } => {
+                let scope = if *local {
+                    Some(extensions::SettingsScope::Project)
+                } else if *global {
+                    Some(extensions::SettingsScope::Global)
+                } else {
+                    None
+                };
+                for source in extensions::list_packages(scope, &cwd) {
+                    println!("{source}");
+                }
+                Ok(())
+            }
+            Commands::Update { local, global } => {
+                let scope = if *local {
+                    Some(extensions::SettingsScope::Project)
+                } else if *global {
+                    Some(extensions::SettingsScope::Global)
+                } else {
+                    None
+                };
+                let updated = extensions::update_packages(scope, &cwd)?;
+                for source in updated {
+                    println!("Updated {source}");
+                }
+                Ok(())
+            }
         };
     }
 

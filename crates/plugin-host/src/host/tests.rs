@@ -38,6 +38,11 @@ async fn test_load_plugins_with_sample() {
                         return { content: [{ type: "text", text: "Hello, " + (params.name || "world") + "!" }] };
                     },
                 });
+
+                bb.registerCommand("hello", {
+                    description: "Say hello",
+                    handler: async (args) => ({ message: "Hello command " + (args || "world") })
+                });
             };
         "#,
     )
@@ -51,6 +56,8 @@ async fn test_load_plugins_with_sample() {
     assert_eq!(host.plugin_count(), 1);
     assert_eq!(host.registered_tools().len(), 1);
     assert_eq!(host.registered_tools()[0].name, "greet");
+    assert_eq!(host.registered_commands().len(), 1);
+    assert_eq!(host.registered_commands()[0].name, "hello");
 
     // Test sending session_start event
     let result = host.send_event(&bb_hooks::Event::SessionStart).await;
@@ -87,6 +94,9 @@ async fn test_load_plugins_with_sample() {
         .await
         .unwrap();
     assert_eq!(result["content"][0]["text"], "Hello, Alice!");
+
+    let result = host.execute_command("hello", "Alice").await.unwrap();
+    assert_eq!(result["message"], "Hello command Alice");
 
     // Cleanup
     host.kill().await;

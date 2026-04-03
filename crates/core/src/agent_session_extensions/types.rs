@@ -214,6 +214,12 @@ pub struct SkillCatalog {
     pub skills: Vec<SkillInfo>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillDefinition {
+    pub info: SkillInfo,
+    pub content: String,
+}
+
 impl SkillInfo {
     pub fn slash_command_name(&self) -> String {
         format!("skill:{}", self.name)
@@ -281,6 +287,36 @@ pub struct LoadedExtension {
 pub struct ExtensionsResult {
     pub extensions: Vec<LoadedExtension>,
     pub runtime: ExtensionRuntimeState,
+    pub registered_commands: Vec<RegisteredCommand>,
+    pub registered_tools: Vec<RegisteredTool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PromptTemplateDefinition {
+    pub info: PromptTemplateInfo,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionResourceBootstrap {
+    pub extensions: ExtensionsResult,
+    pub skills: Vec<SkillDefinition>,
+    pub prompts: Vec<PromptTemplateDefinition>,
+}
+
+impl SessionResourceBootstrap {
+    pub fn skill_catalog(&self) -> SkillCatalog {
+        SkillCatalog {
+            skills: self.skills.iter().map(|skill| skill.info.clone()).collect(),
+        }
+    }
+
+    pub fn prompt_infos(&self) -> Vec<PromptTemplateInfo> {
+        self.prompts
+            .iter()
+            .map(|prompt| prompt.info.clone())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

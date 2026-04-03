@@ -8,10 +8,13 @@
 //! - Executing tool calls
 //! - Looping for multi-turn tool use
 
+use crate::extensions::ExtensionCommandRegistry;
 use anyhow::Result;
 use bb_core::agent_loop::compat::is_context_overflow;
 use bb_core::agent_session::messages_to_provider;
 use bb_core::types::*;
+use bb_hooks::events::ToolResultEvent;
+use bb_hooks::{Event, ToolCallEvent};
 use bb_provider::registry::Model;
 use bb_provider::streaming::CollectedResponse;
 use bb_provider::{
@@ -43,17 +46,29 @@ pub struct TurnConfig {
     pub retry_base_delay_ms: u64,
     pub retry_max_delay_ms: u64,
     pub cancel: CancellationToken,
+    pub extensions: ExtensionCommandRegistry,
 }
 
 /// Events emitted during a streaming turn for the UI to consume.
 #[derive(Clone, Debug)]
 pub enum TurnEvent {
-    TurnStart { turn_index: u32 },
+    TurnStart {
+        turn_index: u32,
+    },
     TextDelta(String),
     ThinkingDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args: String },
-    ToolExecuting { id: String, name: String },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args: String,
+    },
+    ToolExecuting {
+        id: String,
+        name: String,
+    },
     ToolResult {
         id: String,
         name: String,
@@ -62,8 +77,12 @@ pub enum TurnEvent {
         artifact_path: Option<String>,
         is_error: bool,
     },
-    TurnEnd { turn_index: u32 },
-    ContextOverflow { message: String },
+    TurnEnd {
+        turn_index: u32,
+    },
+    ContextOverflow {
+        message: String,
+    },
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,
@@ -75,7 +94,9 @@ pub enum TurnEvent {
         attempt: u32,
         final_error: Option<String>,
     },
-    Done { text: String },
+    Done {
+        text: String,
+    },
     Error(String),
 }
 
@@ -91,19 +112,42 @@ pub enum TurnEvent {
 pub async fn run_turn(
     config: TurnConfig,
     event_tx: mpsc::UnboundedSender<TurnEvent>,
+    user_prompt: String,
 ) -> (TurnConfig, Result<()>) {
-    let result = run_turn_inner(&config, &event_tx).await;
+    let result = run_turn_inner(&config, &event_tx, &user_prompt).await;
     (config, result)
 }
 
 pub(crate) async fn run_turn_inner(
     config: &TurnConfig,
     event_tx: &mpsc::UnboundedSender<TurnEvent>,
+    user_prompt: &str,
 ) -> Result<()> {
     let mut turn_index: u32 = 0;
+    let mut system_prompt = config.system_prompt.clone();
+
+    if let Some(result) = config
+        .extensions
+        .send_event(&Event::BeforeAgentStart {
+            prompt: user_prompt.to_string(),
+            system_prompt: system_prompt.clone(),
+        })
+        .await
+    {
+        if let Some(updated_prompt) = result.system_prompt {
+            system_prompt = updated_prompt;
+        }
+        if let Some(message) = result.message {
+            append_custom_message(&config.conn, &config.session_id, message).await?;
+        }
+    }
 
     loop {
         let _ = event_tx.send(TurnEvent::TurnStart { turn_index });
+        let _ = config
+            .extensions
+            .send_event(&Event::TurnStart { turn_index })
+            .await;
 
         if config.cancel.is_cancelled() {
             let _ = event_tx.send(TurnEvent::Done {
@@ -116,10 +160,26 @@ pub(crate) async fn run_turn_inner(
         let conn = config.conn.lock().await;
         let ctx = context::build_context(&conn, &config.session_id)?;
         drop(conn);
-        let provider_messages = messages_to_provider(&ctx.messages);
 
-        let request = CompletionRequest {
-            system_prompt: config.system_prompt.clone(),
+        let mut context_messages = ctx.messages;
+        if let Some(result) = config
+            .extensions
+            .send_event(&Event::Context(bb_hooks::events::ContextEvent {
+                messages: context_messages.clone(),
+            }))
+            .await
+        {
+            if let Some(replacement) = result.messages {
+                context_messages = replacement
+                    .into_iter()
+                    .filter_map(|message| serde_json::from_value::<AgentMessage>(message).ok())
+                    .collect();
+            }
+        }
+        let provider_messages = messages_to_provider(&context_messages);
+
+        let mut request = CompletionRequest {
+            system_prompt: system_prompt.clone(),
             messages: provider_messages,
             tools: config.tool_defs.clone(),
             model: config.model.id.clone(),
@@ -127,6 +187,20 @@ pub(crate) async fn run_turn_inner(
             stream: true,
             thinking: config.thinking.clone(),
         };
+
+        if let Some(result) = config
+            .extensions
+            .send_event(&Event::BeforeProviderRequest {
+                payload: serde_json::to_value(&request).unwrap_or_default(),
+            })
+            .await
+        {
+            if let Some(payload) = result.payload {
+                if let Ok(updated_request) = serde_json::from_value::<CompletionRequest>(payload) {
+                    request = updated_request;
+                }
+            }
+        }
 
         let retry_tx = event_tx.clone();
         let retry_callback: RetryCallback = std::sync::Arc::new(move |event| {
@@ -161,7 +235,11 @@ pub(crate) async fn run_turn_inner(
             headers: std::collections::HashMap::new(),
             cancel: config.cancel.clone(),
             retry_callback: Some(retry_callback),
-            max_retries: if config.retry_enabled { config.retry_max_retries.max(1) } else { 1 },
+            max_retries: if config.retry_enabled {
+                config.retry_max_retries.max(1)
+            } else {
+                1
+            },
             retry_base_delay_ms: config.retry_base_delay_ms,
             max_retry_delay_ms: config.retry_max_delay_ms,
         };
@@ -267,6 +345,10 @@ pub(crate) async fn run_turn_inner(
         }
 
         let _ = event_tx.send(TurnEvent::TurnEnd { turn_index });
+        let _ = config
+            .extensions
+            .send_event(&Event::TurnEnd { turn_index })
+            .await;
 
         // If no tool calls, we're done
         if collected.tool_calls.is_empty() {
@@ -291,6 +373,7 @@ pub(crate) async fn run_turn_inner(
             &config.tools,
             &config.tool_ctx,
             &config.cancel,
+            &config.extensions,
             event_tx,
         )
         .await?;
@@ -298,6 +381,7 @@ pub(crate) async fn run_turn_inner(
         turn_index += 1;
     }
 
+    let _ = config.extensions.send_event(&Event::AgentEnd).await;
     Ok(())
 }
 
@@ -325,6 +409,28 @@ pub async fn append_user_message(
         }),
     };
     store::append_entry(&conn, session_id, &user_entry)?;
+    Ok(())
+}
+
+pub async fn append_custom_message(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    session_id: &str,
+    message: serde_json::Value,
+) -> Result<()> {
+    let custom_message: CustomMessage = serde_json::from_value(message)?;
+    let conn = conn.lock().await;
+    let custom_entry = SessionEntry::CustomMessage {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: get_leaf_raw(&conn, session_id),
+            timestamp: Utc::now(),
+        },
+        custom_type: custom_message.custom_type,
+        content: custom_message.content,
+        display: custom_message.display,
+        details: custom_message.details,
+    };
+    store::append_entry(&conn, session_id, &custom_entry)?;
     Ok(())
 }
 
@@ -409,10 +515,11 @@ pub async fn execute_tool_calls(
     tools: &[Box<dyn Tool>],
     tool_ctx: &ToolContext,
     cancel: &CancellationToken,
+    extensions: &ExtensionCommandRegistry,
     event_tx: &mpsc::UnboundedSender<TurnEvent>,
 ) -> Result<()> {
     for tool_call in &collected.tool_calls {
-        let args: serde_json::Value =
+        let mut args: serde_json::Value =
             serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::json!({}));
 
         let _ = event_tx.send(TurnEvent::ToolExecuting {
@@ -420,16 +527,36 @@ pub async fn execute_tool_calls(
             name: tool_call.name.clone(),
         });
 
+        let hook_result = extensions
+            .send_event(&Event::ToolCall(ToolCallEvent {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                input: args.clone(),
+            }))
+            .await;
+
+        if let Some(updated_args) = hook_result.as_ref().and_then(|result| result.input.clone()) {
+            args = updated_args;
+        }
+
         let tool = tools.iter().find(|tool| tool.name() == tool_call.name);
-        let result = match tool {
-            Some(tool) => tool.execute(args, tool_ctx, cancel.clone()).await,
-            None => Err(bb_core::error::BbError::Tool(format!(
-                "Unknown tool: {}",
-                tool_call.name
-            ))),
+        let result = if hook_result.as_ref().and_then(|result| result.block) == Some(true) {
+            Err(bb_core::error::BbError::Tool(
+                hook_result
+                    .and_then(|result| result.reason)
+                    .unwrap_or_else(|| format!("Tool {} blocked by extension", tool_call.name)),
+            ))
+        } else {
+            match tool {
+                Some(tool) => tool.execute(args.clone(), tool_ctx, cancel.clone()).await,
+                None => Err(bb_core::error::BbError::Tool(format!(
+                    "Unknown tool: {}",
+                    tool_call.name
+                ))),
+            }
         };
 
-        let (content, details, artifact_path, is_error) = match result {
+        let (mut content, mut details, artifact_path, mut is_error) = match result {
             Ok(r) => (
                 r.content,
                 r.details,
@@ -445,6 +572,31 @@ pub async fn execute_tool_calls(
                 true,
             ),
         };
+
+        if let Some(result) = extensions
+            .send_event(&Event::ToolResult(ToolResultEvent {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                input: args.clone(),
+                content: content.clone(),
+                details: details.clone(),
+                is_error,
+            }))
+            .await
+        {
+            if let Some(updated_content) = result.content {
+                content = updated_content
+                    .into_iter()
+                    .filter_map(|block| serde_json::from_value::<ContentBlock>(block).ok())
+                    .collect();
+            }
+            if let Some(updated_details) = result.details {
+                details = Some(updated_details);
+            }
+            if let Some(updated_is_error) = result.is_error {
+                is_error = updated_is_error;
+            }
+        }
 
         let _ = event_tx.send(TurnEvent::ToolResult {
             id: tool_call.id.clone(),
@@ -480,7 +632,10 @@ pub async fn execute_tool_calls(
     Ok(())
 }
 
-pub async fn get_leaf(conn: &Arc<Mutex<rusqlite::Connection>>, session_id: &str) -> Option<EntryId> {
+pub async fn get_leaf(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    session_id: &str,
+) -> Option<EntryId> {
     let conn = conn.lock().await;
     get_leaf_raw(&conn, session_id)
 }

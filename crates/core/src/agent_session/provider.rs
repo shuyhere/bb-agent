@@ -62,6 +62,18 @@ pub fn messages_to_provider(messages: &[crate::types::AgentMessage]) -> Vec<serd
                     "content": text,
                 }))
             }
+            crate::types::AgentMessage::Custom(custom) => {
+                let text = custom
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!text.is_empty()).then(|| serde_json::json!({"role": "user", "content": text}))
+            }
             crate::types::AgentMessage::CompactionSummary(compaction) => Some(serde_json::json!({
                 "role": "user",
                 "content": format!("[Previous conversation summary]\n\n{}", compaction.summary),

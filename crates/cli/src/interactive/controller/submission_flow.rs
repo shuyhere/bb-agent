@@ -1,7 +1,10 @@
 use super::*;
 
 impl InteractiveMode {
-    pub(super) async fn handle_submitted_text(&mut self, text: String) -> InteractiveResult<SubmitOutcome> {
+    pub(super) async fn handle_submitted_text(
+        &mut self,
+        text: String,
+    ) -> InteractiveResult<SubmitOutcome> {
         // If we're waiting for auth input (OAuth code paste or API key),
         // redirect the submit to the auth flow.
         if self.streaming.pending_auth_provider.is_some() {
@@ -114,7 +117,7 @@ impl InteractiveMode {
                 }
                 SubmitAction::Reload => {
                     self.clear_editor();
-                    self.handle_reload_command();
+                    self.handle_reload_command().await?;
                 }
                 SubmitAction::Debug => {
                     self.handle_debug_command();
@@ -168,7 +171,9 @@ impl InteractiveMode {
             if self.is_extension_command(&text) {
                 self.push_editor_history(&text);
                 self.clear_editor();
-                self.render_cache.chat_lines.push(format!("extension> {text}"));
+                self.render_cache
+                    .chat_lines
+                    .push(format!("extension> {text}"));
             } else {
                 self.queue_compaction_message(text, QueuedMessageKind::Steer);
             }
@@ -216,15 +221,39 @@ impl InteractiveMode {
             return Ok(());
         }
 
+        let input = self
+            .session_setup
+            .extension_commands
+            .apply_input_hooks(&user_input, "interactive")
+            .await
+            .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                Box::new(std::io::Error::other(err.to_string()))
+            })?;
+        if input.handled {
+            self.add_chat_message(InteractiveMessage::User {
+                text: user_input.clone(),
+            });
+            if let Some(output) = input.output {
+                self.add_chat_message(InteractiveMessage::Assistant {
+                    message: assistant_message_from_parts(&output, None, false),
+                    tool_calls: Vec::new(),
+                });
+            }
+            self.refresh_ui();
+            return Ok(());
+        }
+
+        let prompt_text = input.text.unwrap_or(user_input.clone());
+
         self.controller
             .runtime_host
             .session_mut()
-            .prompt(user_input.clone(), PromptOptions::default())
+            .prompt(prompt_text.clone(), PromptOptions::default())
             .map_err(|err| -> Box<dyn Error + Send + Sync> { Box::new(err) })?;
 
         // Show user message IMMEDIATELY with background color (pi-style)
         self.add_chat_message(InteractiveMessage::User {
-            text: user_input.clone(),
+            text: prompt_text.clone(),
         });
         // Render now so user sees their message before streaming starts.
         // Only redraw after appending the mounted user component.
@@ -274,7 +303,7 @@ impl InteractiveMode {
                 },
                 message: bb_core::types::AgentMessage::User(bb_core::types::UserMessage {
                     content: vec![bb_core::types::ContentBlock::Text {
-                        text: user_input.clone(),
+                        text: prompt_text.clone(),
                     }],
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 }),
@@ -283,18 +312,25 @@ impl InteractiveMode {
                 &self.session_setup.conn,
                 &self.session_setup.session_id,
                 &user_entry,
-            ).map_err(|e| -> Box<dyn Error + Send + Sync> { Box::<dyn Error + Send + Sync>::from(e.to_string()) })?;
+            )
+            .map_err(|e| -> Box<dyn Error + Send + Sync> {
+                Box::<dyn Error + Send + Sync>::from(e.to_string())
+            })?;
         }
 
         // Auto-name session from first user message if no name is set.
         {
-            let session_row = store::get_session(
-                &self.session_setup.conn,
-                &self.session_setup.session_id,
-            ).ok().flatten();
-            if session_row.as_ref().and_then(|r| r.name.as_deref()).is_none() {
+            let session_row =
+                store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+                    .ok()
+                    .flatten();
+            if session_row
+                .as_ref()
+                .and_then(|r| r.name.as_deref())
+                .is_none()
+            {
                 // Truncate to a reasonable length for display.
-                let name = user_input.trim().replace('\n', " ");
+                let name = prompt_text.trim().replace('\n', " ");
                 let name = if name.chars().count() > 80 {
                     let truncated: String = name.chars().take(77).collect();
                     format!("{truncated}...")
@@ -310,7 +346,7 @@ impl InteractiveMode {
         }
 
         // Run the streaming turn loop
-        self.run_streaming_turn_loop().await?;
+        self.run_streaming_turn_loop(prompt_text).await?;
 
         // Ensure all streaming state is fully cleaned up.
         self.streaming.pending_working_message = None;

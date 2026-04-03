@@ -150,6 +150,7 @@ impl AgentSession {
             if self.try_execute_extension_command(&text) {
                 return Ok(());
             }
+            self.throw_if_extension_command(&text)?;
         }
 
         let mut expanded_text = text;

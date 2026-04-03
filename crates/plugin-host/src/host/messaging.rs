@@ -35,11 +35,37 @@ impl PluginHost {
                 // Parse into HookResult
                 match serde_json::from_value::<bb_hooks::HookResult>(result) {
                     Ok(hr) => {
+                        if matches!(event, bb_hooks::Event::ToolCall(tool_call)
+                            if hr.block.is_none()
+                                && hr.cancel.is_none()
+                                && hr.reason.is_none()
+                                && hr.messages.is_none()
+                                && hr.system_prompt.is_none()
+                                && hr.message.is_none()
+                                && hr.content.is_none()
+                                && hr.details.is_none()
+                                && hr.is_error.is_none()
+                                && hr.action.is_none()
+                                && hr.text.is_none()
+                                && hr.payload.is_none()
+                                && hr.input.as_ref() == Some(&tool_call.input))
+                        {
+                            return None;
+                        }
+
                         // Only return Some if there's actual content
-                        if hr.block.is_some() || hr.cancel.is_some() || hr.reason.is_some()
-                            || hr.messages.is_some() || hr.system_prompt.is_some()
-                            || hr.message.is_some() || hr.content.is_some()
-                            || hr.action.is_some() || hr.text.is_some()
+                        if hr.block.is_some()
+                            || hr.cancel.is_some()
+                            || hr.reason.is_some()
+                            || hr.messages.is_some()
+                            || hr.system_prompt.is_some()
+                            || hr.message.is_some()
+                            || hr.content.is_some()
+                            || hr.details.is_some()
+                            || hr.is_error.is_some()
+                            || hr.input.is_some()
+                            || hr.action.is_some()
+                            || hr.text.is_some()
                             || hr.payload.is_some()
                         {
                             Some(hr)
@@ -82,7 +108,8 @@ impl PluginHost {
             },
         });
 
-        self.send_json(&request).await
+        self.send_json(&request)
+            .await
             .map_err(|e| PluginHostError::Io(format!("send execute_tool: {e}")))?;
 
         match tokio::time::timeout(Duration::from_secs(60), self.read_response_for_id(id)).await {
@@ -93,9 +120,42 @@ impl PluginHost {
         }
     }
 
+    /// Execute a plugin-registered command.
+    pub async fn execute_command(
+        &mut self,
+        name: &str,
+        args: &str,
+    ) -> Result<serde_json::Value, PluginHostError> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "execute_command",
+            "params": {
+                "name": name,
+                "args": args,
+            },
+        });
+
+        self.send_json(&request)
+            .await
+            .map_err(|e| PluginHostError::Io(format!("send execute_command: {e}")))?;
+
+        match tokio::time::timeout(Duration::from_secs(60), self.read_response_for_id(id)).await {
+            Ok(Ok(Some(result))) => Ok(result),
+            Ok(Ok(None)) => Err(PluginHostError::ProcessExited),
+            Ok(Err(e)) => Err(PluginHostError::Io(format!("read command response: {e}"))),
+            Err(_) => Err(PluginHostError::Timeout(format!("execute_command {name}"))),
+        }
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────
 
-    pub(super) async fn send_json(&mut self, value: &serde_json::Value) -> Result<(), std::io::Error> {
+    pub(super) async fn send_json(
+        &mut self,
+        value: &serde_json::Value,
+    ) -> Result<(), std::io::Error> {
         let json = serde_json::to_string(value).unwrap();
         self.stdin.write_all(json.as_bytes()).await?;
         self.stdin.write_all(b"\n").await?;
@@ -104,7 +164,9 @@ impl PluginHost {
     }
 
     /// Read a single JSON message from stdout.
-    pub(super) async fn read_message(&mut self) -> Result<Option<serde_json::Value>, std::io::Error> {
+    pub(super) async fn read_message(
+        &mut self,
+    ) -> Result<Option<serde_json::Value>, std::io::Error> {
         let mut line = String::new();
         let bytes = self.stdout_reader.read_line(&mut line).await?;
         if bytes == 0 {
@@ -113,7 +175,10 @@ impl PluginHost {
         match serde_json::from_str(&line) {
             Ok(val) => Ok(Some(val)),
             Err(e) => {
-                warn!("Failed to parse plugin message: {e} — line: {}", line.trim());
+                warn!(
+                    "Failed to parse plugin message: {e} — line: {}",
+                    line.trim()
+                );
                 Ok(None)
             }
         }
@@ -121,7 +186,10 @@ impl PluginHost {
 
     /// Read messages until we find a response with the given id.
     /// Non-matching notifications are processed inline.
-    pub(super) async fn read_response_for_id(&mut self, id: u64) -> Result<Option<serde_json::Value>, std::io::Error> {
+    pub(super) async fn read_response_for_id(
+        &mut self,
+        id: u64,
+    ) -> Result<Option<serde_json::Value>, std::io::Error> {
         loop {
             let msg = match self.read_message().await? {
                 Some(m) => m,
@@ -145,7 +213,10 @@ impl PluginHost {
             match method {
                 "handler_error" => {
                     let params = msg.get("params").cloned().unwrap_or_default();
-                    let event_type = params.get("event_type").and_then(|v| v.as_str()).unwrap_or("?");
+                    let event_type = params
+                        .get("event_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     let error = params.get("error").and_then(|v| v.as_str()).unwrap_or("?");
                     warn!("Plugin handler error [{}]: {}", event_type, error);
                 }
@@ -159,7 +230,8 @@ impl PluginHost {
                 }
                 "command_registered" => {
                     if let Some(params) = msg.get("params") {
-                        if let Ok(cmd) = serde_json::from_value::<RegisteredCommand>(params.clone()) {
+                        if let Ok(cmd) = serde_json::from_value::<RegisteredCommand>(params.clone())
+                        {
                             info!("Plugin registered command (late): {}", cmd.name);
                             self.registered_commands.push(cmd);
                         }
@@ -182,8 +254,12 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         Event::SessionStart => serde_json::json!({ "type": event_type }),
         Event::SessionShutdown => serde_json::json!({ "type": event_type }),
         Event::AgentEnd => serde_json::json!({ "type": event_type }),
-        Event::TurnStart { turn_index } => serde_json::json!({ "type": event_type, "turn_index": turn_index }),
-        Event::TurnEnd { turn_index } => serde_json::json!({ "type": event_type, "turn_index": turn_index }),
+        Event::TurnStart { turn_index } => {
+            serde_json::json!({ "type": event_type, "turn_index": turn_index })
+        }
+        Event::TurnEnd { turn_index } => {
+            serde_json::json!({ "type": event_type, "turn_index": turn_index })
+        }
         Event::ToolCall(tc) => serde_json::json!({
             "type": event_type,
             "tool_call_id": tc.tool_call_id,
@@ -194,9 +270,15 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
             "type": event_type,
             "tool_call_id": tr.tool_call_id,
             "tool_name": tr.tool_name,
+            "input": tr.input,
+            "content": tr.content,
+            "details": tr.details,
             "is_error": tr.is_error,
         }),
-        Event::BeforeAgentStart { prompt, system_prompt } => serde_json::json!({
+        Event::BeforeAgentStart {
+            prompt,
+            system_prompt,
+        } => serde_json::json!({
             "type": event_type,
             "prompt": prompt,
             "system_prompt": system_prompt,

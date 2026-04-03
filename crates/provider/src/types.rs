@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// A completion request to send to a provider.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub system_prompt: String,
     pub messages: Vec<serde_json::Value>,

@@ -6,6 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::agent_session::{ModelRef, ScopedModel, SessionStartEvent, ThinkingLevel};
+use crate::agent_session_extensions::SessionResourceBootstrap;
 
 #[derive(Debug, Error)]
 pub enum AgentSessionRuntimeError {
@@ -396,6 +397,7 @@ pub struct AgentSessionRuntimeBootstrap {
     pub thinking_level: Option<ThinkingLevel>,
     pub scoped_models: Vec<ScopedModel>,
     pub initial_active_tool_names: Option<Vec<String>>,
+    pub resource_bootstrap: SessionResourceBootstrap,
 }
 
 #[derive(Debug, Clone)]
@@ -412,4 +414,3 @@ impl CreateAgentSessionRuntimeOptions {
         }
     }
 }
-

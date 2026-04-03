@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::agent_session_extensions::SessionResourceBootstrap;
+
 use super::config::AgentSessionConfig;
 use super::events::{AgentSessionEventListener, Callback0};
 use super::messages::CustomMessage;
@@ -38,6 +40,7 @@ pub(super) struct AgentSessionState {
     pub(super) cwd: PathBuf,
     pub(super) initial_active_tool_names: Option<Vec<String>>,
     pub(super) base_tools_override: Option<Vec<AgentTool>>,
+    pub(super) resource_bootstrap: SessionResourceBootstrap,
     pub(super) session_start_event: SessionStartEvent,
     pub(super) model_registry: RuntimeHandle,
     pub(super) tool_registry: Vec<AgentTool>,
@@ -79,6 +82,7 @@ impl AgentSessionState {
             cwd: config.cwd,
             initial_active_tool_names: config.initial_active_tool_names,
             base_tools_override: config.base_tools_override,
+            resource_bootstrap: config.resource_bootstrap,
             session_start_event: config
                 .session_start_event
                 .unwrap_or_else(SessionStartEvent::startup),

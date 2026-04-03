@@ -2,7 +2,7 @@ use super::*;
 
 /// Simple base64 encoder for OSC 52 clipboard.
 fn base64_encode_simple(data: &[u8]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     STANDARD.encode(data)
 }
 
@@ -30,17 +30,36 @@ fn load_all_previews(
         let (entry_type, preview) = match &entry {
             bb_core::types::SessionEntry::Message { message, .. } => match message {
                 bb_core::types::AgentMessage::User(u) => {
-                    let text: String = u.content.iter().filter_map(|b| match b {
-                        bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join(" ");
+                    let text: String = u
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let line = text.trim().replace('\n', " ");
-                    ("user", if line.is_empty() { "(empty)".into() } else { line })
+                    (
+                        "user",
+                        if line.is_empty() {
+                            "(empty)".into()
+                        } else {
+                            line
+                        },
+                    )
                 }
                 bb_core::types::AgentMessage::Assistant(a) => {
                     let text = bb_core::agent::extract_text(&a.content);
                     let line = text.trim().replace('\n', " ");
-                    ("assistant", if line.is_empty() { "(empty)".into() } else { line })
+                    (
+                        "assistant",
+                        if line.is_empty() {
+                            "(empty)".into()
+                        } else {
+                            line
+                        },
+                    )
                 }
                 bb_core::types::AgentMessage::ToolResult(t) => {
                     ("tool_result", format!("{}: ...", t.tool_name))
@@ -54,7 +73,10 @@ fn load_all_previews(
         };
         map.insert(
             row.entry_id.clone(),
-            EntryPreview { entry_type: entry_type.into(), preview },
+            EntryPreview {
+                entry_type: entry_type.into(),
+                preview,
+            },
         );
     }
     map
@@ -75,7 +97,11 @@ fn flatten_tree(
         let connector = if depth == 0 {
             String::new()
         } else {
-            let branch = if is_last { "\u{2514}\u{2500} " } else { "\u{251c}\u{2500} " };
+            let branch = if is_last {
+                "\u{2514}\u{2500} "
+            } else {
+                "\u{251c}\u{2500} "
+            };
             format!("{prefix}{branch}")
         };
 
@@ -110,7 +136,15 @@ fn flatten_tree(
             format!("{prefix}{cont}")
         };
 
-        flatten_tree(&node.children, previews, depth + 1, &child_prefix, leaf_id, out, leaf_idx);
+        flatten_tree(
+            &node.children,
+            previews,
+            depth + 1,
+            &child_prefix,
+            leaf_id,
+            out,
+            leaf_idx,
+        );
     }
 }
 
@@ -132,10 +166,15 @@ fn load_session_message_preview(conn: &rusqlite::Connection, session_id: &str) -
         if let bb_core::types::SessionEntry::Message { message, .. } = entry {
             match &message {
                 bb_core::types::AgentMessage::User(u) => {
-                    let text: String = u.content.iter().filter_map(|b| match b {
-                        bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join(" ");
+                    let text: String = u
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     if !text.trim().is_empty() {
                         if first_user_message.is_empty() {
                             first_user_message = text.trim().replace('\n', " ");
@@ -196,7 +235,11 @@ impl InteractiveMode {
                             bb_core::types::AssistantContent::Thinking { thinking } => {
                                 content.push(AssistantMessageContent::Thinking(thinking));
                             }
-                            bb_core::types::AssistantContent::ToolCall { id, name, arguments } => {
+                            bb_core::types::AssistantContent::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            } => {
                                 tool_calls.push(ToolCallContent {
                                     id,
                                     name,
@@ -220,50 +263,62 @@ impl InteractiveMode {
                         tool_calls,
                     })
                 }
-                bb_core::types::AgentMessage::ToolResult(result) => Some(InteractiveMessage::ToolResult {
-                    tool_call_id: result.tool_call_id,
-                    result: ToolExecutionResult {
-                        content: result
-                            .content
-                            .into_iter()
-                            .map(|block| match block {
-                                bb_core::types::ContentBlock::Text { text } => ToolResultBlock {
-                                    r#type: "text".to_string(),
-                                    text: Some(text),
-                                    data: None,
-                                    mime_type: None,
-                                },
-                                bb_core::types::ContentBlock::Image { data, mime_type } => ToolResultBlock {
-                                    r#type: "image".to_string(),
-                                    text: None,
-                                    data: Some(data),
-                                    mime_type: Some(mime_type),
-                                },
-                            })
-                            .collect(),
-                        is_error: result.is_error,
-                        details: result.details,
-                    },
-                }),
-                bb_core::types::AgentMessage::BashExecution(message) => Some(InteractiveMessage::BashExecution {
-                    command: message.command,
-                    output: Some(message.output),
-                    exit_code: message.exit_code,
-                    cancelled: message.cancelled,
-                    truncated: message.truncated,
-                    full_output_path: message.full_output_path,
-                    exclude_from_context: false,
-                }),
+                bb_core::types::AgentMessage::ToolResult(result) => {
+                    Some(InteractiveMessage::ToolResult {
+                        tool_call_id: result.tool_call_id,
+                        result: ToolExecutionResult {
+                            content: result
+                                .content
+                                .into_iter()
+                                .map(|block| match block {
+                                    bb_core::types::ContentBlock::Text { text } => {
+                                        ToolResultBlock {
+                                            r#type: "text".to_string(),
+                                            text: Some(text),
+                                            data: None,
+                                            mime_type: None,
+                                        }
+                                    }
+                                    bb_core::types::ContentBlock::Image { data, mime_type } => {
+                                        ToolResultBlock {
+                                            r#type: "image".to_string(),
+                                            text: None,
+                                            data: Some(data),
+                                            mime_type: Some(mime_type),
+                                        }
+                                    }
+                                })
+                                .collect(),
+                            is_error: result.is_error,
+                            details: result.details,
+                        },
+                    })
+                }
+                bb_core::types::AgentMessage::BashExecution(message) => {
+                    Some(InteractiveMessage::BashExecution {
+                        command: message.command,
+                        output: Some(message.output),
+                        exit_code: message.exit_code,
+                        cancelled: message.cancelled,
+                        truncated: message.truncated,
+                        full_output_path: message.full_output_path,
+                        exclude_from_context: false,
+                    })
+                }
                 bb_core::types::AgentMessage::Custom(message) => Some(InteractiveMessage::Custom {
                     custom_type: message.custom_type,
                     text: Self::text_from_blocks(&message.content, "\n"),
                     display: message.display,
                 }),
                 bb_core::types::AgentMessage::BranchSummary(message) => {
-                    Some(InteractiveMessage::BranchSummary { summary: message.summary })
+                    Some(InteractiveMessage::BranchSummary {
+                        summary: message.summary,
+                    })
                 }
                 bb_core::types::AgentMessage::CompactionSummary(message) => {
-                    Some(InteractiveMessage::CompactionSummary { summary: message.summary })
+                    Some(InteractiveMessage::CompactionSummary {
+                        summary: message.summary,
+                    })
                 }
             })
             .collect();
@@ -291,8 +346,12 @@ impl InteractiveMode {
     pub(super) fn render_current_session_state(&mut self) {
         self.render_state_mut().tool_output_expanded = self.interaction.tool_output_expanded;
         self.render_state_mut().hide_thinking_block = self.streaming.hide_thinking_block;
-        self.render_state_mut().hidden_thinking_label = self.streaming.hidden_thinking_label.clone();
-        match bb_session::context::build_context(&self.session_setup.conn, &self.session_setup.session_id) {
+        self.render_state_mut().hidden_thinking_label =
+            self.streaming.hidden_thinking_label.clone();
+        match bb_session::context::build_context(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        ) {
             Ok(context) => {
                 let context = Self::interactive_session_context_from_core(context);
                 self.render_chat_from_session_context(&context);
@@ -356,10 +415,13 @@ impl InteractiveMode {
             if let Ok(entry) = store::parse_entry(row) {
                 let mut val = serde_json::to_value(&entry).unwrap_or_default();
                 if let Some(obj) = val.as_object_mut() {
-                    obj.insert("parentId".into(), match &prev_id {
-                        Some(id) => serde_json::Value::String(id.clone()),
-                        None => serde_json::Value::Null,
-                    });
+                    obj.insert(
+                        "parentId".into(),
+                        match &prev_id {
+                            Some(id) => serde_json::Value::String(id.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
                 }
                 prev_id = Some(row.entry_id.clone());
                 lines.push(serde_json::to_string(&val).unwrap_or_default());
@@ -490,10 +552,11 @@ impl InteractiveMode {
         let name = text.strip_prefix("/name").unwrap_or(text).trim();
         if name.is_empty() {
             // Show current name if called without args.
-            let current = store::get_session(
-                &self.session_setup.conn,
-                &self.session_setup.session_id,
-            ).ok().flatten().and_then(|r| r.name);
+            let current =
+                store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.name);
             match current {
                 Some(n) => {
                     self.add_chat_message(super::super::events::InteractiveMessage::System {
@@ -533,7 +596,9 @@ impl InteractiveMode {
             .ok()
             .flatten();
         let session_name = session_row.as_ref().and_then(|r| r.name.as_deref());
-        let session_file = self.session_setup.conn
+        let session_file = self
+            .session_setup
+            .conn
             .path()
             .map(|p| p.to_string())
             .unwrap_or_else(|| "in-memory".into());
@@ -557,9 +622,16 @@ impl InteractiveMode {
                             bb_core::types::AgentMessage::User(_) => user_msgs += 1,
                             bb_core::types::AgentMessage::Assistant(a) => {
                                 asst_msgs += 1;
-                                tool_calls += a.content.iter().filter(|c| {
-                                    matches!(c, bb_core::types::AssistantContent::ToolCall { .. })
-                                }).count() as u64;
+                                tool_calls += a
+                                    .content
+                                    .iter()
+                                    .filter(|c| {
+                                        matches!(
+                                            c,
+                                            bb_core::types::AssistantContent::ToolCall { .. }
+                                        )
+                                    })
+                                    .count() as u64;
                                 total_input += a.usage.input;
                                 total_output += a.usage.output;
                                 total_cache_read += a.usage.cache_read;
@@ -608,9 +680,7 @@ impl InteractiveMode {
             info.push_str(&format!("{dim}Total:{reset} ${total_cost:.4}"));
         }
 
-        self.add_chat_message(super::super::events::InteractiveMessage::System {
-            text: info,
-        });
+        self.add_chat_message(super::super::events::InteractiveMessage::System { text: info });
         self.snapshot_chat_cache();
         self.refresh_ui();
     }
@@ -651,16 +721,26 @@ impl InteractiveMode {
     pub(super) fn show_user_message_selector(&mut self) {
         // Collect user messages for forking.
         let mut user_msgs: Vec<(String, String)> = Vec::new(); // (entry_id, text)
-        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+        if let Ok(rows) =
+            store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)
+        {
             for row in rows {
                 if let Ok(entry) = store::parse_entry(&row) {
                     if let bb_core::types::SessionEntry::Message {
-                        base, message: bb_core::types::AgentMessage::User(u), ..
-                    } = entry {
-                        let text: String = u.content.iter().filter_map(|b| match b {
-                            bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join(" ");
+                        base,
+                        message: bb_core::types::AgentMessage::User(u),
+                        ..
+                    } = entry
+                    {
+                        let text: String = u
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                bb_core::types::ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         let text = text.trim().replace('\n', " ");
                         if !text.is_empty() {
                             user_msgs.push((base.id.0, text));
@@ -676,18 +756,22 @@ impl InteractiveMode {
         }
 
         // Build session list items to reuse the session selector overlay.
-        let items: Vec<SessionListItem> = user_msgs.iter().enumerate().map(|(i, (id, text))| {
-            SessionListItem {
-                session_id: id.clone(), // reuse session_id field for entry_id
-                name: None,
-                cwd: String::new(),
-                updated_at: String::new(),
-                entry_count: (i + 1) as i64,
-                is_current: false,
-                first_message: text.clone(),
-                all_messages_text: text.clone(),
-            }
-        }).collect();
+        let items: Vec<SessionListItem> = user_msgs
+            .iter()
+            .enumerate()
+            .map(|(i, (id, text))| {
+                SessionListItem {
+                    session_id: id.clone(), // reuse session_id field for entry_id
+                    name: None,
+                    cwd: String::new(),
+                    updated_at: String::new(),
+                    entry_count: (i + 1) as i64,
+                    is_current: false,
+                    first_message: text.clone(),
+                    all_messages_text: text.clone(),
+                }
+            })
+            .collect();
 
         // We'll use a simple overlay — store the fork intent so process_overlay_actions
         // knows to handle it as a fork rather than a resume.
@@ -712,11 +796,17 @@ impl InteractiveMode {
             Ok(Some(row)) => {
                 let text = match store::parse_entry(&row) {
                     Ok(bb_core::types::SessionEntry::Message {
-                        message: bb_core::types::AgentMessage::User(u), ..
-                    }) => u.content.iter().filter_map(|b| match b {
-                        bb_core::types::ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n"),
+                        message: bb_core::types::AgentMessage::User(u),
+                        ..
+                    }) => u
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            bb_core::types::ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     _ => String::new(),
                 };
                 (row.parent_id, text)
@@ -752,10 +842,8 @@ impl InteractiveMode {
     }
 
     pub(super) fn show_tree_selector(&mut self) {
-        let tree = bb_session::tree::get_tree(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        );
+        let tree =
+            bb_session::tree::get_tree(&self.session_setup.conn, &self.session_setup.session_id);
         let tree = match tree {
             Ok(t) => t,
             Err(e) => {
@@ -803,22 +891,22 @@ impl InteractiveMode {
         // just like startup. This avoids empty /new sessions.
         let new_id = uuid::Uuid::new_v4().to_string();
         {
-                self.session_setup.session_id = new_id.clone();
-                self.session_setup.session_created = false; // lazy
-                self.options.session_id = Some(new_id.clone());
-                let _ = self.controller.runtime_host.session_mut().clear_queue();
+            self.session_setup.session_id = new_id.clone();
+            self.session_setup.session_created = false; // lazy
+            self.options.session_id = Some(new_id.clone());
+            let _ = self.controller.runtime_host.session_mut().clear_queue();
 
-                // Clear all chat/pending/streaming state (match pi's renderCurrentSessionState)
-                self.reset_rendered_session_state();
-                self.rebuild_pending_container();
-                self.rebuild_footer();
+            // Clear all chat/pending/streaming state (match pi's renderCurrentSessionState)
+            self.reset_rendered_session_state();
+            self.rebuild_pending_container();
+            self.rebuild_footer();
 
-                // Show confirmation (like pi's "New session started")
-                self.add_chat_message(super::super::events::InteractiveMessage::System {
-                    text: "New session started".to_string(),
-                });
-                self.snapshot_chat_cache();
-                self.refresh_ui();
+            // Show confirmation (like pi's "New session started")
+            self.add_chat_message(super::super::events::InteractiveMessage::System {
+                text: "New session started".to_string(),
+            });
+            self.snapshot_chat_cache();
+            self.refresh_ui();
         }
     }
 
@@ -897,12 +985,17 @@ impl InteractiveMode {
                             "Compaction: {total_tokens} estimated tokens, {to_summarize} messages to summarize, {kept} kept"
                         ));
                         if let Some(inst) = instructions {
-                            self.render_cache.chat_lines.push(format!("Instructions: {inst}"));
+                            self.render_cache
+                                .chat_lines
+                                .push(format!("Instructions: {inst}"));
                         }
                         self.show_status("Compaction prepared (async LLM summarization not wired in interactive mode yet)");
                     }
                     None => {
-                        self.show_status(format!("Nothing to compact ({total_tokens} estimated tokens, {} entries)", entries.len()));
+                        self.show_status(format!(
+                            "Nothing to compact ({total_tokens} estimated tokens, {} entries)",
+                            entries.len()
+                        ));
                     }
                 }
             }
@@ -913,8 +1006,59 @@ impl InteractiveMode {
         self.interaction.is_compacting = false;
     }
 
-    pub(super) fn handle_reload_command(&mut self) {
-        self.show_status("TODO: reload resources/extensions");
+    pub(super) async fn handle_reload_command(&mut self) -> InteractiveResult<()> {
+        if self.streaming.is_streaming {
+            self.show_warning("/reload is only available while the agent is idle");
+            return Ok(());
+        }
+        if self.interaction.is_compacting {
+            self.show_warning("/reload is not available while compaction is active");
+            return Ok(());
+        }
+
+        let cwd = self.session_setup.tool_ctx.cwd.clone();
+        let settings = bb_core::settings::Settings::load_merged(&cwd);
+        let crate::extensions::RuntimeExtensionSupport {
+            session_resources,
+            mut tools,
+            commands,
+        } = crate::extensions::load_runtime_extension_support(
+            &cwd,
+            &settings,
+            &self.session_setup.extension_bootstrap,
+        )
+        .await
+        .map_err(|err| -> Box<dyn Error + Send + Sync> {
+            Box::new(std::io::Error::other(err.to_string()))
+        })?;
+
+        let mut builtin_tools = bb_tools::builtin_tools();
+        builtin_tools.append(&mut tools);
+        self.session_setup.tool_defs = builtin_tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name(),
+                        "description": t.description(),
+                        "parameters": t.parameters_schema(),
+                    }
+                })
+            })
+            .collect();
+        self.session_setup.tools = builtin_tools;
+        self.session_setup.extension_commands = commands;
+        self.controller
+            .runtime_host
+            .reload_resources(session_resources);
+        let _ = self
+            .session_setup
+            .extension_commands
+            .send_event(&bb_hooks::Event::SessionStart)
+            .await;
+        self.show_status("Reloaded resources and extensions");
+        Ok(())
     }
 
     pub(super) fn handle_debug_command(&mut self) {
@@ -934,9 +1078,20 @@ impl InteractiveMode {
         }
         data.push(String::new());
         data.push(format!("Session: {}", self.session_setup.session_id));
-        data.push(format!("Model: {}/{}", self.session_setup.model.provider, self.session_setup.model.id));
+        data.push(format!(
+            "Model: {}/{}",
+            self.session_setup.model.provider, self.session_setup.model.id
+        ));
         data.push(format!("Thinking: {}", self.session_setup.thinking_level));
-        data.push(format!("API key: {}...", &self.session_setup.api_key.chars().take(10).collect::<String>()));
+        data.push(format!(
+            "API key: {}...",
+            &self
+                .session_setup
+                .api_key
+                .chars()
+                .take(10)
+                .collect::<String>()
+        ));
         let _ = std::fs::write(&debug_path, data.join("\n"));
         self.show_status(format!("Debug log written to {}", debug_path.display()));
     }
@@ -1012,7 +1167,11 @@ impl InteractiveMode {
         }
 
         // Move the leaf pointer to the selected entry
-        if let Err(e) = store::set_leaf(&self.session_setup.conn, &self.session_setup.session_id, Some(entry_id)) {
+        if let Err(e) = store::set_leaf(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            Some(entry_id),
+        ) {
             self.show_warning(format!("Failed to navigate: {e}"));
             return;
         }
@@ -1034,8 +1193,14 @@ impl InteractiveMode {
     }
 
     pub(super) fn handle_bash_command(&mut self, command: &str, excluded_from_context: bool) {
-        let label = if excluded_from_context { "bash(excluded)" } else { "bash" };
-        self.render_cache.chat_lines.push(format!("{label}> {command}"));
+        let label = if excluded_from_context {
+            "bash(excluded)"
+        } else {
+            "bash"
+        };
+        self.render_cache
+            .chat_lines
+            .push(format!("{label}> {command}"));
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command)
@@ -1056,11 +1221,15 @@ impl InteractiveMode {
                     }
                 }
                 if !out.status.success() {
-                    self.render_cache.chat_lines.push(format!("exit code: {}", out.status.code().unwrap_or(-1)));
+                    self.render_cache
+                        .chat_lines
+                        .push(format!("exit code: {}", out.status.code().unwrap_or(-1)));
                 }
             }
             Err(e) => {
-                self.render_cache.chat_lines.push(format!("Failed to execute command: {e}"));
+                self.render_cache
+                    .chat_lines
+                    .push(format!("Failed to execute command: {e}"));
             }
         }
     }
@@ -1073,11 +1242,16 @@ impl InteractiveMode {
 
     pub(super) fn is_extension_command(&self, text: &str) -> bool {
         self.session_setup.extension_commands.is_registered(text)
-            || self.controller.runtime_host.session().is_extension_command_text(text)
+            || self
+                .controller
+                .runtime_host
+                .session()
+                .is_extension_command_text(text)
     }
 
     pub(super) fn queue_compaction_message(&mut self, text: String, kind: QueuedMessageKind) {
-        self.queues.compaction_queued_messages
+        self.queues
+            .compaction_queued_messages
             .push_back(QueuedMessage { text, kind });
         self.show_status("Queued message while compaction is active");
     }
@@ -1089,7 +1263,12 @@ impl InteractiveMode {
             .session()
             .model()
             .map(|m| format!("{}/{}", m.provider, m.id))
-            .unwrap_or_else(|| format!("{}/{}", self.session_setup.model.provider, self.session_setup.model.id));
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/{}",
+                    self.session_setup.model.provider, self.session_setup.model.id
+                )
+            });
 
         let mut models = self.get_model_candidates();
         let current_provider = self.session_setup.model.provider.clone();

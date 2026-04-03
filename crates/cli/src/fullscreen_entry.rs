@@ -63,7 +63,9 @@ fn build_fullscreen_config(session_setup: &InteractiveSessionSetup) -> Fullscree
 
 fn build_footer_data(session_setup: &InteractiveSessionSetup) -> FullscreenFooterData {
     let cwd_display = shorten_home_path(&session_setup.tool_ctx.cwd.display().to_string());
-    let line1 = if let Some(branch) = detect_git_branch(&session_setup.tool_ctx.cwd.display().to_string()) {
+    let line1 = if let Some(branch) =
+        detect_git_branch(&session_setup.tool_ctx.cwd.display().to_string())
+    {
         format!("{cwd_display} ({branch})")
     } else {
         cwd_display
@@ -155,7 +157,8 @@ impl FullscreenController {
         }
 
         for message in self.options.initial_messages.clone() {
-            self.handle_submitted_text(message, &mut submission_rx).await?;
+            self.handle_submitted_text(message, &mut submission_rx)
+                .await?;
         }
 
         while !self.shutdown_requested {
@@ -222,7 +225,7 @@ impl FullscreenController {
         self.auto_name_session(&prompt);
         self.publish_footer();
         self.publish_status();
-        self.run_streaming_turn_loop(submission_rx).await
+        self.run_streaming_turn_loop(submission_rx, prompt).await
     }
 
     async fn drain_queued_prompts(
@@ -261,7 +264,9 @@ impl FullscreenController {
             shorten_home_path(&cwd)
         };
 
-        if let Ok(Some(row)) = store::get_session(&self.session_setup.conn, &self.session_setup.session_id) {
+        if let Ok(Some(row)) =
+            store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
+        {
             if let Some(name) = row.name {
                 if !name.is_empty() {
                     line1.push_str(" • ");
@@ -270,7 +275,8 @@ impl FullscreenController {
             }
         }
 
-        let (input_tokens, output_tokens, cache_read, cache_write, cost) = self.footer_usage_totals();
+        let (input_tokens, output_tokens, cache_read, cache_write, cost) =
+            self.footer_usage_totals();
         let mut left_parts = Vec::new();
         if input_tokens > 0 {
             left_parts.push(format!("↑{}", format_tokens(input_tokens)));
@@ -288,12 +294,23 @@ impl FullscreenController {
             left_parts.push(format!("${cost:.3}"));
         }
         let context_window = self.session_setup.model.context_window;
-        left_parts.push(format!("?/{ctx} (auto)", ctx = format_tokens(context_window)));
+        left_parts.push(format!(
+            "?/{ctx} (auto)",
+            ctx = format_tokens(context_window)
+        ));
 
         let right = if self.session_setup.thinking_level == "off" {
-            format!("({}) {} • thinking off", self.session_setup.model.provider, self.session_setup.model.id)
+            format!(
+                "({}) {} • thinking off",
+                self.session_setup.model.provider, self.session_setup.model.id
+            )
         } else {
-            format!("({}) {} • {}", self.session_setup.model.provider, self.session_setup.model.id, self.session_setup.thinking_level)
+            format!(
+                "({}) {} • {}",
+                self.session_setup.model.provider,
+                self.session_setup.model.id,
+                self.session_setup.thinking_level
+            )
         };
 
         FullscreenFooterData {
@@ -310,7 +327,9 @@ impl FullscreenController {
         let mut total_cache_write = 0_u64;
         let mut total_cost = 0.0_f64;
 
-        if let Ok(rows) = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id) {
+        if let Ok(rows) =
+            store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)
+        {
             for row in rows {
                 if let Ok(entry) = store::parse_entry(&row) {
                     if let bb_core::types::SessionEntry::Message {
@@ -328,7 +347,13 @@ impl FullscreenController {
             }
         }
 
-        (total_input, total_output, total_cache_read, total_cache_write, total_cost)
+        (
+            total_input,
+            total_output,
+            total_cache_read,
+            total_cache_write,
+            total_cost,
+        )
     }
 
     fn status_line(&self) -> String {
@@ -452,12 +477,14 @@ impl FullscreenController {
             retry_base_delay_ms: self.session_setup.retry_base_delay_ms,
             retry_max_delay_ms: self.session_setup.retry_max_delay_ms,
             cancel: self.abort_token.clone(),
+            extensions: self.session_setup.extension_commands.clone(),
         })
     }
 
     async fn run_streaming_turn_loop(
         &mut self,
         submission_rx: &mut mpsc::UnboundedReceiver<String>,
+        user_prompt: String,
     ) -> Result<()> {
         self.streaming = true;
         self.retry_status = None;
@@ -466,8 +493,9 @@ impl FullscreenController {
 
         let turn_config = self.build_turn_config()?;
         let (turn_event_tx, mut turn_event_rx) = mpsc::unbounded_channel::<TurnEvent>();
-        let turn_handle =
-            tokio::spawn(async move { turn_runner::run_turn(turn_config, turn_event_tx).await });
+        let turn_handle = tokio::spawn(async move {
+            turn_runner::run_turn(turn_config, turn_event_tx, user_prompt).await
+        });
 
         let mut aborted = false;
         let mut saw_context_overflow = false;

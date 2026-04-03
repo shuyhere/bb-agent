@@ -18,7 +18,9 @@ use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
 use bb_tools::{Tool, ToolContext, builtin_tools};
 
-use crate::extensions::{ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support};
+use crate::extensions::{
+    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support,
+};
 use crate::login;
 
 pub use controller::{
@@ -134,8 +136,12 @@ pub(crate) async fn prepare_interactive_mode(
     };
 
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &entry.extensions);
-    let RuntimeExtensionSupport { mut tools, commands } =
-        load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let RuntimeExtensionSupport {
+        session_resources,
+        mut tools,
+        commands,
+    } = load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
     let mut builtin_tools = select_tools_default();
     builtin_tools.append(&mut tools);
     let tool_defs = build_tool_defs(&builtin_tools);
@@ -188,12 +194,14 @@ pub(crate) async fn prepare_interactive_mode(
         session_created: false,
         sibling_conn: None,
         extension_commands: commands,
+        extension_bootstrap: extension_bootstrap.clone(),
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {
         cwd: Some(cwd.clone()),
         model: Some(model_ref),
         thinking_level: Some(thinking_level),
+        resource_bootstrap: session_resources,
         ..AgentSessionRuntimeBootstrap::default()
     };
     let runtime =

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::agent_session_extensions::SessionResourceBootstrap;
+
 use super::messages::ImageContent;
 use super::models::{ModelRef, ScopedModel, SessionStartEvent, ThinkingLevel};
 use super::runtime::{AgentTool, RuntimeHandle, ToolDefinition};
@@ -16,6 +18,7 @@ pub struct AgentSessionConfig {
     pub model_registry: RuntimeHandle,
     pub initial_active_tool_names: Option<Vec<String>>,
     pub base_tools_override: Option<Vec<AgentTool>>,
+    pub resource_bootstrap: SessionResourceBootstrap,
     pub session_start_event: Option<SessionStartEvent>,
     pub model: Option<ModelRef>,
     pub thinking_level: ThinkingLevel,
@@ -34,6 +37,7 @@ impl Default for AgentSessionConfig {
             model_registry: RuntimeHandle::placeholder("model_registry"),
             initial_active_tool_names: None,
             base_tools_override: None,
+            resource_bootstrap: SessionResourceBootstrap::default(),
             session_start_event: None,
             model: None,
             thinking_level: ThinkingLevel::default(),

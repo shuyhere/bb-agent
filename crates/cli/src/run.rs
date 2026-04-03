@@ -1,11 +1,13 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{
     ModelRef, PrintTurnResult, PrintTurnStopReason, ThinPrintSession, load_agents_md,
     parse_model_arg,
 };
-use bb_core::agent_session_runtime::{CreateAgentSessionRuntimeOptions, create_agent_session_runtime};
+use bb_core::agent_session_runtime::{
+    CreateAgentSessionRuntimeOptions, create_agent_session_runtime,
+};
 use bb_core::config;
 use bb_core::settings::Settings;
 use bb_provider::anthropic::AnthropicProvider;
@@ -13,15 +15,17 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
-use bb_tools::{builtin_tools, Tool, ToolContext};
+use bb_tools::{Tool, ToolContext, builtin_tools};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::extensions::{ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support};
+use crate::Cli;
+use crate::extensions::{
+    ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support,
+};
 use crate::login;
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
-use crate::Cli;
 
 pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
@@ -36,8 +40,12 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
 
     let settings = Settings::load_merged(&cwd);
     let model_input = cli.model.as_deref().or(settings.default_model.as_deref());
-    let provider_input = cli.provider.as_deref().or(settings.default_provider.as_deref());
-    let (provider_name, model_id, _thinking_override) = parse_model_arg(provider_input, model_input);
+    let provider_input = cli
+        .provider
+        .as_deref()
+        .or(settings.default_provider.as_deref());
+    let (provider_name, model_id, _thinking_override) =
+        parse_model_arg(provider_input, model_input);
 
     let agents_md = load_agents_md(&cwd);
     let base_prompt = cli
@@ -54,7 +62,11 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let model = registry
         .find(&provider_name, &model_id)
         .cloned()
-        .or_else(|| registry.find_fuzzy(&model_id, Some(&provider_name)).cloned())
+        .or_else(|| {
+            registry
+                .find_fuzzy(&model_id, Some(&provider_name))
+                .cloned()
+        })
         .or_else(|| registry.find_fuzzy(&model_id, None).cloned())
         .unwrap_or_else(|| bb_provider::registry::Model {
             id: model_id.clone(),
@@ -78,8 +90,12 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &cli.extensions);
-    let RuntimeExtensionSupport { mut tools, commands } =
-        load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let RuntimeExtensionSupport {
+        session_resources,
+        mut tools,
+        commands,
+    } = load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
     let mut builtin_tools = select_tools(&cli);
     builtin_tools.append(&mut tools);
     let tool_defs = build_tool_defs(&builtin_tools);
@@ -102,6 +118,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             id: model_id.clone(),
             reasoning: model.reasoning,
         }),
+        resource_bootstrap: session_resources,
         ..Default::default()
     };
     let runtime_handle = create_agent_session_runtime(
@@ -117,7 +134,18 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             }
             continue;
         }
-        expanded_messages.push(runtime_handle.session.expand_input_text(raw));
+
+        let input = commands.apply_input_hooks(&raw, "interactive").await?;
+        if input.handled {
+            if let Some(output) = input.output {
+                println!("{output}");
+            }
+            continue;
+        }
+
+        if let Some(text) = input.text {
+            expanded_messages.push(runtime_handle.session.expand_input_text(text));
+        }
     }
 
     let initial_message = if expanded_messages.is_empty() {
@@ -144,21 +172,18 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         retry_base_delay_ms: settings.retry.base_delay_ms,
         retry_max_delay_ms: settings.retry.max_delay_ms,
         cancel: CancellationToken::new(),
+        extensions: commands.clone(),
     };
 
-    let mut session = ThinPrintSession::new(|prompt: String| {
-        run_print_turn(&turn_config, prompt)
-    });
+    let mut session = ThinPrintSession::new(|prompt: String| run_print_turn(&turn_config, prompt));
 
     let last_result = session.run(initial_message, follow_up_messages).await?;
+    let _ = commands.send_event(&bb_hooks::Event::SessionShutdown).await;
     if let Some(last_result) = last_result {
         if last_result.is_error() {
-            return Err(anyhow!(
-                last_result
-                    .error_message
-                    .clone()
-                    .unwrap_or_else(|| format!("request {:?}", last_result.stop_reason))
-            ));
+            return Err(anyhow!(last_result.error_message.clone().unwrap_or_else(
+                || format!("request {:?}", last_result.stop_reason)
+            )));
         }
 
         if !last_result.text.is_empty() {
@@ -169,11 +194,18 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn resolve_session_id(conn: &rusqlite::Connection, cwd: &std::path::Path, cli: &Cli) -> Result<String> {
+fn resolve_session_id(
+    conn: &rusqlite::Connection,
+    cwd: &std::path::Path,
+    cli: &Cli,
+) -> Result<String> {
     let cwd_str = cwd.to_str().unwrap_or(".");
     if let Some(session_arg) = &cli.session {
         let all = store::list_sessions(conn, cwd_str)?;
-        let matches: Vec<_> = all.iter().filter(|s| s.session_id.starts_with(session_arg.as_str())).collect();
+        let matches: Vec<_> = all
+            .iter()
+            .filter(|s| s.session_id.starts_with(session_arg.as_str()))
+            .collect();
         return match matches.len() {
             1 => Ok(matches[0].session_id.clone()),
             0 => bail!("No session matching '{}'", session_arg),
@@ -195,33 +227,38 @@ fn select_tools(cli: &Cli) -> Vec<Box<dyn Tool>> {
         Vec::new()
     } else if let Some(tools_str) = &cli.tools {
         let names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
-        builtin_tools().into_iter().filter(|t| names.contains(&t.name())).collect()
+        builtin_tools()
+            .into_iter()
+            .filter(|t| names.contains(&t.name()))
+            .collect()
     } else {
         builtin_tools()
     }
 }
 
 fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
-    tools.iter().map(|t| serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": t.name(),
-            "description": t.description(),
-            "parameters": t.parameters_schema(),
-        }
-    })).collect()
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name(),
+                    "description": t.description(),
+                    "parameters": t.parameters_schema(),
+                }
+            })
+        })
+        .collect()
 }
 
-async fn run_print_turn(
-    config: &TurnConfig,
-    prompt: String,
-) -> Result<PrintTurnResult> {
+async fn run_print_turn(config: &TurnConfig, prompt: String) -> Result<PrintTurnResult> {
     turn_runner::append_user_message(&config.conn, &config.session_id, &prompt).await?;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
     // Run the turn loop directly (print mode is single-threaded, no need to spawn).
-    turn_runner::run_turn_inner(config, &event_tx).await?;
+    turn_runner::run_turn_inner(config, &event_tx, &prompt).await?;
     drop(event_tx);
 
     // Drain remaining events

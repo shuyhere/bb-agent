@@ -1,7 +1,7 @@
 use super::*;
 
-use bb_tools::ToolContext;
 use crate::turn_runner::{self, TurnConfig, TurnEvent};
+use bb_tools::ToolContext;
 
 impl InteractiveMode {
     pub fn set_on_input_callback<F>(&mut self, callback: F)
@@ -21,9 +21,9 @@ impl InteractiveMode {
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.header_container.clone(),
         )));
-        self.ui.tui
-            .root
-            .add(Box::new(SharedContainer::new(self.ui.chat_container.clone())));
+        self.ui.tui.root.add(Box::new(SharedContainer::new(
+            self.ui.chat_container.clone(),
+        )));
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.pending_messages_container.clone(),
         )));
@@ -34,9 +34,9 @@ impl InteractiveMode {
             self.ui.widget_container_above.clone(),
         )));
         self.ui.tui.root.add(Box::new(BottomAnchorMarker));
-        self.ui.tui
-            .root
-            .add(Box::new(SharedComponentWrapper::new(self.ui.editor_component.clone())));
+        self.ui.tui.root.add(Box::new(SharedComponentWrapper::new(
+            self.ui.editor_component.clone(),
+        )));
         self.ui.tui.root.add(Box::new(SharedContainer::new(
             self.ui.widget_container_below.clone(),
         )));
@@ -103,7 +103,11 @@ impl InteractiveMode {
 
         while !self.interaction.shutdown_requested {
             // Check SIGINT flag from signal handler.
-            if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if self
+                .interaction
+                .sigint_flag
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
                 self.interaction.shutdown_requested = true;
                 break;
             }
@@ -114,6 +118,11 @@ impl InteractiveMode {
             self.drain_queued_messages().await?;
         }
 
+        let _ = self
+            .session_setup
+            .extension_commands
+            .send_event(&bb_hooks::Event::SessionShutdown)
+            .await;
         self.stop_ui();
         Ok(())
     }
@@ -129,7 +138,11 @@ impl InteractiveMode {
                 return Ok(None);
             }
             // Check SIGINT flag from signal handler.
-            if self.interaction.sigint_flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if self
+                .interaction
+                .sigint_flag
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
                 self.interaction.shutdown_requested = true;
                 return Ok(None);
             }
@@ -202,7 +215,6 @@ impl InteractiveMode {
         }
     }
 
-
     /// Send a tiny test request to verify that newly-saved OAuth credentials work.
     /// Uses the model registry + parse_model_arg to pick the right default model.
     async fn run_oauth_verification(&mut self, provider: String) {
@@ -217,11 +229,13 @@ impl InteractiveMode {
 
         // Use parse_model_arg to get the default model for this provider
         // (same logic used at startup: anthropic->claude-opus-4-6, openai->gpt-5.4, etc.)
-        let lookup_provider = if provider == "openai-codex" { "openai" } else { &provider };
-        let (_, default_model_id, _) = bb_core::agent_session::parse_model_arg(
-            Some(lookup_provider),
-            None,
-        );
+        let lookup_provider = if provider == "openai-codex" {
+            "openai"
+        } else {
+            &provider
+        };
+        let (_, default_model_id, _) =
+            bb_core::agent_session::parse_model_arg(Some(lookup_provider), None);
 
         // Find the model in registry to get api type + base_url.
         let registry = bb_provider::registry::ModelRegistry::new();
@@ -260,7 +274,9 @@ impl InteractiveMode {
 
         let request = bb_provider::CompletionRequest {
             system_prompt: String::new(),
-            messages: vec![serde_json::json!({"role": "user", "content": "Reply with exactly: ok"})],
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "Reply with exactly: ok"}),
+            ],
             tools: vec![],
             model: model_id.clone(),
             max_tokens: Some(16),
@@ -306,7 +322,6 @@ impl InteractiveMode {
         self.refresh_ui();
     }
 
-
     pub(super) fn get_session_leaf(&self) -> Option<bb_core::types::EntryId> {
         turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id)
     }
@@ -314,46 +329,61 @@ impl InteractiveMode {
     /// Convert a TurnEvent into an AgentLoopEvent for the existing UI event handler.
     fn turn_event_to_agent_event(event: TurnEvent) -> Option<AgentLoopEvent> {
         match event {
-            TurnEvent::TurnStart { turn_index } => {
-                Some(AgentLoopEvent::TurnStart { turn_index })
-            }
-            TurnEvent::TextDelta(text) => {
-                Some(AgentLoopEvent::TextDelta { text })
-            }
-            TurnEvent::ThinkingDelta(text) => {
-                Some(AgentLoopEvent::ThinkingDelta { text })
-            }
+            TurnEvent::TurnStart { turn_index } => Some(AgentLoopEvent::TurnStart { turn_index }),
+            TurnEvent::TextDelta(text) => Some(AgentLoopEvent::TextDelta { text }),
+            TurnEvent::ThinkingDelta(text) => Some(AgentLoopEvent::ThinkingDelta { text }),
             TurnEvent::ToolCallStart { id, name } => {
                 Some(AgentLoopEvent::ToolCallStart { id, name })
             }
-            TurnEvent::ToolCallDelta { id, args } => {
-                Some(AgentLoopEvent::ToolCallDelta { id, args_delta: args })
-            }
+            TurnEvent::ToolCallDelta { id, args } => Some(AgentLoopEvent::ToolCallDelta {
+                id,
+                args_delta: args,
+            }),
             TurnEvent::ToolExecuting { id, name } => {
                 Some(AgentLoopEvent::ToolExecuting { id, name })
             }
-            TurnEvent::ToolResult { id, name, content, details, artifact_path, is_error } => {
-                Some(AgentLoopEvent::ToolResult { id, name, content, details, artifact_path, is_error })
-            }
-            TurnEvent::TurnEnd { turn_index } => {
-                Some(AgentLoopEvent::TurnEnd { turn_index })
-            }
-            TurnEvent::Done { .. } => {
-                Some(AgentLoopEvent::AssistantDone)
-            }
-            TurnEvent::Error(message) => {
-                Some(AgentLoopEvent::Error { message })
-            }
+            TurnEvent::ToolResult {
+                id,
+                name,
+                content,
+                details,
+                artifact_path,
+                is_error,
+            } => Some(AgentLoopEvent::ToolResult {
+                id,
+                name,
+                content,
+                details,
+                artifact_path,
+                is_error,
+            }),
+            TurnEvent::TurnEnd { turn_index } => Some(AgentLoopEvent::TurnEnd { turn_index }),
+            TurnEvent::Done { .. } => Some(AgentLoopEvent::AssistantDone),
+            TurnEvent::Error(message) => Some(AgentLoopEvent::Error { message }),
             TurnEvent::ContextOverflow { .. } => {
                 // Handled specially by the caller, not forwarded as an agent event.
                 None
             }
-            TurnEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => {
-                Some(AgentLoopEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message })
-            }
-            TurnEvent::AutoRetryEnd { success, attempt, final_error } => {
-                Some(AgentLoopEvent::AutoRetryEnd { success, attempt, final_error })
-            }
+            TurnEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            } => Some(AgentLoopEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            }),
+            TurnEvent::AutoRetryEnd {
+                success,
+                attempt,
+                final_error,
+            } => Some(AgentLoopEvent::AutoRetryEnd {
+                success,
+                attempt,
+                final_error,
+            }),
         }
     }
 
@@ -368,10 +398,11 @@ impl InteractiveMode {
         let sibling_conn = if let Some(conn) = self.session_setup.sibling_conn.clone() {
             conn
         } else {
-            let conn = turn_runner::open_sibling_conn(&self.session_setup.conn)
-                .map_err(|e| -> Box<dyn Error + Send + Sync> {
+            let conn = turn_runner::open_sibling_conn(&self.session_setup.conn).map_err(
+                |e| -> Box<dyn Error + Send + Sync> {
                     Box::<dyn Error + Send + Sync>::from(e.to_string())
-                })?;
+                },
+            )?;
             self.session_setup.sibling_conn = Some(conn.clone());
             conn
         };
@@ -401,12 +432,16 @@ impl InteractiveMode {
             retry_base_delay_ms: self.session_setup.retry_base_delay_ms,
             retry_max_delay_ms: self.session_setup.retry_max_delay_ms,
             cancel: self.abort_token.clone(),
+            extensions: self.session_setup.extension_commands.clone(),
         })
     }
 
     /// Run the full streaming turn loop: stream from provider, execute tools, loop until done.
     /// Processes terminal events (Esc/Ctrl-C) during streaming so user can abort.
-    pub(super) async fn run_streaming_turn_loop(&mut self) -> InteractiveResult<()> {
+    pub(super) async fn run_streaming_turn_loop(
+        &mut self,
+        user_prompt: String,
+    ) -> InteractiveResult<()> {
         let (agent_tx, rx) = mpsc::unbounded_channel::<AgentLoopEvent>();
         self.agent_events = Some(rx);
 
@@ -419,8 +454,9 @@ impl InteractiveMode {
         // run_turn takes ownership of TurnConfig and returns it when done,
         // so we can recover the tools.
         let (turn_event_tx, mut turn_event_rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let retry_prompt = user_prompt.clone();
         let turn_handle = tokio::spawn(async move {
-            turn_runner::run_turn(turn_config, turn_event_tx).await
+            turn_runner::run_turn(turn_config, turn_event_tx, user_prompt).await
         });
 
         // Process turn events and terminal events concurrently
@@ -526,20 +562,18 @@ impl InteractiveMode {
         }
 
         // Wait for turn runner to finish (with timeout to prevent hang).
-        let (returned_config, turn_result) = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            turn_handle,
-        ).await {
-            Ok(Ok((config, result))) => (Some(config), result),
-            Ok(Err(e)) => {
-                self.show_error(format!("Turn runner task panicked: {e}"));
-                (None, Ok(()))
-            }
-            Err(_) => {
-                // Timeout waiting for turn runner — it's stuck, just proceed.
-                (None, Ok(()))
-            }
-        };
+        let (returned_config, turn_result) =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), turn_handle).await {
+                Ok(Ok((config, result))) => (Some(config), result),
+                Ok(Err(e)) => {
+                    self.show_error(format!("Turn runner task panicked: {e}"));
+                    (None, Ok(()))
+                }
+                Err(_) => {
+                    // Timeout waiting for turn runner — it's stuck, just proceed.
+                    (None, Ok(()))
+                }
+            };
 
         // Restore tools from the returned config
         if let Some(cfg) = returned_config {
@@ -555,7 +589,7 @@ impl InteractiveMode {
             if self.handle_context_overflow().await {
                 self.refresh_ui();
                 // Retry the entire turn loop (boxed to avoid infinite-size future)
-                return Box::pin(self.run_streaming_turn_loop()).await;
+                return Box::pin(self.run_streaming_turn_loop(retry_prompt)).await;
             } else {
                 let _ = agent_tx.send(AgentLoopEvent::AssistantDone);
                 self.drain_pending_agent_events();

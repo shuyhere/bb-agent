@@ -92,6 +92,15 @@ impl EventBus {
                 if result.content.is_some() {
                     merged.content = result.content;
                 }
+                if result.details.is_some() {
+                    merged.details = result.details;
+                }
+                if result.is_error.is_some() {
+                    merged.is_error = result.is_error;
+                }
+                if result.input.is_some() {
+                    merged.input = result.input;
+                }
                 if result.action.is_some() {
                     merged.action = result.action;
                 }
@@ -109,11 +118,7 @@ impl EventBus {
             }
         }
 
-        if any_result {
-            Some(merged)
-        } else {
-            None
-        }
+        if any_result { Some(merged) } else { None }
     }
 }
 
@@ -183,7 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_context_hook_modifies_messages() {
-        use bb_core::types::{AgentMessage, UserMessage, ContentBlock};
+        use bb_core::types::{AgentMessage, ContentBlock, UserMessage};
 
         let bus = EventBus::new();
         bus.on(
@@ -208,7 +213,9 @@ mod tests {
         .await;
 
         let original_messages = vec![AgentMessage::User(UserMessage {
-            content: vec![ContentBlock::Text { text: "original".into() }],
+            content: vec![ContentBlock::Text {
+                text: "original".into(),
+            }],
             timestamp: 0,
         })];
 
@@ -306,7 +313,9 @@ mod tests {
                 if let Event::ToolResult(tr) = event {
                     if tr.tool_name == "bash" {
                         return Some(HookResult {
-                            content: Some(vec![serde_json::json!({ "Text": { "text": "[redacted]" } })]),
+                            content: Some(vec![
+                                serde_json::json!({ "Text": { "text": "[redacted]" } }),
+                            ]),
                             ..Default::default()
                         });
                     }
@@ -319,7 +328,11 @@ mod tests {
         let event = Event::ToolResult(ToolResultEvent {
             tool_call_id: "1".into(),
             tool_name: "bash".into(),
-            content: vec![bb_core::types::ContentBlock::Text { text: "secret output".into() }],
+            input: serde_json::json!({"command": "echo secret"}),
+            content: vec![bb_core::types::ContentBlock::Text {
+                text: "secret output".into(),
+            }],
+            details: None,
             is_error: false,
         });
         let result = bus.emit(&event).await.unwrap();

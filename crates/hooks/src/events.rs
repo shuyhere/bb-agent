@@ -8,17 +8,31 @@ pub enum Event {
     SessionStart,
     SessionShutdown,
     SessionBeforeCompact(CompactPrep),
-    SessionCompact { from_plugin: bool },
+    SessionCompact {
+        from_plugin: bool,
+    },
     SessionBeforeTree(TreePrep),
-    SessionTree { new_leaf: Option<String>, old_leaf: Option<String> },
-    BeforeAgentStart { prompt: String, system_prompt: String },
+    SessionTree {
+        new_leaf: Option<String>,
+        old_leaf: Option<String>,
+    },
+    BeforeAgentStart {
+        prompt: String,
+        system_prompt: String,
+    },
     AgentEnd,
-    TurnStart { turn_index: u32 },
-    TurnEnd { turn_index: u32 },
+    TurnStart {
+        turn_index: u32,
+    },
+    TurnEnd {
+        turn_index: u32,
+    },
     ToolCall(ToolCallEvent),
     ToolResult(ToolResultEvent),
     Context(ContextEvent),
-    BeforeProviderRequest { payload: Value },
+    BeforeProviderRequest {
+        payload: Value,
+    },
     Input(InputEvent),
 }
 
@@ -67,7 +81,9 @@ pub struct ToolCallEvent {
 pub struct ToolResultEvent {
     pub tool_call_id: String,
     pub tool_name: String,
+    pub input: Value,
     pub content: Vec<bb_core::types::ContentBlock>,
+    pub details: Option<Value>,
     pub is_error: bool,
 }
 
@@ -106,6 +122,15 @@ pub struct HookResult {
     /// For tool_result: replacement content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<Value>>,
+    /// For tool_result: replacement details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    /// For tool_result: replacement error flag
+    #[serde(skip_serializing_if = "Option::is_none", alias = "isError")]
+    pub is_error: Option<bool>,
+    /// For tool_call: patched input
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
     /// For input: action
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,

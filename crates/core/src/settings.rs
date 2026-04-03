@@ -60,7 +60,12 @@ pub struct Settings {
     pub skills: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
-    #[serde(default = "default_enable_skill_commands", alias = "enableSkillCommands")]
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(
+        default = "default_enable_skill_commands",
+        alias = "enableSkillCommands"
+    )]
     pub enable_skill_commands: bool,
     #[serde(default)]
     pub models: Option<Vec<ModelOverride>>,
@@ -154,6 +159,7 @@ impl Default for Settings {
             extensions: Vec::new(),
             skills: Vec::new(),
             prompts: Vec::new(),
+            packages: Vec::new(),
             enable_skill_commands: default_enable_skill_commands(),
             models: None,
             providers: None,
@@ -178,8 +184,19 @@ impl Settings {
     /// Save global settings to `~/.bb-agent/settings.json`.
     pub fn save_global(&self) -> std::io::Result<()> {
         let dir = crate::config::global_dir();
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("settings.json");
+        self.save_to_file(&dir.join("settings.json"))
+    }
+
+    /// Save project settings to `<cwd>/.bb-agent/settings.json`.
+    pub fn save_project(&self, cwd: &Path) -> std::io::Result<()> {
+        self.save_to_file(&cwd.join(".bb-agent").join("settings.json"))
+    }
+
+    /// Save settings to a specific file path.
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(path, content)
@@ -221,13 +238,11 @@ impl Settings {
                 .default_thinking
                 .clone()
                 .or_else(|| global.default_thinking.clone()),
-            tools: project
-                .tools
-                .clone()
-                .or_else(|| global.tools.clone()),
+            tools: project.tools.clone().or_else(|| global.tools.clone()),
             extensions: merge_string_lists(&global.extensions, &project.extensions),
             skills: merge_string_lists(&global.skills, &project.skills),
             prompts: merge_string_lists(&global.prompts, &project.prompts),
+            packages: merge_string_lists(&global.packages, &project.packages),
             enable_skill_commands: merge_bool_with_default(
                 global.enable_skill_commands,
                 project.enable_skill_commands,
@@ -325,11 +340,7 @@ fn merge_string_lists(global: &[String], project: &[String]) -> Vec<String> {
 }
 
 fn merge_bool_with_default(global: bool, project: bool, default: bool) -> bool {
-    if project != default {
-        project
-    } else {
-        global
-    }
+    if project != default { project } else { global }
 }
 
 /// Merge model overrides: project models override global models with the
@@ -460,7 +471,10 @@ mod tests {
         let project = Settings {
             default_provider: Some("anthropic".into()),
             // default_model left as None — global should win
-            extensions: vec!["./project-extension.ts".into(), "./global-extension.ts".into()],
+            extensions: vec![
+                "./project-extension.ts".into(),
+                "./global-extension.ts".into(),
+            ],
             prompts: vec!["./project-prompts".into()],
             enable_skill_commands: false,
             models: Some(vec![ModelOverride {
