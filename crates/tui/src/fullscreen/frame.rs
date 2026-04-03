@@ -256,13 +256,10 @@ fn render_transcript_row(
             render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
         }
         super::transcript::BlockKind::ToolResult => {
-            let is_error = block.title.contains("error");
             let content = if row.kind == ProjectedRowKind::Header {
                 format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
-            } else if is_error {
-                format!("{}{}{}", t.error, truncate_to_width(&plain, width), t.reset)
             } else {
-                format!("{}{}{}", t.tool_output, truncate_to_width(&plain, width), t.reset)
+                style_tool_result_line(block, &plain, width)
             };
             render_boxed_ansi_line(&content, width, tool_result_bg(block, t))
         }
@@ -313,6 +310,46 @@ fn tool_result_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::
     } else {
         &t.tool_success_bg
     }
+}
+
+fn style_tool_result_line(
+    block: &super::transcript::TranscriptBlock,
+    text: &str,
+    width: usize,
+) -> String {
+    let t = theme();
+    let line = truncate_to_width(text, width);
+    if block.title.contains("error") {
+        return format!("{}{}{}", t.error, line, t.reset);
+    }
+
+    let trimmed = crate::utils::strip_ansi(&line);
+    if is_diff_added(&trimmed) {
+        format!("{}{}{}", t.diff_added, line, t.reset)
+    } else if is_diff_removed(&trimmed) {
+        format!("{}{}{}", t.diff_removed, line, t.reset)
+    } else if trimmed.starts_with("@@") || trimmed.starts_with("diff ") || trimmed.starts_with("index ") {
+        format!("{}{}{}", t.diff_context, line, t.reset)
+    } else if trimmed.starts_with("exit code:")
+        || trimmed.starts_with("read ")
+        || trimmed.starts_with("wrote ")
+        || trimmed.starts_with("applied ")
+        || trimmed.starts_with("details:")
+        || trimmed.starts_with("artifact:")
+        || trimmed.starts_with("… output truncated")
+    {
+        format!("{}{}{}", t.dim, line, t.reset)
+    } else {
+        format!("{}{}{}", t.tool_output, line, t.reset)
+    }
+}
+
+fn is_diff_added(text: &str) -> bool {
+    text.starts_with('+') && !text.starts_with("+++")
+}
+
+fn is_diff_removed(text: &str) -> bool {
+    text.starts_with('-') && !text.starts_with("---")
 }
 
 fn strip_tree_header_prefix(text: &str) -> String {

@@ -1418,6 +1418,12 @@ fn format_tool_result_content(
                         lines.push(format!("applied {applied}/{total} edit(s) to {path}"));
                     }
                 }
+                if let Some(diff) = details.get("diff").and_then(|value| value.as_str()) {
+                    if !lines.is_empty() {
+                        lines.push(String::new());
+                    }
+                    lines.extend(diff.lines().map(str::to_string));
+                }
             }
             "bash" => {
                 let exit = details.get("exitCode").and_then(|value| value.as_i64()).unwrap_or(-1);
@@ -1897,6 +1903,27 @@ mod tests {
         assert!(state.input.is_empty());
         assert_eq!(state.submitted_inputs, vec!["hello".to_string()]);
         assert_eq!(state.status_line, "Working...");
+    }
+
+    #[test]
+    fn edit_tool_result_prefers_diff_when_available() {
+        let rendered = format_tool_result_content(
+            "edit",
+            &[],
+            Some(serde_json::json!({
+                "path": "/tmp/demo.txt",
+                "applied": 1,
+                "total": 1,
+                "diff": "@@ -1 +1 @@\n-old\n+new"
+            })),
+            None,
+            false,
+        );
+
+        assert!(rendered.contains("applied 1/1 edit(s) to /tmp/demo.txt"));
+        assert!(rendered.contains("@@ -1 +1 @@"));
+        assert!(rendered.contains("-old"));
+        assert!(rendered.contains("+new"));
     }
 
     #[test]
