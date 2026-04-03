@@ -159,6 +159,11 @@ struct ToolCallState {
     raw_args: String,
     tool_use_id: BlockId,
     tool_result_id: Option<BlockId>,
+    execution_started: bool,
+    result_content: Option<Vec<ContentBlock>>,
+    result_details: Option<serde_json::Value>,
+    artifact_path: Option<String>,
+    is_error: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +310,7 @@ pub struct FullscreenState {
     projection_dirty: bool,
     pending_submissions: VecDeque<FullscreenSubmission>,
     active_turn: Option<ActiveTurnState>,
+    tool_output_expanded: bool,
 }
 
 impl FullscreenState {
@@ -333,6 +339,7 @@ impl FullscreenState {
             projection_dirty: true,
             pending_submissions: VecDeque::new(),
             active_turn: None,
+            tool_output_expanded: false,
         };
         state.prepare_for_render();
         state
@@ -403,7 +410,16 @@ impl FullscreenState {
                 return;
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_transcript_mode();
+                if matches!(self.mode, FullscreenMode::Transcript)
+                    && self
+                        .focused_block
+                        .and_then(|block_id| self.transcript.block(block_id))
+                        .is_some_and(|block| block.kind == BlockKind::ToolUse)
+                {
+                    self.toggle_tool_output_expansion();
+                } else {
+                    self.toggle_transcript_mode();
+                }
                 return;
             }
             _ => {}
@@ -631,83 +647,58 @@ impl FullscreenState {
                 };
                 if let Some(active_turn) = self.active_turn.as_mut() {
                     active_turn.tools.insert(
-                        id,
+                        id.clone(),
                         ToolCallState {
                             name,
                             raw_args: String::new(),
                             tool_use_id,
                             tool_result_id: None,
+                            execution_started: false,
+                            result_content: None,
+                            result_details: None,
+                            artifact_path: None,
+                            is_error: false,
                         },
                     );
                 }
-                self.projection_dirty = true;
-                self.dirty = true;
+                self.refresh_tool_rendering(&id);
                 RenderIntent::Render
             }
             FullscreenCommand::ToolCallDelta { id, args } => {
                 if args.is_empty() {
                     return RenderIntent::None;
                 }
-                let (tool_use_id, tool_name, raw_args) = match self.tool_call_state_mut(&id) {
-                    Some(tool) => {
-                        tool.raw_args.push_str(&args);
-                        (tool.tool_use_id, tool.name.clone(), tool.raw_args.clone())
-                    }
+                match self.tool_call_state_mut(&id) {
+                    Some(tool) => tool.raw_args.push_str(&args),
                     None => return RenderIntent::None,
                 };
-                let preview = format_tool_call_content(&tool_name, &raw_args);
-                let _ = self.transcript.replace_content(tool_use_id, preview);
-                self.projection_dirty = true;
-                self.dirty = true;
+                self.refresh_tool_rendering(&id);
                 RenderIntent::Schedule
             }
             FullscreenCommand::ToolExecuting { id } => {
-                let Some(tool) = self.tool_call_state(&id).cloned() else {
+                let Some(tool) = self.tool_call_state_mut(&id) else {
                     return RenderIntent::None;
                 };
-                let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
-                let _ = self
-                    .transcript
-                    .update_title(tool.tool_use_id, format!("{display_name} • running"));
-                let _ = self
-                    .transcript
-                    .replace_content(tool.tool_use_id, format_tool_call_content(&tool.name, &tool.raw_args));
-                self.projection_dirty = true;
-                self.dirty = true;
+                tool.execution_started = true;
+                self.refresh_tool_rendering(&id);
                 RenderIntent::Render
             }
             FullscreenCommand::ToolResult {
                 id,
-                name,
+                name: _,
                 content,
                 details,
                 artifact_path,
                 is_error,
             } => {
-                let Some(tool) = self.tool_call_state(&id).cloned() else {
+                let Some(tool) = self.tool_call_state_mut(&id) else {
                     return RenderIntent::None;
                 };
-                let display_name = format_tool_call_title(&name, &tool.raw_args);
-                let _ = self.transcript.update_title(
-                    tool.tool_use_id,
-                    format!("{display_name} • {}", if is_error { "error" } else { "done" }),
-                );
-                let _ = self
-                    .transcript
-                    .replace_content(tool.tool_use_id, format_tool_call_content(&name, &tool.raw_args));
-                let Some(tool_result_id) = self.ensure_tool_result_block(&id) else {
-                    return RenderIntent::None;
-                };
-                let _ = self.transcript.update_title(
-                    tool_result_id,
-                    if is_error { "error output" } else { "output" },
-                );
-                let formatted = format_tool_result_content(&name, &content, details, artifact_path, is_error);
-                let _ = self
-                    .transcript
-                    .replace_tool_result_content(tool_result_id, formatted);
-                self.projection_dirty = true;
-                self.dirty = true;
+                tool.result_content = Some(content);
+                tool.result_details = details;
+                tool.artifact_path = artifact_path;
+                tool.is_error = is_error;
+                self.refresh_tool_rendering(&id);
                 RenderIntent::Render
             }
             FullscreenCommand::TurnEnd => {
@@ -990,7 +981,7 @@ impl FullscreenState {
         match self.mode {
             FullscreenMode::Normal => String::new(),
             FullscreenMode::Transcript => {
-                "transcript mode • j/k navigate • Enter/Space toggle • o expand • c collapse • / search • Esc returns"
+                "transcript mode • j/k navigate • Enter/Space toggle • o expand • c collapse • Ctrl+O tool output • / search • Esc returns"
                     .to_string()
             }
             FullscreenMode::Search => {
@@ -1466,6 +1457,76 @@ impl FullscreenState {
         Some(tool_result_id)
     }
 
+    fn refresh_tool_rendering(&mut self, id: &str) {
+        let Some(tool) = self.tool_call_state(id).cloned() else {
+            return;
+        };
+
+        let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
+        let status = if tool.result_content.is_some() {
+            if tool.is_error { "error" } else { "done" }
+        } else if tool.execution_started {
+            "running"
+        } else {
+            "collecting"
+        };
+        let _ = self
+            .transcript
+            .update_title(tool.tool_use_id, format!("{display_name} • {status}"));
+        let _ = self.transcript.replace_content(
+            tool.tool_use_id,
+            format_tool_call_content(&tool.name, &tool.raw_args, self.tool_output_expanded),
+        );
+
+        if let Some(result_content) = tool.result_content.clone() {
+            let Some(tool_result_id) = self.ensure_tool_result_block(id) else {
+                return;
+            };
+            let _ = self.transcript.update_title(
+                tool_result_id,
+                if tool.is_error { "error output" } else { "output" },
+            );
+            let formatted = format_tool_result_content(
+                &tool.name,
+                &result_content,
+                tool.result_details.clone(),
+                tool.artifact_path.clone(),
+                tool.is_error,
+                self.tool_output_expanded,
+            );
+            let _ = self
+                .transcript
+                .replace_tool_result_content(tool_result_id, formatted);
+        } else if tool.execution_started {
+            let Some(tool_result_id) = self.ensure_tool_result_block(id) else {
+                return;
+            };
+            let _ = self.transcript.update_title(tool_result_id, "output");
+            let _ = self
+                .transcript
+                .replace_tool_result_content(tool_result_id, "executing...".to_string());
+        }
+
+        self.projection_dirty = true;
+        self.dirty = true;
+    }
+
+    fn toggle_tool_output_expansion(&mut self) {
+        self.tool_output_expanded = !self.tool_output_expanded;
+        if let Some(active_turn) = self.active_turn.as_ref() {
+            let ids = active_turn.tools.keys().cloned().collect::<Vec<_>>();
+            for id in ids {
+                self.refresh_tool_rendering(&id);
+            }
+        }
+        self.status_line = format!(
+            "tool output expansion {}",
+            if self.tool_output_expanded { "enabled" } else { "collapsed" }
+        );
+        self.projection_dirty = true;
+        self.dirty = true;
+    }
+
     fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
         if submitted.trim().is_empty() {
@@ -1793,7 +1854,7 @@ fn shorten_display_path(path: &str) -> String {
     path.to_string()
 }
 
-fn format_tool_call_content(name: &str, raw_args: &str) -> String {
+fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> String {
     if raw_args.trim().is_empty() {
         return String::new();
     }
@@ -1816,20 +1877,27 @@ fn format_tool_call_content(name: &str, raw_args: &str) -> String {
             }
             lines.join("\n")
         }
-        "write" => format_write_call_content(&args),
+        "write" => format_write_call_content(&args, expanded),
         "edit" => format_edit_call_content(&args),
-        "read" | "ls" | "find" | "grep" => String::new(),
+        "read" | "ls" | "find" | "grep" => {
+            let rendered = serde_json::to_string_pretty(&args).unwrap_or_else(|_| raw_args.to_string());
+            if rendered == "null" || rendered == "{}" {
+                String::new()
+            } else {
+                rendered
+            }
+        }
         _ => serde_json::to_string_pretty(&args).unwrap_or_else(|_| raw_args.to_string()),
     }
 }
 
-fn format_write_call_content(args: &serde_json::Value) -> String {
+fn format_write_call_content(args: &serde_json::Value, expanded: bool) -> String {
     let Some(content) = args.get("content").and_then(|value| value.as_str()) else {
         return String::new();
     };
 
     let preview_lines: Vec<&str> = content.lines().collect();
-    let max_lines = 5usize;
+    let max_lines = if expanded { 10usize } else { 5usize };
     let mut lines: Vec<String> = preview_lines
         .iter()
         .take(max_lines)
@@ -1886,6 +1954,7 @@ fn format_tool_result_content(
     details: Option<serde_json::Value>,
     artifact_path: Option<String>,
     is_error: bool,
+    expanded: bool,
 ) -> String {
     let mut lines = Vec::new();
 
@@ -1973,7 +2042,7 @@ fn format_tool_result_content(
         }
     }
 
-    let preview_lines = preview_tool_result_lines(name, content);
+    let preview_lines = preview_tool_result_lines(name, content, expanded);
     lines.extend(preview_lines);
 
     if let Some(details) = details {
@@ -2002,8 +2071,8 @@ fn format_tool_result_content(
     }
 }
 
-fn preview_tool_result_lines(name: &str, content: &[ContentBlock]) -> Vec<String> {
-    let max_lines = tool_result_preview_limit(name);
+fn preview_tool_result_lines(name: &str, content: &[ContentBlock], expanded: bool) -> Vec<String> {
+    let max_lines = tool_result_preview_limit(name, expanded);
     let mut all_lines = Vec::new();
 
     for block in content {
@@ -2027,7 +2096,10 @@ fn preview_tool_result_lines(name: &str, content: &[ContentBlock]) -> Vec<String
     preview
 }
 
-fn tool_result_preview_limit(name: &str) -> usize {
+fn tool_result_preview_limit(name: &str, expanded: bool) -> usize {
+    if expanded {
+        return 120;
+    }
     match name {
         "read" => 10,
         "bash" => 12,
@@ -2368,6 +2440,70 @@ mod tests {
     }
 
     #[test]
+    fn tool_executing_shows_placeholder_and_ctrl_o_expands_output() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 24,
+            },
+        );
+
+        let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+        let _ = state.apply_command(FullscreenCommand::ToolCallStart {
+            id: "tool-1".into(),
+            name: "bash".into(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolCallDelta {
+            id: "tool-1".into(),
+            args: serde_json::json!({ "command": "printf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\nn'" }).to_string(),
+        });
+        let _ = state.apply_command(FullscreenCommand::ToolExecuting {
+            id: "tool-1".into(),
+        });
+
+        let assistant = state.transcript.root_blocks()[0];
+        let assistant_block = state.transcript.block(assistant).expect("assistant root");
+        let tool_use_id = assistant_block.children[0];
+        let tool_use = state.transcript.block(tool_use_id).expect("tool use");
+        let tool_result = state
+            .transcript
+            .block(tool_use.children[0])
+            .expect("tool result placeholder");
+        assert!(tool_result.content.contains("executing..."));
+
+        let _ = state.apply_command(FullscreenCommand::ToolResult {
+            id: "tool-1".into(),
+            name: "bash".into(),
+            content: vec![ContentBlock::Text {
+                text: (1..=14).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"),
+            }],
+            details: None,
+            artifact_path: None,
+            is_error: false,
+        });
+        let tool_use = state.transcript.block(tool_use_id).expect("tool use after result");
+        let tool_result = state
+            .transcript
+            .block(tool_use.children[0])
+            .expect("tool result after result");
+        assert!(tool_result.content.contains("... (2 more lines)"));
+        assert!(!tool_result.content.contains("line 14"));
+
+        state.mode = FullscreenMode::Transcript;
+        state.focused_block = Some(tool_use_id);
+        state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+        let tool_use = state.transcript.block(tool_use_id).expect("tool use after expand");
+        let tool_result = state
+            .transcript
+            .block(tool_use.children[0])
+            .expect("tool result after expand");
+        assert!(!tool_result.content.contains("... (2 more lines)"));
+        assert!(tool_result.content.contains("line 14"));
+    }
+
+    #[test]
     fn scheduler_batches_streaming_bursts_until_idle_or_frame_cap() {
         let start = Instant::now();
         let mut scheduler =
@@ -2457,6 +2593,7 @@ mod tests {
             })),
             None,
             false,
+            false,
         );
 
         assert!(rendered.contains("applied 1/1 edit(s) to /tmp/demo.txt"));
@@ -2482,6 +2619,7 @@ mod tests {
                 "bytes": 12
             })),
             None,
+            false,
             false,
         );
         assert!(rendered.contains("wrote 12 bytes to ~/project/demo.txt") || rendered.contains("wrote 12 bytes to /home/test/project/demo.txt"));
@@ -2541,6 +2679,7 @@ mod tests {
             None,
             Some(format!("{home}/project/out.patch")),
             false,
+            false,
         );
         assert!(
             rendered.contains("artifact: ~/project/out.patch")
@@ -2557,6 +2696,7 @@ mod tests {
                 "content": "one\ntwo\nthree\nfour\nfive\nsix"
             })
             .to_string(),
+            false,
         );
         assert!(write.contains("one"));
         assert!(write.contains("five"));
@@ -2573,6 +2713,7 @@ mod tests {
                 ]
             })
             .to_string(),
+            false,
         );
         assert!(edit.contains("2 edit block(s)"));
         assert!(edit.contains("1. - alpha"));
@@ -2589,9 +2730,10 @@ mod tests {
             .join("\n");
         let bash = format_tool_result_content(
             "bash",
-            &[ContentBlock::Text { text: bash_lines }],
+            &[ContentBlock::Text { text: bash_lines.clone() }],
             None,
             None,
+            false,
             false,
         );
         assert!(bash.contains("line   1"));
@@ -2606,13 +2748,25 @@ mod tests {
             .join("\n");
         let grep = format_tool_result_content(
             "grep",
-            &[ContentBlock::Text { text: grep_lines }],
+            &[ContentBlock::Text { text: grep_lines.clone() }],
             None,
             None,
+            false,
             false,
         );
         assert!(grep.contains("match 15"));
         assert!(grep.contains("... (1 more lines)"));
+
+        let expanded = format_tool_result_content(
+            "bash",
+            &[ContentBlock::Text { text: bash_lines }],
+            None,
+            None,
+            false,
+            true,
+        );
+        assert!(expanded.contains("line   14"));
+        assert!(!expanded.contains("... (2 more lines)"));
     }
 
     #[test]
