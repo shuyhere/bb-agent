@@ -1,14 +1,22 @@
 use std::collections::VecDeque;
 
 use anyhow::Result;
-use bb_core::agent_session::PromptOptions;
-use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
+use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
+use bb_core::agent_session_runtime::{AgentSessionRuntimeHost, RuntimeModelRef};
+use bb_core::settings::Settings;
 use bb_core::types::{AgentMessage, ContentBlock, EntryBase, EntryId, SessionEntry, UserMessage};
+use bb_provider::anthropic::AnthropicProvider;
+use bb_provider::google::GoogleProvider;
+use bb_provider::openai::OpenAiProvider;
+use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::store;
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{
     FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel, Transcript,
 };
+use bb_tui::select_list::SelectItem;
+
+use crate::slash::{handle_slash_command, help_lines, SlashResult};
 use chrono::Utc;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -116,6 +124,31 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
+const FULLSCREEN_MENU_PREFIX: &str = "__bb_fullscreen_menu__\t";
+
+fn parse_fullscreen_menu_selection(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix(FULLSCREEN_MENU_PREFIX)?;
+    let mut parts = rest.splitn(2, '\t');
+    let menu_id = parts.next()?;
+    let value = parts.next()?;
+    Some((menu_id, value))
+}
+
+fn persist_fullscreen_retry_settings(
+    enabled: bool,
+    max_retries: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+) -> Result<()> {
+    let mut settings = Settings::load_global();
+    settings.retry.enabled = enabled;
+    settings.retry.max_retries = max_retries.max(1);
+    settings.retry.base_delay_ms = base_delay_ms.max(1_000);
+    settings.retry.max_delay_ms = max_delay_ms.max(settings.retry.base_delay_ms);
+    settings.save_global()?;
+    Ok(())
+}
+
 struct FullscreenController {
     runtime_host: AgentSessionRuntimeHost,
     session_setup: InteractiveSessionSetup,
@@ -182,9 +215,7 @@ impl FullscreenController {
             return Ok(());
         }
 
-        if text == "/quit" || text == "/exit" {
-            self.shutdown_requested = true;
-            self.abort_token.cancel();
+        if self.handle_local_submission(&text).await? {
             return Ok(());
         }
 
@@ -196,6 +227,358 @@ impl FullscreenController {
 
         self.dispatch_prompt(text, submission_rx).await?;
         self.drain_queued_prompts(submission_rx).await
+    }
+
+    async fn handle_local_submission(&mut self, text: &str) -> Result<bool> {
+        if let Some((menu_id, value)) = parse_fullscreen_menu_selection(text) {
+            self.handle_menu_selection(menu_id, value).await?;
+            return Ok(true);
+        }
+
+        match handle_slash_command(text) {
+            SlashResult::NotCommand => Ok(false),
+            SlashResult::Exit => {
+                self.shutdown_requested = true;
+                self.abort_token.cancel();
+                Ok(true)
+            }
+            SlashResult::Help => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: help_lines().join("\n"),
+                });
+                Ok(true)
+            }
+            SlashResult::ModelSelect(search) => {
+                self.handle_model_selection_command(search.as_deref())?;
+                Ok(true)
+            }
+            SlashResult::SetName(name) => {
+                self.ensure_session_row_created()?;
+                store::set_session_name(
+                    &self.session_setup.conn,
+                    &self.session_setup.session_id,
+                    Some(&name),
+                )?;
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Session name: {name}")));
+                Ok(true)
+            }
+            SlashResult::SessionInfo => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: format!(
+                        "Session: {}\nModel: {}/{}\nThinking: {}",
+                        self.session_setup.session_id,
+                        self.session_setup.model.provider,
+                        self.session_setup.model.id,
+                        self.session_setup.thinking_level
+                    ),
+                });
+                Ok(true)
+            }
+            SlashResult::Handled if text == "/settings" => {
+                self.open_settings_menu();
+                Ok(true)
+            }
+            SlashResult::Handled if text == "/name" => {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Usage: /name <session name>".to_string(),
+                ));
+                Ok(true)
+            }
+            SlashResult::NewSession
+            | SlashResult::Compact(_)
+            | SlashResult::Resume
+            | SlashResult::Tree
+            | SlashResult::Fork
+            | SlashResult::Login
+            | SlashResult::Logout
+            | SlashResult::Handled => {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "{text} is not wired in fullscreen yet; use the legacy interactive mode for that flow"
+                )));
+                Ok(true)
+            }
+        }
+    }
+
+    fn handle_model_selection_command(&mut self, search: Option<&str>) -> Result<()> {
+        let search_term = search.unwrap_or_default().trim();
+        if let Some(model) = self.find_exact_model_match(search_term) {
+            self.apply_model_selection(model);
+            return Ok(());
+        }
+
+        let mut items: Vec<SelectItem> = self
+            .get_model_candidates()
+            .into_iter()
+            .filter(|model| {
+                if search_term.is_empty() {
+                    true
+                } else {
+                    let needle = search_term.to_ascii_lowercase();
+                    let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+                    provider_id.contains(&needle)
+                        || model.id.to_ascii_lowercase().contains(&needle)
+                        || model.name.to_ascii_lowercase().contains(&needle)
+                }
+            })
+            .map(|model| SelectItem {
+                label: format!("{}/{}", model.provider, model.id),
+                detail: Some(model.name.clone()),
+                value: format!("{}/{}", model.provider, model.id),
+            })
+            .collect();
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: "model".to_string(),
+            title: if search_term.is_empty() {
+                "Select model".to_string()
+            } else {
+                format!("Select model matching '{search_term}'")
+            },
+            items,
+        });
+        Ok(())
+    }
+
+    fn open_settings_menu(&mut self) {
+        let items = vec![
+            SelectItem {
+                label: format!("Thinking level [{}]", self.session_setup.thinking_level),
+                detail: Some("Reasoning depth".to_string()),
+                value: "thinking".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Auto-retry [{}]",
+                    if self.session_setup.retry_enabled { "true" } else { "false" }
+                ),
+                detail: Some("Retry retryable provider errors".to_string()),
+                value: "retry-enabled".to_string(),
+            },
+            SelectItem {
+                label: format!("Retry attempts [{}]", self.session_setup.retry_max_retries),
+                detail: Some("Maximum retry attempts".to_string()),
+                value: "retry-max".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Retry base delay [{}s]",
+                    self.session_setup.retry_base_delay_ms / 1000
+                ),
+                detail: Some("Initial retry backoff".to_string()),
+                value: "retry-delay".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Retry max delay [{}s]",
+                    self.session_setup.retry_max_delay_ms / 1000
+                ),
+                detail: Some("Maximum allowed retry delay".to_string()),
+                value: "retry-max-delay".to_string(),
+            },
+        ];
+
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: "settings".to_string(),
+            title: "Settings".to_string(),
+            items,
+        });
+    }
+
+    fn open_setting_values_menu(&mut self, setting_id: &str) {
+        let (title, values): (&str, Vec<&str>) = match setting_id {
+            "thinking" => ("Thinking level", vec!["off", "low", "medium", "high", "xhigh"]),
+            "retry-enabled" => ("Auto-retry", vec!["true", "false"]),
+            "retry-max" => ("Retry attempts", vec!["1", "2", "3", "4", "5"]),
+            "retry-delay" => ("Retry base delay", vec!["1s", "2s", "5s", "10s"]),
+            "retry-max-delay" => ("Retry max delay", vec!["10s", "30s", "60s", "120s"]),
+            _ => {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Unknown setting: {setting_id}"
+                )));
+                return;
+            }
+        };
+
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: format!("settings:{setting_id}"),
+            title: title.to_string(),
+            items: values
+                .into_iter()
+                .map(|value| SelectItem {
+                    label: value.to_string(),
+                    detail: None,
+                    value: value.to_string(),
+                })
+                .collect(),
+        });
+    }
+
+    async fn handle_menu_selection(&mut self, menu_id: &str, value: &str) -> Result<()> {
+        match menu_id {
+            "model" => {
+                if let Some(model) = self.find_exact_model_match(value) {
+                    self.apply_model_selection(model);
+                } else {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Model not found: {value}"
+                    )));
+                }
+            }
+            "settings" => self.open_setting_values_menu(value),
+            _ if menu_id.starts_with("settings:") => {
+                let setting_id = menu_id.trim_start_matches("settings:");
+                self.apply_setting_value(setting_id, value)?;
+            }
+            _ => {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Unknown fullscreen menu: {menu_id}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn get_model_candidates(&self) -> Vec<Model> {
+        let current_provider = self.session_setup.model.provider.clone();
+        let available = crate::login::authenticated_providers();
+        let mut registry = ModelRegistry::new();
+        registry.load_custom_models(&Settings::load_merged(&self.session_setup.tool_ctx.cwd));
+        registry
+            .list()
+            .iter()
+            .filter(|model| {
+                available.iter().any(|provider| provider == &model.provider)
+                    || model.provider == current_provider
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn find_exact_model_match(&self, search_term: &str) -> Option<Model> {
+        let needle = search_term.trim().to_ascii_lowercase();
+        self.get_model_candidates().into_iter().find(|model| {
+            let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+            let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
+            model.id.eq_ignore_ascii_case(&needle)
+                || model.name.eq_ignore_ascii_case(&needle)
+                || provider_id == needle
+                || provider_colon_id == needle
+        })
+    }
+
+    fn apply_model_selection(&mut self, model: Model) {
+        let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+        let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
+            ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+            ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
+            _ => "https://api.openai.com/v1".to_string(),
+        });
+        let new_provider: std::sync::Arc<dyn bb_provider::Provider> = match model.api {
+            ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
+            ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
+            _ => std::sync::Arc::new(OpenAiProvider::new()),
+        };
+        let display = format!("{}/{}", model.provider, model.id);
+
+        self.runtime_host.session_mut().set_model(ModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            reasoning: model.reasoning,
+        });
+        self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
+            provider: model.provider.clone(),
+            id: model.id.clone(),
+            context_window: model.context_window as usize,
+        });
+        self.session_setup.model = model;
+        self.session_setup.provider = new_provider;
+        self.session_setup.api_key = api_key;
+        self.session_setup.base_url = base_url;
+        self.options.model_display = Some(display.clone());
+        self.publish_footer();
+        self.send_command(FullscreenCommand::SetStatusLine(format!("Model: {display}")));
+    }
+
+    fn apply_setting_value(&mut self, setting_id: &str, value: &str) -> Result<()> {
+        match setting_id {
+            "thinking" => {
+                self.session_setup.thinking_level = value.to_string();
+                let level = match value {
+                    "off" => ThinkingLevel::Off,
+                    "low" | "minimal" => ThinkingLevel::Low,
+                    "medium" => ThinkingLevel::Medium,
+                    "high" => ThinkingLevel::High,
+                    "xhigh" => ThinkingLevel::XHigh,
+                    _ => ThinkingLevel::Medium,
+                };
+                self.runtime_host.session_mut().set_thinking_level(level);
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Thinking: {value}")));
+            }
+            "retry-enabled" => {
+                self.session_setup.retry_enabled = value == "true";
+                persist_fullscreen_retry_settings(
+                    self.session_setup.retry_enabled,
+                    self.session_setup.retry_max_retries,
+                    self.session_setup.retry_base_delay_ms,
+                    self.session_setup.retry_max_delay_ms,
+                )?;
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Auto-retry: {value}")));
+            }
+            "retry-max" => {
+                let parsed = value.parse::<u32>().unwrap_or(self.session_setup.retry_max_retries);
+                self.session_setup.retry_max_retries = parsed.max(1);
+                persist_fullscreen_retry_settings(
+                    self.session_setup.retry_enabled,
+                    self.session_setup.retry_max_retries,
+                    self.session_setup.retry_base_delay_ms,
+                    self.session_setup.retry_max_delay_ms,
+                )?;
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Retry attempts: {}",
+                    self.session_setup.retry_max_retries
+                )));
+            }
+            "retry-delay" => {
+                let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(1);
+                self.session_setup.retry_base_delay_ms = secs.max(1) * 1000;
+                if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
+                    self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
+                }
+                persist_fullscreen_retry_settings(
+                    self.session_setup.retry_enabled,
+                    self.session_setup.retry_max_retries,
+                    self.session_setup.retry_base_delay_ms,
+                    self.session_setup.retry_max_delay_ms,
+                )?;
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Retry base delay: {value}")));
+            }
+            "retry-max-delay" => {
+                let secs = value.trim_end_matches('s').parse::<u64>().unwrap_or(10);
+                self.session_setup.retry_max_delay_ms = secs.max(1) * 1000;
+                if self.session_setup.retry_max_delay_ms < self.session_setup.retry_base_delay_ms {
+                    self.session_setup.retry_max_delay_ms = self.session_setup.retry_base_delay_ms;
+                }
+                persist_fullscreen_retry_settings(
+                    self.session_setup.retry_enabled,
+                    self.session_setup.retry_max_retries,
+                    self.session_setup.retry_base_delay_ms,
+                    self.session_setup.retry_max_delay_ms,
+                )?;
+                self.send_command(FullscreenCommand::SetStatusLine(format!("Retry max delay: {value}")));
+            }
+            _ => {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Unknown setting: {setting_id}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     async fn dispatch_prompt(
@@ -526,11 +909,13 @@ impl FullscreenController {
                             if text.is_empty() || text == "/" {
                                 continue;
                             }
-                            if text == "/quit" || text == "/exit" {
-                                self.shutdown_requested = true;
-                                self.abort_token.cancel();
-                                aborted = true;
-                                break;
+                            if self.handle_local_submission(&text).await? {
+                                if self.shutdown_requested {
+                                    self.abort_token.cancel();
+                                    aborted = true;
+                                    break;
+                                }
+                                continue;
                             }
                             self.queued_prompts.push_back(text);
                             self.publish_status();

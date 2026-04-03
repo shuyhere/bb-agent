@@ -522,6 +522,15 @@ fn render_footer(state: &FullscreenState, width: usize, height: usize) -> Vec<St
         return Vec::new();
     }
 
+    if let Some(menu_lines) = state.render_select_menu_lines(width) {
+        let mut lines = menu_lines;
+        lines.truncate(height);
+        while lines.len() < height {
+            lines.push(blank_line(width));
+        }
+        return lines;
+    }
+
     if let Some(menu_lines) = state.render_slash_menu_lines(width) {
         let mut lines = menu_lines;
         lines.truncate(height);
