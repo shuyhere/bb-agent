@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_COMMIT="3a97a78"
-STATE_DIR="/tmp/bb-fullscreen/review-state"
-LOG="/tmp/bb-fullscreen/review-events.log"
+BASE_COMMIT="6652737"
+STATE_DIR="/tmp/bb-fullscreen-next/review-state"
+LOG="/tmp/bb-fullscreen-next/review-events.log"
 INTERVAL="${1:-30}"
 BASE_REV="$(git -C /home/shuyhere/BB-Agent rev-parse "$BASE_COMMIT")"
 
 mkdir -p "$STATE_DIR"
 
 BRANCH_DIRS=(
-  "/tmp/bb-fullscreen/r24-foundation"
-  "/tmp/bb-fullscreen/r25-block-model"
-  "/tmp/bb-fullscreen/r26-projection-scroll"
-  "/tmp/bb-fullscreen/r27-input-modes"
-  "/tmp/bb-fullscreen/r28-streaming"
-  "/tmp/bb-fullscreen/r29-integration"
+  "/tmp/bb-fullscreen-next/r30-unify"
+  "/tmp/bb-fullscreen-next/r31-projector"
+  "/tmp/bb-fullscreen-next/r32-controls"
+  "/tmp/bb-fullscreen-next/r33-streaming"
+  "/tmp/bb-fullscreen-next/r34-runtime"
 )
 
 while true; do
