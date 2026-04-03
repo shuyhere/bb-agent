@@ -1433,8 +1433,67 @@ fn format_tool_call_content(name: &str, raw_args: &str) -> String {
             }
             lines.join("\n")
         }
+        "write" => format_write_call_content(&args),
+        "edit" => format_edit_call_content(&args),
         "read" | "ls" | "find" | "grep" => String::new(),
         _ => serde_json::to_string_pretty(&args).unwrap_or_else(|_| raw_args.to_string()),
+    }
+}
+
+fn format_write_call_content(args: &serde_json::Value) -> String {
+    let Some(content) = args.get("content").and_then(|value| value.as_str()) else {
+        return String::new();
+    };
+
+    let preview_lines: Vec<&str> = content.lines().collect();
+    let max_lines = 5usize;
+    let mut lines: Vec<String> = preview_lines
+        .iter()
+        .take(max_lines)
+        .map(|line| line.replace('\t', "   "))
+        .collect();
+    if preview_lines.len() > max_lines {
+        lines.push(format!("... ({} more lines)", preview_lines.len() - max_lines));
+    }
+    lines.join("\n")
+}
+
+fn format_edit_call_content(args: &serde_json::Value) -> String {
+    let Some(edits) = args.get("edits").and_then(|value| value.as_array()) else {
+        return String::new();
+    };
+    if edits.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![format!("{} edit block(s)", edits.len())];
+    for (index, edit) in edits.iter().take(3).enumerate() {
+        let old_text = edit
+            .get("oldText")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let new_text = edit
+            .get("newText")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let old_preview = summarize_inline(old_text, 60);
+        let new_preview = summarize_inline(new_text, 60);
+        lines.push(format!("{}. - {old_preview}", index + 1));
+        lines.push(format!("   + {new_preview}"));
+    }
+    if edits.len() > 3 {
+        lines.push(format!("... ({} more edit block(s))", edits.len() - 3));
+    }
+    lines.join("\n")
+}
+
+fn summarize_inline(text: &str, max_chars: usize) -> String {
+    let text = text.replace('\n', "\\n");
+    if text.chars().count() <= max_chars {
+        text
+    } else {
+        let prefix: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{prefix}...")
     }
 }
 
@@ -2090,6 +2149,39 @@ mod tests {
             rendered.contains("artifact: ~/project/out.patch")
                 || rendered.contains("artifact: /home/test/project/out.patch")
         );
+    }
+
+    #[test]
+    fn write_and_edit_call_content_use_interactive_style_previews() {
+        let write = format_tool_call_content(
+            "write",
+            &serde_json::json!({
+                "path": "/tmp/demo.txt",
+                "content": "one\ntwo\nthree\nfour\nfive\nsix"
+            })
+            .to_string(),
+        );
+        assert!(write.contains("one"));
+        assert!(write.contains("five"));
+        assert!(write.contains("... (1 more lines)"));
+        assert!(!write.contains("\"content\""));
+
+        let edit = format_tool_call_content(
+            "edit",
+            &serde_json::json!({
+                "path": "/tmp/demo.txt",
+                "edits": [
+                    { "oldText": "alpha", "newText": "beta" },
+                    { "oldText": "line1\nline2", "newText": "line1\nlineX" }
+                ]
+            })
+            .to_string(),
+        );
+        assert!(edit.contains("2 edit block(s)"));
+        assert!(edit.contains("1. - alpha"));
+        assert!(edit.contains("+ beta"));
+        assert!(edit.contains("line1\\nline2"));
+        assert!(!edit.contains("\"oldText\""));
     }
 
     #[test]
