@@ -4,6 +4,7 @@ pub mod terminal;
 pub mod component;
 pub mod renderer;
 pub mod tui_core;
+pub mod fullscreen;
 pub mod utils;
 pub mod markdown;
 pub mod chat;

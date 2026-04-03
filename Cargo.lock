@@ -193,6 +193,7 @@ dependencies = [
  "base64",
  "bb-core",
  "futures",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

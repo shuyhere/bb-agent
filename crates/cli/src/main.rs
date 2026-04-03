@@ -5,9 +5,10 @@ mod error;
 
 #[path = "interactive.rs"]
 mod interactive;
+mod interactive_fullscreen;
 mod login;
-mod oauth;
 mod models;
+mod oauth;
 mod run;
 mod slash;
 mod turn_runner;
@@ -106,6 +107,10 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
+    /// Enable the new fullscreen transcript shell
+    #[arg(long)]
+    fullscreen: bool,
+
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
     messages: Vec<String>,
@@ -140,8 +145,7 @@ async fn main() -> Result<()> {
     };
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(log_level.into()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(log_level.into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -203,9 +207,19 @@ async fn main() -> Result<()> {
         };
     }
 
+    let use_fullscreen = cli.fullscreen
+        || std::env::var("BB_FULLSCREEN")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+
     // Print mode stays a thin entry layer; interactive mode owns the TUI controller.
     if cli.print {
         run::run_print_mode(cli).await
+    } else if use_fullscreen {
+        interactive_fullscreen::run_interactive_fullscreen(
+            interactive::InteractiveEntryOptions::from(&cli),
+        )
+        .await
     } else {
         interactive::run_interactive(interactive::InteractiveEntryOptions::from(&cli)).await
     }
