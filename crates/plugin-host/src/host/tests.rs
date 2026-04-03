@@ -142,3 +142,83 @@ async fn test_load_plugins_with_sample() {
     host.kill().await;
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_extension_ui_plumbing() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("Skipping test: node not available");
+        return;
+    }
+
+    let temp_dir = std::env::temp_dir().join("bb-test-ui-ext");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let plugin_path = temp_dir.join("ui-ext.js");
+    std::fs::write(
+        &plugin_path,
+        r#"
+            module.exports = function(bb) {
+                bb.registerCommand('ui-test', {
+                    description: 'Test UI methods',
+                    handler: async (args, ctx) => {
+                        // Fire-and-forget: notify
+                        ctx.ui.notify('hello from extension', 'info');
+                        ctx.ui.setStatus('my-ext', 'running...');
+                        ctx.ui.setWidget('my-widget', ['line1', 'line2']);
+
+                        // Dialog: confirm (will get default response: false)
+                        const confirmed = await ctx.ui.confirm('Danger!', 'Continue?');
+
+                        // Dialog: select (will get default: cancelled)
+                        const selected = await ctx.ui.select('Pick', ['A', 'B', 'C']);
+
+                        // Dialog: input (will get default: cancelled)
+                        const typed = await ctx.ui.input('Name?', 'enter name');
+
+                        return {
+                            message: `confirmed=${confirmed} selected=${selected} typed=${typed}`,
+                        };
+                    },
+                });
+
+                bb.on('session_start', async (_event, ctx) => {
+                    ctx.ui.notify('session started!', 'info');
+                    return {};
+                });
+            };
+        "#,
+    )
+    .unwrap();
+
+    // Use default UI handler (returns defaults for dialogs, logs notifications)
+    let ui_handler: types::SharedUiHandler = std::sync::Arc::new(types::DefaultUiHandler);
+
+    let mut host = PluginHost::load_plugins(&[plugin_path.clone()])
+        .await
+        .unwrap();
+    host.set_ui_handler(ui_handler);
+
+    assert_eq!(host.registered_commands().len(), 1);
+    assert_eq!(host.registered_commands()[0].name, "ui-test");
+
+    // Execute the command — it will call notify, setStatus, setWidget, confirm, select, input
+    // All dialog methods should return defaults (false, cancelled, cancelled)
+    let result = host.execute_command("ui-test", "").await.unwrap();
+    let message = result["message"].as_str().unwrap();
+    assert_eq!(
+        message,
+        "confirmed=false selected=undefined typed=undefined"
+    );
+
+    // Also test that notify in event handler works
+    let result = host.send_event(&bb_hooks::Event::SessionStart).await;
+    // The handler returns {} so result should be None (no meaningful content)
+    // But the notify call should not cause a hang
+    assert!(result.is_none());
+
+    host.kill().await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

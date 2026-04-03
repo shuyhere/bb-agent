@@ -4,7 +4,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::PluginHost;
-use super::types::{PluginContext, PluginHostError, RegisteredCommand, RegisteredTool};
+use super::types::{PluginContext, PluginHostError, RegisteredCommand, RegisteredTool, UiRequest};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -260,10 +260,61 @@ impl PluginHost {
                         }
                     }
                 }
+                "ui_request" => {
+                    if let Some(params) = msg.get("params") {
+                        self.handle_ui_request_inline(params.clone()).await;
+                    }
+                }
                 _ => {
                     debug!("Ignoring notification during response wait: {}", method);
                 }
             }
+        }
+    }
+}
+
+impl PluginHost {
+    /// Handle an incoming UI request from a plugin handler.
+    ///
+    /// Forwards to the registered UI handler (or produces a default response),
+    /// then sends the response back to the JS host as a `ui_response` message.
+    async fn handle_ui_request_inline(&mut self, params: serde_json::Value) {
+        let request = match serde_json::from_value::<UiRequest>(params) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Invalid ui_request params: {e}");
+                return;
+            }
+        };
+
+        let is_fire_and_forget = matches!(
+            request.method.as_str(),
+            "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text"
+        );
+
+        let response = if let Some(handler) = &self.ui_handler {
+            handler.handle_request(request.clone()).await
+        } else {
+            super::types::default_ui_response(&request)
+        };
+
+        // Fire-and-forget methods: handler was called (for side effects like logging),
+        // but we still send a response so JS doesn't hang if it's awaiting.
+        // Dialog methods always get a response.
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "ui_response",
+            "params": response,
+        });
+
+        if let Err(e) = self.send_json(&msg).await {
+            warn!("Failed to send ui_response: {e}");
+        }
+
+        if is_fire_and_forget {
+            debug!("Handled fire-and-forget UI request: {}", request.method);
+        } else {
+            debug!("Handled dialog UI request: {}", request.method);
         }
     }
 }

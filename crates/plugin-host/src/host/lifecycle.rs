@@ -45,7 +45,11 @@ impl PluginHost {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
 
-        info!("Plugin host spawned (pid: {:?}), loading {} plugin(s)", child.id(), plugin_paths.len());
+        info!(
+            "Plugin host spawned (pid: {:?}), loading {} plugin(s)",
+            child.id(),
+            plugin_paths.len()
+        );
 
         let mut host = Self {
             child,
@@ -55,6 +59,7 @@ impl PluginHost {
             registered_tools: Vec::new(),
             registered_commands: Vec::new(),
             plugin_count: 0,
+            ui_handler: None,
         };
 
         // Read startup notifications until plugins_loaded
@@ -76,7 +81,8 @@ impl PluginHost {
         let timeout = Duration::from_secs(10);
 
         loop {
-            let msg = tokio::time::timeout(timeout, self.read_message()).await
+            let msg = tokio::time::timeout(timeout, self.read_message())
+                .await
                 .map_err(|_| PluginHostError::Timeout("startup notifications".into()))?
                 .map_err(|e| PluginHostError::Io(format!("read startup: {e}")))?;
 
@@ -108,7 +114,8 @@ impl PluginHost {
                     error!("Plugin load error [{}]: {}", path, error);
                 }
                 "plugins_loaded" => {
-                    self.plugin_count = params.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    self.plugin_count =
+                        params.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                     return Ok(());
                 }
                 other => {

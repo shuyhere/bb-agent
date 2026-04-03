@@ -7,4 +7,7 @@ mod types;
 mod tests;
 
 pub use host_impl::PluginHost;
-pub use types::{PluginContext, PluginHostError, RegisteredCommand, RegisteredTool};
+pub use types::{
+    DefaultUiHandler, PluginContext, PluginHostError, RegisteredCommand, RegisteredTool,
+    SharedUiHandler, UiHandler, UiRequest, UiResponse, default_ui_response,
+};

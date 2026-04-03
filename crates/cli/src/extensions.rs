@@ -17,8 +17,9 @@ use bb_core::error::{BbError, BbResult};
 use bb_core::settings::Settings;
 use bb_core::types::{ContentBlock, SessionEntry};
 use bb_plugin_host::{
-    PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
-    RegisteredTool as HostRegisteredTool,
+    DefaultUiHandler, PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
+    RegisteredTool as HostRegisteredTool, SharedUiHandler, UiHandler, UiRequest, UiResponse,
+    default_ui_response,
 };
 use bb_tools::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
@@ -66,12 +67,148 @@ struct SessionSnapshotSource {
     session_file: Option<String>,
 }
 
+/// Print-mode UI handler: logs notifications to tracing, returns defaults for dialogs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PrintUiHandler;
+
+impl UiHandler for PrintUiHandler {
+    fn handle_request(
+        &self,
+        request: UiRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = UiResponse> + Send + '_>> {
+        Box::pin(async move {
+            match request.method.as_str() {
+                "notify" => {
+                    let msg = request
+                        .params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let kind = request
+                        .params
+                        .get("notifyType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info");
+                    match kind {
+                        "error" => tracing::error!("[extension] {msg}"),
+                        "warning" => tracing::warn!("[extension] {msg}"),
+                        _ => tracing::info!("[extension] {msg}"),
+                    }
+                }
+                "setStatus" | "setWidget" | "setTitle" | "set_editor_text" => {
+                    // No-op in print mode
+                }
+                _ => {}
+            }
+            default_ui_response(&request)
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Interactive-mode UI handler: stores notifications/statuses and can be
+/// queried by the interactive controller. Dialogs return defaults for now
+/// but the plumbing supports real TUI dialogs in the future.
+#[derive(Clone, Debug)]
+pub(crate) struct InteractiveUiHandler {
+    notifications: Arc<Mutex<Vec<UiNotification>>>,
+    statuses: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct UiNotification {
+    pub message: String,
+    pub kind: String,
+}
+
+impl Default for InteractiveUiHandler {
+    fn default() -> Self {
+        Self {
+            notifications: Arc::new(Mutex::new(Vec::new())),
+            statuses: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+
+impl InteractiveUiHandler {
+    /// Drain all pending notifications.
+    pub(crate) async fn drain_notifications(&self) -> Vec<UiNotification> {
+        let mut notifications = self.notifications.lock().await;
+        std::mem::take(&mut *notifications)
+    }
+
+    /// Get all current status entries.
+    pub(crate) async fn get_statuses(&self) -> BTreeMap<String, Option<String>> {
+        self.statuses.lock().await.clone()
+    }
+}
+
+impl UiHandler for InteractiveUiHandler {
+    fn handle_request(
+        &self,
+        request: UiRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = UiResponse> + Send + '_>> {
+        let notifications = self.notifications.clone();
+        let statuses = self.statuses.clone();
+        Box::pin(async move {
+            match request.method.as_str() {
+                "notify" => {
+                    let msg = request
+                        .params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = request
+                        .params
+                        .get("notifyType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info")
+                        .to_string();
+                    notifications
+                        .lock()
+                        .await
+                        .push(UiNotification { message: msg, kind });
+                }
+                "setStatus" => {
+                    let key = request
+                        .params
+                        .get("statusKey")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let text = request
+                        .params
+                        .get("statusText")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string);
+                    statuses.lock().await.insert(key, text);
+                }
+                "setWidget" | "setTitle" | "set_editor_text" => {
+                    // Store for future consumption by interactive controller
+                    tracing::debug!("Interactive UI: {} (stored for controller)", request.method);
+                }
+                _ => {}
+            }
+            default_ui_response(&request)
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ExtensionCommandRegistry {
     host: Option<Arc<Mutex<PluginHost>>>,
     commands: BTreeSet<String>,
     context: PluginContext,
     session: Option<SessionSnapshotSource>,
+    ui_handler: Option<SharedUiHandler>,
 }
 
 impl fmt::Debug for ExtensionCommandRegistry {
@@ -81,6 +218,7 @@ impl fmt::Debug for ExtensionCommandRegistry {
             .field("context", &self.context)
             .field("has_host", &self.host.is_some())
             .field("has_session", &self.session.is_some())
+            .field("has_ui_handler", &self.ui_handler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -341,8 +479,15 @@ pub(crate) async fn load_runtime_extension_support_with_ui(
     let mut tools: Vec<Box<dyn Tool>> = Vec::new();
     let mut commands = ExtensionCommandRegistry::default();
 
+    let ui_handler: SharedUiHandler = if has_ui {
+        Arc::new(InteractiveUiHandler::default())
+    } else {
+        Arc::new(PrintUiHandler)
+    };
+
     if !discovered.extension_files.is_empty() {
-        let host = PluginHost::load_plugins(&discovered.extension_files).await?;
+        let mut host = PluginHost::load_plugins(&discovered.extension_files).await?;
+        host.set_ui_handler(ui_handler.clone());
         let tool_registrations = host.registered_tools().to_vec();
         let command_registrations = host.registered_commands().to_vec();
         let shared_host = Arc::new(Mutex::new(host));
@@ -367,6 +512,7 @@ pub(crate) async fn load_runtime_extension_support_with_ui(
                 ..PluginContext::default()
             },
             session: None,
+            ui_handler: Some(ui_handler.clone()),
         };
 
         session_resources.extensions = ExtensionsResult {
@@ -1635,5 +1781,77 @@ mod tests {
             support_v2.commands.execute_text("/hello").await.unwrap(),
             Some("v2".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn extension_ui_notify_and_confirm_plumbing() {
+        if !node_available() {
+            eprintln!("Skipping test: node not available");
+            return;
+        }
+
+        let cwd = tempdir().unwrap();
+        let ext_path = cwd.path().join("ui-ext.js");
+        fs::write(
+            &ext_path,
+            r#"
+                module.exports = function(bb) {
+                    bb.registerCommand('ui-demo', {
+                        description: 'demo UI methods',
+                        handler: async (args, ctx) => {
+                            ctx.ui.notify('extension says hi', 'info');
+                            ctx.ui.setStatus('demo', 'active');
+                            const ok = await ctx.ui.confirm('Title', 'Sure?');
+                            const picked = await ctx.ui.select('Pick', ['a','b']);
+                            return { message: `ok=${ok} picked=${picked}` };
+                        },
+                    });
+                };
+            "#,
+        )
+        .unwrap();
+
+        let bootstrap = ExtensionBootstrap {
+            paths: vec![ext_path],
+            package_sources: Vec::new(),
+        };
+        let settings = Settings::default();
+        // Load with has_ui=true to get an InteractiveUiHandler
+        let support =
+            load_runtime_extension_support_with_ui(cwd.path(), &settings, &bootstrap, true)
+                .await
+                .unwrap();
+
+        // Get the interactive handler to verify stored notifications
+        let handler = support
+            .commands
+            .ui_handler
+            .as_ref()
+            .expect("should have ui handler");
+        // Downcast to InteractiveUiHandler
+        let interactive_handler = handler
+            .as_ref()
+            .as_any()
+            .downcast_ref::<InteractiveUiHandler>()
+            .expect("should be InteractiveUiHandler");
+
+        let output = support
+            .commands
+            .execute_text("/ui-demo")
+            .await
+            .unwrap()
+            .unwrap();
+        // Dialogs return defaults: confirm=false, select=cancelled(undefined)
+        assert_eq!(output, "ok=false picked=undefined");
+
+        // Verify notifications were captured
+        let notifications = interactive_handler.drain_notifications().await;
+        assert!(!notifications.is_empty());
+        assert_eq!(notifications[0].message, "extension says hi");
+        assert_eq!(notifications[0].kind, "info");
+
+        // Verify status was captured
+        let statuses = interactive_handler.get_statuses().await;
+        assert_eq!(statuses.get("demo"), Some(&Some("active".to_string())));
     }
 }

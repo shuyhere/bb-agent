@@ -55,6 +55,23 @@ const handlers = {};  // event -> [handler]
 const tools = {};     // name -> def
 const commands = {};  // name -> def
 
+// ── UI request/response plumbing ─────────────────────────────────
+const pendingUiRequests = {};  // id -> resolve function
+let uiRequestCounter = 0;
+
+function requestUI(method, params) {
+    const id = `ui_${uiRequestCounter++}`;
+    send({ jsonrpc: "2.0", method: "ui_request", params: { id, method, ...params } });
+    return new Promise(resolve => {
+        pendingUiRequests[id] = resolve;
+    });
+}
+
+function fireAndForgetUI(method, params) {
+    const id = `ui_${uiRequestCounter++}`;
+    send({ jsonrpc: "2.0", method: "ui_request", params: { id, method, ...params } });
+}
+
 const bb = {
     on(event, handler) {
         if (!handlers[event]) handlers[event] = [];
@@ -79,9 +96,10 @@ function buildContext(raw) {
     const entries = context.session_entries || [];
     const branch = context.session_branch || entries;
     const labels = context.labels || {};
+    const hasUI = !!context.has_ui || !!context.hasUI;
     return {
         cwd: context.cwd || process.cwd(),
-        hasUI: !!context.has_ui || !!context.hasUI,
+        hasUI,
         signal: undefined,
         sessionManager: {
             getEntries: () => entries,
@@ -93,16 +111,56 @@ function buildContext(raw) {
             getSessionName: () => context.session_name || context.sessionName || undefined,
         },
         ui: {
-            notify: async () => undefined,
-            setStatus: async () => undefined,
-            setTitle: async () => undefined,
-            setEditorText: async () => undefined,
-            setWidget: async () => undefined,
-            select: async () => undefined,
-            confirm: async () => false,
-            input: async () => undefined,
-            editor: async () => undefined,
-            custom: async () => undefined,
+            notify: (message, notifyType) => {
+                fireAndForgetUI('notify', { message: String(message), notifyType: notifyType || 'info' });
+            },
+            setStatus: (statusKey, statusText) => {
+                fireAndForgetUI('setStatus', { statusKey: String(statusKey), statusText: statusText != null ? String(statusText) : undefined });
+            },
+            setTitle: (title) => {
+                fireAndForgetUI('setTitle', { title: String(title) });
+            },
+            setEditorText: (text) => {
+                fireAndForgetUI('set_editor_text', { text: String(text) });
+            },
+            setWidget: (widgetKey, widgetLines, options) => {
+                const placement = options?.placement || 'aboveEditor';
+                const lines = Array.isArray(widgetLines) ? widgetLines.map(String) : undefined;
+                fireAndForgetUI('setWidget', { widgetKey: String(widgetKey), widgetLines: lines, widgetPlacement: placement });
+            },
+            select: async (title, options, timeout) => {
+                const resp = await requestUI('select', { title: String(title), options: (options || []).map(String), timeout });
+                if (resp.cancelled) return undefined;
+                return resp.value;
+            },
+            confirm: async (title, message, timeout) => {
+                const resp = await requestUI('confirm', { title: String(title), message: String(message || ''), timeout });
+                return !!resp.confirmed;
+            },
+            input: async (title, placeholder) => {
+                const resp = await requestUI('input', { title: String(title), placeholder: placeholder != null ? String(placeholder) : undefined });
+                if (resp.cancelled) return undefined;
+                return resp.value;
+            },
+            editor: async (title, prefill) => {
+                const resp = await requestUI('editor', { title: String(title), prefill: prefill != null ? String(prefill) : undefined });
+                if (resp.cancelled) return undefined;
+                return resp.value;
+            },
+            custom: () => undefined,
+            setWorkingMessage: () => {},
+            setFooter: () => {},
+            setHeader: () => {},
+            setEditorComponent: () => {},
+            setToolsExpanded: () => {},
+            getEditorText: () => '',
+            getToolsExpanded: () => false,
+            pasteToEditor: (text) => {
+                fireAndForgetUI('set_editor_text', { text: String(text) });
+            },
+            getAllThemes: () => [],
+            getTheme: () => undefined,
+            setTheme: () => ({ success: false, error: 'not supported' }),
         },
         getSystemPrompt: () => context.system_prompt || context.systemPrompt || '',
         shutdown: () => undefined,
@@ -125,6 +183,18 @@ const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async (line) => {
     try {
         const msg = JSON.parse(line);
+
+        // Handle UI responses from the Rust host
+        if (msg.method === 'ui_response') {
+            const params = msg.params || {};
+            const resolver = pendingUiRequests[params.id];
+            if (resolver) {
+                delete pendingUiRequests[params.id];
+                resolver(params.data || params);
+            }
+            return;
+        }
+
         if (msg.method === 'event') {
             const event = msg.params.event;
             const ctx = buildContext(msg.params.context);
