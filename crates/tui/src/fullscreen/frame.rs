@@ -6,7 +6,8 @@ use crate::utils::{pad_to_width, truncate_to_width, visible_width};
 use super::{
     projection::{ProjectedRowKind, TranscriptProjection},
     renderer::FrameBuffer,
-    runtime::{FullscreenMode, FullscreenState},
+    runtime::FullscreenState,
+    types::FullscreenMode,
 };
 
 pub(crate) struct InputWrap {
@@ -657,7 +658,8 @@ mod tests {
     use super::*;
     use crate::fullscreen::FullscreenAppConfig;
     use crate::fullscreen::layout::Size;
-    use crate::fullscreen::runtime::{FullscreenCommand, FullscreenState};
+    use crate::fullscreen::runtime::FullscreenState;
+    use crate::fullscreen::types::FullscreenCommand;
 
     #[test]
     fn boxed_line_uses_full_width_background() {
@@ -716,7 +718,7 @@ mod tests {
                 height: 20,
             },
         );
-        state.mode = crate::fullscreen::runtime::FullscreenMode::Transcript;
+        state.mode = crate::fullscreen::types::FullscreenMode::Transcript;
         state.focused_block = Some(tool);
 
         let lines = render_transcript(&state, &state.projection, 80, 20);

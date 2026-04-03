@@ -4,19 +4,28 @@
 //! adapter and future controls/streaming/runtime work lands on this shared
 //! stack instead of growing a second fullscreen implementation.
 
-mod events;
 mod frame;
+mod input;
 mod layout;
+mod menus;
+mod navigation;
 mod projection;
 mod renderer;
 mod runtime;
 mod scheduler;
+mod search;
 mod terminal;
+mod tool_format;
 mod transcript;
+mod types;
 mod viewport;
 
-pub use runtime::{
+#[cfg(test)]
+mod tests;
+
+pub use runtime::{run, run_with_channels};
+pub use types::{
     FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
-    FullscreenOutcome, FullscreenSubmission, run, run_with_channels,
+    FullscreenOutcome, FullscreenSubmission,
 };
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
