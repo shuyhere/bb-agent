@@ -216,7 +216,23 @@ fn render_transcript_row(
     let plain = transcript_row_text(state, row, block);
 
     if plain.trim().is_empty() {
-        return blank_line(width);
+        return match &block.kind {
+            super::transcript::BlockKind::UserMessage => {
+                render_boxed_ansi_line("", width, &t.user_msg_bg)
+            }
+            super::transcript::BlockKind::ToolUse => {
+                render_boxed_ansi_line("", width, &t.tool_pending_bg)
+            }
+            super::transcript::BlockKind::ToolResult => {
+                let bg = if block.title.contains("error") {
+                    &t.tool_error_bg
+                } else {
+                    &t.tool_success_bg
+                };
+                render_boxed_ansi_line("", width, bg)
+            }
+            _ => blank_line(width),
+        };
     }
 
     let padded = pad_to_width(&truncate_to_width(&plain, width), width);
@@ -241,25 +257,34 @@ fn render_transcript_row(
             let content = if row.kind == ProjectedRowKind::Header {
                 format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else {
-                truncate_to_width(&plain, width)
+                format!("{}{}{}", t.dim, truncate_to_width(&plain, width), t.reset)
             };
             render_boxed_ansi_line(&content, width, &t.tool_pending_bg)
         }
         super::transcript::BlockKind::ToolResult => {
-            let bg = if block.title.contains("error") {
+            let is_error = block.title.contains("error");
+            let bg = if is_error {
                 &t.tool_error_bg
             } else {
                 &t.tool_success_bg
             };
             let content = if row.kind == ProjectedRowKind::Header {
                 format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
+            } else if is_error {
+                format!("{}{}{}", t.error, truncate_to_width(&plain, width), t.reset)
             } else {
-                truncate_to_width(&plain, width)
+                format!("{}{}{}", t.tool_output, truncate_to_width(&plain, width), t.reset)
             };
             render_boxed_ansi_line(&content, width, bg)
         }
         super::transcript::BlockKind::SystemNote => render_note_line(block, &plain, width),
-        super::transcript::BlockKind::AssistantMessage => padded,
+        super::transcript::BlockKind::AssistantMessage => {
+            if row.kind == ProjectedRowKind::Content {
+                format!("{}{}{}", t.text, padded, t.reset)
+            } else {
+                padded
+            }
+        },
     }
 }
 
@@ -343,14 +368,23 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
     let text = match state.mode {
         FullscreenMode::Normal => {
             if state.has_active_turn() {
-                format!("{spinner} {}", state.status_line)
+                if state.status_line.trim().is_empty() {
+                    format!("{spinner} Working...")
+                } else {
+                    format!("{spinner} {}", state.status_line)
+                }
             } else {
                 state.status_line.clone()
             }
         }
         FullscreenMode::Transcript => {
+            let base = if state.status_line.trim().is_empty() {
+                "Transcript mode".to_string()
+            } else {
+                state.status_line.clone()
+            };
             let follow = if state.viewport.auto_follow { "follow on" } else { "follow paused" };
-            format!("{} • {}", state.status_line, follow)
+            format!("{base} • {follow}")
         }
         FullscreenMode::Search => {
             if state.search.query.is_empty() {
@@ -360,6 +394,9 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
             }
         }
     };
+    if text.trim().is_empty() {
+        return blank_line(width);
+    }
     format!(
         "{}{}{}",
         t.dim,

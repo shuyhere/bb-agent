@@ -243,12 +243,39 @@ fn render_header_lines(block: &TranscriptBlock, width: usize, depth: usize) -> V
 }
 
 fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
-    if block.content.trim().is_empty() {
-        return Vec::new();
-    }
-
     let prefix = format!("{}  ", "  ".repeat(depth + 1));
-    wrap_with_prefix(&block.content, width, &prefix, &prefix)
+    let mut lines = if block.content.trim().is_empty() {
+        Vec::new()
+    } else {
+        wrap_with_prefix(&block.content, width, &prefix, &prefix)
+    };
+    apply_visual_padding(block, &mut lines);
+    lines
+}
+
+fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
+    match block.kind {
+        BlockKind::UserMessage => {
+            if !lines.is_empty() {
+                lines.insert(0, String::new());
+                lines.push(String::new());
+            }
+        }
+        BlockKind::AssistantMessage | BlockKind::Thinking => {
+            if !lines.is_empty() {
+                lines.insert(0, String::new());
+            }
+        }
+        BlockKind::ToolUse | BlockKind::ToolResult => {
+            if lines.is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.insert(0, String::new());
+                lines.push(String::new());
+            }
+        }
+        BlockKind::SystemNote => {}
+    }
 }
 
 fn kind_label(kind: &BlockKind) -> &'static str {
@@ -456,5 +483,29 @@ mod tests {
 
         let _ = projector.project(&mut transcript, 40);
         assert!(!transcript.has_dirty_blocks());
+    }
+
+    #[test]
+    fn projection_adds_visual_padding_for_chat_like_blocks() {
+        let mut transcript = Transcript::new();
+        let user = transcript.append_root_block(
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content("hello"),
+        );
+        let tool = transcript.append_root_block(
+            NewBlock::new(BlockKind::ToolUse, "bash").with_content("timeout 5s"),
+        );
+
+        let mut projector = TranscriptProjector::new();
+        let projection = projector.project(&mut transcript, 80);
+
+        let user_span = projection.rows_for_block(user).expect("user span");
+        let user_rows = &projection.rows[user_span.content_rows.clone()];
+        assert!(user_rows.first().expect("user top pad").text.is_empty());
+        assert!(user_rows.last().expect("user bottom pad").text.is_empty());
+
+        let tool_span = projection.rows_for_block(tool).expect("tool span");
+        let tool_rows = &projection.rows[tool_span.content_rows.clone()];
+        assert!(tool_rows.first().expect("tool top pad").text.is_empty());
+        assert!(tool_rows.last().expect("tool bottom pad").text.is_empty());
     }
 }

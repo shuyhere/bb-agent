@@ -55,9 +55,7 @@ fn build_fullscreen_config(session_setup: &InteractiveSessionSetup) -> Fullscree
     FullscreenAppConfig {
         title: format!("BB-Agent v{}", env!("CARGO_PKG_VERSION")),
         input_placeholder: "Type a prompt for BB-Agent…".to_string(),
-        status_line:
-            "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel/click transcript"
-                .to_string(),
+        status_line: String::new(),
         footer: build_footer_data(session_setup),
         transcript,
     }
@@ -355,12 +353,14 @@ impl FullscreenController {
         let mut status = if self.streaming {
             String::from("Working...")
         } else {
-            String::from(
-                "Esc quits • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript",
-            )
+            String::new()
         };
         if !self.queued_prompts.is_empty() {
-            status.push_str(&format!(" • queued {}", self.queued_prompts.len()));
+            if status.is_empty() {
+                status = format!("Queued {}", self.queued_prompts.len());
+            } else {
+                status.push_str(&format!(" • queued {}", self.queued_prompts.len()));
+            }
         }
         status
     }

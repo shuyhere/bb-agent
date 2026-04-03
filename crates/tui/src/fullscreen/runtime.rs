@@ -212,12 +212,12 @@ impl FullscreenState {
 
     pub fn on_resize(&mut self, width: u16, height: u16) {
         self.size = Size { width, height };
-        self.status_line = format!(
-            "resized to {}x{} • {}",
-            width,
-            height,
-            self.mode_help_text()
-        );
+        let help = self.mode_help_text();
+        self.status_line = if help.is_empty() {
+            format!("resized to {}x{}", width, height)
+        } else {
+            format!("resized to {}x{} • {}", width, height, help)
+        };
         self.projection_dirty = true;
         self.refresh_projection(true);
         self.dirty = true;
@@ -227,7 +227,6 @@ impl FullscreenState {
         match self.mode {
             FullscreenMode::Normal => {
                 self.insert_str(text);
-                self.status_line = format!("pasted {} bytes", text.len());
             }
             FullscreenMode::Search => {
                 self.search.query.push_str(text);
@@ -300,10 +299,7 @@ impl FullscreenState {
                     self.toggle_block(block_id);
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                self.status_line = format!("mouse drag at {},{}", event.column, event.row);
-                self.dirty = true;
-            }
+            MouseEventKind::Drag(MouseButton::Left) => {}
             _ => {}
         }
     }
@@ -567,6 +563,12 @@ impl FullscreenState {
             KeyCode::Enter => {
                 self.submit_input();
             }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_input();
+            }
+            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_input();
+            }
             KeyCode::Backspace => {
                 self.backspace();
             }
@@ -687,9 +689,15 @@ impl FullscreenState {
             FullscreenMode::Transcript | FullscreenMode::Search
         ) && self.focused_block.is_none()
         {
-            self.focused_block = self.default_focus_block();
+            self.focused_block = if self.viewport.auto_follow {
+                self.last_focusable_block().or_else(|| self.default_focus_block())
+            } else {
+                self.default_focus_block()
+            };
             self.sync_focus_tracking();
-            self.ensure_focus_visible();
+            if !self.viewport.auto_follow {
+                self.ensure_focus_visible();
+            }
         }
 
         self.status_line = self.mode_help_text();
@@ -698,10 +706,7 @@ impl FullscreenState {
 
     fn mode_help_text(&self) -> String {
         match self.mode {
-            FullscreenMode::Normal => {
-                "normal mode • Ctrl+O transcript • Enter submits • Shift+Enter inserts a newline • Esc quits"
-                    .to_string()
-            }
+            FullscreenMode::Normal => String::new(),
             FullscreenMode::Transcript => {
                 "transcript mode • j/k navigate • Enter/Space toggle • o expand • c collapse • / search • Esc returns"
                     .to_string()
@@ -724,7 +729,7 @@ impl FullscreenState {
     }
 
     fn current_layout(&self) -> FullscreenLayout {
-        let input_inner_width = self.size.width.saturating_sub(2).max(1) as usize;
+        let input_inner_width = self.size.width.max(1) as usize;
         let input_wrap = measure_input(&self.input, self.cursor, input_inner_width);
         compute_layout(self.size, input_wrap.lines.len())
     }
@@ -771,18 +776,19 @@ impl FullscreenState {
     }
 
     fn visible_header_blocks(&self) -> Vec<BlockId> {
-        self.viewport
-            .visible_row_range()
-            .filter_map(|row_index| {
-                let row = self.projection.row(row_index)?;
-                if row.kind != ProjectedRowKind::Header
-                    || self.projection.header_row_for_block(row.block_id) != Some(row.index)
-                {
-                    return None;
-                }
-                Some(row.block_id)
-            })
-            .collect()
+        let mut visible = Vec::new();
+        for row_index in self.viewport.visible_row_range() {
+            let Some(row) = self.projection.row(row_index) else {
+                continue;
+            };
+            if visible.last().copied() == Some(row.block_id) {
+                continue;
+            }
+            if !visible.contains(&row.block_id) {
+                visible.push(row.block_id);
+            }
+        }
+        visible
     }
 
     fn focusable_blocks(&self) -> Vec<BlockId> {
@@ -1038,9 +1044,6 @@ impl FullscreenState {
 
         let projected_row = visible.start + local_row.saturating_sub(top_padding);
         let row = self.projection.row(projected_row)?;
-        if row.kind != ProjectedRowKind::Header {
-            return None;
-        }
         Some(row.block_id)
     }
 
@@ -1119,7 +1122,7 @@ impl FullscreenState {
         self.pending_submissions.push_back(submitted);
         self.input.clear();
         self.cursor = 0;
-        self.status_line = "submitted prompt • waiting for assistant".to_string();
+        self.status_line = "Working...".to_string();
         self.projection_dirty = true;
         self.dirty = true;
     }
@@ -1552,7 +1555,7 @@ mod tests {
             },
             Size {
                 width: 80,
-                height: 12,
+                height: 16,
             },
         );
         (state, intro, tool, result)
@@ -1884,6 +1887,25 @@ mod tests {
             state.visible_header_blocks().last().copied()
         );
         assert!(state.status_line.contains("follow on"));
+    }
+
+    #[test]
+    fn ctrl_j_submits_like_enter_in_normal_mode() {
+        let mut state = FullscreenState::new(
+            FullscreenAppConfig::default(),
+            Size {
+                width: 80,
+                height: 24,
+            },
+        );
+        state.input = "hello".to_string();
+        state.cursor = state.input.len();
+
+        state.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+
+        assert!(state.input.is_empty());
+        assert_eq!(state.submitted_inputs, vec!["hello".to_string()]);
+        assert_eq!(state.status_line, "Working...");
     }
 
     #[test]
