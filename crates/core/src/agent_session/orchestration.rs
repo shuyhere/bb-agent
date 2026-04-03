@@ -7,12 +7,132 @@ use super::session::AgentSession;
 
 impl AgentSession {
     pub(super) fn install_agent_subscription(&mut self) {
-        // TODO: hook concrete runtime agent events.
-        self.state.unsubscribe_agent = Some(Box::new(|| {}));
+        let listeners = self.state.event_listeners.clone();
+
+        // Emit session start event at the session lifecycle boundary.
+        self.emit_ref(&AgentSessionEvent::SessionStarted {
+            event: self.state.session_start_event.clone(),
+        });
+
+        // The unsubscribe callback emits session shutdown when invoked.
+        self.state.unsubscribe_agent = Some(Box::new(move || {
+            let locked = listeners
+                .lock()
+                .expect("agent session event listener mutex poisoned");
+            for listener in locked.iter() {
+                listener(&AgentSessionEvent::SessionShutdown);
+            }
+        }));
     }
 
-    pub(super) fn build_runtime(&mut self, _options: RuntimeBuildOptions) {
-        // TODO: port runtime tool / extension initialization.
+    pub(super) fn build_runtime(&mut self, options: RuntimeBuildOptions) {
+        use super::runtime::{
+            AgentTool as RtAgentTool, ToolDefinition as RtToolDefinition,
+            ToolDefinitionEntry as RtToolDefinitionEntry, ToolPromptGuideline,
+            ToolPromptSnippet,
+        };
+
+        // 1. Base tool definitions from overrides or built-in defaults.
+        let base_tools: Vec<RtToolDefinition> =
+            if let Some(ref overrides) = self.state.base_tools_override {
+                overrides
+                    .iter()
+                    .map(|tool| RtToolDefinition {
+                        name: tool.name.clone(),
+                        description: None,
+                    })
+                    .collect()
+            } else {
+                ["read", "bash", "edit", "write"]
+                    .iter()
+                    .map(|&name| RtToolDefinition {
+                        name: name.to_owned(),
+                        description: None,
+                    })
+                    .collect()
+            };
+        self.state.base_tool_definitions = base_tools;
+
+        // 2. Build the combined tool registry from base + custom + extension tools.
+        let mut registry: Vec<RtAgentTool> = Vec::new();
+        let mut definitions: Vec<RtToolDefinitionEntry> = Vec::new();
+        let mut snippets: Vec<ToolPromptSnippet> = Vec::new();
+        let mut guidelines: Vec<ToolPromptGuideline> = Vec::new();
+
+        // -- base tools
+        for def in &self.state.base_tool_definitions {
+            registry.push(RtAgentTool {
+                name: def.name.clone(),
+            });
+            definitions.push(RtToolDefinitionEntry {
+                name: def.name.clone(),
+                definition: def.clone(),
+            });
+        }
+
+        // -- custom tools from config
+        for custom_def in &self.state.custom_tools {
+            if !registry.iter().any(|t| t.name == custom_def.name) {
+                registry.push(RtAgentTool {
+                    name: custom_def.name.clone(),
+                });
+                definitions.push(RtToolDefinitionEntry {
+                    name: custom_def.name.clone(),
+                    definition: custom_def.clone(),
+                });
+            }
+        }
+
+        // -- extension-registered tools
+        if options.include_all_extension_tools {
+            for reg_tool in &self.state.resource_bootstrap.extensions.registered_tools {
+                let tool_name = &reg_tool.definition.name;
+                if !registry.iter().any(|t| t.name == *tool_name) {
+                    registry.push(RtAgentTool {
+                        name: tool_name.clone(),
+                    });
+                    definitions.push(RtToolDefinitionEntry {
+                        name: tool_name.clone(),
+                        definition: RtToolDefinition {
+                            name: tool_name.clone(),
+                            description: None,
+                        },
+                    });
+                    if let Some(snippet) = &reg_tool.definition.prompt_snippet {
+                        let trimmed = snippet.trim();
+                        if !trimmed.is_empty() {
+                            snippets.push(ToolPromptSnippet {
+                                tool_name: tool_name.clone(),
+                                snippet: trimmed.to_owned(),
+                            });
+                        }
+                    }
+                    let tool_guidelines: Vec<String> = reg_tool
+                        .definition
+                        .prompt_guidelines
+                        .iter()
+                        .map(|g| g.trim().to_owned())
+                        .filter(|g| !g.is_empty())
+                        .collect();
+                    if !tool_guidelines.is_empty() {
+                        guidelines.push(ToolPromptGuideline {
+                            tool_name: tool_name.clone(),
+                            guidelines: tool_guidelines,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. Filter by active tool names when specified.
+        if let Some(ref active_names) = options.active_tool_names {
+            registry.retain(|tool| active_names.contains(&tool.name));
+        }
+
+        self.state.tool_registry = registry;
+        self.state.tool_definitions = definitions;
+        self.state.tool_prompt_snippets = snippets;
+        self.state.tool_prompt_guidelines = guidelines;
     }
 
     pub(super) fn emit_ref(&self, event: &AgentSessionEvent) {
@@ -33,9 +153,29 @@ impl AgentSession {
         });
     }
 
-    pub(super) fn try_execute_extension_command(&self, _text: &str) -> bool {
-        // TODO: integrate extension command execution.
-        false
+    pub(super) fn try_execute_extension_command(&self, text: &str) -> bool {
+        let Some((command_name, args)) = parse_slash_command(text) else {
+            return false;
+        };
+
+        let found = self
+            .state
+            .resource_bootstrap
+            .extensions
+            .registered_commands
+            .iter()
+            .any(|cmd| cmd.invocation_name == command_name);
+
+        if !found {
+            return false;
+        }
+
+        self.emit_ref(&AgentSessionEvent::ExtensionCommandExecuted {
+            command: command_name.to_owned(),
+            args: args.map(str::to_owned),
+        });
+
+        true
     }
 
     pub(super) fn expand_skill_command(&self, text: String) -> String {
@@ -255,12 +395,11 @@ mod tests {
             reasoning: false,
         });
 
+        // Extension commands are executed (not queued) when submitted via prompt.
         let result = session.prompt("/hello world", PromptOptions::default());
-        assert_eq!(
-            result,
-            Err(AgentSessionError::ExtensionCommandCannotBeQueued)
-        );
+        assert_eq!(result, Ok(()));
 
+        // Extension commands cannot be delivered as steer/follow-up messages.
         let steer_result = session.steer("/hello world", Vec::new());
         assert_eq!(
             steer_result,

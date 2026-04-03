@@ -1,6 +1,6 @@
 use super::config::{CustomMessageDelivery, StreamingBehavior};
 use super::messages::{CustomMessage, SessionMessage, UserMessage};
-use super::models::{ModelRef, ThinkingLevel};
+use super::models::{ModelRef, SessionStartEvent, ThinkingLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueState {
@@ -39,6 +39,14 @@ pub enum AgentSessionEvent {
         level: ThinkingLevel,
     },
     BashMessagesFlushed,
+    SessionStarted {
+        event: SessionStartEvent,
+    },
+    SessionShutdown,
+    ExtensionCommandExecuted {
+        command: String,
+        args: Option<String>,
+    },
 }
 
 pub type AgentSessionEventListener = Box<dyn Fn(&AgentSessionEvent) + Send + Sync + 'static>;
