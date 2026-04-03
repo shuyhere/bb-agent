@@ -5,7 +5,7 @@ mod error;
 
 #[path = "interactive.rs"]
 mod interactive;
-mod interactive_fullscreen;
+mod fullscreen_entry;
 mod login;
 mod models;
 mod oauth;
@@ -24,6 +24,7 @@ mod turn_runner;
   bb -p "What is 2+2?"               Print mode (non-interactive)
   bb -c                               Continue previous session
   bb -r                               Resume: pick a session
+  bb --fullscreen-transcript          Shared fullscreen transcript shell
   bb --model anthropic/claude-sonnet-4-20250514
   bb --model sonnet:high              Model with thinking level
   bb --list-models                    List all available models
@@ -107,9 +108,9 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Enable the new fullscreen transcript shell
-    #[arg(long)]
-    fullscreen: bool,
+    /// Launch the shared fullscreen transcript shell (`--fullscreen` kept as a legacy alias)
+    #[arg(long = "fullscreen-transcript", visible_alias = "fullscreen")]
+    fullscreen_transcript: bool,
 
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
@@ -207,22 +208,31 @@ async fn main() -> Result<()> {
         };
     }
 
-    let use_fullscreen = cli.fullscreen
-        || std::env::var("BB_FULLSCREEN")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
+    let use_fullscreen = fullscreen_transcript_requested(&cli);
 
-    // Print mode stays a thin entry layer; interactive mode owns the TUI controller.
+    // Print mode stays a thin entry layer; interactive mode owns the legacy TUI controller.
+    // The fullscreen entry must remain a thin adapter onto `bb_tui::fullscreen` so the final
+    // cutover happens on the shared stack rather than on another CLI-local implementation.
     if cli.print {
         run::run_print_mode(cli).await
     } else if use_fullscreen {
-        interactive_fullscreen::run_interactive_fullscreen(
-            interactive::InteractiveEntryOptions::from(&cli),
-        )
-        .await
+        fullscreen_entry::run_fullscreen_entry(interactive::InteractiveEntryOptions::from(&cli))
+            .await
     } else {
         interactive::run_interactive(interactive::InteractiveEntryOptions::from(&cli)).await
     }
+}
+
+fn fullscreen_transcript_requested(cli: &Cli) -> bool {
+    cli.fullscreen_transcript
+        || env_flag_enabled("BB_FULLSCREEN_TRANSCRIPT")
+        || env_flag_enabled("BB_FULLSCREEN")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 // Cli is already visible to submodules via crate::Cli

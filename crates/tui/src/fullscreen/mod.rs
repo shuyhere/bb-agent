@@ -1,12 +1,17 @@
-pub mod frame;
-pub mod layout;
-pub mod projection;
-pub mod renderer;
-pub mod runtime;
-pub mod terminal;
-pub mod transcript;
-pub mod viewport;
+//! Shared fullscreen transcript surface.
+//!
+//! Keep the public API intentionally small so CLI entry code stays a thin
+//! adapter and future controls/streaming/runtime work lands on this shared
+//! stack instead of growing a second fullscreen implementation.
+
+mod frame;
+mod layout;
+mod projection;
+mod renderer;
+mod runtime;
+mod terminal;
+mod transcript;
+mod viewport;
 
 pub use runtime::{FullscreenAppConfig, FullscreenOutcome, run};
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
-pub use viewport::{ViewportAnchor, ViewportState};

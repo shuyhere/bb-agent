@@ -3,8 +3,10 @@ use unicode_width::UnicodeWidthChar;
 use crate::utils::{pad_to_width, truncate_to_width, visible_width};
 
 use super::{
-    layout::compute_layout, projection::TranscriptProjection, renderer::FrameBuffer,
-    runtime::FullscreenState,
+    layout::compute_layout,
+    projection::{ProjectedRowKind, TranscriptProjection},
+    renderer::FrameBuffer,
+    runtime::{FullscreenMode, FullscreenState},
 };
 
 pub(crate) struct InputWrap {
@@ -144,14 +146,25 @@ fn render_transcript(
     }
 
     let visible = state.viewport.visible_row_range();
-    let mut lines: Vec<String> = projection.rows[visible]
-        .iter()
-        .map(|row| pad_to_width(&truncate_to_width(&row.text, width), width))
-        .collect();
+    let visible_rows = &projection.rows[visible.clone()];
+    let focused_block = matches!(state.mode, FullscreenMode::Transcript | FullscreenMode::Search)
+        .then_some(state.focused_block)
+        .flatten();
 
-    while lines.len() < height {
-        lines.insert(0, blank_line(width));
+    let mut lines = Vec::with_capacity(height);
+    let top_padding = height.saturating_sub(visible_rows.len());
+    for _ in 0..top_padding {
+        lines.push(blank_line(width));
     }
+
+    lines.extend(visible_rows.iter().map(|row| {
+        let body = pad_to_width(&truncate_to_width(&row.text, width), width);
+        if focused_block == Some(row.block_id) && row.kind == ProjectedRowKind::Header {
+            format!("\x1b[7m{body}\x1b[0m")
+        } else {
+            body
+        }
+    }));
 
     lines.truncate(height);
     lines
@@ -164,8 +177,19 @@ fn render_status(state: &FullscreenState, width: usize) -> String {
         2 => "-",
         _ => "\\",
     };
+    let mode = match state.mode {
+        FullscreenMode::Normal => "normal".to_string(),
+        FullscreenMode::Transcript => "transcript".to_string(),
+        FullscreenMode::Search => {
+            if state.search.query.is_empty() {
+                "search /".to_string()
+            } else {
+                format!("search /{}", state.search.query)
+            }
+        }
+    };
     let text = format!(
-        " {spinner} {} • size {}x{} • row {} of {} ",
+        " {spinner} [{mode}] {} • size {}x{} • row {} of {} ",
         state.status_line,
         state.size.width,
         state.size.height,
@@ -225,7 +249,9 @@ fn render_input(
 
     lines.push(bottom);
 
-    let cursor = if state.input.is_empty() {
+    let cursor = if state.mode != FullscreenMode::Normal {
+        None
+    } else if state.input.is_empty() {
         Some((1, input_y + 1))
     } else {
         let visible_cursor_row = cursor_row.saturating_sub(visible_start);
