@@ -115,10 +115,15 @@ fn render_generic_call_body(args: &Value) -> Vec<String> {
 fn render_bash_call_body(args: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let command_lines = bash_command_lines(args);
-    if command_lines.len() > 1 {
-        for line in command_lines.iter().skip(1) {
-            lines.push(replace_tabs(line));
+    if command_lines.is_empty() {
+        if let Some(timeout) = args.get("timeout").and_then(|v| v.as_f64()) {
+            lines.push(format!("timeout {timeout}s"));
         }
+        return lines;
+    }
+
+    for line in command_lines {
+        lines.push(replace_tabs(&line));
     }
     if let Some(timeout) = args.get("timeout").and_then(|v| v.as_f64()) {
         lines.push(format!("timeout {timeout}s"));
@@ -157,7 +162,10 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
                 .map(|line| replace_tabs(line)),
         );
         if preview_lines.len() > max_lines {
-            lines.push(format!("... ({} more lines)", preview_lines.len() - max_lines));
+            lines.push(format!(
+                "... ({} more lines; Ctrl+O to expand)",
+                preview_lines.len() - max_lines
+            ));
         }
     }
     lines
@@ -290,7 +298,10 @@ fn preview_text_lines(text: &str, max_lines: usize) -> Vec<String> {
         out.push(replace_tabs(line));
     }
     if lines.len() > max_lines {
-        out.push(format!("... ({} more lines)", lines.len() - max_lines));
+        out.push(format!(
+            "... ({} more lines; Ctrl+O to expand)",
+            lines.len() - max_lines
+        ));
     }
     out
 }
@@ -317,5 +328,31 @@ mod tests {
         );
         assert!(rendered.contains("\"pattern\""));
         assert!(rendered.contains("\"glob\""));
+    }
+
+    #[test]
+    fn bash_call_body_keeps_first_line_visible() {
+        let rendered = format_tool_call_content(
+            "bash",
+            &serde_json::json!({"command":"echo hi\nprintf done","timeout": 5.0}).to_string(),
+            false,
+        );
+        assert!(rendered.contains("echo hi"));
+        assert!(rendered.contains("printf done"));
+        assert!(rendered.contains("timeout 5s"));
+    }
+
+    #[test]
+    fn truncated_preview_mentions_ctrl_o_expand() {
+        let text = (1..=14).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let rendered = format_tool_result_content(
+            "bash",
+            &[ContentBlock::Text { text }],
+            None,
+            None,
+            false,
+            false,
+        );
+        assert!(rendered.contains("Ctrl+O to expand"));
     }
 }

@@ -260,7 +260,7 @@ fn render_transcript_row(
             let content = if row.kind == ProjectedRowKind::Header {
                 format!("{}{}{}", t.bold, truncate_to_width(&plain, width), t.reset)
             } else {
-                format!("{}{}{}", t.dim, truncate_to_width(&plain, width), t.reset)
+                style_tool_use_line(&plain, width)
             };
             render_boxed_ansi_line(&content, width, tool_use_bg(block, t))
         }
@@ -317,6 +317,21 @@ fn tool_result_bg<'a>(block: &super::transcript::TranscriptBlock, t: &'a crate::
     }
 }
 
+fn style_tool_use_line(text: &str, width: usize) -> String {
+    let t = theme();
+    let line = truncate_to_width(text, width);
+    let trimmed = crate::utils::strip_ansi(&line);
+    if trimmed.starts_with("timeout ")
+        || trimmed.starts_with("... (")
+        || trimmed.ends_with(" edit block(s)")
+        || trimmed == "executing..."
+    {
+        format!("{}{}{}", t.dim, line, t.reset)
+    } else {
+        format!("{}{}{}", t.tool_output, line, t.reset)
+    }
+}
+
 fn style_tool_result_line(
     block: &super::transcript::TranscriptBlock,
     text: &str,
@@ -341,7 +356,9 @@ fn style_tool_result_line(
         || trimmed.starts_with("applied ")
         || trimmed.starts_with("details:")
         || trimmed.starts_with("artifact:")
+        || trimmed.starts_with("... (")
         || trimmed.starts_with("… output truncated")
+        || trimmed == "executing..."
     {
         format!("{}{}{}", t.dim, line, t.reset)
     } else {

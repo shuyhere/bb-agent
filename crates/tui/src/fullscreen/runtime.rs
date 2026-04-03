@@ -2254,7 +2254,7 @@ mod tests {
             .transcript
             .block(tool_use.children[0])
             .expect("tool result after result");
-        assert!(tool_result.content.contains("... (2 more lines)"));
+        assert!(tool_result.content.contains("... (2 more lines; Ctrl+O to expand)"));
         assert!(!tool_result.content.contains("line 14"));
 
         state.mode = FullscreenMode::Transcript;
@@ -2266,7 +2266,7 @@ mod tests {
             .transcript
             .block(tool_use.children[0])
             .expect("tool result after expand");
-        assert!(!tool_result.content.contains("... (2 more lines)"));
+        assert!(!tool_result.content.contains("... (2 more lines; Ctrl+O to expand)"));
         assert!(tool_result.content.contains("line 14"));
     }
 
@@ -2467,7 +2467,7 @@ mod tests {
         );
         assert!(write.contains("one"));
         assert!(write.contains("five"));
-        assert!(write.contains("... (1 more lines)"));
+        assert!(write.contains("... (1 more lines; Ctrl+O to expand)"));
         assert!(!write.contains("\"content\""));
 
         let edit = format_tool_call_content(
@@ -2505,7 +2505,7 @@ mod tests {
         );
         assert!(bash.contains("line   1"));
         assert!(bash.contains("line   12"));
-        assert!(bash.contains("... (2 more lines)"));
+        assert!(bash.contains("... (2 more lines; Ctrl+O to expand)"));
         assert!(!bash.contains("… output truncated"));
         assert!(!bash.contains("line   13\nline   14"));
 
@@ -2522,7 +2522,7 @@ mod tests {
             false,
         );
         assert!(grep.contains("match 15"));
-        assert!(grep.contains("... (1 more lines)"));
+        assert!(grep.contains("... (1 more lines; Ctrl+O to expand)"));
 
         let expanded = format_tool_result_content(
             "bash",
@@ -2533,7 +2533,7 @@ mod tests {
             true,
         );
         assert!(expanded.contains("line   14"));
-        assert!(!expanded.contains("... (2 more lines)"));
+        assert!(!expanded.contains("... (2 more lines; Ctrl+O to expand)"));
     }
 
     #[test]
