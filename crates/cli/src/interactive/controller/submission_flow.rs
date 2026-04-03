@@ -194,6 +194,28 @@ impl InteractiveMode {
     }
 
     pub(super) async fn dispatch_prompt(&mut self, user_input: String) -> InteractiveResult<()> {
+        if let Some(output) = self
+            .session_setup
+            .extension_commands
+            .execute_text(&user_input)
+            .await
+            .map_err(|err| -> Box<dyn Error + Send + Sync> {
+                Box::new(std::io::Error::other(err.to_string()))
+            })?
+        {
+            self.add_chat_message(InteractiveMessage::User {
+                text: user_input.clone(),
+            });
+            if !output.is_empty() {
+                self.add_chat_message(InteractiveMessage::Assistant {
+                    message: assistant_message_from_parts(&output, None, false),
+                    tool_calls: Vec::new(),
+                });
+            }
+            self.refresh_ui();
+            return Ok(());
+        }
+
         self.controller
             .runtime_host
             .session_mut()

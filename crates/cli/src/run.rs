@@ -2,9 +2,10 @@ use anyhow::{anyhow, bail, Result};
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{
-    load_agents_md, parse_model_arg, PrintTurnResult, PrintTurnStopReason,
-    ThinPrintSession,
+    ModelRef, PrintTurnResult, PrintTurnStopReason, ThinPrintSession, load_agents_md,
+    parse_model_arg,
 };
+use bb_core::agent_session_runtime::{CreateAgentSessionRuntimeOptions, create_agent_session_runtime};
 use bb_core::config;
 use bb_core::settings::Settings;
 use bb_provider::anthropic::AnthropicProvider;
@@ -17,6 +18,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::extensions::{ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support};
 use crate::login;
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
 use crate::Cli;
@@ -75,8 +77,12 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".into());
 
-    let tools = select_tools(&cli);
-    let tool_defs = build_tool_defs(&tools);
+    let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &cli.extensions);
+    let RuntimeExtensionSupport { mut tools, commands } =
+        load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let mut builtin_tools = select_tools(&cli);
+    builtin_tools.append(&mut tools);
+    let tool_defs = build_tool_defs(&builtin_tools);
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir,
@@ -89,12 +95,37 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         _ => Arc::new(OpenAiProvider::new()),
     };
 
-    let initial_message = if cli.messages.is_empty() {
+    let bootstrap = bb_core::agent_session_runtime::AgentSessionRuntimeBootstrap {
+        cwd: Some(cwd.clone()),
+        model: Some(ModelRef {
+            provider: provider_name.clone(),
+            id: model_id.clone(),
+            reasoning: model.reasoning,
+        }),
+        ..Default::default()
+    };
+    let runtime_handle = create_agent_session_runtime(
+        &bootstrap,
+        CreateAgentSessionRuntimeOptions::new(cwd.clone()),
+    );
+
+    let mut expanded_messages = Vec::new();
+    for raw in cli.messages {
+        if commands.is_registered(&raw) {
+            if let Some(output) = commands.execute_text(&raw).await? {
+                println!("{output}");
+            }
+            continue;
+        }
+        expanded_messages.push(runtime_handle.session.expand_input_text(raw));
+    }
+
+    let initial_message = if expanded_messages.is_empty() {
         None
     } else {
-        Some(cli.messages.join(" "))
+        Some(expanded_messages.remove(0))
     };
-    let follow_up_messages = Vec::new();
+    let follow_up_messages = expanded_messages;
 
     let turn_config = TurnConfig {
         conn: wrap_conn(conn),
@@ -104,7 +135,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         provider,
         api_key,
         base_url,
-        tools,
+        tools: builtin_tools,
         tool_defs,
         tool_ctx,
         thinking: None,

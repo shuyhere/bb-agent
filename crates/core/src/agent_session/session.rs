@@ -129,6 +129,15 @@ impl AgentSession {
         self.emit_ref(&event);
     }
 
+    pub fn expand_input_text(&self, text: impl Into<String>) -> String {
+        let text = text.into();
+        self.expand_prompt_template(self.expand_skill_command(text))
+    }
+
+    pub fn is_extension_command_text(&self, text: &str) -> bool {
+        self.throw_if_extension_command(text).is_err()
+    }
+
     pub fn prompt(
         &mut self,
         text: impl Into<String>,

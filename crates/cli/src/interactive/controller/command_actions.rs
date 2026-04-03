@@ -1072,7 +1072,8 @@ impl InteractiveMode {
     }
 
     pub(super) fn is_extension_command(&self, text: &str) -> bool {
-        text.starts_with("/ext") || text.starts_with("/extension")
+        self.session_setup.extension_commands.is_registered(text)
+            || self.controller.runtime_host.session().is_extension_command_text(text)
     }
 
     pub(super) fn queue_compaction_message(&mut self, text: String, kind: QueuedMessageKind) {

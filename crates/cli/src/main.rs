@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod error;
+mod extensions;
 
 #[path = "interactive.rs"]
 mod interactive;
@@ -19,12 +20,13 @@ mod turn_runner;
     about = "BB-Agent — a minimal Rust-native coding agent",
     version,
     after_help = r#"Examples:
-  bb                                  Interactive mode
-  bb "List all .rs files in src/"     Interactive with initial prompt
+  bb                                  Fullscreen TUI
+  bb "List all .rs files in src/"     Fullscreen TUI with initial prompt
+  bb --legacy-interactive             Legacy scrollback TUI
   bb -p "What is 2+2?"               Print mode (non-interactive)
   bb -c                               Continue previous session
   bb -r                               Resume: pick a session
-  bb --fullscreen-transcript          Shared fullscreen transcript shell
+  bb --fullscreen-transcript          Explicit fullscreen TUI alias
   bb --model anthropic/claude-sonnet-4-20250514
   bb --model sonnet:high              Model with thinking level
   bb --list-models                    List all available models
@@ -108,9 +110,13 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Launch the shared fullscreen transcript shell (`--fullscreen` kept as a legacy alias)
+    /// Launch the shared fullscreen transcript shell explicitly (`bb` already defaults to this)
     #[arg(long = "fullscreen-transcript", visible_alias = "fullscreen")]
     fullscreen_transcript: bool,
+
+    /// Force the legacy scrollback interactive TUI instead of the fullscreen default
+    #[arg(long = "legacy-interactive")]
+    legacy_interactive: bool,
 
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
@@ -134,6 +140,9 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(cwd) = cli.cwd.as_deref() {
+        std::env::set_current_dir(cwd)?;
+    }
 
     // In interactive mode, suppress tracing to avoid leaking into TUI.
     // In print mode or verbose, show warnings.
@@ -208,11 +217,11 @@ async fn main() -> Result<()> {
         };
     }
 
-    let use_fullscreen = fullscreen_transcript_requested(&cli);
+    let use_fullscreen = fullscreen_tui_enabled(&cli);
 
-    // Print mode stays a thin entry layer; interactive mode owns the legacy TUI controller.
-    // The fullscreen entry must remain a thin adapter onto `bb_tui::fullscreen` so the final
-    // cutover happens on the shared stack rather than on another CLI-local implementation.
+    // Print mode stays a thin entry layer. Plain `bb` now launches the shared fullscreen TUI
+    // by default, while `--legacy-interactive` remains as a safe escape hatch to the older
+    // scrollback controller during the transition.
     if cli.print {
         run::run_print_mode(cli).await
     } else if use_fullscreen {
@@ -223,10 +232,16 @@ async fn main() -> Result<()> {
     }
 }
 
-fn fullscreen_transcript_requested(cli: &Cli) -> bool {
-    cli.fullscreen_transcript
-        || env_flag_enabled("BB_FULLSCREEN_TRANSCRIPT")
-        || env_flag_enabled("BB_FULLSCREEN")
+fn fullscreen_tui_enabled(cli: &Cli) -> bool {
+    if cli.legacy_interactive || env_flag_enabled("BB_LEGACY_INTERACTIVE") {
+        return false;
+    }
+
+    if cli.fullscreen_transcript {
+        return true;
+    }
+
+    true
 }
 
 fn env_flag_enabled(name: &str) -> bool {

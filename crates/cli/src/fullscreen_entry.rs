@@ -21,7 +21,7 @@ use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
 pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> {
     let config = build_fullscreen_config(&entry);
-    let (runtime_host, options, session_setup) = prepare_interactive_mode(entry)?;
+    let (runtime_host, options, session_setup) = prepare_interactive_mode(entry).await?;
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (submission_tx, submission_rx) = mpsc::unbounded_channel();
     let controller_command_tx = command_tx.clone();

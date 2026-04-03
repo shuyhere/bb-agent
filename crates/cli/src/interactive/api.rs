@@ -1,7 +1,10 @@
 use bb_provider::Provider;
-use std::sync::Arc;
-use bb_tools::{Tool, ToolContext};
 use std::error::Error;
+use std::sync::Arc;
+
+use bb_tools::{Tool, ToolContext};
+
+use crate::extensions::ExtensionCommandRegistry;
 
 pub type InteractiveResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -40,4 +43,5 @@ pub struct InteractiveSessionSetup {
     pub session_created: bool,
     /// Cached sibling DB connection for the turn runner (avoid opening a new one each turn).
     pub sibling_conn: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
+    pub extension_commands: ExtensionCommandRegistry,
 }

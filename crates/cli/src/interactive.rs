@@ -18,6 +18,7 @@ use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
 use bb_tools::{Tool, ToolContext, builtin_tools};
 
+use crate::extensions::{ExtensionBootstrap, RuntimeExtensionSupport, load_runtime_extension_support};
 use crate::login;
 
 pub use controller::{
@@ -33,6 +34,7 @@ pub struct InteractiveEntryOptions {
     pub thinking: Option<String>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Option<String>,
+    pub extensions: Vec<String>,
 }
 
 impl From<&crate::Cli> for InteractiveEntryOptions {
@@ -45,11 +47,12 @@ impl From<&crate::Cli> for InteractiveEntryOptions {
             thinking: cli.thinking.clone(),
             system_prompt: cli.system_prompt.clone(),
             append_system_prompt: cli.append_system_prompt.clone(),
+            extensions: cli.extensions.clone(),
         }
     }
 }
 
-pub(crate) fn prepare_interactive_mode(
+pub(crate) async fn prepare_interactive_mode(
     entry: InteractiveEntryOptions,
 ) -> Result<(
     AgentSessionRuntimeHost,
@@ -130,8 +133,12 @@ pub(crate) fn prepare_interactive_mode(
         _ => std::sync::Arc::new(OpenAiProvider::new()),
     };
 
-    let tools = select_tools_default();
-    let tool_defs = build_tool_defs(&tools);
+    let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &entry.extensions);
+    let RuntimeExtensionSupport { mut tools, commands } =
+        load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
+    let mut builtin_tools = select_tools_default();
+    builtin_tools.append(&mut tools);
+    let tool_defs = build_tool_defs(&builtin_tools);
 
     let artifacts_dir = global_dir.join("artifacts");
     std::fs::create_dir_all(&artifacts_dir)?;
@@ -169,7 +176,7 @@ pub(crate) fn prepare_interactive_mode(
         model,
         api_key,
         base_url,
-        tools,
+        tools: builtin_tools,
         tool_defs,
         tool_ctx,
         system_prompt,
@@ -180,6 +187,7 @@ pub(crate) fn prepare_interactive_mode(
         retry_max_delay_ms: settings.retry.max_delay_ms,
         session_created: false,
         sibling_conn: None,
+        extension_commands: commands,
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {
@@ -196,7 +204,7 @@ pub(crate) fn prepare_interactive_mode(
 }
 
 pub async fn run_interactive(entry: InteractiveEntryOptions) -> Result<()> {
-    let (runtime_host, options, setup) = prepare_interactive_mode(entry)?;
+    let (runtime_host, options, setup) = prepare_interactive_mode(entry).await?;
     controller::run_interactive(runtime_host, options, setup)
         .await
         .map_err(|err| anyhow::Error::msg(err.to_string()))
