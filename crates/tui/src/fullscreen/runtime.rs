@@ -1331,18 +1331,38 @@ fn format_tool_call_title(name: &str, raw_args: &str) -> String {
         }
         "read" => {
             let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
+            let offset = args.get("offset").and_then(|value| value.as_u64());
+            let limit = args.get("limit").and_then(|value| value.as_u64());
+            let mut line_suffix = String::new();
+            if offset.is_some() || limit.is_some() {
+                let start = offset.unwrap_or(1);
+                if let Some(limit) = limit {
+                    let end = start.saturating_add(limit).saturating_sub(1);
+                    line_suffix = format!(":{start}-{end}");
+                } else {
+                    line_suffix = format!(":{start}");
+                }
+            }
             if path.is_empty() {
                 "read".to_string()
             } else {
-                format!("read {}", shorten_display_path(path))
+                format!("read {}{line_suffix}", shorten_display_path(path))
             }
         }
-        "write" | "edit" | "ls" | "find" => {
+        "write" | "edit" => {
             let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
             if path.is_empty() {
                 name.to_string()
             } else {
                 format!("{name} {}", shorten_display_path(path))
+            }
+        }
+        "ls" => {
+            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
+            let limit = args.get("limit").and_then(|value| value.as_u64());
+            match limit {
+                Some(limit) => format!("ls {} (limit {limit})", shorten_display_path(path)),
+                None => format!("ls {}", shorten_display_path(path)),
             }
         }
         "grep" => {
@@ -1351,10 +1371,27 @@ fn format_tool_call_title(name: &str, raw_args: &str) -> String {
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
             let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
-            if pattern.is_empty() {
+            let glob = args.get("glob").and_then(|value| value.as_str());
+            let mut title = if pattern.is_empty() {
                 format!("grep {}", shorten_display_path(path))
             } else {
                 format!("grep /{pattern}/ in {}", shorten_display_path(path))
+            };
+            if let Some(glob) = glob.filter(|glob| !glob.is_empty()) {
+                title.push_str(&format!(" ({glob})"));
+            }
+            title
+        }
+        "find" => {
+            let pattern = args
+                .get("pattern")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
+            if pattern.is_empty() {
+                format!("find {}", shorten_display_path(path))
+            } else {
+                format!("find {pattern} in {}", shorten_display_path(path))
             }
         }
         _ => name.to_string(),
@@ -1992,6 +2029,51 @@ mod tests {
             false,
         );
         assert!(rendered.contains("wrote 12 bytes to ~/project/demo.txt") || rendered.contains("wrote 12 bytes to /home/test/project/demo.txt"));
+    }
+
+    #[test]
+    fn tool_titles_include_interactive_context_details() {
+        let read = format_tool_call_title(
+            "read",
+            &serde_json::json!({
+                "path": "/tmp/demo.txt",
+                "offset": 5,
+                "limit": 3
+            })
+            .to_string(),
+        );
+        assert_eq!(read, "read /tmp/demo.txt:5-7");
+
+        let ls = format_tool_call_title(
+            "ls",
+            &serde_json::json!({
+                "path": "/tmp",
+                "limit": 25
+            })
+            .to_string(),
+        );
+        assert_eq!(ls, "ls /tmp (limit 25)");
+
+        let grep = format_tool_call_title(
+            "grep",
+            &serde_json::json!({
+                "pattern": "todo",
+                "path": "/tmp/project",
+                "glob": "*.rs"
+            })
+            .to_string(),
+        );
+        assert_eq!(grep, "grep /todo/ in /tmp/project (*.rs)");
+
+        let find = format_tool_call_title(
+            "find",
+            &serde_json::json!({
+                "pattern": "*.md",
+                "path": "/tmp/project"
+            })
+            .to_string(),
+        );
+        assert_eq!(find, "find *.md in /tmp/project");
     }
 
     #[test]
