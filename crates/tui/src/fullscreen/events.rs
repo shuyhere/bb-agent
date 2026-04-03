@@ -310,11 +310,20 @@ impl FullscreenState {
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 self.collapse_focused_block();
             }
-            (KeyCode::Char('/'), KeyModifiers::NONE) => {
+            // Search is only available via explicit Ctrl+/ in transcript mode.
+            // Plain '/' switches back to Normal and inserts into the input
+            // (which opens the slash command menu).
+            (KeyCode::Char('/'), mods) if mods.contains(KeyModifiers::CONTROL) => {
                 self.mode = FullscreenMode::Search;
                 self.search.query.clear();
                 self.status_line = format!("search {}", self.search_prompt());
                 self.dirty = true;
+            }
+            (KeyCode::Char('/'), KeyModifiers::NONE) => {
+                self.mode = FullscreenMode::Normal;
+                self.viewport.auto_follow = true;
+                self.status_line = self.mode_help_text();
+                self.insert_char('/');
             }
             (KeyCode::Char('n'), KeyModifiers::NONE) => {
                 self.search_step(true);
