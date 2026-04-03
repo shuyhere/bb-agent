@@ -109,13 +109,33 @@ impl UiHandler for PrintUiHandler {
     }
 }
 
+/// A pending UI dialog sent from an extension to the interactive controller.
+#[derive(Debug)]
+pub(crate) enum PendingUiDialog {
+    Confirm {
+        title: String,
+        message: String,
+        responder: tokio::sync::oneshot::Sender<bool>,
+    },
+    Select {
+        title: String,
+        options: Vec<String>,
+        responder: tokio::sync::oneshot::Sender<Option<usize>>,
+    },
+    Input {
+        prompt: String,
+        responder: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+}
+
 /// Interactive-mode UI handler: stores notifications/statuses and can be
-/// queried by the interactive controller. Dialogs return defaults for now
-/// but the plumbing supports real TUI dialogs in the future.
+/// queried by the interactive controller. Dialogs are forwarded to the
+/// controller via a channel; if no receiver is attached, defaults are returned.
 #[derive(Clone, Debug)]
 pub(crate) struct InteractiveUiHandler {
     notifications: Arc<Mutex<Vec<UiNotification>>>,
     statuses: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+    dialog_tx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<PendingUiDialog>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +149,7 @@ impl Default for InteractiveUiHandler {
         Self {
             notifications: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(BTreeMap::new())),
+            dialog_tx: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -144,6 +165,15 @@ impl InteractiveUiHandler {
     pub(crate) async fn get_statuses(&self) -> BTreeMap<String, Option<String>> {
         self.statuses.lock().await.clone()
     }
+
+    /// Attach a dialog channel so that confirm/select/input requests are
+    /// forwarded to the interactive controller instead of returning defaults.
+    pub(crate) async fn set_dialog_sender(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<PendingUiDialog>,
+    ) {
+        *self.dialog_tx.lock().await = Some(tx);
+    }
 }
 
 impl UiHandler for InteractiveUiHandler {
@@ -153,6 +183,7 @@ impl UiHandler for InteractiveUiHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = UiResponse> + Send + '_>> {
         let notifications = self.notifications.clone();
         let statuses = self.statuses.clone();
+        let dialog_tx = self.dialog_tx.clone();
         Box::pin(async move {
             match request.method.as_str() {
                 "notify" => {
@@ -187,6 +218,111 @@ impl UiHandler for InteractiveUiHandler {
                         .map(ToString::to_string);
                     statuses.lock().await.insert(key, text);
                 }
+                "confirm" => {
+                    let title = request
+                        .params
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let message = request
+                        .params
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tx_guard = dialog_tx.lock().await;
+                    if let Some(tx) = tx_guard.as_ref() {
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(PendingUiDialog::Confirm {
+                                title,
+                                message,
+                                responder: resp_tx,
+                            })
+                            .is_ok()
+                        {
+                            drop(tx_guard);
+                            let confirmed = resp_rx.await.unwrap_or(false);
+                            return UiResponse {
+                                id: request.id.clone(),
+                                data: serde_json::json!({ "confirmed": confirmed }),
+                            };
+                        }
+                    }
+                    // Fallback: return default
+                }
+                "select" => {
+                    let title = request
+                        .params
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let options: Vec<String> = request
+                        .params
+                        .get("options")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(ToString::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let tx_guard = dialog_tx.lock().await;
+                    if let Some(tx) = tx_guard.as_ref() {
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(PendingUiDialog::Select {
+                                title,
+                                options,
+                                responder: resp_tx,
+                            })
+                            .is_ok()
+                        {
+                            drop(tx_guard);
+                            let selected = resp_rx.await.unwrap_or(None);
+                            return UiResponse {
+                                id: request.id.clone(),
+                                data: match selected {
+                                    Some(idx) => serde_json::json!({ "selectedIndex": idx }),
+                                    None => serde_json::json!({ "cancelled": true }),
+                                },
+                            };
+                        }
+                    }
+                    // Fallback: return default
+                }
+                "input" => {
+                    let prompt = request
+                        .params
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tx_guard = dialog_tx.lock().await;
+                    if let Some(tx) = tx_guard.as_ref() {
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(PendingUiDialog::Input {
+                                prompt,
+                                responder: resp_tx,
+                            })
+                            .is_ok()
+                        {
+                            drop(tx_guard);
+                            let value = resp_rx.await.unwrap_or(None);
+                            return UiResponse {
+                                id: request.id.clone(),
+                                data: match value {
+                                    Some(text) => serde_json::json!({ "value": text }),
+                                    None => serde_json::json!({ "cancelled": true }),
+                                },
+                            };
+                        }
+                    }
+                    // Fallback: return default
+                }
                 "setWidget" | "setTitle" | "set_editor_text" => {
                     // Store for future consumption by interactive controller
                     tracing::debug!("Interactive UI: {} (stored for controller)", request.method);
@@ -208,7 +344,7 @@ pub(crate) struct ExtensionCommandRegistry {
     commands: BTreeSet<String>,
     context: PluginContext,
     session: Option<SessionSnapshotSource>,
-    ui_handler: Option<SharedUiHandler>,
+    pub(crate) ui_handler: Option<SharedUiHandler>,
 }
 
 impl fmt::Debug for ExtensionCommandRegistry {

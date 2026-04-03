@@ -151,6 +151,9 @@ impl InteractiveMode {
             self.poll_oauth_progress();
             self.poll_oauth_result();
 
+            // Check for pending extension UI dialogs.
+            self.poll_pending_dialogs();
+
             // If an OAuth flow just completed, run a verification request.
             if let Some(provider) = self.streaming.pending_oauth_verify_provider.take() {
                 self.run_oauth_verification(provider).await;

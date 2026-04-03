@@ -42,6 +42,10 @@ pub(super) struct StreamingState {
     pub(super) pending_auth_url: Option<String>,
     pub(super) pending_auth_message: Option<String>,
     pub(super) retry_in_progress: bool,
+    /// Receiver for UI dialog requests from extensions.
+    pub(super) pending_dialog_rx: Option<tokio::sync::mpsc::UnboundedReceiver<PendingUiDialog>>,
+    /// Currently active dialog awaiting user response.
+    pub(super) pending_ui_dialog: Option<PendingUiDialog>,
 }
 
 pub(super) struct QueueState {
@@ -153,6 +157,8 @@ impl InteractiveMode {
                 pending_auth_url: None,
                 pending_auth_message: None,
                 retry_in_progress: false,
+                pending_dialog_rx: None,
+                pending_ui_dialog: None,
             },
             queues: QueueState {
                 steering_queue: VecDeque::new(),

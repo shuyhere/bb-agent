@@ -11,6 +11,7 @@ use super::session_selector_overlay::{SessionListItem, SessionSelectorAction, Se
 use super::settings_overlay::{SettingItem, SettingsAction, SettingsOverlay};
 use super::tree_selector_overlay::{FlatTreeEntry, TreeSelectorAction, TreeSelectorOverlay};
 use super::api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
+use crate::extensions::PendingUiDialog;
 use super::state::{
     InteractiveController, KeyAction, KeyBinding, QueuedMessage, QueuedMessageKind,
     SubmitAction, SubmitMatch, SubmitOutcome, SubmitRoute,

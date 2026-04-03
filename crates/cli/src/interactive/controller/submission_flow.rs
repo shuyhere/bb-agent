@@ -37,6 +37,15 @@ impl InteractiveMode {
         &mut self,
         text: String,
     ) -> InteractiveResult<SubmitOutcome> {
+        // If we're waiting for a UI dialog response from an extension,
+        // redirect the submit to resolve the dialog.
+        if self.streaming.pending_ui_dialog.is_some() {
+            let text = text.trim().to_string();
+            self.resolve_pending_dialog(Some(text));
+            self.clear_editor();
+            return Ok(SubmitOutcome::Handled);
+        }
+
         // If we're waiting for auth input (OAuth code paste or API key),
         // redirect the submit to the auth flow.
         if self.streaming.pending_auth_provider.is_some() {
@@ -415,5 +424,92 @@ impl InteractiveMode {
         }
         self.sync_pending_render_state();
         Ok(())
+    }
+
+    /// Poll the dialog receiver for incoming extension UI dialog requests.
+    /// If a dialog arrives, store it and show a prompt to the user.
+    pub(super) fn poll_pending_dialogs(&mut self) {
+        if self.streaming.pending_ui_dialog.is_some() {
+            return; // already showing a dialog
+        }
+        let dialog = match self.streaming.pending_dialog_rx.as_mut() {
+            Some(rx) => match rx.try_recv() {
+                Ok(d) => d,
+                Err(_) => return,
+            },
+            None => return,
+        };
+
+        // Show the dialog prompt to the user
+        match &dialog {
+            PendingUiDialog::Confirm { title, message, .. } => {
+                let label = if title.is_empty() {
+                    format!("[extension] {message} (y/n)")
+                } else {
+                    format!("[extension] {title}: {message} (y/n)")
+                };
+                self.show_status(label);
+            }
+            PendingUiDialog::Select { title, options, .. } => {
+                let items: Vec<String> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| format!("  {}: {opt}", i + 1))
+                    .collect();
+                let label = format!(
+                    "[extension] {title} (enter number 1-{}):\n{}",
+                    options.len(),
+                    items.join("\n")
+                );
+                self.show_status(label);
+            }
+            PendingUiDialog::Input { prompt, .. } => {
+                let label = format!("[extension] {prompt}");
+                self.show_status(label);
+            }
+        }
+        self.streaming.pending_ui_dialog = Some(dialog);
+        self.refresh_ui();
+    }
+
+    /// Resolve the pending UI dialog with the user's input.
+    /// For `Confirm`, accepts "y"/"yes" as true, anything else as false.
+    /// For `Select`, expects a 1-based number.
+    /// For `Input`, forwards the text directly.
+    /// Pass `None` to cancel the dialog.
+    pub(super) fn resolve_pending_dialog(&mut self, user_input: Option<String>) {
+        let Some(dialog) = self.streaming.pending_ui_dialog.take() else {
+            return;
+        };
+        match dialog {
+            PendingUiDialog::Confirm { responder, .. } => {
+                let confirmed = user_input
+                    .as_deref()
+                    .map(|s| matches!(s.to_lowercase().as_str(), "y" | "yes"))
+                    .unwrap_or(false);
+                let _ = responder.send(confirmed);
+            }
+            PendingUiDialog::Select { responder, options, .. } => {
+                let selected = user_input.as_deref().and_then(|s| {
+                    let idx: usize = s.trim().parse().ok()?;
+                    if idx >= 1 && idx <= options.len() {
+                        Some(idx - 1)
+                    } else {
+                        None
+                    }
+                });
+                let _ = responder.send(selected);
+            }
+            PendingUiDialog::Input { responder, .. } => {
+                let _ = responder.send(user_input);
+            }
+        }
+        self.clear_status();
+        self.refresh_ui();
+    }
+
+    /// Cancel any pending UI dialog, resolving with defaults.
+    pub(super) fn cancel_pending_dialog(&mut self) {
+        self.resolve_pending_dialog(None);
     }
 }

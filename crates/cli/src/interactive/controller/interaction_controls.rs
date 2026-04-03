@@ -15,6 +15,11 @@ impl InteractiveMode {
             self.refresh_ui();
             return;
         }
+        // Priority 2b: cancel any pending extension UI dialog
+        if self.streaming.pending_ui_dialog.is_some() {
+            self.cancel_pending_dialog();
+            return;
+        }
         // Priority 3: cancel in-progress retry (matching pi: Esc aborts retry)
         if self.streaming.retry_in_progress {
             self.abort_token.cancel();

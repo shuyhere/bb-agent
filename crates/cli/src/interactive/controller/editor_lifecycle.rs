@@ -48,7 +48,17 @@ impl InteractiveMode {
     }
 
     pub(super) async fn bind_current_session_extensions(&mut self) -> InteractiveResult<()> {
-        // Extension binding is deferred
+        // Wire up the dialog channel so extension UI dialogs (confirm/select/input)
+        // are forwarded to the interactive controller.
+        if let Some(ui_handler) = &self.session_setup.extension_commands.ui_handler {
+            use crate::extensions::InteractiveUiHandler;
+            let any_ref: &dyn std::any::Any = ui_handler.as_ref().as_any();
+            if let Some(interactive) = any_ref.downcast_ref::<InteractiveUiHandler>() {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                interactive.set_dialog_sender(tx).await;
+                self.streaming.pending_dialog_rx = Some(rx);
+            }
+        }
         Ok(())
     }
 
