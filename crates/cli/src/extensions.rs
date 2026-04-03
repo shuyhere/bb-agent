@@ -224,6 +224,14 @@ impl fmt::Debug for ExtensionCommandRegistry {
 }
 
 impl ExtensionCommandRegistry {
+    /// Retrieve the `InteractiveUiHandler` from the stored UI handler (if present
+    /// and running in interactive mode). Returns `None` in print mode.
+    pub(crate) fn get_interactive_ui_handler(&self) -> Option<&InteractiveUiHandler> {
+        self.ui_handler
+            .as_ref()
+            .and_then(|h| h.as_ref().as_any().downcast_ref::<InteractiveUiHandler>())
+    }
+
     pub(crate) fn bind_session_context(
         &mut self,
         conn: Arc<Mutex<rusqlite::Connection>>,

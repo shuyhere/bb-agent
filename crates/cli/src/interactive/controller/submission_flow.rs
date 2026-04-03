@@ -1,6 +1,38 @@
 use super::*;
 
 impl InteractiveMode {
+    /// Drain pending extension UI notifications and display them in the TUI.
+    /// Also reads extension statuses and surfaces them in the footer area.
+    pub(super) async fn drain_extension_notifications(&mut self) {
+        let handler = self
+            .session_setup
+            .extension_commands
+            .get_interactive_ui_handler();
+        let Some(handler) = handler else {
+            return;
+        };
+        let notifications = handler.drain_notifications().await;
+        let statuses = handler.get_statuses().await;
+
+        for notification in notifications {
+            match notification.kind.as_str() {
+                "error" => self.show_error(notification.message),
+                "warning" => self.show_warning(notification.message),
+                _ => self.show_status(notification.message),
+            }
+        }
+
+        // Surface active statuses in the footer area.
+        let active: Vec<String> = statuses
+            .values()
+            .filter_map(|v| v.as_ref())
+            .cloned()
+            .collect();
+        if !active.is_empty() {
+            self.show_status(active.join(" | "));
+        }
+    }
+
     pub(super) async fn handle_submitted_text(
         &mut self,
         text: String,
@@ -217,6 +249,7 @@ impl InteractiveMode {
                     tool_calls: Vec::new(),
                 });
             }
+            self.drain_extension_notifications().await;
             self.refresh_ui();
             return Ok(());
         }
@@ -239,6 +272,7 @@ impl InteractiveMode {
                     tool_calls: Vec::new(),
                 });
             }
+            self.drain_extension_notifications().await;
             self.refresh_ui();
             return Ok(());
         }

@@ -1069,6 +1069,7 @@ impl InteractiveMode {
             .extension_commands
             .send_event(&bb_hooks::Event::SessionStart)
             .await;
+        self.drain_extension_notifications().await;
         self.show_status("Reloaded resources and extensions");
         Ok(())
     }
