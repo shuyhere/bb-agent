@@ -1682,16 +1682,12 @@ impl FullscreenState {
     }
 
     fn submit_local_command(&mut self, submitted: String) {
-        self.transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
-        );
-        self.submitted_inputs.push(submitted.clone());
         self.pending_submissions.push_back(submitted);
         self.input.clear();
         self.cursor = 0;
         self.slash_menu = None;
         self.select_menu = None;
-        self.projection_dirty = true;
+        self.status_line = self.mode_help_text();
         self.dirty = true;
     }
 
@@ -2944,6 +2940,8 @@ mod tests {
         state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(state.input.is_empty());
+        assert!(state.transcript.root_blocks().is_empty());
+        assert!(state.status_line.is_empty());
         assert_eq!(state.take_pending_submissions(), vec!["/model".to_string()]);
     }
 
@@ -2963,6 +2961,8 @@ mod tests {
         state.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
 
         assert!(state.input.is_empty());
+        assert!(state.transcript.root_blocks().is_empty());
+        assert!(state.status_line.is_empty());
         assert_eq!(state.take_pending_submissions(), vec!["/settings".to_string()]);
     }
 
