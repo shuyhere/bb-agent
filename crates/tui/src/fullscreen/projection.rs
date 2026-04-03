@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::markdown::MarkdownRenderer;
 use crate::utils::{char_width, visible_width};
 
 use super::transcript::{BlockId, BlockKind, Transcript, TranscriptBlock};
@@ -247,10 +248,31 @@ fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> 
     let mut lines = if block.content.trim().is_empty() {
         Vec::new()
     } else {
-        wrap_with_prefix(&block.content, width, &prefix, &prefix)
+        match block.kind {
+            BlockKind::UserMessage | BlockKind::AssistantMessage | BlockKind::Thinking => {
+                render_markdown_content_lines(&block.content, width, &prefix)
+            }
+            _ => wrap_with_prefix(&block.content, width, &prefix, &prefix),
+        }
     };
     apply_visual_padding(block, &mut lines);
     lines
+}
+
+fn render_markdown_content_lines(text: &str, width: usize, prefix: &str) -> Vec<String> {
+    let available_width = width.saturating_sub(visible_width(prefix)).max(1);
+    let mut renderer = MarkdownRenderer::new(text);
+    renderer
+        .render(available_width as u16)
+        .into_iter()
+        .map(|line| {
+            if line.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect()
 }
 
 fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
@@ -507,5 +529,22 @@ mod tests {
         let tool_rows = &projection.rows[tool_span.content_rows.clone()];
         assert!(tool_rows.first().expect("tool top pad").text.is_empty());
         assert!(tool_rows.last().expect("tool bottom pad").text.is_empty());
+    }
+
+    #[test]
+    fn assistant_blocks_use_markdown_renderer() {
+        let mut transcript = Transcript::new();
+        let assistant = transcript.append_root_block(
+            NewBlock::new(BlockKind::AssistantMessage, "assistant")
+                .with_content("# Heading\n\n- item"),
+        );
+
+        let mut projector = TranscriptProjector::new();
+        let projection = projector.project(&mut transcript, 80);
+        let span = projection.rows_for_block(assistant).expect("assistant span");
+        let rows = &projection.rows[span.content_rows.clone()];
+
+        assert!(rows.iter().any(|row| row.text.contains("\x1b[")));
+        assert!(rows.iter().any(|row| row.text.contains("Heading") || row.text.contains("item")));
     }
 }

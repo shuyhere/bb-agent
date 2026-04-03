@@ -149,16 +149,6 @@ impl FullscreenController {
     async fn run(mut self, mut submission_rx: mpsc::UnboundedReceiver<String>) -> Result<()> {
         self.publish_footer();
 
-        let startup_prompts = self.options.initial_messages.len()
-            + usize::from(self.options.initial_message.is_some());
-        if startup_prompts > 0 {
-            self.send_command(FullscreenCommand::PushNote {
-                level: FullscreenNoteLevel::Status,
-                text: format!("Submitting {startup_prompts} startup prompt(s)..."),
-            });
-            self.publish_status();
-        }
-
         if let Some(initial_message) = self.options.initial_message.clone() {
             self.handle_submitted_text(initial_message, &mut submission_rx)
                 .await?;
@@ -196,11 +186,7 @@ impl FullscreenController {
         }
 
         if self.streaming {
-            self.queued_prompts.push_back(text.clone());
-            self.send_command(FullscreenCommand::PushNote {
-                level: FullscreenNoteLevel::Status,
-                text: format!("Queued follow-up: {text}"),
-            });
+            self.queued_prompts.push_back(text);
             self.publish_status();
             return Ok(());
         }
@@ -518,11 +504,7 @@ impl FullscreenController {
                                 aborted = true;
                                 break;
                             }
-                            self.queued_prompts.push_back(text.clone());
-                            self.send_command(FullscreenCommand::PushNote {
-                                level: FullscreenNoteLevel::Status,
-                                text: format!("Queued follow-up: {text}"),
-                            });
+                            self.queued_prompts.push_back(text);
                             self.publish_status();
                             if self.shutdown_requested {
                                 self.abort_token.cancel();
