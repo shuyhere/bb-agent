@@ -267,9 +267,9 @@ impl FullscreenController {
 
     pub(super) fn handle_new_session(&mut self) {
         let new_id = uuid::Uuid::new_v4().to_string();
-        self.session_setup.session_id = new_id.clone();
+        self.options.session_id = Some(new_id.clone());
+        self.session_setup.session_id = new_id;
         self.session_setup.session_created = false;
-        self.options.session_id = Some(new_id);
         let _ = self.runtime_host.session_mut().clear_queue();
         self.queued_prompts.clear();
         self.retry_status = None;

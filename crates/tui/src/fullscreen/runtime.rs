@@ -36,10 +36,10 @@ pub struct FullscreenState {
     pub mode: FullscreenMode,
     pub focused_block: Option<BlockId>,
     pub search: FullscreenSearchState,
-    pub dirty: bool,
-    pub should_quit: bool,
+    pub(super) dirty: bool,
+    pub(super) should_quit: bool,
     pub tick_count: u64,
-    pub submitted_inputs: Vec<String>,
+    pub(super) submitted_inputs: Vec<String>,
     projector: TranscriptProjector,
     pub(crate) slash_menu: Option<FullscreenSlashMenuState>,
     pub(super) select_menu: Option<FullscreenSelectMenuState>,
@@ -79,6 +79,18 @@ impl FullscreenState {
         };
         state.prepare_for_render();
         state
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    pub fn take_submitted_inputs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.submitted_inputs)
     }
 
     pub fn take_dirty(&mut self) -> bool {

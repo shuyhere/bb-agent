@@ -120,7 +120,7 @@ impl FullscreenController {
                     if matches!(&event, TurnEvent::ContextOverflow { .. }) {
                         saw_context_overflow = true;
                     }
-                    self.handle_turn_event(&event);
+                    self.handle_turn_event(event);
                     if self.shutdown_requested {
                         self.abort_token.cancel();
                         aborted = true;
@@ -219,33 +219,33 @@ impl FullscreenController {
         Ok(())
     }
 
-    fn handle_turn_event(&mut self, event: &TurnEvent) {
+    fn handle_turn_event(&mut self, event: TurnEvent) {
         match event {
             TurnEvent::TurnStart { turn_index } => {
                 self.send_command(FullscreenCommand::TurnStart {
-                    turn_index: *turn_index,
+                    turn_index,
                 });
             }
             TurnEvent::TextDelta(text) => {
-                self.send_command(FullscreenCommand::TextDelta(text.clone()));
+                self.send_command(FullscreenCommand::TextDelta(text));
             }
             TurnEvent::ThinkingDelta(text) => {
-                self.send_command(FullscreenCommand::ThinkingDelta(text.clone()));
+                self.send_command(FullscreenCommand::ThinkingDelta(text));
             }
             TurnEvent::ToolCallStart { id, name } => {
                 self.send_command(FullscreenCommand::ToolCallStart {
-                    id: id.clone(),
-                    name: name.clone(),
+                    id,
+                    name,
                 });
             }
             TurnEvent::ToolCallDelta { id, args } => {
                 self.send_command(FullscreenCommand::ToolCallDelta {
-                    id: id.clone(),
-                    args: args.clone(),
+                    id,
+                    args,
                 });
             }
             TurnEvent::ToolExecuting { id, .. } => {
-                self.send_command(FullscreenCommand::ToolExecuting { id: id.clone() });
+                self.send_command(FullscreenCommand::ToolExecuting { id });
             }
             TurnEvent::ToolResult {
                 id,
@@ -256,12 +256,12 @@ impl FullscreenController {
                 is_error,
             } => {
                 self.send_command(FullscreenCommand::ToolResult {
-                    id: id.clone(),
-                    name: name.clone(),
-                    content: content.clone(),
-                    details: details.clone(),
-                    artifact_path: artifact_path.clone(),
-                    is_error: *is_error,
+                    id,
+                    name,
+                    content,
+                    details,
+                    artifact_path,
+                    is_error,
                 });
             }
             TurnEvent::TurnEnd { .. } => {
@@ -272,7 +272,7 @@ impl FullscreenController {
             TurnEvent::ContextOverflow { message } => {
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Warning,
-                    text: message.clone(),
+                    text: message,
                 });
             }
             TurnEvent::AutoRetryStart {
@@ -287,11 +287,7 @@ impl FullscreenController {
                 ));
                 self.publish_status();
             }
-            TurnEvent::AutoRetryEnd {
-                success: _,
-                attempt: _,
-                final_error: _,
-            } => {
+            TurnEvent::AutoRetryEnd { .. } => {
                 self.retry_status = None;
                 self.publish_status();
             }
@@ -303,7 +299,7 @@ impl FullscreenController {
                 });
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Error,
-                    text: message.clone(),
+                    text: message,
                 });
             }
         }

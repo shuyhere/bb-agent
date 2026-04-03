@@ -366,11 +366,10 @@ impl FullscreenController {
         self.session_setup.provider = new_provider;
         self.session_setup.api_key = api_key;
         self.session_setup.base_url = base_url;
-        self.options.model_display = Some(display.clone());
+        let status = format!("Model: {display}");
+        self.options.model_display = Some(display);
         self.publish_footer();
-        self.send_command(FullscreenCommand::SetStatusLine(format!(
-            "Model: {display}"
-        )));
+        self.send_command(FullscreenCommand::SetStatusLine(status));
     }
 
     fn get_model_candidates(&self) -> Vec<Model> {

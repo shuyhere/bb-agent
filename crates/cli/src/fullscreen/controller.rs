@@ -53,12 +53,12 @@ impl FullscreenController {
     ) -> Result<()> {
         self.publish_footer();
 
-        if let Some(initial_message) = self.options.initial_message.clone() {
+        if let Some(initial_message) = self.options.initial_message.take() {
             self.handle_submitted_text(initial_message, &mut submission_rx)
                 .await?;
         }
 
-        for message in self.options.initial_messages.clone() {
+        for message in std::mem::take(&mut self.options.initial_messages) {
             self.handle_submitted_text(message, &mut submission_rx)
                 .await?;
         }
@@ -134,7 +134,7 @@ impl FullscreenController {
 
     fn status_line(&self) -> String {
         if let Some(status) = &self.retry_status {
-            return status.clone();
+            return status.to_string();
         }
 
         let mut status = if self.streaming {
