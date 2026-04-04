@@ -11,6 +11,7 @@ struct FlatNode {
     depth: usize,
     preview: String,
     is_active: bool,
+    #[allow(dead_code)]
     has_children: bool,
     is_last_child: bool,
     /// For each depth level, whether the ancestor at that level is a last child.
@@ -342,6 +343,7 @@ fn flatten(
             depth,
             preview,
             is_active,
+    #[allow(dead_code)]
             has_children: !node.children.is_empty(),
             is_last_child: is_last,
             ancestor_is_last: ancestor_is_last.to_vec(),

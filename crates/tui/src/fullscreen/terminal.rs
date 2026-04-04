@@ -44,6 +44,7 @@ impl FullscreenTerminal {
         terminal::size()
     }
 
+    #[allow(dead_code)]
     pub fn sync_updates_supported(&self) -> bool {
         self.sync_updates_supported
     }

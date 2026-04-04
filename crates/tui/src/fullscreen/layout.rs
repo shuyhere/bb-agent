@@ -21,10 +21,12 @@ pub struct FullscreenLayout {
     pub footer: Rect,
 }
 
+#[allow(dead_code)]
 pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLayout {
     compute_layout_with_footer(size, requested_input_lines, if size.height >= 14 { 2 } else { 0 })
 }
 
+#[allow(dead_code)]
 pub fn compute_layout_with_footer(
     size: Size,
     requested_input_lines: usize,

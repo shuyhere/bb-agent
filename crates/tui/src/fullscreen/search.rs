@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::runtime::FullscreenState;

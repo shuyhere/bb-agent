@@ -39,6 +39,7 @@ impl FullscreenSelectMenuState {
         Self { menu_id, title, list }
     }
 
+    #[allow(dead_code)]
     pub(super) fn selected_value(&self) -> Option<String> {
         self.list.selected_value()
     }

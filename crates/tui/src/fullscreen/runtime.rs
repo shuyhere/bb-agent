@@ -88,14 +88,17 @@ impl FullscreenState {
         state
     }
 
+    #[allow(dead_code)]
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
+    #[allow(dead_code)]
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
 
+    #[allow(dead_code)]
     pub fn take_submitted_inputs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.submitted_inputs)
     }

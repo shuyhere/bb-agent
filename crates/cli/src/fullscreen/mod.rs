@@ -70,7 +70,7 @@ pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> 
 
 fn build_dynamic_slash_items(
     runtime_host: &bb_core::agent_session_runtime::AgentSessionRuntimeHost,
-    extension_commands: &crate::extensions::ExtensionCommandRegistry,
+    _extension_commands: &crate::extensions::ExtensionCommandRegistry,
 ) -> Vec<bb_tui::select_list::SelectItem> {
     let mut items = Vec::new();
 
@@ -172,6 +172,7 @@ pub(super) fn shorten_path(path: &str) -> String {
 }
 
 /// Format a source scope label for display.
+#[allow(dead_code)]
 pub(super) fn format_source_scope(source: &str) -> &str {
     if source.contains("global") {
         "global"

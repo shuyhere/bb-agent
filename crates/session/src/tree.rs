@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 
 use crate::store::EntryRow;

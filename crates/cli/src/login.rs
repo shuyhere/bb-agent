@@ -48,6 +48,7 @@ pub fn provider_meta(provider: &str) -> (&str, &str) {
         .unwrap_or(("API_KEY", ""))
 }
 
+#[allow(dead_code)]
 pub fn provider_has_env_key(provider: &str) -> bool {
     let (env_var, _) = provider_meta(provider);
     std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
@@ -262,6 +263,7 @@ pub async fn handle_logout(provider: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn list_known_providers() -> Vec<(String, bool)> {
     KNOWN_PROVIDERS
         .iter()
@@ -453,7 +455,7 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
 /// spawn a blocking thread with its own single-threaded runtime.
 fn try_refresh_sync(provider: &str, refresh_token: &str) -> Option<String> {
     let rt = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
+        Ok(_handle) => {
             // We're inside a runtime – run on a blocking thread.
             let provider = provider.to_string();
             let refresh_token = refresh_token.to_string();

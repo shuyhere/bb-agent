@@ -111,6 +111,7 @@ impl Default for RetrySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct BranchSummarySettings {
     pub reserve_tokens: usize,
 }

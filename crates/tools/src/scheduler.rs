@@ -37,7 +37,7 @@ pub async fn execute_tool_calls(
     calls: &[(String, String, Value)], // (tool_call_id, tool_name, args)
     ctx: &ToolContext,
     cancel: CancellationToken,
-    file_queue: &FileQueue,
+    _file_queue: &FileQueue,
 ) -> Vec<(String, BbResult<ToolResult>)> {
     let mut handles = Vec::new();
 

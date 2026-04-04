@@ -455,7 +455,7 @@ impl InteractiveMode {
 
         // Parse JSONL lines
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        let mut session_header: Option<serde_json::Value> = None;
+        let mut _session_header: Option<serde_json::Value> = None;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -464,7 +464,7 @@ impl InteractiveMode {
             match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(val) => {
                     if val.get("type").and_then(|t| t.as_str()) == Some("session") {
-                        session_header = Some(val);
+                        _session_header = Some(val);
                     } else {
                         entries.push(val);
                     }

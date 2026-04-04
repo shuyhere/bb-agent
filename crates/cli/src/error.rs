@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Domain errors for the CLI crate.
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum CliError {
     #[error("authentication error: {0}")]
     AuthError(String),
@@ -16,4 +17,5 @@ pub enum CliError {
     InvalidInput(String),
 }
 
+#[allow(dead_code)]
 pub type Result<T> = std::result::Result<T, CliError>;

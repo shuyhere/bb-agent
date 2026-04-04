@@ -27,6 +27,7 @@ pub struct CallbackServerParts {
 
 impl CallbackServer {
     /// Cancel the background listener.
+    #[allow(dead_code)]
     pub fn cancel(self) {
         let _ = self.cancel_tx.send(());
     }

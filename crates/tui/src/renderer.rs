@@ -59,6 +59,7 @@ fn log_redraw(reason: &str, prev_len: usize, new_len: usize, height: u16) {
 }
 
 /// Write width-overflow debug info to `~/.bb-agent/tui-crash.log`.
+#[allow(dead_code)]
 fn write_crash_log(line_idx: usize, line_width: usize, term_width: usize, all_lines: &[String]) {
     let Ok(home) = std::env::var("HOME") else {
         return;
@@ -227,6 +228,7 @@ impl Renderer {
 
     /// Append SEGMENT_RESET (ANSI reset + hyperlink close) to each line to
     /// prevent colour/style bleed across line boundaries.
+    #[allow(dead_code)]
     fn apply_line_resets(lines: &[String]) -> Vec<String> {
         lines
             .iter()

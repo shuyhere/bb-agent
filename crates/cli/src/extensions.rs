@@ -17,7 +17,7 @@ use bb_core::error::{BbError, BbResult};
 use bb_core::settings::{PackageEntry, Settings};
 use bb_core::types::{ContentBlock, SessionEntry};
 use bb_plugin_host::{
-    DefaultUiHandler, PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
+    PluginContext, PluginHost, RegisteredCommand as HostRegisteredCommand,
     RegisteredTool as HostRegisteredTool, SharedUiHandler, UiHandler, UiRequest, UiResponse,
     default_ui_response,
 };

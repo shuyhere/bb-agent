@@ -15,5 +15,7 @@ mod state;
 mod status_loader;
 mod tree_selector_overlay;
 
+#[allow(unused_imports)]
 pub use api::{InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup};
+#[allow(unused_imports)]
 pub use controller::{InteractiveMode, run_interactive};

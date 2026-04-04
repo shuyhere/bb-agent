@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+#[allow(dead_code)]
 const CURRENT_VERSION: i32 = 1;
 
 const SCHEMA_V1: &str = r#"

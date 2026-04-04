@@ -26,6 +26,7 @@ impl ViewportState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_total_rows(viewport_height: usize, total_projected_rows: usize) -> Self {
         let mut state = Self::new(viewport_height);
         state.set_total_rows(total_projected_rows);
@@ -47,6 +48,7 @@ impl ViewportState {
         self.viewport_top >= self.bottom_top()
     }
 
+    #[allow(dead_code)]
     pub fn set_total_rows(&mut self, total_projected_rows: usize) {
         self.total_projected_rows = total_projected_rows;
         if self.auto_follow {
@@ -76,11 +78,13 @@ impl ViewportState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn jump_to_bottom(&mut self) {
         self.viewport_top = self.bottom_top();
         self.auto_follow = true;
     }
 
+    #[allow(dead_code)]
     pub fn jump_to_top(&mut self) {
         self.viewport_top = 0;
         self.auto_follow = false;

@@ -107,6 +107,7 @@ pub enum FullscreenMode {
     #[default]
     Normal,
     Transcript,
+    #[allow(dead_code)]
     Search,
 }
 

@@ -1,10 +1,9 @@
 use super::components;
 use super::events::{
-    ChatItem, InteractiveMessage, InteractiveRenderState, PendingMessages,
+    ChatItem, InteractiveMessage, InteractiveRenderState,
     QueuedMessage as RenderQueuedMessage, QueuedMessageMode, ToolCallContent,
     assistant_message_from_parts,
 };
-use super::interactive_commands::SelectorKind;
 use super::auth_selector_overlay::{AuthSelectorAction, AuthSelectorMode, AuthSelectorOverlay};
 use super::model_selector_overlay::{ModelSelectorOverlay, ModelSelectorOverlayAction};
 use super::session_selector_overlay::{SessionListItem, SessionSelectorAction, SessionSelectorOverlay};
@@ -22,7 +21,7 @@ use bb_core::agent_session::{ModelRef, PromptOptions, ThinkingLevel};
 use bb_core::agent_session_runtime::{AgentSessionRuntimeHost, RuntimeModelRef};
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::{compaction, store};
-use bb_tui::component::{Component, Container, Focusable, Spacer, Text};
+use bb_tui::component::{Component, Container, Spacer, Text};
 use bb_tui::editor::Editor;
 use bb_tui::footer::{Footer, FooterData, FooterDataProvider};
 use bb_tui::model_selector::ModelSelector;
@@ -30,7 +29,6 @@ use bb_tui::terminal::{Terminal, TerminalEvent};
 use bb_tui::tui_core::TUI;
 use bb_tui::utils::word_wrap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use rusqlite::params;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -54,6 +52,6 @@ mod ui_state;
 
 pub use mode::{InteractiveMode, run_interactive};
 
-use mode::{EDITOR_FOCUS_INDEX, InteractionState, QueueState, RenderCache, StreamingState, UIContainers};
+use mode::EDITOR_FOCUS_INDEX;
 use shared::{BottomAnchorMarker, SharedComponentWrapper, SharedContainer, SharedEditorWrapper};
 

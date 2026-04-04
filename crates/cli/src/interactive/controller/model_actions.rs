@@ -468,7 +468,7 @@ impl InteractiveMode {
     ///
     /// Opens browser, starts callback server, and also allows manual code paste.
     /// The editor is used for manual paste input. Results arrive via poll_oauth_result.
-    fn start_oauth_flow(&mut self, provider: &str, display_name: &str, verb: &str, source_note: &str) {
+    fn start_oauth_flow(&mut self, provider: &str, display_name: &str, _verb: &str, _source_note: &str) {
         use crate::oauth::{self, OAuthCallbacks};
 
         // Oneshot so the user can paste the code/URL manually.

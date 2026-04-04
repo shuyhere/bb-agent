@@ -26,6 +26,7 @@ struct TokenResponse {
     #[serde(default)]
     expires_in: i64,
     #[serde(default)]
+    #[allow(dead_code)]
     id_token: Option<String>,
 }
 
@@ -47,7 +48,8 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
          &code_challenge={challenge}\
          &code_challenge_method=S256\
          &state={state}\
-         &id_token_add_organizations=true\
+         &#[allow(dead_code)]
+    id_token_add_organizations=true\
          &codex_cli_simplified_flow=true\
          &originator=bb",
         redirect = url_encode(REDIRECT_URI),

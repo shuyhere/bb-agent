@@ -172,6 +172,7 @@ async fn run_loop(
             }
 
             has_more_tool_calls = !assistant.tool_calls.is_empty();
+            #[allow(unused_assignments)]
             let mut tool_results = Vec::new();
 
             if has_more_tool_calls {

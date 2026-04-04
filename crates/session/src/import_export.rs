@@ -1,10 +1,8 @@
 use anyhow::Result;
-use bb_core::types::{EntryBase, EntryId, SessionEntry};
-use chrono::Utc;
+use bb_core::types::SessionEntry;
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use uuid::Uuid;
 
 use crate::store;
 

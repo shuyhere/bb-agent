@@ -25,7 +25,7 @@ use crate::extensions::{
 use crate::login;
 
 pub use controller::{
-    InteractiveMode, InteractiveModeOptions, InteractiveResult, InteractiveSessionSetup,
+    InteractiveModeOptions, InteractiveSessionSetup,
 };
 
 #[derive(Clone, Debug, Default)]

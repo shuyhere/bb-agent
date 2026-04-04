@@ -11,6 +11,7 @@ pub type SharedEventBus = Arc<EventBus>;
 pub type HandlerFn = Arc<dyn Fn(&Event) -> Option<HookResult> + Send + Sync>;
 
 struct HandlerEntry {
+    #[allow(dead_code)]
     plugin_id: String,
     handler: HandlerFn,
 }
@@ -33,12 +34,14 @@ impl EventBus {
     }
 
     /// Register a handler for an event type.
+    #[allow(dead_code)]
     pub async fn on(&self, event_type: &str, plugin_id: &str, handler: HandlerFn) {
         let mut handlers = self.handlers.write().await;
         handlers
             .entry(event_type.to_string())
             .or_default()
             .push(HandlerEntry {
+    #[allow(dead_code)]
                 plugin_id: plugin_id.to_string(),
                 handler,
             });

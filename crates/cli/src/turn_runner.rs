@@ -632,6 +632,7 @@ pub async fn execute_tool_calls(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn get_leaf(
     conn: &Arc<Mutex<rusqlite::Connection>>,
     session_id: &str,

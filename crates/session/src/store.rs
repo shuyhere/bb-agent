@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bb_core::types::{EntryBase, EntryId, SessionEntry};
+use bb_core::types::SessionEntry;
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
