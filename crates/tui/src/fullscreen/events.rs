@@ -242,7 +242,16 @@ impl FullscreenState {
 
         match key.code {
             KeyCode::Esc => {
-                self.should_quit = true;
+                // Esc clears input if non-empty; does NOT quit.
+                // Use Ctrl+C to quit.
+                if !self.input.is_empty() {
+                    self.input.clear();
+                    self.cursor = 0;
+                    self.slash_menu = None;
+                    self.status_line = String::new();
+                } else {
+                    self.status_line = "press Ctrl+C to exit".to_string();
+                }
                 self.dirty = true;
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {

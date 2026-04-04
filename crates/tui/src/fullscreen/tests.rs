@@ -105,7 +105,7 @@ fn frame_renders_header_title_when_space_allows() {
 }
 
 #[test]
-fn ctrl_o_and_escape_switch_modes_before_quitting() {
+fn ctrl_o_and_escape_switch_modes_and_clear_input() {
     let (mut state, _, _, _) = sample_state();
 
     state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
@@ -113,11 +113,25 @@ fn ctrl_o_and_escape_switch_modes_before_quitting() {
     assert!(state.focused_block.is_some());
     assert!(!state.should_quit);
 
+    // Esc from transcript returns to Normal
     state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(state.mode, FullscreenMode::Normal);
     assert!(!state.should_quit);
 
+    // Esc in Normal with empty input does NOT quit (shows hint)
     state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!state.should_quit);
+    assert!(state.status_line.contains("Ctrl+C"));
+
+    // Esc in Normal with text clears input
+    state.input = "hello".to_string();
+    state.cursor = 5;
+    state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(state.input.is_empty());
+    assert!(!state.should_quit);
+
+    // Ctrl+C quits
+    state.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(state.should_quit);
 }
 
