@@ -55,13 +55,29 @@ impl FullscreenController {
         self.show_startup_resources();
 
         if let Some(initial_message) = self.options.initial_message.take() {
-            self.handle_submitted_text(initial_message, &mut submission_rx)
-                .await?;
+            if let Err(err) = self
+                .handle_submitted_text(initial_message, &mut submission_rx)
+                .await
+            {
+                tracing::error!("initial message error: {err}");
+                self.send_command(FullscreenCommand::PushNote {
+                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                    text: format!("Error: {err}"),
+                });
+            }
         }
 
         for message in std::mem::take(&mut self.options.initial_messages) {
-            self.handle_submitted_text(message, &mut submission_rx)
-                .await?;
+            if let Err(err) = self
+                .handle_submitted_text(message, &mut submission_rx)
+                .await
+            {
+                tracing::error!("initial message error: {err}");
+                self.send_command(FullscreenCommand::PushNote {
+                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                    text: format!("Error: {err}"),
+                });
+            }
         }
 
         while !self.shutdown_requested {
@@ -95,7 +111,14 @@ impl FullscreenController {
                 self.handle_submitted_text(text, submission_rx).await
             }
             FullscreenSubmission::MenuSelection { menu_id, value } => {
-                self.handle_menu_selection(&menu_id, &value).await
+                if let Err(err) = self.handle_menu_selection(&menu_id, &value).await {
+                    tracing::error!("menu selection error: {err}");
+                    self.send_command(FullscreenCommand::PushNote {
+                        level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                        text: format!("Error: {err}"),
+                    });
+                }
+                Ok(())
             }
         }
     }
@@ -120,12 +143,40 @@ impl FullscreenController {
             return Ok(());
         }
 
-        self.dispatch_prompt(text, submission_rx).await?;
-        self.drain_queued_prompts(submission_rx).await
+        if let Err(err) = self.dispatch_prompt(text, submission_rx).await {
+            tracing::error!("prompt dispatch error: {err}");
+            self.send_command(FullscreenCommand::PushNote {
+                level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                text: format!("Error: {err}"),
+            });
+            self.streaming = false;
+            self.publish_status();
+            return Ok(());
+        }
+        if let Err(err) = self.drain_queued_prompts(submission_rx).await {
+            tracing::error!("drain queued error: {err}");
+            self.send_command(FullscreenCommand::PushNote {
+                level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                text: format!("Error: {err}"),
+            });
+            self.streaming = false;
+            self.publish_status();
+        }
+        Ok(())
     }
 
     pub(super) async fn handle_local_submission(&mut self, text: &str) -> Result<bool> {
-        dispatch_local_slash_command(self, text)
+        match dispatch_local_slash_command(self, text) {
+            Ok(handled) => Ok(handled),
+            Err(err) => {
+                tracing::error!("local command error: {err}");
+                self.send_command(FullscreenCommand::PushNote {
+                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                    text: format!("Command error: {err}"),
+                });
+                Ok(true) // treated as handled to prevent sending as prompt
+            }
+        }
     }
 
     pub(super) fn send_command(&mut self, command: FullscreenCommand) {
