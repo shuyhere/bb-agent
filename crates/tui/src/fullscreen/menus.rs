@@ -34,7 +34,7 @@ impl FullscreenSelectMenuState {
                 item.label = colorize_tree_menu_label(&item.label);
             }
         }
-        let mut list = SelectList::new(items, 8);
+        let mut list = SelectList::new(items, 16);
         list.set_show_search(false);
         Self { menu_id, title, list }
     }

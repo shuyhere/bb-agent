@@ -352,39 +352,58 @@ impl FullscreenController {
             leaf_id: Option<&str>,
             out: &mut Vec<SelectItem>,
         ) {
-            let prefix = if depth == 0 {
-                String::new()
-            } else {
-                format!("{}", "  ".repeat(depth))
-            };
-            let marker = if leaf_id == Some(node.entry_id.as_str()) {
-                "* "
-            } else {
-                ""
-            };
             let (role, preview) = previews
                 .get(&node.entry_id)
                 .cloned()
                 .unwrap_or_else(|| ("other".to_string(), node.entry_type.clone()));
-            let role_tag = match role.as_str() {
-                "user" => "[U]",
-                "assistant" => "[A]",
-                "tool_result" => "[T]",
-                "compaction" => "[C]",
-                "branch_summary" => "[B]",
-                _ => "[?]",
-            };
-            let branch_marker = if node.children.len() > 1 { " *" } else { "" };
-            out.push(SelectItem {
-                label: format!(
-                    "{prefix}{marker}{role_tag} {}{branch_marker}",
-                    preview.trim()
-                ),
-                detail: None,
-                value: node.entry_id.clone(),
-            });
+
+            // Only show user messages, compactions, and branch points.
+            // Skip assistant/tool_result/label/other to keep the tree readable.
+            let show = matches!(
+                role.as_str(),
+                "user" | "compaction" | "branch_summary"
+            ) || node.children.len() > 1  // branch points always visible
+              || leaf_id == Some(node.entry_id.as_str()); // current leaf always visible
+
+            if show {
+                let indent = "  ".repeat(depth.min(8));
+                let marker = if leaf_id == Some(node.entry_id.as_str()) {
+                    "> "
+                } else {
+                    "  "
+                };
+                let role_tag = match role.as_str() {
+                    "user" => "[U]",
+                    "assistant" => "[A]",
+                    "tool_result" => "[T]",
+                    "compaction" => "[C]",
+                    "branch_summary" => "[B]",
+                    _ => "[?]",
+                };
+                // Truncate preview to 60 chars
+                let preview_text = preview.trim().replace('\n', " ");
+                let truncated = if preview_text.len() > 60 {
+                    format!("{}\u{2026}", &preview_text[..60])
+                } else {
+                    preview_text
+                };
+                let branch_marker = if node.children.len() > 1 {
+                    format!(" ({}\u{00a0}branches)", node.children.len())
+                } else {
+                    String::new()
+                };
+                out.push(SelectItem {
+                    label: format!(
+                        "{indent}{marker}{role_tag} {truncated}{branch_marker}"
+                    ),
+                    detail: None,
+                    value: node.entry_id.clone(),
+                });
+            }
+
             for child in &node.children {
-                flatten(child, depth + 1, previews, leaf_id, out);
+                let child_depth = if show { depth + 1 } else { depth };
+                flatten(child, child_depth, previews, leaf_id, out);
             }
         }
 
