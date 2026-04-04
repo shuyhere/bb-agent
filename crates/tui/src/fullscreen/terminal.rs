@@ -1,6 +1,6 @@
 use crossterm::{
     cursor,
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseEvent},
+    event::{self, Event, KeyEvent, MouseEvent},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -29,12 +29,7 @@ impl FullscreenTerminal {
         terminal::enable_raw_mode()?;
 
         let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            cursor::Hide,
-        )?;
+        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
         write!(stdout, "\x1b[?2004h")?;
         stdout.flush()?;
 
@@ -76,12 +71,7 @@ impl FullscreenTerminal {
         }
 
         write!(self.stdout, "\x1b[?2004l")?;
-        execute!(
-            self.stdout,
-            cursor::Show,
-            DisableMouseCapture,
-            LeaveAlternateScreen,
-        )?;
+        execute!(self.stdout, cursor::Show, LeaveAlternateScreen)?;
         self.stdout.flush()?;
         terminal::disable_raw_mode()?;
         self.active = false;
