@@ -16,6 +16,9 @@ pub(super) struct ActiveTurnState {
     pub(super) thinking_id: Option<BlockId>,
     pub(super) content_id: Option<BlockId>,
     pub(super) tools: HashMap<String, ToolCallState>,
+    /// True once TurnEnd has been received. The turn data stays alive
+    /// so late-arriving ToolResult events can still be processed.
+    pub(super) finished: bool,
 }
 
 impl ActiveTurnState {
@@ -26,6 +29,7 @@ impl ActiveTurnState {
             thinking_id: None,
             content_id: None,
             tools: HashMap::new(),
+            finished: false,
         }
     }
 }
@@ -45,7 +49,10 @@ pub(super) struct ToolCallState {
 
 impl FullscreenState {
     pub(super) fn finish_active_turn(&mut self, status: &str) {
-        if let Some(active_turn) = self.active_turn.take() {
+        // Mark the turn as finished but keep the data so late-arriving
+        // ToolResult events can still find their tool state.
+        if let Some(ref mut active_turn) = self.active_turn {
+            active_turn.finished = true;
             let _ = self.transcript.update_title(
                 active_turn.root_id,
                 format!("turn {} • {status}", active_turn.turn_index + 1),

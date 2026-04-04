@@ -52,6 +52,11 @@ pub fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> S
         "write" => render_write_call_body(&args, expanded),
         "edit" => render_edit_call_body(&args),
         "bash" => render_bash_call_body(&args),
+        "read" | "ls" | "grep" | "find" => {
+            // These tools have simple args (path, pattern, etc.)
+            // The title already shows the important info; no body needed.
+            Vec::new()
+        }
         _ => render_generic_call_body(&args),
     };
 
@@ -320,14 +325,14 @@ mod tests {
     }
 
     #[test]
-    fn grep_call_preview_reuses_generic_json_body() {
+    fn grep_call_body_is_empty_because_title_shows_details() {
         let rendered = format_tool_call_content(
             "grep",
             &serde_json::json!({"pattern":"todo","path":"/tmp","glob":"*.rs"}).to_string(),
             false,
         );
-        assert!(rendered.contains("\"pattern\""));
-        assert!(rendered.contains("\"glob\""));
+        // grep/read/ls/find tools show details in the title, not the body
+        assert!(rendered.is_empty());
     }
 
     #[test]

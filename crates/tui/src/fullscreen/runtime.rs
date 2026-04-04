@@ -114,7 +114,9 @@ impl FullscreenState {
     }
 
     pub(crate) fn has_active_turn(&self) -> bool {
-        self.active_turn.is_some()
+        self.active_turn
+            .as_ref()
+            .is_some_and(|turn| !turn.finished)
     }
 
     pub fn prepare_for_render(&mut self) {
@@ -240,6 +242,8 @@ impl FullscreenState {
                 RenderIntent::Render
             }
             FullscreenCommand::TurnStart { turn_index } => {
+                // Clear previous active turn (tool results already processed)
+                self.active_turn = None;
                 let root_id = self.transcript.append_root_block(
                     NewBlock::new(
                         BlockKind::AssistantMessage,
