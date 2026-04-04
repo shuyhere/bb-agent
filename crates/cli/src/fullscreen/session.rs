@@ -347,7 +347,9 @@ impl FullscreenController {
 
         fn flatten(
             node: &bb_session::tree::TreeNode,
-            depth: usize,
+            prefix: &str,
+            is_last: bool,
+            is_root: bool,
             previews: &HashMap<String, (String, String)>,
             leaf_id: Option<&str>,
             out: &mut Vec<SelectItem>,
@@ -357,59 +359,90 @@ impl FullscreenController {
                 .cloned()
                 .unwrap_or_else(|| ("other".to_string(), node.entry_type.clone()));
 
-            // Only show user messages, compactions, and branch points.
-            // Skip assistant/tool_result/label/other to keep the tree readable.
+            // Skip labels and other non-message entries
             let show = matches!(
                 role.as_str(),
-                "user" | "compaction" | "branch_summary"
-            ) || node.children.len() > 1  // branch points always visible
-              || leaf_id == Some(node.entry_id.as_str()); // current leaf always visible
+                "user" | "assistant" | "tool_result" | "compaction" | "branch_summary"
+            );
 
             if show {
-                let indent = "  ".repeat(depth.min(8));
-                let marker = if leaf_id == Some(node.entry_id.as_str()) {
-                    "> "
+                let connector = if is_root {
+                    "".to_string()
+                } else if is_last {
+                    format!("{prefix}\u{2514}\u{2500} ")
                 } else {
-                    "  "
+                    format!("{prefix}\u{251c}\u{2500} ")
                 };
-                let role_tag = match role.as_str() {
-                    "user" => "[U]",
-                    "assistant" => "[A]",
-                    "tool_result" => "[T]",
-                    "compaction" => "[C]",
-                    "branch_summary" => "[B]",
-                    _ => "[?]",
+
+                let is_leaf = leaf_id == Some(node.entry_id.as_str());
+                let leaf_mark = if is_leaf { "\u{25cf} " } else { "" };
+
+                let role_label = match role.as_str() {
+                    "user" => "you",
+                    "assistant" => "agent",
+                    "tool_result" => "tool",
+                    "compaction" => "compact",
+                    "branch_summary" => "summary",
+                    _ => "other",
                 };
-                // Truncate preview to 60 chars
+
                 let preview_text = preview.trim().replace('\n', " ");
-                let truncated = if preview_text.len() > 60 {
-                    format!("{}\u{2026}", &preview_text[..60])
+                let truncated = if preview_text.len() > 55 {
+                    format!("{}\u{2026}", &preview_text[..55])
                 } else {
                     preview_text
                 };
-                let branch_marker = if node.children.len() > 1 {
-                    format!(" ({}\u{00a0}branches)", node.children.len())
+
+                let branch_info = if node.children.len() > 1 {
+                    format!(" \u{2500}\u{252c}\u{2500} {} branches", node.children.len())
                 } else {
                     String::new()
                 };
+
                 out.push(SelectItem {
                     label: format!(
-                        "{indent}{marker}{role_tag} {truncated}{branch_marker}"
+                        "{connector}{leaf_mark}{role_label}: {truncated}{branch_info}"
                     ),
                     detail: None,
                     value: node.entry_id.clone(),
                 });
             }
 
-            for child in &node.children {
-                let child_depth = if show { depth + 1 } else { depth };
-                flatten(child, child_depth, previews, leaf_id, out);
+            let child_prefix = if is_root {
+                String::new()
+            } else if is_last {
+                format!("{prefix}   ")
+            } else {
+                format!("{prefix}\u{2502}  ")
+            };
+
+            let child_count = node.children.len();
+            for (i, child) in node.children.iter().enumerate() {
+                let child_is_last = i == child_count - 1;
+                flatten(
+                    child,
+                    if show { &child_prefix } else { prefix },
+                    child_is_last,
+                    false,
+                    previews,
+                    leaf_id,
+                    out,
+                );
             }
         }
 
         let mut items = Vec::new();
-        for node in &tree_nodes {
-            flatten(node, 0, &previews, leaf_id.as_deref(), &mut items);
+        let root_count = tree_nodes.len();
+        for (i, node) in tree_nodes.iter().enumerate() {
+            flatten(
+                node,
+                "",
+                i == root_count - 1,
+                true,
+                &previews,
+                leaf_id.as_deref(),
+                &mut items,
+            );
         }
         self.send_command(FullscreenCommand::OpenSelectMenu {
             menu_id: TREE_ENTRY_MENU_ID.to_string(),
