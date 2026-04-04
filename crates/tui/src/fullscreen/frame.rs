@@ -161,7 +161,7 @@ fn render_header(state: &FullscreenState, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     if !state.title.is_empty() {
         lines.push(format!("\x1b[1m\x1b[36m{}\x1b[0m", pad_to_width(&truncate_to_width(&state.title, width), width)));
-        let hints = "\x1b[90mCtrl-C exit . / commands . ! bash . Ctrl+O transcript . /help for more\x1b[0m";
+        let hints = "\x1b[90mCtrl-C exit . / commands . ! bash . Ctrl+O transcript . Shift+select to copy . /help for more\x1b[0m";
         lines.push(pad_to_width(&truncate_to_width(hints, width), width));
         lines.push(blank_line(width));
     }
