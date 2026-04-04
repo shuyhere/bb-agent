@@ -120,9 +120,9 @@ impl Theme {
             user_msg_bg: hex_bg("#343541"),
 
             // Tool execution
-            tool_pending_bg: hex_bg("#282832"),
-            tool_success_bg: hex_bg("#283228"),
-            tool_error_bg: hex_bg("#3c2828"),
+            tool_pending_bg: hex_bg("#1e2a3a"),
+            tool_success_bg: hex_bg("#1e2a3a"),
+            tool_error_bg: hex_bg("#3a1e2a"),
             tool_title: String::new(),
             tool_output: hex_fg("#808080"),
 

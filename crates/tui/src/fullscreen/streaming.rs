@@ -153,9 +153,10 @@ impl FullscreenState {
         let _ = self
             .transcript
             .update_title(tool.tool_use_id, format!("{display_name} • {status}"));
+        let expanded = self.is_tool_block_expanded(tool.tool_use_id);
         let _ = self.transcript.replace_content(
             tool.tool_use_id,
-            format_tool_call_content(&tool.name, &tool.raw_args, self.tool_output_expanded),
+            format_tool_call_content(&tool.name, &tool.raw_args, expanded),
         );
 
         if let Some(result_content) = tool.result_content.clone() {
@@ -172,7 +173,7 @@ impl FullscreenState {
                 tool.result_details.clone(),
                 tool.artifact_path.clone(),
                 tool.is_error,
-                self.tool_output_expanded,
+                expanded,
             );
             let _ = self
                 .transcript

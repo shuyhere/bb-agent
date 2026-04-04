@@ -75,7 +75,10 @@ impl FullscreenState {
                     && self
                         .focused_block
                         .and_then(|block_id| self.transcript.block(block_id))
-                        .is_some_and(|block| block.kind == BlockKind::ToolUse)
+                        .is_some_and(|block| {
+                            block.kind == BlockKind::ToolUse
+                                || block.kind == BlockKind::ToolResult
+                        })
                 {
                     self.toggle_tool_output_expansion();
                 } else {
@@ -398,6 +401,16 @@ impl FullscreenState {
         let Some(block) = self.transcript.block(block_id).cloned() else {
             return;
         };
+
+        // Tool use/result blocks use the expanded_tool_blocks set
+        if block.kind == super::transcript::BlockKind::ToolUse
+            || block.kind == super::transcript::BlockKind::ToolResult
+        {
+            self.focused_block = Some(block_id);
+            self.toggle_tool_output_expansion();
+            return;
+        }
+
         if !(block.expandable || !block.children.is_empty()) {
             self.status_line = format!(
                 "focused {} block is not expandable",

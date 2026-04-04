@@ -48,7 +48,9 @@ pub struct FullscreenState {
     pub(crate) projection_dirty: bool,
     pub(super) pending_submissions: VecDeque<FullscreenSubmission>,
     pub(super) active_turn: Option<ActiveTurnState>,
-    pub(super) tool_output_expanded: bool,
+    pub(super) expanded_tool_blocks: std::collections::HashSet<BlockId>,
+    /// Persistent tool call state — survives after active_turn is cleared.
+    pub(super) all_tool_states: std::collections::HashMap<String, super::streaming::ToolCallState>,
     pub(crate) extra_slash_items: Vec<SelectItem>,
 }
 
@@ -78,7 +80,8 @@ impl FullscreenState {
             projection_dirty: true,
             pending_submissions: VecDeque::new(),
             active_turn: None,
-            tool_output_expanded: false,
+            expanded_tool_blocks: std::collections::HashSet::new(),
+            all_tool_states: std::collections::HashMap::new(),
             extra_slash_items: config.extra_slash_items,
         };
         state.prepare_for_render();
@@ -345,6 +348,10 @@ impl FullscreenState {
                 tool.artifact_path = artifact_path;
                 tool.is_error = is_error;
                 self.refresh_tool_rendering(&id);
+                // Save to persistent map for post-turn re-rendering
+                if let Some(tool) = self.tool_call_state(&id).cloned() {
+                    self.all_tool_states.insert(id.clone(), tool);
+                }
                 RenderIntent::Render
             }
             FullscreenCommand::TurnEnd => {
@@ -398,19 +405,104 @@ impl FullscreenState {
 
 
     pub(super) fn toggle_tool_output_expansion(&mut self) {
-        self.tool_output_expanded = !self.tool_output_expanded;
+        // Toggle the focused tool block's expansion state
+        let block_id = match self.focused_block {
+            Some(id) => id,
+            None => {
+                self.status_line = "no block focused".to_string();
+                self.dirty = true;
+                return;
+            }
+        };
+
+        // Find the tool_use block (could be the block itself or its parent)
+        let tool_use_id = if self
+            .transcript
+            .block(block_id)
+            .is_some_and(|b| b.kind == super::transcript::BlockKind::ToolUse)
+        {
+            block_id
+        } else if let Some(parent_id) = self
+            .transcript
+            .block(block_id)
+            .and_then(|b| b.parent)
+        {
+            if self
+                .transcript
+                .block(parent_id)
+                .is_some_and(|b| b.kind == super::transcript::BlockKind::ToolUse)
+            {
+                parent_id
+            } else {
+                self.status_line = "not a tool block".to_string();
+                self.dirty = true;
+                return;
+            }
+        } else {
+            self.status_line = "not a tool block".to_string();
+            self.dirty = true;
+            return;
+        };
+
+        if self.expanded_tool_blocks.contains(&tool_use_id) {
+            self.expanded_tool_blocks.remove(&tool_use_id);
+        } else {
+            self.expanded_tool_blocks.insert(tool_use_id);
+        }
+
+        // Try re-rendering through active turn state (works during streaming)
         if let Some(active_turn) = self.active_turn.as_ref() {
-            let ids = active_turn.tools.keys().cloned().collect::<Vec<_>>();
+            let ids = active_turn
+                .tools
+                .iter()
+                .filter(|(_, t)| t.tool_use_id == tool_use_id)
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
             for id in ids {
                 self.refresh_tool_rendering(&id);
             }
         }
-        self.status_line = format!(
-            "tool output expansion {}",
-            if self.tool_output_expanded { "enabled" } else { "collapsed" }
-        );
+
+        // Re-render from persistent tool state (works after turn finishes)
+        let expanded = self.expanded_tool_blocks.contains(&tool_use_id);
+        // Find the tool_call_id that maps to this tool_use_id
+        let tool_ids: Vec<String> = self
+            .all_tool_states
+            .iter()
+            .filter(|(_, t)| t.tool_use_id == tool_use_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for tool_id in tool_ids {
+            if let Some(tool) = self.all_tool_states.get(&tool_id).cloned() {
+                let _ = self.transcript.replace_content(
+                    tool.tool_use_id,
+                    super::tool_format::format_tool_call_content(
+                        &tool.name,
+                        &tool.raw_args,
+                        expanded,
+                    ),
+                );
+                if let (Some(result_id), Some(content)) =
+                    (tool.tool_result_id, tool.result_content.as_ref())
+                {
+                    let formatted = super::tool_format::format_tool_result_content(
+                        &tool.name,
+                        content,
+                        tool.result_details.clone(),
+                        tool.artifact_path.clone(),
+                        tool.is_error,
+                        expanded,
+                    );
+                    let _ = self.transcript.replace_tool_result_content(result_id, formatted);
+                }
+            }
+        }
         self.projection_dirty = true;
         self.dirty = true;
+    }
+
+    pub(super) fn is_tool_block_expanded(&self, tool_use_id: BlockId) -> bool {
+        self.expanded_tool_blocks.contains(&tool_use_id)
     }
 }
 

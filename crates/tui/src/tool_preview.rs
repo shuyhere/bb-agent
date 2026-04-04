@@ -159,7 +159,7 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(content) = arg_str(args, "content") {
         let preview_lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
-        let max_lines = if expanded { 10 } else { 5 };
+        let max_lines = if expanded { 120 } else { 3 };
         lines.extend(
             preview_lines
                 .iter()
@@ -191,7 +191,7 @@ fn render_read_result(content: &[ContentBlock], details: Option<&Value>, expande
             lines.push(format!("read {} lines {start}-{end} / {total}", shorten_path(&path)));
         }
     }
-    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 10 }));
+    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 3 }));
     lines
 }
 
@@ -241,7 +241,7 @@ fn render_bash_result(content: &[ContentBlock], details: Option<&Value>, expande
         };
         lines.push(format!("exit code: {exit}{suffix}"));
     }
-    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 12 }));
+    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 3 }));
     lines
 }
 
@@ -253,7 +253,7 @@ fn render_list_result(content: &[ContentBlock], details: Option<&Value>, expande
         let suffix = if truncated { " (truncated)" } else { "" };
         lines.push(format!("{count} entr{} shown{suffix}", if count == 1 { "y" } else { "ies" }));
     }
-    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 20 }));
+    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 3 }));
     lines
 }
 
@@ -263,7 +263,7 @@ fn render_grep_result(content: &[ContentBlock], details: Option<&Value>, expande
         let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
         lines.push(format!("{count} match(es)"));
     }
-    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 15 }));
+    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 3 }));
     lines
 }
 
@@ -273,12 +273,12 @@ fn render_find_result(content: &[ContentBlock], details: Option<&Value>, expande
         let count = details.get("matchCount").and_then(|v| v.as_u64()).unwrap_or(0);
         lines.push(format!("{count} file(s)"));
     }
-    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 20 }));
+    lines.extend(preview_text_lines(&text_output(content), if expanded { 120 } else { 3 }));
     lines
 }
 
 fn render_default_result(content: &[ContentBlock], expanded: bool) -> Vec<String> {
-    preview_text_lines(&text_output(content), if expanded { 120 } else { 20 })
+    preview_text_lines(&text_output(content), if expanded { 120 } else { 3 })
 }
 
 fn text_output(content: &[ContentBlock]) -> String {

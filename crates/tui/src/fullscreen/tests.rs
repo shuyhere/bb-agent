@@ -132,14 +132,13 @@ fn transcript_keys_navigate_and_toggle_expansion() {
     state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(state.focused_block, Some(tool));
 
+    // Enter on a tool block toggles its expansion via expanded_tool_blocks
     state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(state.transcript.block(tool).expect("tool block").collapsed);
+    assert!(state.expanded_tool_blocks.contains(&tool));
 
-    state.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    assert!(!state.transcript.block(tool).expect("tool block").collapsed);
-
-    state.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-    assert!(state.transcript.block(tool).expect("tool block").collapsed);
+    // Enter again collapses it
+    state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!state.expanded_tool_blocks.contains(&tool));
 }
 
 #[test]
@@ -154,9 +153,10 @@ fn mouse_click_on_header_toggles_block() {
         modifiers: KeyModifiers::NONE,
     });
 
-    // Mouse click toggles the block but does NOT enter Transcript mode
+    // Mouse click toggles tool block expansion, stays in Normal mode
     assert_eq!(state.mode, FullscreenMode::Normal);
-    assert!(state.transcript.block(tool).expect("tool block").collapsed);
+    // Tool blocks use expanded_tool_blocks set, not transcript collapsed flag
+    assert!(state.expanded_tool_blocks.contains(&tool));
 }
 
 #[test]
@@ -377,7 +377,7 @@ fn tool_executing_shows_placeholder_and_ctrl_o_expands_output() {
         .transcript
         .block(tool_use.children[0])
         .expect("tool result after result");
-    assert!(tool_result.content.contains("... (2 more lines; Ctrl+O to expand)"));
+    assert!(tool_result.content.contains("more lines; Ctrl+O to expand"));
     assert!(!tool_result.content.contains("line 14"));
 
     state.mode = FullscreenMode::Transcript;
@@ -389,7 +389,7 @@ fn tool_executing_shows_placeholder_and_ctrl_o_expands_output() {
         .transcript
         .block(tool_use.children[0])
         .expect("tool result after expand");
-    assert!(!tool_result.content.contains("... (2 more lines; Ctrl+O to expand)"));
+    assert!(!tool_result.content.contains("more lines; Ctrl+O to expand"));
     assert!(tool_result.content.contains("line 14"));
 }
 
@@ -581,8 +581,9 @@ fn write_and_edit_call_content_use_interactive_style_previews() {
         false,
     );
     assert!(write.contains("one"));
-    assert!(write.contains("five"));
-    assert!(write.contains("... (1 more lines; Ctrl+O to expand)"));
+    assert!(write.contains("three")); // 3rd line visible
+    assert!(!write.contains("five")); // 5th line truncated at 3 lines
+    assert!(write.contains("more lines; Ctrl+O to expand"));
     assert!(!write.contains("\"content\""));
 
     let edit = format_tool_call_content(
@@ -619,10 +620,9 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
         false,
     );
     assert!(bash.contains("line   1"));
-    assert!(bash.contains("line   12"));
-    assert!(bash.contains("... (2 more lines; Ctrl+O to expand)"));
-    assert!(!bash.contains("… output truncated"));
-    assert!(!bash.contains("line   13\nline   14"));
+    assert!(bash.contains("line   3")); // 3rd line visible
+    assert!(!bash.contains("line   4")); // 4th line truncated
+    assert!(bash.contains("more lines; Ctrl+O to expand"));
 
     let grep_lines = (1..=16)
         .map(|i| format!("match {i}"))
@@ -636,8 +636,9 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
         false,
         false,
     );
-    assert!(grep.contains("match 15"));
-    assert!(grep.contains("... (1 more lines; Ctrl+O to expand)"));
+    assert!(grep.contains("match 3")); // 3rd line visible
+    assert!(!grep.contains("match 4")); // 4th line truncated
+    assert!(grep.contains("more lines; Ctrl+O to expand"));
 
     let expanded = format_tool_result_content(
         "bash",
