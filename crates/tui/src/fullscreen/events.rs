@@ -222,6 +222,8 @@ impl FullscreenState {
                 SelectAction::None => {}
                 SelectAction::Cancelled => {
                     self.slash_menu = None;
+                    self.input.clear();
+                    self.cursor = 0;
                     self.dirty = true;
                     return;
                 }
