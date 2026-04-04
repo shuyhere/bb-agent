@@ -69,8 +69,17 @@ impl FullscreenController {
                 self.abort_token.cancel();
                 break;
             };
-            self.handle_submission(submission, &mut submission_rx)
-                .await?;
+            if let Err(err) = self
+                .handle_submission(submission, &mut submission_rx)
+                .await
+            {
+                // Show the error but do NOT exit — let the user keep working.
+                tracing::error!("submission error: {err}");
+                self.send_command(FullscreenCommand::PushNote {
+                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
+                    text: format!("Error: {err}"),
+                });
+            }
         }
 
         Ok(())
