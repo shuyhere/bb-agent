@@ -484,6 +484,9 @@ pub async fn run_with_channels(
                     )?,
                     None => {
                         command_open = false;
+                        // Controller exited (e.g. /quit) — exit the TUI too.
+                        state.should_quit = true;
+                        state.dirty = true;
                     }
                 }
             }
