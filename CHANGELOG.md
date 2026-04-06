@@ -5,7 +5,13 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.5] - 2026-04-06
+## [0.0.6] - 2026-04-06
+
+### Fixed
+
+- npm launcher no longer recurses into itself when the native binary is missing
+- npm postinstall now better detects whether the current package already has a usable native binary
+- clearer npm fallback messaging when matching GitHub release assets are not yet available
 
 ### Added
 
@@ -28,4 +34,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Print mode** (`bb -p`) for non-interactive scripted usage
 - **Session resume** (`bb -c` to continue, `bb -r` to pick)
 
-[0.0.5]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.5
+[0.0.6]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.6
