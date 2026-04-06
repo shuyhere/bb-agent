@@ -467,21 +467,30 @@ impl FullscreenController {
     fn open_login_provider_menu(&mut self) {
         self.send_command(FullscreenCommand::OpenSelectMenu {
             menu_id: LOGIN_PROVIDER_MENU_ID.to_string(),
-            title: "Login provider".to_string(),
+            title: "Sign in provider".to_string(),
             items: LOGIN_PROVIDERS
                 .iter()
-                .map(|provider| SelectItem {
-                    label: match *provider {
-                        "anthropic" => "Anthropic".to_string(),
-                        "openai" => "OpenAI".to_string(),
-                        "google" => "Google Gemini".to_string(),
-                        "groq" => "Groq".to_string(),
-                        "xai" => "xAI".to_string(),
-                        "openrouter" => "OpenRouter".to_string(),
-                        _ => (*provider).to_string(),
-                    },
-                    detail: Some(fullscreen_auth_status_detail(provider)),
-                    value: (*provider).to_string(),
+                .map(|provider| {
+                    let methods = match *provider {
+                        "anthropic" | "openai" => "OAuth + API key",
+                        _ => "API key",
+                    };
+                    SelectItem {
+                        label: match *provider {
+                            "anthropic" => "Anthropic".to_string(),
+                            "openai" => "OpenAI".to_string(),
+                            "google" => "Google Gemini".to_string(),
+                            "groq" => "Groq".to_string(),
+                            "xai" => "xAI".to_string(),
+                            "openrouter" => "OpenRouter".to_string(),
+                            _ => (*provider).to_string(),
+                        },
+                        detail: Some(format!(
+                            "{methods} • {}",
+                            fullscreen_auth_status_detail(provider)
+                        )),
+                        value: (*provider).to_string(),
+                    }
                 })
                 .collect(),
             selected_value: None,
@@ -549,7 +558,7 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::OpenSelectMenu {
             menu_id: LOGIN_METHOD_MENU_ID.to_string(),
             title: format!(
-                "Login method: {}",
+                "Sign in method: {}",
                 match provider {
                     "anthropic" => "Anthropic",
                     "openai" => "OpenAI",
