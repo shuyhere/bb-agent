@@ -12,15 +12,30 @@ const packageJson = require("../package.json");
 const BINARY_RELEASE_TAG = `v${packageJson.version}`;
 const REPO = "shuyhere/bb-agent";
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
-const WRAPPER_SCRIPT = path.join(PACKAGE_ROOT, "bin", "bb");
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 15_000;
+
+function isWindows() {
+  return os.platform() === "win32";
+}
+
+function nativeBinaryName() {
+  return isWindows() ? "bb.exe" : "bb";
+}
+
+function nativeBinaryPath() {
+  return path.join(NATIVE_DIR, nativeBinaryName());
+}
 
 function getTarget() {
   const platform = os.platform();
   const arch = os.arch();
 
-  const platformMap = { darwin: "apple-darwin", linux: "unknown-linux-gnu" };
+  const platformMap = {
+    darwin: "apple-darwin",
+    linux: "unknown-linux-gnu",
+    win32: "pc-windows-msvc",
+  };
   const archMap = { x64: "x86_64", arm64: "aarch64" };
 
   const p = platformMap[platform];
@@ -57,12 +72,27 @@ function downloadBinary(url, dest, timeoutMs) {
   });
 }
 
+function assetNameForTarget(target) {
+  return isWindows() ? `bb-${target}.exe` : `bb-${target}`;
+}
+
+function hasBundledNativeBinary() {
+  const dest = nativeBinaryPath();
+  if (!fs.existsSync(dest)) return false;
+  try {
+    execSync(`"${dest}" --version`, { stdio: "pipe", timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function tryDownloadPrebuilt(target) {
-  const assetName = `bb-${target}`;
+  const assetName = assetNameForTarget(target);
   const url = `https://github.com/${REPO}/releases/download/${BINARY_RELEASE_TAG}/${assetName}`;
 
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
-  const dest = path.join(NATIVE_DIR, "bb");
+  const dest = nativeBinaryPath();
 
   try {
     console.log(`Downloading BB-Agent ${BINARY_RELEASE_TAG} for ${target}...`);
@@ -87,47 +117,13 @@ async function tryDownloadPrebuilt(target) {
   }
 }
 
-function isCurrentPackageWrapper(candidate) {
-  try {
-    return fs.realpathSync(candidate) === fs.realpathSync(WRAPPER_SCRIPT);
-  } catch {
-    return false;
-  }
-}
-
-function findInPath(name) {
-  const dirs = (process.env.PATH || "").split(path.delimiter);
-  for (const dir of dirs) {
-    const full = path.join(dir, name);
-    try {
-      fs.accessSync(full, fs.constants.X_OK);
-      if (isCurrentPackageWrapper(full)) continue;
-      return full;
-    } catch {}
-  }
-  return null;
-}
-
-function checkExistingInstall() {
-  const existing = findInPath("bb");
-  if (!existing) return false;
-
-  try {
-    const version = execSync(`"${existing}" --version`, { encoding: "utf8", timeout: 5000 }).trim();
-    console.log(`✓ BB-Agent already installed: ${version} (${existing})`);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function main() {
   if (process.env.BB_SKIP_POSTINSTALL) {
     return;
   }
 
-  // Already installed via cargo install?
-  if (checkExistingInstall()) return;
+  if (hasBundledNativeBinary()) return;
 
   const target = getTarget();
 
@@ -147,8 +143,8 @@ async function main() {
   console.log("║  BB-Agent: no prebuilt binary for " + platform.padEnd(19) + "       ║");
   console.log("║                                                              ║");
   console.log("║  Install Rust (if needed):                                   ║");
-  console.log("║    curl --proto '=https' --tlsv1.2 -sSf https://rustup.rs|sh ║");
-  console.log("║    source ~/.cargo/env                                       ║");
+  console.log("║    https://rustup.rs                                         ║");
+  console.log("║    Then install with rustup for your platform                ║");
   console.log("║                                                              ║");
   console.log("║  Then build BB-Agent:                                        ║");
   console.log("║    git clone https://github.com/shuyhere/bb-agent.git        ║");

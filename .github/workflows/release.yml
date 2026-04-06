@@ -16,12 +16,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: bb-x86_64-unknown-linux-gnu
+            binary: bb
           - os: macos-14
             target: x86_64-apple-darwin
             asset: bb-x86_64-apple-darwin
+            binary: bb
           - os: macos-14
             target: aarch64-apple-darwin
             asset: bb-aarch64-apple-darwin
+            binary: bb
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: bb-x86_64-pc-windows-msvc.exe
+            binary: bb.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -48,7 +55,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/bb ${{ matrix.asset }}
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

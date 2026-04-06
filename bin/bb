@@ -5,35 +5,67 @@
 var execFileSync = require("child_process").execFileSync;
 var path = require("path");
 var fs = require("fs");
+var os = require("os");
 var packageJson = require("../package.json");
 
 var wrapperRealPath = null;
 try { wrapperRealPath = fs.realpathSync(__filename); } catch (e) {}
 
-function isSelfBinary(candidate) {
+function isWindows() {
+  return os.platform() === "win32";
+}
+
+function candidateNames() {
+  return isWindows() ? ["bb.exe", "bb.cmd", "bb.ps1", "bb"] : ["bb"];
+}
+
+function bundledBinaryPath() {
+  return path.join(__dirname, "..", "native", isWindows() ? "bb.exe" : "bb");
+}
+
+function candidateReferencesCurrentPackage(candidate) {
   try {
-    if (!wrapperRealPath) return false;
-    return fs.realpathSync(candidate) === wrapperRealPath;
+    var text = fs.readFileSync(candidate, "utf8").replace(/\\/g, "/").toLowerCase();
+    var packageRoot = path.resolve(__dirname, "..").replace(/\\/g, "/").toLowerCase();
+    return text.indexOf(packageRoot) !== -1 || text.indexOf(packageJson.name.toLowerCase()) !== -1;
   } catch (e) {
     return false;
   }
 }
 
+function isSelfBinary(candidate) {
+  try {
+    if (wrapperRealPath && fs.realpathSync(candidate) === wrapperRealPath) return true;
+  } catch (e) {}
+
+  try {
+    var resolved = fs.realpathSync(candidate);
+    if (resolved.indexOf(path.resolve(__dirname, "..")) === 0 && path.basename(resolved) !== path.basename(bundledBinaryPath())) {
+      return true;
+    }
+  } catch (e) {}
+
+  return candidateReferencesCurrentPackage(candidate);
+}
+
 function findBinary() {
-  var nativeBin = path.join(__dirname, "..", "native", "bb");
+  var nativeBin = bundledBinaryPath();
   if (fs.existsSync(nativeBin)) {
     try { fs.accessSync(nativeBin, fs.constants.X_OK); return nativeBin; } catch (e) {}
   }
 
   var dirs = (process.env.PATH || "").split(path.delimiter);
+  var names = candidateNames();
   for (var i = 0; i < dirs.length; i++) {
     if (path.resolve(dirs[i]) === path.resolve(__dirname)) continue;
-    var full = path.join(dirs[i], "bb");
-    try {
-      fs.accessSync(full, fs.constants.X_OK);
-      if (isSelfBinary(full)) continue;
-      return full;
-    } catch (e) {}
+    for (var j = 0; j < names.length; j++) {
+      var full = path.join(dirs[i], names[j]);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        if (isSelfBinary(full)) continue;
+        return full;
+      } catch (e) {}
+    }
   }
 
   return null;
@@ -55,6 +87,8 @@ if (!binary) {
   console.error("Or build from source:");
   console.error("  git clone https://github.com/shuyhere/bb-agent.git");
   console.error("  cd bb-agent && cargo install --path crates/cli");
+  console.error("");
+  console.error("If this npm launcher shadows a source-built bb on your PATH, uninstall the npm package first.");
   console.error("");
   process.exit(1);
 }

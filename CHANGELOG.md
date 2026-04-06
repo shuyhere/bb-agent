@@ -5,33 +5,22 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.6] - 2026-04-06
+## [0.0.7] - 2026-04-06
 
 ### Fixed
 
-- npm launcher no longer recurses into itself when the native binary is missing
-- npm postinstall now better detects whether the current package already has a usable native binary
-- clearer npm fallback messaging when matching GitHub release assets are not yet available
+- fullscreen no-auth errors now direct users to `/login`
+- successful TUI login now auto-switches to a friendly authenticated model (`gpt-5.4` for OpenAI, `claude-opus-4-6` for Anthropic)
+- error and warning notes now use highlighted text without background blocks
+- npm launcher and postinstall behavior improved when native binaries are missing
 
 ### Added
 
-- **Fullscreen TUI** with streaming output, markdown rendering, and syntax highlighting
-- **Multi-provider support**: Anthropic (Claude), OpenAI, Google (Gemini), Groq, xAI, OpenRouter, and custom OpenAI-compatible endpoints
-- **Built-in tools**: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`, `web_search`, `web_fetch`, `browser_fetch`
-- **Session persistence** with SQLite-backed storage, branching, forking, and tree navigation
-- **Extensions** via JS/TS plugin system for custom tools, commands, and event hooks
-- **Skills** — markdown-based instruction files that auto-load contextual knowledge
-- **System prompt templates** — save named prompts in `~/.bb-agent/system-prompts/` and use with `bb -t <name>`
-- **OAuth login** for Anthropic and OpenAI (browser-based PKCE flow)
-- **`@` file mention** autocomplete in the input area
-- **`/` slash commands** for session management, model switching, and more
-- **Layered configuration** — global `~/.bb-agent/settings.json` merged with project `.bb-agent/settings.json`
-- **`AGENTS.md`** support (like Claude's `CLAUDE.md`) for persistent system prompt additions
-- **Custom models and providers** via settings.json
-- **Auto-retry** with exponential backoff and server-hinted delays
-- **Session compaction** to keep context within model limits
-- **Package management** — install skills/extensions from npm, git, or local paths
-- **Print mode** (`bb -p`) for non-interactive scripted usage
-- **Session resume** (`bb -c` to continue, `bb -r` to pick)
+- Windows release binaries via GitHub Releases
+- Windows support in the npm installer/launcher path
 
-[0.0.6]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.6
+### Changed
+
+- release packaging now targets Linux, macOS, and Windows with matching npm/GitHub binary distribution paths
+
+[0.0.7]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.7
