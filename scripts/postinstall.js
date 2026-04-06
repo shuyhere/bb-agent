@@ -8,7 +8,8 @@ const path = require("path");
 const os = require("os");
 const https = require("https");
 
-const VERSION = "0.0.3";
+// Binary release tag — update this when you push a new GitHub release with binaries.
+const BINARY_RELEASE_TAG = "v0.0.1";
 const REPO = "shuyhere/bb-agent";
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -56,13 +57,13 @@ function downloadBinary(url, dest, timeoutMs) {
 
 async function tryDownloadPrebuilt(target) {
   const assetName = `bb-${target}`;
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${assetName}`;
+  const url = `https://github.com/${REPO}/releases/download/${BINARY_RELEASE_TAG}/${assetName}`;
 
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
   const dest = path.join(NATIVE_DIR, "bb");
 
   try {
-    console.log(`Downloading BB-Agent v${VERSION} for ${target}...`);
+    console.log(`Downloading BB-Agent ${BINARY_RELEASE_TAG} for ${target}...`);
     await downloadBinary(url, dest, DOWNLOAD_TIMEOUT_MS);
     fs.chmodSync(dest, 0o755);
 
