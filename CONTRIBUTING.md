@@ -2,20 +2,24 @@
 
 Thank you for your interest in contributing! Here's how to get started.
 
-## Development Setup
+For full setup instructions, project structure, and debugging tips, see the [Development Guide](docs/development.md).
+
+## Quick Start
 
 ```bash
 git clone https://github.com/shuyhere/bb-agent.git
 cd bb-agent
-cargo build --workspace
-cargo test --workspace --release
+cargo build --release
+cargo install --path crates/cli
+bb    # verify it works
 ```
 
 ### Prerequisites
 
-- **Rust nightly** (see `rust-toolchain.toml`)
-- A C compiler (`cc`) for SQLite and linking
+- **Rust 1.93+** (pinned in `rust-toolchain.toml` — auto-installed by rustup)
+- A C compiler (`cc` / `gcc` / `clang`) for SQLite and linking
 - Optional: Chrome/Chromium for `browser_fetch` tool
+- Optional: Node.js 16+ for testing extensions
 
 ## Making Changes
 

@@ -149,15 +149,27 @@ BB-Agent uses layered configuration:
 - [Built-in Tools](docs/tools.md) — all 10 tools with parameters
 - [Extensions & Skills](docs/extensions.md) — plugins, skills, prompts, packages
 - [Providers & Models](docs/providers.md) — authentication, model selection, custom providers
-- [Contributing](CONTRIBUTING.md) — development setup, code style, PR process
+- [Development Guide](docs/development.md) — build from source, dev workflow, project structure, debugging
+- [Contributing](CONTRIBUTING.md) — code style, PR process
 - [Changelog](CHANGELOG.md) — release history
 - [Security](SECURITY.md) — vulnerability reporting, security model
 
 ## Development
 
+See the full [Development Guide](docs/development.md) for detailed instructions.
+
 ```bash
-cargo build --workspace              # Build all
-cargo test --workspace --release     # Run all tests
+git clone https://github.com/shuyhere/bb-agent.git
+cd bb-agent
+cargo build --release                # Build
+cargo install --path crates/cli      # Install to PATH
+bb                                   # Run it
+```
+
+Dev cycle:
+```bash
+cargo run --bin bb                   # Run without installing
+cargo test --workspace --release     # Run all 435 tests
 cargo fmt --all                      # Format
 cargo clippy --workspace             # Lint
 ```
