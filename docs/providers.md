@@ -30,7 +30,7 @@ For GitHub Copilot, `bb` now supports:
 - GitHub device/browser auth flow
 - GitHub OAuth token persistence in `auth.json`
 - Copilot runtime token exchange via GitHub's Copilot token endpoint
-- Copilot runtime token refresh by re-exchanging the saved GitHub OAuth session
+- Copilot runtime token refresh by re-exchanging the saved GitHub OAuth session when `GITHUB_COPILOT_CLIENT_SECRET` (or `GH_COPILOT_CLIENT_SECRET`) is provided
 - `/models` validation and cached Copilot model discovery
 - Copilot auth/session visibility in `/session`
 
@@ -58,9 +58,12 @@ export GOOGLE_API_KEY="..."
 export GROQ_API_KEY="..."
 export XAI_API_KEY="..."
 export OPENROUTER_API_KEY="..."
-export GH_COPILOT_TOKEN="..."        # Direct Copilot runtime token
-export GITHUB_COPILOT_TOKEN="..."    # Equivalent env fallback
+export GH_COPILOT_TOKEN="..."                 # Direct Copilot runtime token
+export GITHUB_COPILOT_TOKEN="..."             # Equivalent env fallback
+export GITHUB_COPILOT_CLIENT_SECRET="..."     # Optional: only needed for GitHub OAuth refresh support
 ```
+
+If you do not set `GITHUB_COPILOT_CLIENT_SECRET`, GitHub Copilot sign-in still works, but expired GitHub OAuth sessions must be refreshed by logging in again.
 
 ### Check Status
 

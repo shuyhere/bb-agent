@@ -7,7 +7,6 @@ use tokio::time::{Duration, sleep};
 use super::{OAuthCallbacks, OAuthCredentials, OAuthDeviceCode};
 
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
-const CLIENT_SECRET: &str = "350ee525b5da0e4a54c6e8e043edc1b99cc02f19";
 const API_VERSION: &str = "2025-04-01";
 const DEVICE_FLOW_SCOPES: &str = "repo workflow";
 
@@ -366,10 +365,25 @@ async fn poll_device_flow(
     }
 }
 
+fn github_client_secret() -> Option<String> {
+    for key in ["GITHUB_COPILOT_CLIENT_SECRET", "GH_COPILOT_CLIENT_SECRET"] {
+        if let Ok(value) = std::env::var(key)
+            && !value.trim().is_empty()
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
 async fn refresh_github_access_token(
     server_url: &str,
     refresh_token: &str,
 ) -> Result<AccessTokenResponse> {
+    let client_secret = github_client_secret().context(
+        "GitHub Copilot refresh requires GITHUB_COPILOT_CLIENT_SECRET (or GH_COPILOT_CLIENT_SECRET). Re-run `bb login github-copilot` instead, or set the client secret explicitly for refresh support.",
+    )?;
+
     let client = reqwest::Client::new();
     let response = client
         .post(format!(
@@ -379,7 +393,7 @@ async fn refresh_github_access_token(
         .header(ACCEPT, "application/json")
         .form(&[
             ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
+            ("client_secret", client_secret.as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
         ])
