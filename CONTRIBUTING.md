@@ -1,0 +1,92 @@
+# Contributing to BB-Agent
+
+Thank you for your interest in contributing! Here's how to get started.
+
+## Development Setup
+
+```bash
+git clone https://github.com/shuyhere/bb-agent.git
+cd bb-agent
+cargo build --workspace
+cargo test --workspace --release
+```
+
+### Prerequisites
+
+- **Rust nightly** (see `rust-toolchain.toml`)
+- A C compiler (`cc`) for SQLite and linking
+- Optional: Chrome/Chromium for `browser_fetch` tool
+
+## Making Changes
+
+1. **Fork** the repository
+2. **Create a branch** from `master`: `git checkout -b my-feature`
+3. **Make your changes**
+4. **Ensure quality**:
+   ```bash
+   cargo fmt --all
+   cargo clippy --workspace --all-targets
+   cargo test --workspace --release
+   ```
+5. **Commit** with a clear message
+6. **Open a Pull Request**
+
+## Code Style
+
+- Run `cargo fmt --all` before committing
+- Run `cargo clippy --workspace --all-targets` — zero warnings required
+- Write tests for new functionality
+- Use `thiserror` for error types, `anyhow` for application-level errors
+- Doc comments (`///`) on all public items
+- No `unsafe` code
+- No `unwrap()`/`expect()` outside of tests and static initialization
+
+## Project Structure
+
+```
+crates/
+├── core/          # Core agent, session, config, runtime types
+├── session/       # SQLite session storage, branching, compaction
+├── tools/         # Built-in tool implementations
+├── provider/      # LLM provider integrations (Anthropic, OpenAI, Google, etc.)
+├── hooks/         # Event types for extensions
+├── plugin-host/   # JS/TS plugin discovery and runtime
+├── tui/           # Terminal UI components and fullscreen experience
+└── cli/           # The `bb` binary — CLI, controller, TUI wiring
+```
+
+## Adding a New Tool
+
+1. Create a new module in `crates/tools/src/`
+2. Implement the `Tool` trait (see `crates/tools/src/types.rs`)
+3. Register it in `crates/tools/src/registry.rs`
+4. Add tests
+
+## Adding a New Provider
+
+1. Create a new module in `crates/provider/src/`
+2. Implement the `Provider` trait (see `crates/provider/src/traits.rs`)
+3. Add models to `crates/provider/src/registry/models/`
+4. Wire it in `crates/cli/src/session_bootstrap.rs`
+
+## Adding a Skill
+
+Skills are just markdown files. Create `~/.bb-agent/skills/<name>/SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: What this skill does
+---
+Instructions for the agent...
+```
+
+## Reporting Issues
+
+- Use [GitHub Issues](https://github.com/shuyhere/bb-agent/issues)
+- Include: OS, Rust version (`rustc --version`), BB-Agent version (`bb --version`)
+- For bugs: steps to reproduce, expected vs actual behavior
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the same terms as the project: MIT OR Apache-2.0.

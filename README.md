@@ -18,7 +18,7 @@ A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, m
 ### Build from source
 
 ```bash
-git clone https://github.com/bb-agent/bb-agent.git
+git clone https://github.com/shuyhere/bb-agent.git
 cd bb-agent
 cargo install --path crates/cli
 ```
@@ -134,6 +134,16 @@ cargo test --workspace --release     # Run all tests
 cargo fmt --all                      # Format
 cargo clippy --workspace             # Lint
 ```
+
+## Documentation
+
+- [Configuration Reference](docs/configuration.md) — settings.json, AGENTS.md, templates
+- [Built-in Tools](docs/tools.md) — all 10 tools with parameters
+- [Extensions & Skills](docs/extensions.md) — plugins, skills, prompts, packages
+- [Providers & Models](docs/providers.md) — authentication, model selection, custom providers
+- [Contributing](CONTRIBUTING.md) — development setup, code style, PR process
+- [Changelog](CHANGELOG.md) — release history
+- [Security](SECURITY.md) — vulnerability reporting, security model
 
 ## License
 
