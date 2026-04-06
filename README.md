@@ -33,7 +33,25 @@ npm install -g @shuyhere/bb-agent
 
 ## Getting Started
 
-### 1. Login to a provider
+### 1. Start the TUI
+
+```bash
+bb
+```
+
+That's the recommended way to get started.
+
+### 2. Log in with `/login`
+
+Inside the TUI, run:
+
+```text
+/login
+```
+
+This opens the provider picker and auth flow directly in the fullscreen UI.
+
+If you prefer, you can also log in from a normal terminal:
 
 ```bash
 bb login              # Interactive provider selection
@@ -43,12 +61,6 @@ bb login google       # Login to Google (API key)
 ```
 
 Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
-
-### 2. Start the TUI
-
-```bash
-bb
-```
 
 That's it! Run `bb` to launch the fullscreen interactive terminal UI. Type your prompt and press Enter.
 
