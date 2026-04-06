@@ -120,6 +120,14 @@ impl FullscreenController {
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
                     ));
+                } else if self.pending_login_copilot_enterprise {
+                    self.pending_login_copilot_enterprise = false;
+                    self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                    self.send_command(FullscreenCommand::CloseAuthDialog);
+                    self.send_command(FullscreenCommand::SetInput(String::new()));
+                    self.send_command(FullscreenCommand::SetStatusLine(
+                        "Authentication cancelled".to_string(),
+                    ));
                 } else if let Some(cancel) = self.local_action_cancel.take() {
                     cancel.cancel();
                 } else {
@@ -180,6 +188,23 @@ impl FullscreenController {
                 "Logged in to {}",
                 crate::login::provider_display_name(&provider)
             )));
+            return Ok(());
+        }
+
+        if self.pending_login_copilot_enterprise {
+            let domain = text.trim().to_string();
+            if domain.is_empty() || domain == "/" {
+                self.pending_login_copilot_enterprise = false;
+                self.send_command(FullscreenCommand::SetInput(String::new()));
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Authentication cancelled".to_string(),
+                ));
+                return Ok(());
+            }
+            self.pending_login_copilot_enterprise = false;
+            self.finish_copilot_host_setup(&domain)?;
             return Ok(());
         }
 

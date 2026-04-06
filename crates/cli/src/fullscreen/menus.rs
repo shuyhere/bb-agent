@@ -33,13 +33,19 @@ fn fullscreen_auth_display_name(provider: &str) -> String {
 }
 
 fn fullscreen_auth_status_detail(provider: &str) -> String {
-    match crate::login::auth_source(provider) {
+    let base = match crate::login::auth_source(provider) {
         Some(_) => format!("({}) [configured]", fullscreen_auth_method_label(provider)),
         None => format!(
             "({}) [not authenticated]",
             fullscreen_auth_method_label(provider)
         ),
+    };
+    if provider == "github-copilot"
+        && let Some(domain) = crate::login::github_copilot_domain()
+    {
+        return format!("{base} • host: {domain}");
     }
+    base
 }
 
 #[derive(Default)]
@@ -146,6 +152,26 @@ fn build_oauth_dialog(
     }
 }
 
+fn build_copilot_enterprise_dialog() -> FullscreenAuthDialog {
+    FullscreenAuthDialog {
+        title: "GitHub Copilot Enterprise".to_string(),
+        status: Some("Enter your GitHub Enterprise Server domain".to_string()),
+        steps: vec![
+            auth_step("Choose GitHub Enterprise Server host", FullscreenAuthStepState::Active),
+            auth_step("Store host configuration", FullscreenAuthStepState::Pending),
+            auth_step("Run Copilot OAuth flow (next step)", FullscreenAuthStepState::Pending),
+        ],
+        url: None,
+        lines: vec![
+            "Examples: github.acme.com or https://github.acme.com".to_string(),
+            "Press Esc to cancel. Press Enter to save the host target for the future Copilot OAuth flow."
+                .to_string(),
+        ],
+        input_label: Some("GitHub Enterprise Server domain".to_string()),
+        input_placeholder: Some("github.example.com".to_string()),
+    }
+}
+
 fn build_api_key_dialog(label: &str, url: &str) -> FullscreenAuthDialog {
     FullscreenAuthDialog {
         title: format!("Sign in to {label}"),
@@ -212,6 +238,10 @@ impl FullscreenController {
                     self.begin_oauth_login(provider, submission_rx).await?;
                 } else if let Some(provider) = value.strip_prefix("api_key:") {
                     self.begin_api_key_login(provider);
+                } else if value == "copilot:github" {
+                    self.finish_copilot_host_setup("github.com")?;
+                } else if value == "copilot:enterprise" {
+                    self.begin_copilot_enterprise_login();
                 } else {
                     self.send_command(FullscreenCommand::PushNote {
                         level: FullscreenNoteLevel::Error,
@@ -695,12 +725,14 @@ impl FullscreenController {
                 .map(|provider| {
                     let methods = match *provider {
                         "anthropic" | "openai" => "OAuth + API key",
+                        "github-copilot" => "OAuth",
                         _ => "API key",
                     };
                     SelectItem {
                         label: match *provider {
                             "anthropic" => "Anthropic".to_string(),
                             "openai" => "OpenAI".to_string(),
+                            "github-copilot" => "GitHub Copilot".to_string(),
                             "google" => "Google Gemini".to_string(),
                             "groq" => "Groq".to_string(),
                             "xai" => "xAI".to_string(),
@@ -746,6 +778,18 @@ impl FullscreenController {
                     value: "api_key:openai".to_string(),
                 });
             }
+            "github-copilot" => {
+                items.push(SelectItem {
+                    label: "GitHub.com".to_string(),
+                    detail: Some("Use the default github.com Copilot authority".to_string()),
+                    value: "copilot:github".to_string(),
+                });
+                items.push(SelectItem {
+                    label: "GitHub Enterprise Server".to_string(),
+                    detail: Some("Enter your GitHub Enterprise Server domain".to_string()),
+                    value: "copilot:enterprise".to_string(),
+                });
+            }
             "google" => {
                 items.push(SelectItem {
                     label: "Google API key".to_string(),
@@ -784,6 +828,7 @@ impl FullscreenController {
                 match provider {
                     "anthropic" => "Anthropic",
                     "openai" => "OpenAI",
+                    "github-copilot" => "GitHub Copilot",
                     "google" => "Google Gemini",
                     "groq" => "Groq",
                     "xai" => "xAI",
@@ -1005,8 +1050,39 @@ impl FullscreenController {
         )));
     }
 
+    fn begin_copilot_enterprise_login(&mut self) {
+        self.pending_login_copilot_enterprise = true;
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.send_command(FullscreenCommand::OpenAuthDialog(
+            build_copilot_enterprise_dialog(),
+        ));
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Enter your GitHub Enterprise Server domain".to_string(),
+        ));
+    }
+
+    pub(super) fn finish_copilot_host_setup(&mut self, domain: &str) -> Result<()> {
+        let domain = crate::login::normalize_github_domain(domain)?;
+        crate::login::save_github_copilot_config(&domain)?;
+        self.pending_login_copilot_enterprise = false;
+        self.send_command(FullscreenCommand::CloseAuthDialog);
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Saved GitHub Copilot host: {domain}"
+        )));
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: format!(
+                "GitHub Copilot authority configured for {domain}. OAuth sign-in is not implemented yet in bb; this only stores the target host for the upcoming Copilot auth flow."
+            ),
+        });
+        Ok(())
+    }
+
     fn open_logout_provider_menu(&mut self) {
-        let providers = crate::login::authenticated_providers();
+        let providers = crate::login::configured_providers();
         if providers.is_empty() {
             self.send_command(FullscreenCommand::SetStatusLine(
                 "No logged-in providers".to_string(),

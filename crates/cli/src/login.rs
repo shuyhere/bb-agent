@@ -57,6 +57,8 @@ enum AuthEntry {
         #[serde(flatten)]
         extra: serde_json::Value,
     },
+    #[serde(rename = "provider_config")]
+    ProviderConfig { domain: String },
 }
 
 const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
@@ -66,6 +68,7 @@ const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
         "https://console.anthropic.com/settings/keys",
     ),
     ("openai-codex", "", "https://chatgpt.com/"),
+    ("github-copilot", "", "https://github.com/features/copilot"),
     (
         "openai",
         "OPENAI_API_KEY",
@@ -86,7 +89,7 @@ const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
 ];
 
 /// Providers that use OAuth instead of API key paste.
-const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
+const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex", "github-copilot"];
 
 pub fn provider_meta(provider: &str) -> (&str, &str) {
     KNOWN_PROVIDERS
@@ -100,6 +103,7 @@ pub(crate) fn provider_display_name(provider: &str) -> String {
     match provider {
         "anthropic" => "Claude Pro/Max".to_string(),
         "openai-codex" => "ChatGPT Plus/Pro (Codex)".to_string(),
+        "github-copilot" => "GitHub Copilot".to_string(),
         "openai" => "OpenAI".to_string(),
         "google" => "Google Gemini".to_string(),
         "groq" => "Groq".to_string(),
@@ -127,6 +131,12 @@ pub(crate) fn provider_login_hint(provider: &str) -> String {
             "Requires Claude Pro or Max subscription. Uses browser OAuth, not Anthropic API keys."
                 .to_string()
         }
+        "github-copilot" => {
+            let target = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
+            format!(
+                "OAuth preview. Supports github.com or a GitHub Enterprise Server domain. Current target: {target}."
+            )
+        }
         other => {
             let (env_var, url) = provider_meta(other);
             if url.is_empty() {
@@ -142,6 +152,7 @@ pub(crate) fn provider_oauth_variant(provider: &str) -> Option<&'static str> {
     match provider {
         "anthropic" => Some("anthropic"),
         "openai" | "openai-codex" => Some("openai-codex"),
+        "github-copilot" => Some("github-copilot"),
         _ => None,
     }
 }
@@ -210,6 +221,58 @@ pub(crate) fn save_api_key(provider: &str, key: String) -> Result<()> {
     save_auth(&store)
 }
 
+pub(crate) fn save_github_copilot_config(domain: &str) -> Result<()> {
+    let mut store = load_auth();
+    store.providers.insert(
+        "github-copilot".to_string(),
+        AuthEntry::ProviderConfig {
+            domain: normalize_github_domain(domain)?,
+        },
+    );
+    save_auth(&store)
+}
+
+pub(crate) fn github_copilot_domain() -> Option<String> {
+    let store = load_auth();
+    match store.providers.get("github-copilot") {
+        Some(AuthEntry::ProviderConfig { domain }) => Some(domain.clone()),
+        Some(AuthEntry::OAuth { extra, .. }) => extra
+            .get("domain")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string),
+        _ => None,
+    }
+}
+
+pub(crate) fn normalize_github_domain(input: &str) -> Result<String> {
+    let value = input.trim().trim_end_matches('/');
+    if value.is_empty() {
+        anyhow::bail!("GitHub domain cannot be empty");
+    }
+
+    let host = if value.contains("://") {
+        url::Url::parse(value)
+            .ok()
+            .and_then(|url| url.host_str().map(ToString::to_string))
+            .unwrap_or_else(|| value.to_string())
+    } else {
+        value.split('/').next().unwrap_or(value).to_string()
+    };
+
+    let host = host.trim().trim_end_matches('/').to_ascii_lowercase();
+    if host.is_empty() || host.contains(' ') {
+        anyhow::bail!("Invalid GitHub domain: {input}");
+    }
+    Ok(host)
+}
+
+pub(crate) fn configured_providers() -> Vec<String> {
+    let store = load_auth();
+    let mut providers = store.providers.keys().cloned().collect::<Vec<_>>();
+    providers.sort();
+    providers
+}
+
 pub(crate) async fn run_oauth_login(
     provider: &str,
     callbacks: crate::oauth::OAuthCallbacks,
@@ -219,6 +282,9 @@ pub(crate) async fn run_oauth_login(
     let creds = match provider {
         "anthropic" => oauth::login_anthropic(callbacks).await?,
         "openai-codex" => oauth::login_openai_codex(callbacks).await?,
+        "github-copilot" => anyhow::bail!(
+            "GitHub Copilot OAuth is not implemented yet in bb; only host configuration is available right now"
+        ),
         other => anyhow::bail!("No OAuth flow for provider: {other}"),
     };
 
@@ -264,6 +330,28 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
             }
         }
     };
+
+    // ── GitHub Copilot host selection (OAuth backend not yet implemented) ──
+    if provider == "github-copilot" {
+        println!("GitHub Copilot sign-in target:");
+        println!("  Press Enter for github.com, or enter your GitHub Enterprise Server domain.");
+        print!("Domain [github.com]: ");
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let domain = if input.trim().is_empty() {
+            "github.com".to_string()
+        } else {
+            normalize_github_domain(input.trim())?
+        };
+
+        save_github_copilot_config(&domain)?;
+        println!("✓ Saved GitHub Copilot target: {domain}");
+        println!("  OAuth sign-in for GitHub Copilot is not implemented yet in bb.");
+        println!("  This release only adds the /login architecture and stored enterprise host.");
+        return Ok(());
+    }
 
     // ── OAuth providers ─────────────────────────────────────────────
     if OAUTH_PROVIDERS.contains(&provider.as_str()) {
@@ -392,27 +480,31 @@ pub async fn handle_logout(provider: Option<&str>) -> Result<()> {
 
 fn get_provider_status(name: &str) -> &'static str {
     let store = load_auth();
-    if store.providers.contains_key(name) {
-        "✓"
-    } else {
-        // Check env var
-        let env_var = KNOWN_PROVIDERS
-            .iter()
-            .find(|(n, _, _)| *n == name)
-            .map(|(_, e, _)| *e)
-            .unwrap_or("");
-        if !env_var.is_empty() {
-            if std::env::var(env_var)
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-            {
-                "✓ (env)"
-            } else {
-                "✗"
-            }
+    if let Some(entry) = store.providers.get(name) {
+        return match entry {
+            AuthEntry::ApiKey { key } if !key.trim().is_empty() => "✓",
+            AuthEntry::OAuth { access, .. } if !access.trim().is_empty() => "✓",
+            _ => "✗",
+        };
+    }
+
+    // Check env var
+    let env_var = KNOWN_PROVIDERS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, e, _)| *e)
+        .unwrap_or("");
+    if !env_var.is_empty() {
+        if std::env::var(env_var)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            "✓ (env)"
         } else {
             "✗"
         }
+    } else {
+        "✗"
     }
 }
 
@@ -430,6 +522,7 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
         let has = match entry {
             AuthEntry::ApiKey { key } => !key.trim().is_empty(),
             AuthEntry::OAuth { access, .. } => !access.trim().is_empty(),
+            AuthEntry::ProviderConfig { .. } => false,
         };
         if has {
             return Some(AuthSource::BbAuth);
@@ -454,9 +547,7 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
 
 /// Resolve API key for a provider: auth.json first, then env var.
 pub fn provider_has_auth(provider: &str) -> bool {
-    resolve_api_key(provider)
-        .map(|key| !key.trim().is_empty())
-        .unwrap_or(false)
+    auth_source(provider).is_some()
 }
 
 pub fn authenticated_providers() -> Vec<String> {
@@ -525,6 +616,7 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
                     // Return stale token as last resort (server will reject).
                     return Some(access.clone());
                 }
+                AuthEntry::ProviderConfig { .. } => {}
             }
         }
     }
@@ -537,7 +629,7 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         "groq" => &["GROQ_API_KEY"],
         "xai" => &["XAI_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
-        _ => &["OPENAI_API_KEY"],
+        _ => &[],
     };
 
     for key in env_keys {
