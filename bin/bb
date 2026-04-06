@@ -2,46 +2,42 @@
 
 "use strict";
 
-const { execFileSync } = require("child_process");
-const path = require("path");
-const fs = require("fs");
+var execFileSync = require("child_process").execFileSync;
+var path = require("path");
+var fs = require("fs");
 
 function findBinary() {
-  // 1. Check native/ dir (downloaded by postinstall)
-  const nativeBin = path.join(__dirname, "..", "native", "bb");
+  var nativeBin = path.join(__dirname, "..", "native", "bb");
   if (fs.existsSync(nativeBin)) {
-    try { fs.accessSync(nativeBin, fs.constants.X_OK); return nativeBin; } catch {}
+    try { fs.accessSync(nativeBin, fs.constants.X_OK); return nativeBin; } catch (e) {}
   }
 
-  // 2. Check PATH (cargo install)
-  const dirs = (process.env.PATH || "").split(path.delimiter);
-  for (const dir of dirs) {
-    // Skip our own bin/ dir to avoid infinite recursion
-    if (path.resolve(dir) === path.resolve(__dirname)) continue;
-    const full = path.join(dir, "bb");
-    try { fs.accessSync(full, fs.constants.X_OK); return full; } catch {}
+  var dirs = (process.env.PATH || "").split(path.delimiter);
+  for (var i = 0; i < dirs.length; i++) {
+    if (path.resolve(dirs[i]) === path.resolve(__dirname)) continue;
+    var full = path.join(dirs[i], "bb");
+    try { fs.accessSync(full, fs.constants.X_OK); return full; } catch (e) {}
   }
 
   return null;
 }
 
-const binary = findBinary();
+var binary = findBinary();
 
 if (!binary) {
-  console.error(`
-BB-Agent binary not found.
-
-Install Rust (if needed):
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  source ~/.cargo/env
-
-Then build BB-Agent:
-  git clone https://github.com/shuyhere/bb-agent.git
-  cd bb-agent && cargo install --path crates/cli
-
-Then run:
-  bb
-`;
+  console.error("");
+  console.error("BB-Agent binary not found.");
+  console.error("");
+  console.error("Install Rust (if needed):");
+  console.error("  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh");
+  console.error("  source ~/.cargo/env");
+  console.error("");
+  console.error("Then build BB-Agent:");
+  console.error("  git clone https://github.com/shuyhere/bb-agent.git");
+  console.error("  cd bb-agent && cargo install --path crates/cli");
+  console.error("");
+  console.error("Then run:  bb");
+  console.error("");
   process.exit(1);
 }
 

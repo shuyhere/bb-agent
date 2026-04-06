@@ -8,7 +8,7 @@ const path = require("path");
 const os = require("os");
 const https = require("https");
 
-const VERSION = "0.0.2";
+const VERSION = "0.0.3";
 const REPO = "shuyhere/bb-agent";
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 15_000;
