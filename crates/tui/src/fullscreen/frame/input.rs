@@ -188,3 +188,74 @@ pub(crate) fn format_border_bottom(width: usize, lines_below: usize, border_colo
 pub(crate) fn blank_line(width: usize) -> String {
     " ".repeat(width)
 }
+
+type AuthDialogRender = (Vec<(usize, String)>, Option<(u16, u16)>);
+
+pub(crate) fn render_auth_dialog(
+    state: &FullscreenState,
+    width: usize,
+    height: usize,
+) -> Option<AuthDialogRender> {
+    let dialog = state.auth_dialog.as_ref()?;
+    if width < 20 || height < 8 {
+        return None;
+    }
+
+    let t = theme();
+    let box_width = width.clamp(20, 90);
+    let inner_width = box_width.saturating_sub(4);
+
+    let mut content = Vec::new();
+    content.push(format!("{}{}{}", t.bold, dialog.title, t.reset));
+    content.push(String::new());
+    content.extend(dialog.lines.iter().map(|line| line.to_string()));
+    if let Some(label) = &dialog.input_label {
+        content.push(String::new());
+        content.push(format!("{}{}{}", t.dim, label, t.reset));
+        let input = if state.input.is_empty() {
+            format!("{}Paste here...{}", t.dim, t.reset)
+        } else {
+            state.input.clone()
+        };
+        content.push(input);
+    }
+    content.push(String::new());
+    content.push(format!("{}Esc to cancel{}", t.dim, t.reset));
+
+    let box_height = content
+        .len()
+        .saturating_add(2)
+        .min(height.saturating_sub(2));
+    let start_y = (height.saturating_sub(box_height)) / 2;
+    let start_x = (width.saturating_sub(box_width)) / 2;
+
+    let mut rendered = Vec::new();
+    let border = "─".repeat(box_width.saturating_sub(2));
+    rendered.push((start_y, format!("{}┌{}┐{}", t.border_accent, border, t.reset)));
+    for row in 0..box_height.saturating_sub(2) {
+        let content_line = content
+            .get(row)
+            .map(|s| truncate_to_width(s, inner_width))
+            .unwrap_or_default();
+        let padded = pad_to_width(&content_line, inner_width);
+        rendered.push((
+            start_y + 1 + row,
+            format!("{}│{}{}{}│{}", t.border_accent, t.reset, padded, t.border_accent, t.reset),
+        ));
+    }
+    rendered.push((
+        start_y + box_height.saturating_sub(1),
+        format!("{}└{}┘{}", t.border_accent, border, t.reset),
+    ));
+
+    let cursor = dialog.input_label.as_ref().map(|_| {
+        let input_row = start_y + box_height.saturating_sub(4);
+        let input_col = start_x + 2 + visible_width(&truncate_to_width(&state.input, inner_width));
+        (
+            input_col.min(width.saturating_sub(1)) as u16,
+            input_row as u16,
+        )
+    });
+
+    Some((rendered, cursor))
+}

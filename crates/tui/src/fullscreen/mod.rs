@@ -33,6 +33,6 @@ pub use tool_format::{
 };
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
 pub use types::{
-    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
-    FullscreenOutcome, FullscreenSubmission, HistoricalToolState,
+    FullscreenAppConfig, FullscreenAuthDialog, FullscreenCommand, FullscreenFooterData,
+    FullscreenNoteLevel, FullscreenOutcome, FullscreenSubmission, HistoricalToolState,
 };

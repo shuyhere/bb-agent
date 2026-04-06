@@ -71,6 +71,17 @@ impl FullscreenState {
                 self.dirty = true;
                 RenderIntent::Render
             }
+            FullscreenCommand::OpenAuthDialog(dialog)
+            | FullscreenCommand::UpdateAuthDialog(dialog) => {
+                self.auth_dialog = Some(dialog);
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::CloseAuthDialog => {
+                self.auth_dialog = None;
+                self.dirty = true;
+                RenderIntent::Render
+            }
             FullscreenCommand::SetExtraSlashItems(items) => {
                 self.extra_slash_items = items;
                 self.slash_menu = None;

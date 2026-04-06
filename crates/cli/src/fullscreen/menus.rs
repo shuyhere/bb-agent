@@ -592,6 +592,20 @@ impl FullscreenController {
 
         self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.send_command(FullscreenCommand::OpenAuthDialog(
+            bb_tui::fullscreen::FullscreenAuthDialog {
+                title: format!("Sign in to {label}"),
+                lines: vec![
+                    "Waiting for browser authentication...".to_string(),
+                    "".to_string(),
+                    "The authorization URL will appear below.".to_string(),
+                ],
+                input_label: Some(
+                    "Paste the full localhost callback URL here and press Enter if needed:"
+                        .to_string(),
+                ),
+            },
+        ));
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Starting OAuth login for {label}..."
         )));
@@ -606,18 +620,33 @@ impl FullscreenController {
                 } else {
                     "No local browser launcher detected. Open the URL manually."
                 };
-                let _ = command_tx.send(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: format!(
-                        "Use `/login` to sign in.\nProvider: {label_for_auth}\nMode: OAuth\nOpen: {url}\n{launcher_hint}\nIf the browser opens on another machine, paste the full localhost callback URL into the input box here and press Enter.\nPress Esc to cancel."
-                    ),
-                });
+                let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
+                    bb_tui::fullscreen::FullscreenAuthDialog {
+                        title: format!("Sign in to {label_for_auth}"),
+                        lines: vec![
+                            "Open this URL to continue authentication:".to_string(),
+                            "".to_string(),
+                            url.clone(),
+                            "".to_string(),
+                            launcher_hint.to_string(),
+                            "If the browser opens on another machine, paste the full localhost callback URL below and press Enter.".to_string(),
+                        ],
+                        input_label: Some("Localhost callback URL".to_string()),
+                    },
+                ));
             }),
             on_manual_input: Some(manual_rx),
             on_progress: Some(Box::new({
                 let command_tx = self.command_tx.clone();
                 move |msg: String| {
-                    let _ = command_tx.send(FullscreenCommand::SetStatusLine(msg));
+                    let _ = command_tx.send(FullscreenCommand::SetStatusLine(msg.clone()));
+                    let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
+                        bb_tui::fullscreen::FullscreenAuthDialog {
+                            title: format!("Sign in to {label}"),
+                            lines: vec![msg],
+                            input_label: Some("Localhost callback URL".to_string()),
+                        },
+                    ));
                 }
             })),
         };
@@ -680,6 +709,7 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::SetLocalActionActive(false));
         match outcome {
             Ok(()) => {
+                self.send_command(FullscreenCommand::CloseAuthDialog);
                 if cancelled {
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
@@ -693,6 +723,7 @@ impl FullscreenController {
                 Ok(())
             }
             Err(err) => {
+                self.send_command(FullscreenCommand::CloseAuthDialog);
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Error,
                     text: format!("Authentication failed: {err}"),
@@ -712,12 +743,18 @@ impl FullscreenController {
         let label = crate::login::provider_display_name(provider);
         self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
-        self.send_command(FullscreenCommand::PushNote {
-            level: FullscreenNoteLevel::Status,
-            text: format!(
-                "Use `/login` to sign in.\nProvider: {label}\nMode: API key\nOpen: {url}\nPaste your API key into the input box below and press Enter.\nPress Esc to cancel."
-            ),
-        });
+        self.send_command(FullscreenCommand::OpenAuthDialog(
+            bb_tui::fullscreen::FullscreenAuthDialog {
+                title: format!("Sign in to {label}"),
+                lines: vec![
+                    format!("Open: {url}"),
+                    "".to_string(),
+                    "Paste your API key below and press Enter.".to_string(),
+                    "Your input stays local and will be stored in auth.json.".to_string(),
+                ],
+                input_label: Some("API key".to_string()),
+            },
+        ));
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Paste API key for {label} and press Enter"
         )));

@@ -8,7 +8,7 @@ mod tests;
 use super::{renderer::FrameBuffer, runtime::FullscreenState};
 use chrome::{render_footer, render_header, render_status};
 pub(crate) use input::measure_input;
-use input::{blank_line, render_input};
+use input::{blank_line, render_auth_dialog, render_input};
 use transcript::render_transcript;
 
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
@@ -45,13 +45,20 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
         lines[layout.status.y as usize] = render_status(state, layout.status.width as usize);
     }
 
-    let (input_lines, cursor) = render_input(
-        state,
-        layout.input.y,
-        layout.input.width as usize,
-        layout.input.height as usize,
-        input_wrap,
-    );
+    let (input_lines, mut cursor) = if state.auth_dialog.is_some() {
+        (
+            vec![blank_line(layout.input.width as usize); layout.input.height as usize],
+            None,
+        )
+    } else {
+        render_input(
+            state,
+            layout.input.y,
+            layout.input.width as usize,
+            layout.input.height as usize,
+            input_wrap,
+        )
+    };
     render_footer(
         state,
         layout.footer.width as usize,
@@ -72,6 +79,17 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
                 *slot = line;
             }
         });
+
+    if let Some((dialog_lines, dialog_cursor)) =
+        render_auth_dialog(state, state.size.width as usize, state.size.height as usize)
+    {
+        for (y, line) in dialog_lines {
+            if let Some(slot) = lines.get_mut(y) {
+                *slot = line;
+            }
+        }
+        cursor = dialog_cursor.or(cursor);
+    }
 
     FrameBuffer { lines, cursor }
 }

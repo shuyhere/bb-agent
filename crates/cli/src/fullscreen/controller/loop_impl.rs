@@ -115,6 +115,7 @@ impl FullscreenController {
                     self.open_tree_summary_menu(&target_entry_id)?;
                 } else if self.pending_login_api_key_provider.take().is_some() {
                     self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                    self.send_command(FullscreenCommand::CloseAuthDialog);
                     self.send_command(FullscreenCommand::SetInput(String::new()));
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
@@ -164,6 +165,7 @@ impl FullscreenController {
             if key.is_empty() || key == "/" {
                 self.pending_login_api_key_provider = None;
                 self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                self.send_command(FullscreenCommand::CloseAuthDialog);
                 self.send_command(FullscreenCommand::SetStatusLine(
                     "Authentication cancelled".to_string(),
                 ));
@@ -173,6 +175,7 @@ impl FullscreenController {
             crate::login::save_api_key(&provider, key)?;
             self.send_command(FullscreenCommand::SetInput(String::new()));
             self.send_command(FullscreenCommand::SetLocalActionActive(false));
+            self.send_command(FullscreenCommand::CloseAuthDialog);
             self.send_command(FullscreenCommand::SetStatusLine(format!(
                 "Logged in to {}",
                 crate::login::provider_display_name(&provider)

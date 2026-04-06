@@ -16,6 +16,13 @@ pub struct FullscreenFooterData {
     pub line2_right: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct FullscreenAuthDialog {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub input_label: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FullscreenAppConfig {
     pub title: String,
@@ -95,6 +102,9 @@ pub enum FullscreenCommand {
     },
     SetInput(String),
     SetLocalActionActive(bool),
+    OpenAuthDialog(FullscreenAuthDialog),
+    UpdateAuthDialog(FullscreenAuthDialog),
+    CloseAuthDialog,
     SetExtraSlashItems(Vec<SelectItem>),
     OpenSelectMenu {
         menu_id: String,
