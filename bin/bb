@@ -5,6 +5,19 @@
 var execFileSync = require("child_process").execFileSync;
 var path = require("path");
 var fs = require("fs");
+var packageJson = require("../package.json");
+
+var wrapperRealPath = null;
+try { wrapperRealPath = fs.realpathSync(__filename); } catch (e) {}
+
+function isSelfBinary(candidate) {
+  try {
+    if (!wrapperRealPath) return false;
+    return fs.realpathSync(candidate) === wrapperRealPath;
+  } catch (e) {
+    return false;
+  }
+}
 
 function findBinary() {
   var nativeBin = path.join(__dirname, "..", "native", "bb");
@@ -16,7 +29,11 @@ function findBinary() {
   for (var i = 0; i < dirs.length; i++) {
     if (path.resolve(dirs[i]) === path.resolve(__dirname)) continue;
     var full = path.join(dirs[i], "bb");
-    try { fs.accessSync(full, fs.constants.X_OK); return full; } catch (e) {}
+    try {
+      fs.accessSync(full, fs.constants.X_OK);
+      if (isSelfBinary(full)) continue;
+      return full;
+    } catch (e) {}
   }
 
   return null;
@@ -26,23 +43,27 @@ var binary = findBinary();
 
 if (!binary) {
   console.error("");
-  console.error("BB-Agent binary not found.");
+  console.error("BB-Agent native binary not found.");
   console.error("");
-  console.error("Install Rust (if needed):");
-  console.error("  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh");
-  console.error("  source ~/.cargo/env");
+  console.error("This npm package is a small launcher and expects a matching native binary.");
+  console.error("That binary may not have been downloaded yet for version " + packageJson.version + ".");
   console.error("");
-  console.error("Then build BB-Agent:");
+  console.error("Try reinstalling after the GitHub release assets are available:");
+  console.error("  npm uninstall -g @shuyhere/bb-agent");
+  console.error("  npm install -g @shuyhere/bb-agent@" + packageJson.version);
+  console.error("");
+  console.error("Or build from source:");
   console.error("  git clone https://github.com/shuyhere/bb-agent.git");
   console.error("  cd bb-agent && cargo install --path crates/cli");
-  console.error("");
-  console.error("Then run:  bb");
   console.error("");
   process.exit(1);
 }
 
 try {
-  execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
+  execFileSync(binary, process.argv.slice(2), {
+    stdio: "inherit",
+    env: Object.assign({}, process.env, { BB_NPM_WRAPPER_ACTIVE: "1" })
+  });
 } catch (err) {
   process.exit(err.status || 1);
 }

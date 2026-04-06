@@ -11,6 +11,8 @@ const https = require("https");
 const packageJson = require("../package.json");
 const BINARY_RELEASE_TAG = `v${packageJson.version}`;
 const REPO = "shuyhere/bb-agent";
+const PACKAGE_ROOT = path.resolve(__dirname, "..");
+const WRAPPER_SCRIPT = path.join(PACKAGE_ROOT, "bin", "bb");
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 
@@ -85,12 +87,21 @@ async function tryDownloadPrebuilt(target) {
   }
 }
 
+function isCurrentPackageWrapper(candidate) {
+  try {
+    return fs.realpathSync(candidate) === fs.realpathSync(WRAPPER_SCRIPT);
+  } catch {
+    return false;
+  }
+}
+
 function findInPath(name) {
   const dirs = (process.env.PATH || "").split(path.delimiter);
   for (const dir of dirs) {
     const full = path.join(dir, name);
     try {
       fs.accessSync(full, fs.constants.X_OK);
+      if (isCurrentPackageWrapper(full)) continue;
       return full;
     } catch {}
   }
@@ -129,6 +140,8 @@ async function main() {
   // No prebuilt available — print instructions instead of trying cargo build
   // (cargo build takes 5+ minutes and would appear to hang)
   const platform = `${os.platform()}-${os.arch()}`;
+  console.log("");
+  console.log(`BB-Agent ${packageJson.version}: matching prebuilt binary not available yet for ${platform}.`);
   console.log("");
   console.log("╔══════════════════════════════════════════════════════════════╗");
   console.log("║  BB-Agent: no prebuilt binary for " + platform.padEnd(19) + "       ║");
