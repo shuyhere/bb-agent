@@ -34,8 +34,9 @@ const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
         "ANTHROPIC_API_KEY",
         "https://console.anthropic.com/settings/keys",
     ),
+    ("openai-codex", "", "https://chatgpt.com/"),
     (
-        "openai-codex",
+        "openai",
         "OPENAI_API_KEY",
         "https://platform.openai.com/api-keys",
     ),
@@ -62,6 +63,45 @@ pub fn provider_meta(provider: &str) -> (&str, &str) {
         .find(|(name, _, _)| *name == provider)
         .map(|(_, env_var, url)| (*env_var, *url))
         .unwrap_or(("API_KEY", ""))
+}
+
+pub(crate) fn provider_display_name(provider: &str) -> String {
+    match provider {
+        "anthropic" => "Claude Pro/Max".to_string(),
+        "openai-codex" => "ChatGPT Plus/Pro (Codex)".to_string(),
+        "openai" => "OpenAI".to_string(),
+        "google" => "Google".to_string(),
+        "groq" => "Groq".to_string(),
+        "xai" => "xAI".to_string(),
+        "openrouter" => "OpenRouter".to_string(),
+        _ => provider.to_string(),
+    }
+}
+
+pub(crate) fn provider_auth_method(provider: &str) -> &'static str {
+    if OAUTH_PROVIDERS.contains(&provider) {
+        "OAuth"
+    } else {
+        "API key"
+    }
+}
+
+pub(crate) fn provider_login_hint(provider: &str) -> String {
+    match provider {
+        "openai-codex" => {
+            "Requires ChatGPT Plus or Pro subscription. Uses browser OAuth, not OpenAI API keys."
+                .to_string()
+        }
+        "anthropic" => "Uses browser OAuth for Claude subscription login.".to_string(),
+        other => {
+            let (env_var, url) = provider_meta(other);
+            if url.is_empty() {
+                format!("Set {env_var} or paste an API key.")
+            } else {
+                format!("Get an API key from {url} or set {env_var}.")
+            }
+        }
+    }
 }
 
 pub fn remove_auth(provider: &str) -> Result<bool> {
@@ -114,20 +154,17 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
         None => {
             // Show provider selector
             println!("Available providers:");
-            for (i, (name, _, url)) in KNOWN_PROVIDERS.iter().enumerate() {
-                let method_label = if OAUTH_PROVIDERS.contains(name) {
-                    "OAuth"
-                } else {
-                    "API key"
-                };
+            for (i, (name, _, _url)) in KNOWN_PROVIDERS.iter().enumerate() {
+                let method_label = provider_auth_method(name);
                 let status = get_provider_status(name);
+                let hint = provider_login_hint(name);
                 println!(
-                    "  {}. {} ({}) {} ({})",
+                    "  {}. {} ({}) {}\n     {}",
                     i + 1,
-                    name,
+                    provider_display_name(name),
                     method_label,
                     status,
-                    url
+                    hint
                 );
             }
             println!();

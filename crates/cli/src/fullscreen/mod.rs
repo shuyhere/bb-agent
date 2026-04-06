@@ -28,12 +28,12 @@ const FORK_ENTRY_MENU_ID: &str = "fork-entry";
 const LOGIN_PROVIDERS: &[&str] = &[
     "anthropic",
     "openai-codex",
+    "openai",
     "google",
     "groq",
     "xai",
     "openrouter",
 ];
-const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
 pub async fn run_fullscreen_entry(entry: SessionBootstrapOptions) -> Result<()> {
     let (runtime_host, options, session_setup) = prepare_session_runtime(entry).await?;

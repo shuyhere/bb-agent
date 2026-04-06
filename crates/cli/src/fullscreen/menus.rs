@@ -17,28 +17,15 @@ use super::controller::FullscreenController;
 use super::formatting::format_assistant_text;
 use super::{
     FORK_ENTRY_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS, LOGOUT_PROVIDER_MENU_ID,
-    OAUTH_PROVIDERS, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID,
-    copy_text_to_clipboard,
+    RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
 };
 
 fn fullscreen_auth_method_label(provider: &str) -> &'static str {
-    if OAUTH_PROVIDERS.contains(&provider) {
-        "OAuth"
-    } else {
-        "API key"
-    }
+    crate::login::provider_auth_method(provider)
 }
 
 fn fullscreen_auth_display_name(provider: &str) -> String {
-    match provider {
-        "anthropic" => "Anthropic".to_string(),
-        "openai-codex" => "OpenAI Codex".to_string(),
-        "google" => "Google".to_string(),
-        "groq" => "Groq".to_string(),
-        "xai" => "xAI".to_string(),
-        "openrouter" => "OpenRouter".to_string(),
-        _ => provider.to_string(),
-    }
+    crate::login::provider_display_name(provider)
 }
 
 fn fullscreen_auth_status_detail(provider: &str) -> String {
@@ -95,15 +82,18 @@ impl FullscreenController {
             FORK_ENTRY_MENU_ID => self.handle_fork_from_entry(value)?,
             LOGIN_PROVIDER_MENU_ID => {
                 let (_env_var, url) = crate::login::provider_meta(value);
-                let mode = if OAUTH_PROVIDERS.contains(&value) {
-                    "OAuth"
+                let mode = crate::login::provider_auth_method(value);
+                let label = crate::login::provider_display_name(value);
+                let hint = crate::login::provider_login_hint(value);
+                let open_line = if url.is_empty() {
+                    String::new()
                 } else {
-                    "API key"
+                    format!("\nOpen: {url}")
                 };
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Status,
                     text: format!(
-                        "Login provider: {value}\nMode: {mode}\nOpen: {url}\nUse `bb login {value}` in a normal terminal to complete authentication."
+                        "Login provider: {label}\nMode: {mode}{open_line}\n{hint}\nUse `bb login {value}` in a normal terminal to complete authentication."
                     ),
                 });
             }
