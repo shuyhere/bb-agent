@@ -68,7 +68,9 @@ pub fn collapsed_tool_summary_with_count(name: &str, count: usize) -> Option<Str
         _ => return None,
     };
     let noun = if count == 1 { singular } else { plural };
-    Some(format!("{verb} {count} {noun} (Ctrl+Shift+O tool expand)"))
+    Some(format!(
+        "{verb} {count} {noun} (click or use Ctrl+Shift+O to enter tool expand mode)"
+    ))
 }
 
 fn render_read_result(
@@ -117,7 +119,7 @@ fn render_read_result(
         }
         if total > max_lines {
             lines.push(format!(
-                "... ({} more lines; Ctrl+Shift+O tool expand)",
+                "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
                 total - max_lines
             ));
         }
@@ -323,7 +325,7 @@ fn render_web_search_result(
             }
             if links.len() > max_links {
                 lines.push(format!(
-                    "... ({} more link(s); Ctrl+Shift+O tool expand)",
+                    "... ({} more link(s); click or use Ctrl+Shift+O to enter tool expand mode)",
                     links.len() - max_links
                 ));
             }

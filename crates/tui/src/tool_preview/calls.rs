@@ -69,7 +69,7 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
         );
         if preview_lines.len() > max_lines {
             lines.push(format!(
-                "... ({} more lines; Ctrl+Shift+O tool expand)",
+                "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
                 preview_lines.len() - max_lines
             ));
         }

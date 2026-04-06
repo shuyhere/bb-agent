@@ -249,7 +249,7 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
         .append_child_block(
             read1,
             NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (Ctrl+Shift+O tool expand)"),
+                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
         )
         .expect("result1");
     let read2 = transcript
@@ -262,7 +262,7 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
         .append_child_block(
             read2,
             NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (Ctrl+Shift+O tool expand)"),
+                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
         )
         .expect("result2");
 
@@ -279,14 +279,12 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
 
     assert!(header1.text.contains("Read(/tmp/a.txt)"));
     assert!(header2.text.contains("Read(/tmp/b.txt)"));
-    assert!(
-        rows1
-            .iter()
-            .any(|row| row.text.contains("Read 1 file (Ctrl+Shift+O tool expand)"))
-    );
-    assert!(
-        rows2
-            .iter()
-            .any(|row| row.text.contains("Read 1 file (Ctrl+Shift+O tool expand)"))
-    );
+    assert!(rows1.iter().any(|row| {
+        row.text
+            .contains("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)")
+    }));
+    assert!(rows2.iter().any(|row| {
+        row.text
+            .contains("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)")
+    }));
 }

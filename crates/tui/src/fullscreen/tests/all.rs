@@ -237,7 +237,7 @@ fn transcript_toggle_expands_only_focused_tool_block() {
         .append_child_block(
             tool1,
             NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (Ctrl+Shift+O tool expand)"),
+                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
         )
         .expect("result1");
     let tool2 = transcript
@@ -250,7 +250,7 @@ fn transcript_toggle_expands_only_focused_tool_block() {
         .append_child_block(
             tool2,
             NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (Ctrl+Shift+O tool expand)"),
+                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
         )
         .expect("result2");
 
@@ -564,7 +564,7 @@ fn resumed_tool_transcript_can_expand_from_historical_tool_state() {
     assert!(
         !tool_result
             .content
-            .contains("more lines; Ctrl+Shift+O tool expand")
+            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
     );
     assert!(tool_use.title.contains("Bash"));
 }
@@ -624,7 +624,7 @@ fn tool_result_appears_only_when_finished_and_enter_expands_output() {
     assert!(
         tool_result
             .content
-            .contains("more lines; Ctrl+Shift+O tool expand")
+            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
     );
     assert!(!tool_result.content.contains("line 14"));
 
@@ -643,7 +643,7 @@ fn tool_result_appears_only_when_finished_and_enter_expands_output() {
     assert!(
         !tool_result
             .content
-            .contains("more lines; Ctrl+Shift+O tool expand")
+            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
     );
     assert!(tool_result.content.contains("line 14"));
 }
@@ -935,7 +935,7 @@ fn write_and_edit_call_content_use_interactive_style_previews() {
     assert!(write.contains("one"));
     assert!(write.contains("three")); // 3rd line visible
     assert!(!write.contains("five")); // 5th line truncated at 3 lines
-    assert!(write.contains("more lines; Ctrl+Shift+O tool expand"));
+    assert!(write.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
     assert!(!write.contains("\"content\""));
 
     let edit = format_tool_call_content(
@@ -975,7 +975,7 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
     );
     assert!(bash.contains("line   1"));
     assert!(bash.contains("line   3"));
-    assert!(bash.contains("more lines; Ctrl+Shift+O tool expand"));
+    assert!(bash.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
     assert!(!bash.contains("line   4"));
 
     let grep_lines = (1..=16)
@@ -994,7 +994,7 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
     );
     assert!(grep.contains("match 1"));
     assert!(grep.contains("match 3"));
-    assert!(grep.contains("more lines; Ctrl+Shift+O tool expand"));
+    assert!(grep.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
     assert!(!grep.contains("match 4"));
 
     let expanded = format_tool_result_content(
@@ -1006,7 +1006,7 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
         true,
     );
     assert!(expanded.contains("line   14"));
-    assert!(!expanded.contains("... (2 more lines; Ctrl+Shift+O tool expand)"));
+    assert!(!expanded.contains("... (2 more lines; click or use Ctrl+Shift+O to enter tool expand mode)"));
 
     let long_lines = (1..=140)
         .map(|i| format!("tail {i}"))

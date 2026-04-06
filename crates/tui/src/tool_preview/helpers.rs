@@ -130,7 +130,7 @@ pub(super) fn preview_text_lines(text: &str, max_lines: usize, expanded: bool) -
             out.push(collapse_preview_line(line, COLLAPSED_MAX_CHARS_PER_LINE));
         }
         out.push(format!(
-            "... ({} more lines; Ctrl+Shift+O tool expand)",
+            "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
             lines.len() - max_lines
         ));
         return out;

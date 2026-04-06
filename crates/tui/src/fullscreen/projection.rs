@@ -352,7 +352,7 @@ fn render_markdown_content_lines(
 }
 
 fn response_prefixes(depth: usize, content: &str) -> (&str, &str) {
-    if content.contains("(Ctrl+Shift+O tool expand)") {
+    if content.contains("(click or use Ctrl+Shift+O to enter tool expand mode)") {
         ("  ", "  ")
     } else if depth > 2 {
         ("     ", "     ")

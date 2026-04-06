@@ -72,7 +72,7 @@ fn truncated_preview_mentions_ctrl_o_expand() {
         false,
         false,
     );
-    assert!(rendered.contains("Ctrl+Shift+O tool expand"));
+    assert!(rendered.contains("click or use Ctrl+Shift+O to enter tool expand mode"));
 }
 
 #[test]

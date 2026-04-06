@@ -109,7 +109,7 @@ fn transcript_blank_line_rhythm_matches_user_tool_text_flow() {
                 crate::fullscreen::transcript::BlockKind::ToolResult,
                 "output",
             )
-            .with_content("Ran 1 command (Ctrl+Shift+O tool expand)"),
+            .with_content("Ran 1 command (click or use Ctrl+Shift+O to enter tool expand mode)"),
         )
         .expect("tool result");
     transcript.append_root_block(
@@ -145,7 +145,9 @@ fn transcript_blank_line_rhythm_matches_user_tool_text_flow() {
         .expect("tool header");
     let summary_idx = lines
         .iter()
-        .position(|line| line.contains("Ran 1 command (Ctrl+Shift+O tool expand)"))
+        .position(|line| {
+            line.contains("Ran 1 command (click or use Ctrl+Shift+O to enter tool expand mode)")
+        })
         .expect("summary line");
     let text_idx = lines
         .iter()

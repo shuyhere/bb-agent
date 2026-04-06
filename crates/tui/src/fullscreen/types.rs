@@ -59,7 +59,7 @@ impl Default for FullscreenAppConfig {
             title: "BB-Agent fullscreen transcript".to_string(),
             input_placeholder: "Type a prompt…".to_string(),
             status_line:
-                "Ctrl+Shift+O tool expand • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript"
+                "click or use Ctrl+Shift+O to enter tool expand mode • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript"
                     .to_string(),
             footer: FullscreenFooterData::default(),
             transcript: Transcript::new(),

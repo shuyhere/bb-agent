@@ -22,7 +22,7 @@ pub(crate) fn render_header(state: &FullscreenState, width: usize) -> Vec<String
             t.reset,
         ));
         let hints = format!(
-            "{}Ctrl-C exit . / commands . ! bash . Ctrl+Shift+O tool expand . Ctrl+Y drag-copy . /help for more{}",
+            "{}Ctrl-C exit . / commands . ! bash . click or use Ctrl+Shift+O to enter tool expand mode . Ctrl+Y drag-copy . /help for more{}",
             t.dim, t.reset
         );
         lines.push(pad_to_width(&truncate_to_width(&hints, width), width));

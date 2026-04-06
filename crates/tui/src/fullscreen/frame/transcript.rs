@@ -396,7 +396,7 @@ fn style_response_line(text: &str, width: usize, is_error: bool) -> String {
         let body_color = if is_error { &t.error } else { &t.text };
         return format!("     {}{}{}", body_color, rest, t.reset);
     }
-    if trimmed.contains("(Ctrl+Shift+O tool expand)") {
+    if trimmed.contains("(click or use Ctrl+Shift+O to enter tool expand mode)") {
         return format!("{}{}{}", t.dim, line, t.reset);
     }
     if is_error {

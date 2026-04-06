@@ -111,6 +111,10 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     // exit code 0 is now hidden for successful commands (no noise)
     assert!(!tool_result.content.contains("exit code: 0"));
     assert!(tool_result.content.contains("line 1"));
-    assert!(tool_result.content.contains("Ctrl+Shift+O tool expand"));
+    assert!(
+        tool_result
+            .content
+            .contains("click or use Ctrl+Shift+O to enter tool expand mode")
+    );
     assert!(!tool_result.content.contains("\"command\""));
 }
