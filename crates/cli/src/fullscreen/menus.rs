@@ -600,16 +600,18 @@ impl FullscreenController {
         let label_for_auth = label.clone();
         let callbacks = OAuthCallbacks {
             on_auth: Box::new(move |url: String| {
+                let opened = crate::login::try_open_browser(&url);
+                let launcher_hint = if opened {
+                    "A browser should open locally."
+                } else {
+                    "No local browser launcher detected. Open the URL manually."
+                };
                 let _ = command_tx.send(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Status,
                     text: format!(
-                        "Use `/login` to sign in.\nProvider: {label_for_auth}\nMode: OAuth\nOpen: {url}\nIf the browser opens on another machine, paste the full localhost callback URL into the input box here and press Enter.\nPress Esc to cancel."
+                        "Use `/login` to sign in.\nProvider: {label_for_auth}\nMode: OAuth\nOpen: {url}\n{launcher_hint}\nIf the browser opens on another machine, paste the full localhost callback URL into the input box here and press Enter.\nPress Esc to cancel."
                     ),
                 });
-                #[cfg(target_os = "macos")]
-                let _ = std::process::Command::new("open").arg(&url).spawn();
-                #[cfg(not(target_os = "macos"))]
-                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }),
             on_manual_input: Some(manual_rx),
             on_progress: Some(Box::new({

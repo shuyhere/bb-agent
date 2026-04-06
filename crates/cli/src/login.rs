@@ -7,6 +7,37 @@ use std::path::PathBuf;
 
 use crate::oauth::OAuthCredentials;
 
+pub(crate) fn try_open_browser(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let has_launcher_hint = std::env::var_os("DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("BROWSER").is_some();
+        if !has_launcher_hint {
+            return false;
+        }
+
+        return std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct AuthStore {
     #[serde(flatten)]
@@ -300,11 +331,10 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
 
     let callbacks = OAuthCallbacks {
         on_auth: Box::new(|url: String| {
-            println!("\nOpening browser…\nIf the browser does not open, visit:\n  {url}\n");
-            #[cfg(target_os = "macos")]
-            let _handle = std::process::Command::new("open").arg(&url).spawn();
-            #[cfg(not(target_os = "macos"))]
-            let _handle = std::process::Command::new("xdg-open").arg(&url).spawn();
+            println!("\nOpen this URL to continue authentication:\n  {url}\n");
+            if !try_open_browser(&url) {
+                println!("No local browser launcher detected. Open the URL manually.");
+            }
         }),
         on_manual_input: None,
         on_progress: Some(Box::new(|msg: String| {
