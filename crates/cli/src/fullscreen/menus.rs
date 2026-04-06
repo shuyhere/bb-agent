@@ -152,6 +152,36 @@ fn build_oauth_dialog(
     }
 }
 
+fn build_device_oauth_dialog(
+    label: &str,
+    status: &str,
+    verification_uri: String,
+    user_code: String,
+) -> FullscreenAuthDialog {
+    FullscreenAuthDialog {
+        title: format!("Sign in to {label}"),
+        status: Some(status.to_string()),
+        steps: vec![
+            auth_step("Open verification page", FullscreenAuthStepState::Done),
+            auth_step(
+                "Enter device code in your browser",
+                FullscreenAuthStepState::Active,
+            ),
+            auth_step(
+                "Wait for bb to receive credentials",
+                FullscreenAuthStepState::Pending,
+            ),
+        ],
+        url: Some(verification_uri),
+        lines: vec![
+            format!("Device code: {user_code}"),
+            "A future bb release will poll and exchange Copilot device tokens here.".to_string(),
+        ],
+        input_label: None,
+        input_placeholder: None,
+    }
+}
+
 fn build_copilot_enterprise_dialog() -> FullscreenAuthDialog {
     FullscreenAuthDialog {
         title: "GitHub Copilot Enterprise".to_string(),
@@ -159,12 +189,12 @@ fn build_copilot_enterprise_dialog() -> FullscreenAuthDialog {
         steps: vec![
             auth_step("Choose GitHub Enterprise Server host", FullscreenAuthStepState::Active),
             auth_step("Store host configuration", FullscreenAuthStepState::Pending),
-            auth_step("Run Copilot OAuth flow (next step)", FullscreenAuthStepState::Pending),
+            auth_step("Start Copilot OAuth/device flow", FullscreenAuthStepState::Pending),
         ],
         url: None,
         lines: vec![
             "Examples: github.acme.com or https://github.acme.com".to_string(),
-            "Press Esc to cancel. Press Enter to save the host target for the future Copilot OAuth flow."
+            "Press Esc to cancel. Press Enter to save the host target, then bb will open the Copilot auth skeleton."
                 .to_string(),
         ],
         input_label: Some("GitHub Enterprise Server domain".to_string()),
@@ -240,6 +270,8 @@ impl FullscreenController {
                     self.begin_api_key_login(provider);
                 } else if value == "copilot:github" {
                     self.finish_copilot_host_setup("github.com")?;
+                    self.begin_oauth_login("github-copilot", submission_rx)
+                        .await?;
                 } else if value == "copilot:enterprise" {
                     self.begin_copilot_enterprise_login();
                 } else {
@@ -529,11 +561,17 @@ impl FullscreenController {
 
     fn apply_model_selection(&mut self, model: Model, thinking_override: Option<ThinkingLevel>) {
         let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
-        let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
-            ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
-            ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
-            _ => "https://api.openai.com/v1".to_string(),
-        });
+        let base_url = if model.provider == "github-copilot" {
+            crate::login::github_copilot_api_base_url()
+        } else {
+            model.base_url.clone().unwrap_or_else(|| match model.api {
+                ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+                ApiType::GoogleGenerative => {
+                    "https://generativelanguage.googleapis.com".to_string()
+                }
+                _ => "https://api.openai.com/v1".to_string(),
+            })
+        };
         let new_provider: std::sync::Arc<dyn bb_provider::Provider> = match model.api {
             ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
             ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
@@ -841,7 +879,7 @@ impl FullscreenController {
         });
     }
 
-    async fn begin_oauth_login(
+    pub(super) async fn begin_oauth_login(
         &mut self,
         provider: &str,
         submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
@@ -898,6 +936,31 @@ impl FullscreenController {
                         )));
                 }
             }),
+            on_device_code: Some(Box::new({
+                let command_tx = self.command_tx.clone();
+                let label = label.clone();
+                let dialog_shared = dialog_shared.clone();
+                move |device| {
+                    if let Ok(mut shared) = dialog_shared.lock() {
+                        shared.0 = Some(device.verification_uri.clone());
+                        shared.1 = Some(
+                            "Open the verification URL and enter the device code.".to_string(),
+                        );
+                    }
+                    let _ = command_tx.send(FullscreenCommand::SetStatusLine(format!(
+                        "Enter device code {} in your browser",
+                        device.user_code
+                    )));
+                    let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
+                        build_device_oauth_dialog(
+                            &label,
+                            "Complete device authentication in your browser…",
+                            device.verification_uri,
+                            device.user_code,
+                        ),
+                    ));
+                }
+            })),
             on_manual_input: Some(manual_rx),
             on_progress: Some(Box::new({
                 let command_tx = self.command_tx.clone();

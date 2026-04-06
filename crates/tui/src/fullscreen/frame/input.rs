@@ -341,9 +341,39 @@ pub(crate) fn render_auth_dialog(
     let start_y = (height.saturating_sub(panel_height)) / 2;
     let start_x = (width.saturating_sub(panel_width)) / 2;
 
+    let header_keep = usize::from(panel_height > 0);
+    let body_height = panel_height.saturating_sub(header_keep);
+    let body_len = content.len().saturating_sub(header_keep);
+    let max_body_start = body_len.saturating_sub(body_height);
+    let body_input_row = input_row_in_content.and_then(|row| row.checked_sub(header_keep));
+    let body_start = if content.len() > panel_height {
+        if let Some(input_row) = body_input_row {
+            input_row
+                .saturating_add(2)
+                .saturating_sub(body_height)
+                .min(max_body_start)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut visible_content = Vec::new();
+    if header_keep == 1 {
+        visible_content.push(content[0].clone());
+    }
+    visible_content.extend(
+        content
+            .iter()
+            .skip(header_keep + body_start)
+            .take(body_height)
+            .cloned(),
+    );
+
     let mut rendered = Vec::new();
     for row in 0..panel_height {
-        let content_line = content
+        let content_line = visible_content
             .get(row)
             .map(|s| truncate_to_width(s, inner_width))
             .unwrap_or_default();
@@ -353,19 +383,29 @@ pub(crate) fn render_auth_dialog(
         ));
     }
 
-    let cursor = input_row_in_content.map(|row_index| {
+    let cursor = input_row_in_content.and_then(|row_index| {
+        let visible_row = if row_index == 0 {
+            Some(0)
+        } else {
+            row_index
+                .checked_sub(header_keep + body_start)
+                .map(|row| row + header_keep)
+        }?;
+        if visible_row >= panel_height {
+            return None;
+        }
         let input_text = if state.input.is_empty() {
             String::new()
         } else {
             state.input.clone()
         };
-        let input_row = start_y + row_index;
+        let input_row = start_y + visible_row;
         let display = truncate_to_width(&format!("{input_prefix}{input_text}"), inner_width);
         let input_col = start_x + visible_width(&display);
-        (
+        Some((
             input_col.min(width.saturating_sub(1)) as u16,
             input_row.min(height.saturating_sub(1)) as u16,
-        )
+        ))
     });
 
     Some((rendered, cursor))

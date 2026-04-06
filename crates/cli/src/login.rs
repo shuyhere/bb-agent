@@ -244,6 +244,15 @@ pub(crate) fn github_copilot_domain() -> Option<String> {
     }
 }
 
+pub(crate) fn github_copilot_api_base_url() -> String {
+    let authority = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
+    if authority.eq_ignore_ascii_case("github.com") {
+        "https://api.githubcopilot.com".to_string()
+    } else {
+        format!("https://{authority}/api/copilot")
+    }
+}
+
 pub(crate) fn normalize_github_domain(input: &str) -> Result<String> {
     let value = input.trim().trim_end_matches('/');
     if value.is_empty() {
@@ -282,9 +291,10 @@ pub(crate) async fn run_oauth_login(
     let creds = match provider {
         "anthropic" => oauth::login_anthropic(callbacks).await?,
         "openai-codex" => oauth::login_openai_codex(callbacks).await?,
-        "github-copilot" => anyhow::bail!(
-            "GitHub Copilot OAuth is not implemented yet in bb; only host configuration is available right now"
-        ),
+        "github-copilot" => {
+            let authority = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
+            oauth::login_github_copilot(&authority, callbacks).await?
+        }
         other => anyhow::bail!("No OAuth flow for provider: {other}"),
     };
 
@@ -348,9 +358,7 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
 
         save_github_copilot_config(&domain)?;
         println!("✓ Saved GitHub Copilot target: {domain}");
-        println!("  OAuth sign-in for GitHub Copilot is not implemented yet in bb.");
-        println!("  This release only adds the /login architecture and stored enterprise host.");
-        return Ok(());
+        return handle_oauth_login_cli(&provider).await;
     }
 
     // ── OAuth providers ─────────────────────────────────────────────
@@ -424,6 +432,10 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
                 println!("No local browser launcher detected. Open the URL manually.");
             }
         }),
+        on_device_code: Some(Box::new(|device| {
+            println!("Device verification URL: {}", device.verification_uri);
+            println!("Device code: {}", device.user_code);
+        })),
         on_manual_input: None,
         on_progress: Some(Box::new(|msg: String| {
             println!("  {msg}");
@@ -677,6 +689,12 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
         "openai" | "openai-codex" => oauth::openai_codex::refresh_openai_codex_token(refresh_token)
             .await
             .ok()?,
+        "github-copilot" => oauth::github_copilot::refresh_github_copilot_token(
+            refresh_token,
+            &github_copilot_domain().unwrap_or_else(|| "github.com".to_string()),
+        )
+        .await
+        .ok()?,
         _ => return None,
     };
 

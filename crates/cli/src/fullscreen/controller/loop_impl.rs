@@ -205,6 +205,8 @@ impl FullscreenController {
             }
             self.pending_login_copilot_enterprise = false;
             self.finish_copilot_host_setup(&domain)?;
+            self.begin_oauth_login("github-copilot", submission_rx)
+                .await?;
             return Ok(());
         }
 

@@ -169,10 +169,14 @@ pub(crate) async fn prepare_session_runtime(
         });
 
     let api_key = login::resolve_api_key(&provider_name).unwrap_or_default();
-    let base_url = model
-        .base_url
-        .clone()
-        .unwrap_or_else(|| "https://api.openai.com/v1".into());
+    let base_url = if provider_name == "github-copilot" {
+        crate::login::github_copilot_api_base_url()
+    } else {
+        model
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com/v1".into())
+    };
 
     let provider: Arc<dyn Provider> = match model.api {
         ApiType::AnthropicMessages => Arc::new(AnthropicProvider::new()),

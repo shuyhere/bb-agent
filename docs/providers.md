@@ -8,7 +8,7 @@ BB-Agent supports multiple LLM providers out of the box.
 |----------|-------------|--------|
 | **Anthropic** | OAuth or `ANTHROPIC_API_KEY` | Claude Opus, Sonnet, Haiku |
 | **OpenAI** | OAuth or `OPENAI_API_KEY` | GPT-4o, GPT-4.1, o1, o3, o4-mini |
-| **GitHub Copilot** | OAuth host configuration preview | Planned |
+| **GitHub Copilot** | OAuth/device-flow skeleton + stored authority | Runtime skeleton |
 | **Google** | `GOOGLE_API_KEY` | Gemini 2.5 Pro, Flash |
 | **Groq** | `GROQ_API_KEY` | Llama, Mixtral |
 | **xAI** | `XAI_API_KEY` | Grok |
@@ -25,10 +25,16 @@ bb login openai-codex     # Opens browser for OAuth
 bb login github-copilot   # Stores github.com or GHES host for upcoming OAuth flow
 ```
 
-For GitHub Copilot, `bb` currently supports the `/login` architecture and stored authority target:
-- press Enter for `github.com`
-- or enter your GitHub Enterprise Server domain
-- actual Copilot OAuth and model runtime are not implemented yet
+For GitHub Copilot, `bb` currently supports:
+- stored authority-aware configuration (`github.com` or GitHub Enterprise Server domain)
+- fullscreen/CLI browser + device-flow auth scaffolding
+- token storage/refresh plumbing skeleton
+- runtime/model skeleton under the `github-copilot` provider
+
+Still not implemented yet:
+- real Copilot token exchange
+- real Copilot token refresh
+- verified production request/streaming support
 
 ### API Key Login
 

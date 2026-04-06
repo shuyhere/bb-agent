@@ -1,4 +1,5 @@
 mod anthropic;
+mod github_copilot;
 mod google;
 mod groq;
 mod openai;
@@ -10,6 +11,7 @@ pub(crate) fn builtin_models() -> Vec<Model> {
     let mut models = Vec::new();
     models.extend(anthropic::builtin_models());
     models.extend(openai::builtin_models());
+    models.extend(github_copilot::builtin_models());
     models.extend(google::builtin_models());
     models.extend(groq::builtin_models());
     models.extend(openrouter::builtin_models());
