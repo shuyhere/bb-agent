@@ -28,6 +28,7 @@
     "bin/",
     "scripts/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

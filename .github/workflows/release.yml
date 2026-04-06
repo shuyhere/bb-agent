@@ -28,6 +28,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify tag matches Cargo and npm versions
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('Cargo.toml').read_text()
+match = re.search(r'^version = "([^"]+)"', text, re.M)
+print(match.group(1))
+PY
+)
+          NPM_VERSION=$(node -p "require('./package.json').version")
+          echo "tag=$TAG cargo=$CARGO_VERSION npm=$NPM_VERSION"
+          test "$TAG" = "$CARGO_VERSION"
+          test "$TAG" = "$NPM_VERSION"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:

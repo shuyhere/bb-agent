@@ -23,14 +23,13 @@ cargo install --path crates/cli
 
 This compiles the `bb` binary and installs it to `~/.cargo/bin/bb` (which Rust adds to your PATH).
 
-### npm (Linux x86_64 — prebuilt binary)
+### npm (Linux/macOS x86_64 + arm64 — downloads matching prebuilt binary when available)
 
 ```bash
 npm install -g @shuyhere/bb-agent
 ```
 
-> **macOS / other platforms:** npm install will print instructions to build from source.
-> Prebuilt binaries for macOS coming soon. After install, run `bb` to start.
+> If no matching prebuilt binary is available for your platform, npm install will print source-build instructions instead. After install, run `bb` to start.
 
 ## Getting Started
 
@@ -75,7 +74,7 @@ bb --list-models                      # List all available models
 - **Extensions** — JS/TS plugin system for custom tools, commands, and hooks
 - **Skills** — markdown-based instruction files that auto-load contextual knowledge
 - **System prompt templates** — save and switch between named prompt configurations
-- **OAuth login** — browser-based login for Anthropic and OpenAI
+- **OAuth login** — browser/device login for Anthropic, OpenAI, and GitHub Copilot
 
 ## System Prompt Templates
 

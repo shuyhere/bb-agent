@@ -8,8 +8,8 @@ const path = require("path");
 const os = require("os");
 const https = require("https");
 
-// Binary release tag — update this when you push a new GitHub release with binaries.
-const BINARY_RELEASE_TAG = "v0.0.1";
+const packageJson = require("../package.json");
+const BINARY_RELEASE_TAG = `v${packageJson.version}`;
 const REPO = "shuyhere/bb-agent";
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 15_000;
