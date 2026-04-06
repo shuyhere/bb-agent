@@ -33,7 +33,7 @@ impl FullscreenController {
             self.send_command(FullscreenCommand::PushNote {
                 level: FullscreenNoteLevel::Error,
                 text: format!(
-                    "No API key configured for provider '{}'. Configure credentials and try again.",
+                    "No credentials configured for provider '{}'. Use /login to sign in, then bb will switch to your authenticated default model automatically.",
                     self.session_setup.model.provider
                 ),
             });

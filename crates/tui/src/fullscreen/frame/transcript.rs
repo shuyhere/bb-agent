@@ -437,8 +437,8 @@ fn render_note_line(block: &TranscriptBlock, text: &str, width: usize) -> String
             };
             format!("{}{}{}{}", t.info_bg, accent, body, t.reset)
         }
-        "error" => format!("{}{}{}{}", t.tool_error_bg, t.error, body, t.reset),
-        "warning" => format!("{}{}{}{}", t.info_bg, t.warning, body, t.reset),
+        "error" => format!("{}{}{}", t.error, body, t.reset),
+        "warning" => format!("{}{}{}", t.warning, body, t.reset),
         "status" => {
             if text.starts_with("[Skills]") {
                 format!("{}{}{}{}", t.bold, t.custom_msg_label, body, t.reset)

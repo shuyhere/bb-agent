@@ -564,6 +564,32 @@ impl FullscreenController {
         Ok(())
     }
 
+    fn preferred_post_login_model(provider: &str) -> Option<(&'static str, &'static str)> {
+        match provider {
+            "anthropic" => Some(("anthropic", "claude-opus-4-6")),
+            "openai" | "openai-codex" => Some(("openai", "gpt-5.4")),
+            _ => None,
+        }
+    }
+
+    pub(super) fn maybe_switch_to_preferred_post_login_model(&mut self, provider: &str) -> Option<String> {
+        let (preferred_provider, preferred_model_id) = Self::preferred_post_login_model(provider)?;
+        let mut registry = ModelRegistry::new();
+        registry.load_custom_models(&Settings::load_merged(&self.session_setup.tool_ctx.cwd));
+        crate::login::add_cached_github_copilot_models(&mut registry);
+        let model = registry
+            .find(preferred_provider, preferred_model_id)
+            .cloned()
+            .or_else(|| {
+                registry
+                    .find_fuzzy(preferred_model_id, Some(preferred_provider))
+                    .cloned()
+            })?;
+        let display = format!("{}/{}", model.provider, model.id);
+        self.apply_model_selection(model, None);
+        Some(display)
+    }
+
     fn apply_model_selection(&mut self, model: Model, thinking_override: Option<ThinkingLevel>) {
         let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
         let base_url = if model.provider == "github-copilot" {
@@ -1118,6 +1144,14 @@ impl FullscreenController {
                         "Logged in to {} • refreshed {} models",
                         crate::login::provider_display_name(provider),
                         model_count
+                    )));
+                } else if let Some(display) =
+                    self.maybe_switch_to_preferred_post_login_model(provider)
+                {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Logged in to {} • switched to {}",
+                        crate::login::provider_display_name(provider),
+                        display,
                     )));
                 } else {
                     self.send_command(FullscreenCommand::SetStatusLine(format!(

@@ -184,10 +184,18 @@ impl FullscreenController {
             self.send_command(FullscreenCommand::SetInput(String::new()));
             self.send_command(FullscreenCommand::SetLocalActionActive(false));
             self.send_command(FullscreenCommand::CloseAuthDialog);
-            self.send_command(FullscreenCommand::SetStatusLine(format!(
-                "Logged in to {}",
-                crate::login::provider_display_name(&provider)
-            )));
+            if let Some(display) = self.maybe_switch_to_preferred_post_login_model(&provider) {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Logged in to {} • switched to {}",
+                    crate::login::provider_display_name(&provider),
+                    display,
+                )));
+            } else {
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Logged in to {}",
+                    crate::login::provider_display_name(&provider)
+                )));
+            }
             return Ok(());
         }
 
