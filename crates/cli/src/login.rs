@@ -28,13 +28,13 @@ pub(crate) fn try_open_browser(url: &str) -> bool {
             return false;
         }
 
-        return std::process::Command::new("xdg-open")
+        std::process::Command::new("xdg-open")
             .arg(url)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .is_ok();
+            .is_ok()
     }
 }
 
