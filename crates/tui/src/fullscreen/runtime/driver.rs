@@ -156,11 +156,49 @@ fn base64_encode_simple(data: &[u8]) -> String {
     out
 }
 
+fn copy_text_to_system_clipboard(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                child.wait().map(|_| ())
+            });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for cmd in [
+            ("wl-copy", Vec::<&str>::new()),
+            ("xclip", vec!["-selection", "clipboard"]),
+        ] {
+            let spawned = std::process::Command::new(cmd.0)
+                .args(&cmd.1)
+                .stdin(std::process::Stdio::piped())
+                .spawn();
+            if let Ok(mut child) = spawned {
+                use std::io::Write;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+}
+
 fn apply_pending_terminal_state(
     terminal: &mut FullscreenTerminal,
     state: &mut FullscreenState,
 ) -> io::Result<()> {
     if let Some(text) = state.take_pending_clipboard_copy() {
+        copy_text_to_system_clipboard(&text);
         let encoded = base64_encode_simple(text.as_bytes());
         terminal.write_raw(&format!("\x1b]52;c;{encoded}\x07"))?;
     }

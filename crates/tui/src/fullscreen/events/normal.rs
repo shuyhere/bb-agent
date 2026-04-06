@@ -267,17 +267,10 @@ impl FullscreenState {
                 self.dirty = true;
             }
             KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::ALT) => {
-                if let Some(url) = self
-                    .auth_dialog
-                    .as_ref()
-                    .and_then(|dialog| dialog.url.clone())
-                {
-                    self.pending_clipboard_copy = Some(url);
-                    self.status_line = "Copied login URL to clipboard".to_string();
-                } else {
-                    self.status_line = "No login URL to copy yet".to_string();
-                }
-                self.dirty = true;
+                self.copy_auth_dialog_url();
+            }
+            KeyCode::F(6) => {
+                self.copy_auth_dialog_url();
             }
             KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.status_line = format!("ignored Ctrl+{ch}");
@@ -292,6 +285,20 @@ impl FullscreenState {
             }
             _ => {}
         }
+    }
+
+    fn copy_auth_dialog_url(&mut self) {
+        if let Some(url) = self
+            .auth_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.url.clone())
+        {
+            self.pending_clipboard_copy = Some(url);
+            self.status_line = "Copied login URL to clipboard".to_string();
+        } else {
+            self.status_line = "No login URL to copy yet".to_string();
+        }
+        self.dirty = true;
     }
 
     fn submit_auth_dialog_input(&mut self) {

@@ -225,12 +225,32 @@ fn render_auth_step(step: &super::super::types::FullscreenAuthStep, width: usize
         .collect()
 }
 
-fn render_clickable_url(url: &str) -> String {
+fn render_clickable_url_segment(url: &str, segment: &str) -> String {
     let t = theme();
     format!(
-        "\x1b]8;;{url}\x07{}\x1b[4m{}{}\x1b]8;;\x07",
-        t.md_link, url, t.reset
+        "\x1b]8;;{url}\x07{}{}{}\x1b]8;;\x07",
+        t.md_link, segment, t.reset
     )
+}
+
+fn wrap_clickable_url(url: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let chars = url.chars().collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+
+    while start < chars.len() {
+        let end = (start + width).min(chars.len());
+        let segment = chars[start..end].iter().collect::<String>();
+        lines.push(render_clickable_url_segment(url, &segment));
+        start = end;
+    }
+
+    if lines.is_empty() {
+        lines.push(render_clickable_url_segment(url, url));
+    }
+
+    lines
 }
 
 fn render_dialog_row(width: usize, start_x: usize, row: String) -> String {
@@ -248,8 +268,8 @@ pub(crate) fn render_auth_dialog(
     }
 
     let t = theme();
-    let box_width = width.clamp(20, 90);
-    let inner_width = box_width.saturating_sub(4);
+    let panel_width = width.clamp(20, 90);
+    let inner_width = panel_width.saturating_sub(2);
 
     let mut content = Vec::new();
     let mut input_row_in_content = None;
@@ -279,9 +299,9 @@ pub(crate) fn render_auth_dialog(
             "{}Authorization URL (click if supported){}",
             t.dim, t.reset
         ));
-        content.push(render_clickable_url(url));
+        content.extend(wrap_clickable_url(url, inner_width));
         content.push(format!(
-            "{}Alt+C copies this URL to your clipboard{}",
+            "{}Alt+C or F6 copies this URL to your clipboard{}",
             t.dim, t.reset
         ));
     }
@@ -311,55 +331,27 @@ pub(crate) fn render_auth_dialog(
 
     content.push(String::new());
     let shortcuts = if dialog.url.is_some() {
-        "Esc to cancel • Alt+C copy URL"
+        "Esc to cancel • Alt+C / F6 copy URL"
     } else {
         "Esc to cancel"
     };
     content.push(format!("{}{}{}", t.dim, shortcuts, t.reset));
 
-    let box_height = content
-        .len()
-        .saturating_add(2)
-        .min(height.saturating_sub(2));
-    let start_y = (height.saturating_sub(box_height)) / 2;
-    let start_x = (width.saturating_sub(box_width)) / 2;
+    let panel_height = content.len().min(height.saturating_sub(2));
+    let start_y = (height.saturating_sub(panel_height)) / 2;
+    let start_x = (width.saturating_sub(panel_width)) / 2;
 
     let mut rendered = Vec::new();
-    let border = "─".repeat(box_width.saturating_sub(2));
-    rendered.push((
-        start_y,
-        render_dialog_row(
-            width,
-            start_x,
-            format!("{}┌{}┐{}", t.border_accent, border, t.reset),
-        ),
-    ));
-    for row in 0..box_height.saturating_sub(2) {
+    for row in 0..panel_height {
         let content_line = content
             .get(row)
             .map(|s| truncate_to_width(s, inner_width))
             .unwrap_or_default();
-        let padded = pad_to_width(&content_line, inner_width);
         rendered.push((
-            start_y + 1 + row,
-            render_dialog_row(
-                width,
-                start_x,
-                format!(
-                    "{}│{}{}{}│{}",
-                    t.border_accent, t.reset, padded, t.border_accent, t.reset
-                ),
-            ),
+            start_y + row,
+            render_dialog_row(width, start_x, content_line),
         ));
     }
-    rendered.push((
-        start_y + box_height.saturating_sub(1),
-        render_dialog_row(
-            width,
-            start_x,
-            format!("{}└{}┘{}", t.border_accent, border, t.reset),
-        ),
-    ));
 
     let cursor = input_row_in_content.map(|row_index| {
         let input_text = if state.input.is_empty() {
@@ -367,9 +359,9 @@ pub(crate) fn render_auth_dialog(
         } else {
             state.input.clone()
         };
-        let input_row = start_y + 1 + row_index;
+        let input_row = start_y + row_index;
         let display = truncate_to_width(&format!("{input_prefix}{input_text}"), inner_width);
-        let input_col = start_x + 2 + visible_width(&display);
+        let input_col = start_x + visible_width(&display);
         (
             input_col.min(width.saturating_sub(1)) as u16,
             input_row.min(height.saturating_sub(1)) as u16,
