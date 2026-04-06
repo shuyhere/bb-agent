@@ -310,6 +310,63 @@ pub(crate) fn github_copilot_cached_models() -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub(crate) fn github_copilot_status() -> GithubCopilotStatus {
+    let store = load_auth();
+    let Some(entry) = store.providers.get("github-copilot") else {
+        return GithubCopilotStatus::default();
+    };
+
+    match entry {
+        AuthEntry::ProviderConfig { domain } => GithubCopilotStatus {
+            authority: Some(domain.clone()),
+            ..GithubCopilotStatus::default()
+        },
+        AuthEntry::OAuth { extra, .. } => GithubCopilotStatus {
+            authority: extra
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            login: extra
+                .get("login")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            api_base_url: extra
+                .get("copilot_api_base_url")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            cached_models: extra
+                .get("copilot_models")
+                .and_then(|value| value.as_array())
+                .map(|models| {
+                    models
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            github_access_expires_at: extra
+                .get("github_access_expires_at")
+                .and_then(|value| value.as_i64()),
+            github_refresh_expires_at: extra
+                .get("github_refresh_expires_at")
+                .and_then(|value| value.as_i64()),
+            copilot_expires_at: extra
+                .get("copilot_expires_at")
+                .and_then(|value| value.as_i64()),
+            has_oauth: true,
+        },
+        AuthEntry::ApiKey { .. } => GithubCopilotStatus::default(),
+    }
+}
+
+pub(crate) fn auth_source_label(provider: &str) -> &'static str {
+    match auth_source(provider) {
+        Some(AuthSource::BbAuth) => "bb auth.json",
+        Some(AuthSource::EnvVar) => "environment",
+        None => "not configured",
+    }
+}
+
 pub(crate) fn add_cached_github_copilot_models(
     registry: &mut bb_provider::registry::ModelRegistry,
 ) {
@@ -503,6 +560,18 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
 
     run_oauth_login(provider, callbacks).await?;
     println!("✓ Logged in to {provider}");
+    if provider == "github-copilot" {
+        let status = github_copilot_status();
+        if let Some(authority) = status.authority {
+            println!("  Authority: {authority}");
+        }
+        if let Some(login) = status.login {
+            println!("  GitHub user: {login}");
+        }
+        if !status.cached_models.is_empty() {
+            println!("  Refreshed Copilot models: {}", status.cached_models.len());
+        }
+    }
     println!("  Stored in: {}", auth_path().display());
     Ok(())
 }
@@ -570,6 +639,18 @@ fn get_provider_status(name: &str) -> &'static str {
 pub enum AuthSource {
     BbAuth,
     EnvVar,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GithubCopilotStatus {
+    pub authority: Option<String>,
+    pub login: Option<String>,
+    pub api_base_url: Option<String>,
+    pub cached_models: Vec<String>,
+    pub github_access_expires_at: Option<i64>,
+    pub github_refresh_expires_at: Option<i64>,
+    pub copilot_expires_at: Option<i64>,
+    pub has_oauth: bool,
 }
 
 /// Resolve which source provides auth for a provider, if any.

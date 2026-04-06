@@ -12,6 +12,13 @@ pub(crate) struct SessionInfoSummary {
     pub id: String,
     pub model: String,
     pub thinking: String,
+    pub auth_source: String,
+    pub copilot_authority: Option<String>,
+    pub copilot_login: Option<String>,
+    pub copilot_api_base_url: Option<String>,
+    pub copilot_cached_model_count: Option<usize>,
+    pub copilot_github_access_expires_at: Option<i64>,
+    pub copilot_runtime_expires_at: Option<i64>,
     pub user_messages: u64,
     pub assistant_messages: u64,
     pub tool_calls: u64,
@@ -66,8 +73,19 @@ pub(crate) fn collect_session_info_summary(
         id: session_id.to_string(),
         model: format!("{model_provider}/{model_id}"),
         thinking: thinking.to_string(),
+        auth_source: crate::login::auth_source_label(model_provider).to_string(),
         ..SessionInfoSummary::default()
     };
+
+    if model_provider == "github-copilot" {
+        let copilot = crate::login::github_copilot_status();
+        summary.copilot_authority = copilot.authority;
+        summary.copilot_login = copilot.login;
+        summary.copilot_api_base_url = copilot.api_base_url;
+        summary.copilot_cached_model_count = Some(copilot.cached_models.len());
+        summary.copilot_github_access_expires_at = copilot.github_access_expires_at;
+        summary.copilot_runtime_expires_at = copilot.copilot_expires_at;
+    }
 
     let registry = load_session_model_registry(conn, session_id);
     let rows = store::get_entries(conn, session_id)?;
@@ -111,7 +129,33 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     out.push_str(&format!("File: {}\n", summary.file));
     out.push_str(&format!("ID: {}\n", summary.id));
     out.push_str(&format!("Model: {}\n", summary.model));
-    out.push_str(&format!("Thinking: {}\n\n", summary.thinking));
+    out.push_str(&format!("Thinking: {}\n", summary.thinking));
+    out.push_str(&format!("Auth: {}\n", summary.auth_source));
+    if let Some(authority) = &summary.copilot_authority {
+        out.push_str(&format!("Copilot Authority: {}\n", authority));
+    }
+    if let Some(login) = &summary.copilot_login {
+        out.push_str(&format!("Copilot Login: {}\n", login));
+    }
+    if let Some(api_base_url) = &summary.copilot_api_base_url {
+        out.push_str(&format!("Copilot API: {}\n", api_base_url));
+    }
+    if let Some(count) = summary.copilot_cached_model_count {
+        out.push_str(&format!("Copilot Cached Models: {}\n", count));
+    }
+    if let Some(expires_at) = summary.copilot_github_access_expires_at {
+        out.push_str(&format!(
+            "GitHub OAuth Expires: {}\n",
+            format_timestamp(expires_at)
+        ));
+    }
+    if let Some(expires_at) = summary.copilot_runtime_expires_at {
+        out.push_str(&format!(
+            "Copilot Runtime Expires: {}\n",
+            format_timestamp(expires_at)
+        ));
+    }
+    out.push('\n');
 
     out.push_str("Messages\n");
     out.push_str(&format!("User: {}\n", format_u64(summary.user_messages)));
@@ -152,6 +196,12 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     }
 
     out
+}
+
+fn format_timestamp(timestamp_ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
 fn format_u64(value: u64) -> String {

@@ -1097,6 +1097,13 @@ impl FullscreenController {
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
                     ));
+                } else if provider == "github-copilot" {
+                    let model_count = crate::login::github_copilot_cached_models().len();
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Logged in to {} • refreshed {} models",
+                        crate::login::provider_display_name(provider),
+                        model_count
+                    )));
                 } else {
                     self.send_command(FullscreenCommand::SetStatusLine(format!(
                         "Logged in to {}",
@@ -1159,7 +1166,7 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::PushNote {
             level: FullscreenNoteLevel::Status,
             text: format!(
-                "GitHub Copilot authority configured for {domain}. OAuth sign-in is not implemented yet in bb; this only stores the target host for the upcoming Copilot auth flow."
+                "GitHub Copilot authority configured for {domain}. bb will use this authority for the GitHub device flow and Copilot token exchange."
             ),
         });
         Ok(())

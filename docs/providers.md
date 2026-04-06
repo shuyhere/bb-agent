@@ -32,6 +32,7 @@ For GitHub Copilot, `bb` now supports:
 - Copilot runtime token exchange via GitHub's Copilot token endpoint
 - Copilot runtime token refresh by re-exchanging the saved GitHub OAuth session
 - `/models` validation and cached Copilot model discovery
+- Copilot auth/session visibility in `/session`
 
 Current limitations:
 - Copilot request behavior is wired through the OpenAI-compatible runtime path and may still need endpoint/header adjustments for some models or enterprise installations
