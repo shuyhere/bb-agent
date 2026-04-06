@@ -164,18 +164,23 @@ fn build_device_oauth_dialog(
         steps: vec![
             auth_step("Open verification page", FullscreenAuthStepState::Done),
             auth_step(
-                "Enter device code in your browser",
+                "Get the device code from this bb screen",
+                FullscreenAuthStepState::Done,
+            ),
+            auth_step(
+                "Enter the device code in your browser",
                 FullscreenAuthStepState::Active,
             ),
             auth_step(
-                "Wait for bb to receive credentials",
+                "Wait for bb to finish sign-in automatically",
                 FullscreenAuthStepState::Pending,
             ),
         ],
         url: Some(verification_uri),
         lines: vec![
-            format!("Device code: {user_code}"),
-            "A future bb release will poll and exchange Copilot device tokens here.".to_string(),
+            "bb generated the device code for you. Copy the code shown below from this screen and enter it on the GitHub verification page.".to_string(),
+            format!("Device code (from bb): {user_code}"),
+            "This flow does not use a localhost callback URL.".to_string(),
         ],
         input_label: None,
         input_placeholder: None,
@@ -916,7 +921,7 @@ impl FullscreenController {
         let label = crate::login::provider_display_name(provider);
         let (manual_tx, manual_rx) = oneshot::channel::<String>();
         let mut manual_tx = Some(manual_tx);
-        let dialog_shared = Arc::new(Mutex::new((None::<String>, None::<String>)));
+        let dialog_shared = Arc::new(Mutex::new((None::<String>, None::<String>, None::<String>)));
 
         self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
@@ -946,6 +951,7 @@ impl FullscreenController {
                     if let Ok(mut shared) = dialog_shared.lock() {
                         shared.0 = Some(url.clone());
                         shared.1 = Some(launcher_hint.to_string());
+                        shared.2 = None;
                     }
                     let _ =
                         command_tx.send(FullscreenCommand::UpdateAuthDialog(build_oauth_dialog(
@@ -964,12 +970,12 @@ impl FullscreenController {
                 move |device| {
                     if let Ok(mut shared) = dialog_shared.lock() {
                         shared.0 = Some(device.verification_uri.clone());
-                        shared.1 = Some(
-                            "Open the verification URL and enter the device code.".to_string(),
-                        );
+                        shared.1 =
+                            Some("bb generated the device code shown on this screen.".to_string());
+                        shared.2 = Some(device.user_code.clone());
                     }
                     let _ = command_tx.send(FullscreenCommand::SetStatusLine(format!(
-                        "Enter device code {} in your browser",
+                        "Enter device code {} from bb in your browser",
                         device.user_code
                     )));
                     let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
@@ -988,20 +994,29 @@ impl FullscreenController {
                 let label = label.clone();
                 let dialog_shared = dialog_shared.clone();
                 move |msg: String| {
-                    let (url, launcher_hint) = if let Ok(shared) = dialog_shared.lock() {
-                        (shared.0.clone(), shared.1.clone())
+                    let (url, launcher_hint, device_code) = if let Ok(shared) = dialog_shared.lock()
+                    {
+                        (shared.0.clone(), shared.1.clone(), shared.2.clone())
                     } else {
-                        (None, None)
-                    };
-                    let stage = if msg.contains("Exchanging authorization code") {
-                        OAuthDialogStage::ExchangingTokens
-                    } else {
-                        OAuthDialogStage::WaitingForBrowser
+                        (None, None, None)
                     };
                     let _ = command_tx.send(FullscreenCommand::SetStatusLine(msg.clone()));
-                    let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
-                        build_oauth_dialog(&label, &msg, stage, url, launcher_hint),
-                    ));
+                    let dialog = if let Some(user_code) = device_code {
+                        build_device_oauth_dialog(
+                            &label,
+                            &msg,
+                            url.unwrap_or_else(|| "https://github.com/login/device".to_string()),
+                            user_code,
+                        )
+                    } else {
+                        let stage = if msg.contains("Exchanging authorization code") {
+                            OAuthDialogStage::ExchangingTokens
+                        } else {
+                            OAuthDialogStage::WaitingForBrowser
+                        };
+                        build_oauth_dialog(&label, &msg, stage, url, launcher_hint)
+                    };
+                    let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(dialog));
                 }
             })),
         };

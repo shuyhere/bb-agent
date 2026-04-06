@@ -550,7 +550,11 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
         }),
         on_device_code: Some(Box::new(|device| {
             println!("Device verification URL: {}", device.verification_uri);
-            println!("Device code: {}", device.user_code);
+            println!(
+                "bb generated this device code for you: {}",
+                device.user_code
+            );
+            println!("Enter that code on the GitHub device page above.");
         })),
         on_manual_input: None,
         on_progress: Some(Box::new(|msg: String| {
