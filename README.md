@@ -26,11 +26,11 @@ This compiles the `bb` binary and installs it to `~/.cargo/bin/bb` (which Rust a
 ### npm (Linux x86_64 — prebuilt binary)
 
 ```bash
-npm install -g bb-agent
+npm install -g @shuyhere/bb-agent
 ```
 
 > **macOS / other platforms:** npm install will print instructions to build from source.
-> Prebuilt binaries for macOS are coming soon.
+> Prebuilt binaries for macOS coming soon. After install, run `bb` to start.
 
 ## Getting Started
 
