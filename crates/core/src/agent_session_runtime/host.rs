@@ -30,10 +30,10 @@ pub fn create_agent_session_runtime(
         ..AgentSessionConfig::default()
     });
 
-    let mut runtime = AgentSessionRuntime::default();
-    runtime.model = session
-        .model()
-        .map(|model| runtime_model_from_session_model(model));
+    let runtime = AgentSessionRuntime {
+        model: session.model().map(runtime_model_from_session_model),
+        ..AgentSessionRuntime::default()
+    };
 
     AgentSessionRuntimeHandle {
         cwd: options.cwd,
@@ -96,7 +96,7 @@ impl AgentSessionRuntimeHost {
         self.bootstrap.thinking_level = Some(self.current.session.thinking_level());
         let cwd = self.current.cwd.clone();
         let session_start_event = Some(crate::agent_session::SessionStartEvent {
-            reason: "reload".to_string(),
+            reason: crate::agent_session_extensions::SessionStartReason::Reload,
         });
         self.current = create_agent_session_runtime(
             &self.bootstrap,

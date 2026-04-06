@@ -1,31 +1,48 @@
 use bb_core::types::ContentBlock;
 
-pub(crate) fn format_tool_call_title(name: &str, raw_args: &str) -> String {
-    let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
-        return name.to_string();
-    };
+pub fn format_tool_call_title(name: &str, raw_args: &str) -> String {
+    let parsed_args = serde_json::from_str::<serde_json::Value>(raw_args).ok();
 
-    match name {
+    let inner = match name {
         "bash" => {
-            let first_line = args
-                .get("command")
+            let full_cmd = parsed_args
+                .as_ref()
+                .and_then(|args| args.get("command"))
                 .and_then(|value| value.as_str())
-                .unwrap_or_default()
+                .map(str::to_string)
+                .or_else(|| {
+                    crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "command")
+                })
+                .unwrap_or_default();
+            // Find the first non-empty, non-comment line as the display command.
+            // If all lines are comments, fall back to the first non-empty line.
+            let first_real = full_cmd
                 .lines()
-                .find(|line| !line.trim().is_empty())
+                .find(|line| {
+                    let t = line.trim();
+                    !t.is_empty() && !t.starts_with('#')
+                })
+                .or_else(|| full_cmd.lines().find(|line| !line.trim().is_empty()))
                 .unwrap_or_default()
-                .trim()
-                .to_string();
-            if first_line.is_empty() {
-                "bash".to_string()
+                .trim();
+            // Truncate very long commands for the header
+            if first_real.len() > 120 {
+                format!("{}…", &first_real[..119])
             } else {
-                format!("$ {first_line}")
+                first_real.to_string()
             }
         }
         "read" => {
-            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
-            let offset = args.get("offset").and_then(|value| value.as_u64());
-            let limit = args.get("limit").and_then(|value| value.as_u64());
+            let path = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")
+                .unwrap_or_default();
+            let offset = parsed_args
+                .as_ref()
+                .and_then(|args| args.get("offset"))
+                .and_then(|value| value.as_u64());
+            let limit = parsed_args
+                .as_ref()
+                .and_then(|args| args.get("limit"))
+                .and_then(|value| value.as_u64());
             let mut line_suffix = String::new();
             if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1);
@@ -36,58 +53,98 @@ pub(crate) fn format_tool_call_title(name: &str, raw_args: &str) -> String {
                     line_suffix = format!(":{start}");
                 }
             }
-            if path.is_empty() {
-                "read".to_string()
-            } else {
-                format!("read {}{line_suffix}", shorten_display_path(path))
-            }
+            format!("{}{line_suffix}", shorten_display_path(&path))
         }
-        "write" | "edit" => {
-            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or_default();
-            if path.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name} {}", shorten_display_path(path))
-            }
-        }
+        "write" | "edit" => crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")
+            .map(|path| shorten_display_path(&path))
+            .unwrap_or_default(),
         "ls" => {
-            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
-            let limit = args.get("limit").and_then(|value| value.as_u64());
+            let path_owned = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")
+                .unwrap_or_else(|| ".".to_string());
+            let path = path_owned.as_str();
+            let limit = parsed_args
+                .as_ref()
+                .and_then(|args| args.get("limit"))
+                .and_then(|value| value.as_u64());
             match limit {
-                Some(limit) => format!("ls {} (limit {limit})", shorten_display_path(path)),
-                None => format!("ls {}", shorten_display_path(path)),
+                Some(limit) => format!("{} limit={limit}", shorten_display_path(path)),
+                None => shorten_display_path(path),
             }
         }
         "grep" => {
-            let pattern = args
-                .get("pattern")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
-            let glob = args.get("glob").and_then(|value| value.as_str());
-            let mut title = if pattern.is_empty() {
-                format!("grep {}", shorten_display_path(path))
+            let pattern_owned =
+                crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "pattern")
+                    .unwrap_or_default();
+            let path_owned = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")
+                .unwrap_or_else(|| ".".to_string());
+            let pattern = pattern_owned.as_str();
+            let path = path_owned.as_str();
+            let glob_owned = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "glob");
+            let glob = glob_owned.as_deref();
+            let mut text = if pattern.is_empty() {
+                shorten_display_path(path)
             } else {
-                format!("grep /{pattern}/ in {}", shorten_display_path(path))
+                format!("/{pattern}/ {}", shorten_display_path(path))
             };
             if let Some(glob) = glob.filter(|glob| !glob.is_empty()) {
-                title.push_str(&format!(" ({glob})"));
+                text.push_str(&format!(" {glob}"));
             }
-            title
+            text
         }
         "find" => {
-            let pattern = args
-                .get("pattern")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            let path = args.get("path").and_then(|value| value.as_str()).unwrap_or(".");
+            let pattern_owned =
+                crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "pattern")
+                    .unwrap_or_default();
+            let path_owned = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")
+                .unwrap_or_else(|| ".".to_string());
+            let pattern = pattern_owned.as_str();
+            let path = path_owned.as_str();
             if pattern.is_empty() {
-                format!("find {}", shorten_display_path(path))
+                shorten_display_path(path)
             } else {
-                format!("find {pattern} in {}", shorten_display_path(path))
+                format!("{pattern} {}", shorten_display_path(path))
             }
         }
-        _ => name.to_string(),
+        "web_search" => {
+            let query = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "query")
+                .unwrap_or_default();
+            if query.chars().count() > 120 {
+                let prefix: String = query.chars().take(119).collect();
+                format!("\"{prefix}…\"")
+            } else if query.is_empty() {
+                String::new()
+            } else {
+                format!("\"{query}\"")
+            }
+        }
+        "web_fetch" | "browser_fetch" => {
+            crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "url")
+                .map(|url| shorten_display_path(&url))
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+
+    if inner.trim().is_empty() {
+        capitalize_tool_name(name).to_string()
+    } else {
+        format!("{}({inner})", capitalize_tool_name(name))
+    }
+}
+
+fn capitalize_tool_name(name: &str) -> &'static str {
+    match name {
+        "bash" => "Bash",
+        "read" => "Read",
+        "write" => "Write",
+        "edit" => "Edit",
+        "ls" => "LS",
+        "grep" => "Grep",
+        "find" => "Find",
+        "web_search" => "WebSearch",
+        "web_fetch" => "WebFetch",
+        "browser_fetch" => "BrowserFetch",
+        _ => "Tool",
     }
 }
 
@@ -95,19 +152,19 @@ pub(crate) fn shorten_display_path(path: &str) -> String {
     if path.is_empty() {
         return String::new();
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if path.starts_with(&home) {
-            return format!("~{}", &path[home.len()..]);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && path.starts_with(&home)
+    {
+        return format!("~{}", &path[home.len()..]);
     }
     path.to_string()
 }
 
-pub(crate) fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> String {
+pub fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> String {
     crate::tool_preview::format_tool_call_content(name, raw_args, expanded)
 }
 
-pub(crate) fn format_tool_result_content(
+pub fn format_tool_result_content(
     name: &str,
     content: &[ContentBlock],
     details: Option<serde_json::Value>,

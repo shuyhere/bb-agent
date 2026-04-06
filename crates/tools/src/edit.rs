@@ -1,13 +1,23 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
 use bb_core::types::ContentBlock;
-use serde_json::{json, Value};
-use std::path::Path;
+use serde_json::{Value, json};
+use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::{diff, Tool, ToolContext, ToolResult};
+use crate::{Tool, ToolContext, ToolResult, diff, path::resolve_path};
+
+#[cfg(test)]
+mod tests;
 
 pub struct EditTool;
+
+struct PlannedEdit<'a> {
+    index: usize,
+    start: usize,
+    end: usize,
+    new_text: &'a str,
+}
 
 #[async_trait]
 impl Tool for EditTool {
@@ -53,12 +63,7 @@ impl Tool for EditTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| BbError::Tool("Missing 'path' parameter".into()))?;
 
-        let path_str = path_str.strip_prefix('@').unwrap_or(path_str);
-        let path = if Path::new(path_str).is_absolute() {
-            Path::new(path_str).to_path_buf()
-        } else {
-            ctx.cwd.join(path_str)
-        };
+        let path = resolve_path(&ctx.cwd, path_str);
 
         let edits = params
             .get("edits")
@@ -73,37 +78,65 @@ impl Tool for EditTool {
             .await
             .map_err(|e| BbError::Tool(format!("Failed to read {}: {e}", path.display())))?;
 
-        let mut content = old_content.clone();
-
-        let mut applied = 0;
         let mut errors = Vec::new();
+        let mut planned = Vec::new();
 
         for (i, edit) in edits.iter().enumerate() {
-            let old_text = edit
-                .get("oldText")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let new_text = edit
-                .get("newText")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let old_text = edit.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
+            let new_text = edit.get("newText").and_then(|v| v.as_str()).unwrap_or("");
 
             if old_text.is_empty() {
                 errors.push(format!("Edit {i}: oldText is empty"));
                 continue;
             }
 
-            let count = content.matches(old_text).count();
-            if count == 0 {
-                errors.push(format!("Edit {i}: oldText not found in file"));
-                continue;
+            let matches: Vec<_> = old_content.match_indices(old_text).collect();
+            match matches.as_slice() {
+                [] => {
+                    errors.push(format!("Edit {i}: oldText not found in file"));
+                }
+                [(start, _matched)] => {
+                    planned.push(PlannedEdit {
+                        index: i,
+                        start: *start,
+                        end: *start + old_text.len(),
+                        new_text,
+                    });
+                }
+                _ => {
+                    errors.push(format!(
+                        "Edit {i}: oldText matches {} locations (must be unique)",
+                        matches.len()
+                    ));
+                }
             }
-            if count > 1 {
-                errors.push(format!("Edit {i}: oldText matches {count} locations (must be unique)"));
-                continue;
-            }
+        }
 
-            content = content.replacen(old_text, new_text, 1);
+        let mut overlapping_edits = HashSet::new();
+        for left in 0..planned.len() {
+            for right in (left + 1)..planned.len() {
+                let current = &planned[left];
+                let other = &planned[right];
+                let overlaps = current.start < other.end && other.start < current.end;
+                if overlaps {
+                    overlapping_edits.insert(current.index);
+                    overlapping_edits.insert(other.index);
+                    errors.push(format!(
+                        "Edits {} and {} overlap in the original file; merge nearby changes into one edit",
+                        current.index, other.index
+                    ));
+                }
+            }
+        }
+
+        let mut content = old_content.clone();
+        let mut applied = 0;
+        planned.sort_by(|left, right| right.start.cmp(&left.start));
+        for edit in planned {
+            if overlapping_edits.contains(&edit.index) {
+                continue;
+            }
+            content.replace_range(edit.start..edit.end, edit.new_text);
             applied += 1;
         }
 
@@ -113,14 +146,23 @@ impl Tool for EditTool {
                 .map_err(|e| BbError::Tool(format!("Failed to write {}: {e}", path.display())))?;
         }
 
-        let mut msg = format!("Applied {applied}/{} edit(s) to {path_str}", edits.len());
-        if applied > 0 {
-            let diff_lines = diff::generate_diff(&old_content, &content, 3);
+        // Generate the diff once and reuse it
+        let diff_str = if applied > 0 {
+            let diff_lines = diff::generate_diff(&old_content, &content, 4);
             let rendered = diff::render_diff(&diff_lines);
-            if !rendered.is_empty() {
-                msg.push('\n');
-                msg.push_str(&rendered.join("\n"));
+            if rendered.is_empty() {
+                None
+            } else {
+                Some(rendered.join("\n"))
             }
+        } else {
+            None
+        };
+
+        let mut msg = format!("Applied {applied}/{} edit(s) to {path_str}", edits.len());
+        if let Some(ref diff) = diff_str {
+            msg.push('\n');
+            msg.push_str(diff);
         }
         if !errors.is_empty() {
             msg.push_str(&format!("\nErrors:\n{}", errors.join("\n")));
@@ -133,7 +175,7 @@ impl Tool for EditTool {
                 "applied": applied,
                 "total": edits.len(),
                 "errors": errors,
-                "diff": if applied > 0 { Some(diff::render_diff(&diff::generate_diff(&old_content, &content, 3)).join("\n")) } else { None },
+                "diff": diff_str,
             })),
             is_error: !errors.is_empty(),
             artifact_path: None,

@@ -1,39 +1,72 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::SystemTime};
 
-use anyhow::Result;
 use bb_core::agent_session_runtime::AgentSessionRuntimeHost;
-use bb_session::store;
-use bb_tui::footer::detect_git_branch;
-use bb_tui::fullscreen::{
-    FullscreenCommand, FullscreenFooterData, FullscreenSubmission,
-};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::interactive::{InteractiveModeOptions, InteractiveSessionSetup};
-use crate::slash::dispatch_local_slash_command;
+use crate::session_bootstrap::{SessionRuntimeSetup, SessionUiOptions};
 
-use super::{format_tokens, shorten_home_path};
+mod loop_impl;
+mod resources;
+mod ui;
+
+/// An image file queued for attachment to the next prompt.
+#[derive(Clone, Debug)]
+pub(super) struct PendingImage {
+    pub data: String,
+    pub mime_type: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ResourceWatchState {
+    global_settings_mtime: Option<SystemTime>,
+    project_settings_mtime: Option<SystemTime>,
+}
+
+impl ResourceWatchState {
+    fn capture(cwd: &std::path::Path) -> Self {
+        Self {
+            global_settings_mtime: settings_mtime(
+                &bb_core::config::global_dir().join("settings.json"),
+            ),
+            project_settings_mtime: settings_mtime(
+                &bb_core::config::project_dir(cwd).join("settings.json"),
+            ),
+        }
+    }
+}
+
+fn settings_mtime(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
 
 pub(super) struct FullscreenController {
     pub(super) runtime_host: AgentSessionRuntimeHost,
-    pub(super) session_setup: InteractiveSessionSetup,
-    pub(super) options: InteractiveModeOptions,
-    pub(super) command_tx: mpsc::UnboundedSender<FullscreenCommand>,
+    pub(super) session_setup: SessionRuntimeSetup,
+    pub(super) options: SessionUiOptions,
+    pub(super) command_tx: mpsc::UnboundedSender<bb_tui::fullscreen::FullscreenCommand>,
     pub(super) abort_token: CancellationToken,
     pub(super) streaming: bool,
     pub(super) retry_status: Option<String>,
     pub(super) queued_prompts: VecDeque<String>,
+    pub(super) pending_tree_summary_target: Option<String>,
+    pub(super) pending_tree_custom_prompt_target: Option<String>,
+    pub(super) pending_images: Vec<PendingImage>,
+    pub(super) local_action_cancel: Option<CancellationToken>,
+    pub(super) color_theme: bb_tui::fullscreen::spinner::ColorTheme,
     pub(super) shutdown_requested: bool,
+    resource_watch: ResourceWatchState,
+    suppress_next_resource_watch_reload: bool,
 }
 
 impl FullscreenController {
     pub(super) fn new(
         runtime_host: AgentSessionRuntimeHost,
-        options: InteractiveModeOptions,
-        session_setup: InteractiveSessionSetup,
-        command_tx: mpsc::UnboundedSender<FullscreenCommand>,
+        options: SessionUiOptions,
+        session_setup: SessionRuntimeSetup,
+        command_tx: mpsc::UnboundedSender<bb_tui::fullscreen::FullscreenCommand>,
     ) -> Self {
+        let resource_watch = ResourceWatchState::capture(&session_setup.tool_ctx.cwd);
         Self {
             runtime_host,
             session_setup,
@@ -43,330 +76,14 @@ impl FullscreenController {
             streaming: false,
             retry_status: None,
             queued_prompts: VecDeque::new(),
+            pending_tree_summary_target: None,
+            pending_tree_custom_prompt_target: None,
+            pending_images: Vec::new(),
+            local_action_cancel: None,
+            color_theme: bb_tui::fullscreen::spinner::ColorTheme::default(),
             shutdown_requested: false,
+            resource_watch,
+            suppress_next_resource_watch_reload: false,
         }
-    }
-
-    pub(super) async fn run(
-        mut self,
-        mut submission_rx: mpsc::UnboundedReceiver<FullscreenSubmission>,
-    ) -> Result<()> {
-        self.publish_footer();
-        self.show_startup_resources();
-
-        if let Some(initial_message) = self.options.initial_message.take() {
-            if let Err(err) = self
-                .handle_submitted_text(initial_message, &mut submission_rx)
-                .await
-            {
-                tracing::error!("initial message error: {err}");
-                self.send_command(FullscreenCommand::PushNote {
-                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                    text: format!("Error: {err}"),
-                });
-            }
-        }
-
-        for message in std::mem::take(&mut self.options.initial_messages) {
-            if let Err(err) = self
-                .handle_submitted_text(message, &mut submission_rx)
-                .await
-            {
-                tracing::error!("initial message error: {err}");
-                self.send_command(FullscreenCommand::PushNote {
-                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                    text: format!("Error: {err}"),
-                });
-            }
-        }
-
-        while !self.shutdown_requested {
-            let Some(submission) = submission_rx.recv().await else {
-                self.abort_token.cancel();
-                break;
-            };
-            if let Err(err) = self
-                .handle_submission(submission, &mut submission_rx)
-                .await
-            {
-                // Show the error but do NOT exit — let the user keep working.
-                tracing::error!("submission error: {err}");
-                self.send_command(FullscreenCommand::PushNote {
-                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                    text: format!("Error: {err}"),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_submission(
-        &mut self,
-        submission: FullscreenSubmission,
-        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
-    ) -> Result<()> {
-        match submission {
-            FullscreenSubmission::Input(text) => {
-                self.handle_submitted_text(text, submission_rx).await
-            }
-            FullscreenSubmission::MenuSelection { menu_id, value } => {
-                if let Err(err) = self.handle_menu_selection(&menu_id, &value).await {
-                    tracing::error!("menu selection error: {err}");
-                    self.send_command(FullscreenCommand::PushNote {
-                        level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                        text: format!("Error: {err}"),
-                    });
-                }
-                Ok(())
-            }
-        }
-    }
-
-    pub(super) async fn handle_submitted_text(
-        &mut self,
-        text: String,
-        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
-    ) -> Result<()> {
-        let text = text.trim().to_string();
-        if text.is_empty() || text == "/" {
-            return Ok(());
-        }
-
-        if self.handle_local_submission(&text).await? {
-            return Ok(());
-        }
-
-        if self.streaming {
-            self.queued_prompts.push_back(text);
-            self.publish_status();
-            return Ok(());
-        }
-
-        if let Err(err) = self.dispatch_prompt(text, submission_rx).await {
-            tracing::error!("prompt dispatch error: {err}");
-            self.send_command(FullscreenCommand::PushNote {
-                level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                text: format!("Error: {err}"),
-            });
-            self.streaming = false;
-            self.publish_status();
-            return Ok(());
-        }
-        if let Err(err) = self.drain_queued_prompts(submission_rx).await {
-            tracing::error!("drain queued error: {err}");
-            self.send_command(FullscreenCommand::PushNote {
-                level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                text: format!("Error: {err}"),
-            });
-            self.streaming = false;
-            self.publish_status();
-        }
-        Ok(())
-    }
-
-    pub(super) async fn handle_local_submission(&mut self, text: &str) -> Result<bool> {
-        match dispatch_local_slash_command(self, text) {
-            Ok(handled) => Ok(handled),
-            Err(err) => {
-                tracing::error!("local command error: {err}");
-                self.send_command(FullscreenCommand::PushNote {
-                    level: bb_tui::fullscreen::FullscreenNoteLevel::Error,
-                    text: format!("Command error: {err}"),
-                });
-                Ok(true) // treated as handled to prevent sending as prompt
-            }
-        }
-    }
-
-    pub(super) fn send_command(&mut self, command: FullscreenCommand) {
-        if self.command_tx.send(command).is_err() {
-            self.shutdown_requested = true;
-        }
-    }
-
-    pub(super) fn publish_status(&mut self) {
-        self.send_command(FullscreenCommand::SetStatusLine(self.status_line()));
-    }
-
-    fn show_startup_resources(&mut self) {
-        let bootstrap = &self.runtime_host.bootstrap().resource_bootstrap;
-        tracing::debug!(
-            "show_startup_resources: skills={} prompts={} extensions={}",
-            bootstrap.skills.len(),
-            bootstrap.prompts.len(),
-            bootstrap.extensions.extensions.len()
-        );
-        let mut sections: Vec<String> = Vec::new();
-
-        // Skills section — one line per skill: path (pi-style)
-        if !bootstrap.skills.is_empty() {
-            let mut skill_lines = vec!["[Skills]".to_string()];
-            for skill in &bootstrap.skills {
-                let path = super::shorten_path(&skill.info.source_info.path);
-                skill_lines.push(format!("  {}", path));
-            }
-            sections.push(skill_lines.join("\n"));
-        }
-
-        // Prompts section — one line per prompt: /name
-        if !bootstrap.prompts.is_empty() {
-            let mut prompt_lines = vec!["[Prompts]".to_string()];
-            for prompt in &bootstrap.prompts {
-                let path = super::shorten_path(&prompt.info.source_info.path);
-                prompt_lines.push(format!("  {}", path));
-            }
-            sections.push(prompt_lines.join("\n"));
-        }
-
-        // Extensions section
-        let extensions = &bootstrap.extensions;
-        if !extensions.extensions.is_empty() {
-            let mut ext_lines = vec!["[Extensions]".to_string()];
-            for ext in &extensions.extensions {
-                ext_lines.push(format!("  {}", super::shorten_path(&ext.path)));
-            }
-            sections.push(ext_lines.join("\n"));
-        }
-
-        if sections.is_empty() {
-            return;
-        }
-
-        let mut resource_lines = Vec::new();
-        for section in &sections {
-            for line in section.lines() {
-                resource_lines.push(line.to_string());
-            }
-        }
-
-        self.send_command(FullscreenCommand::PushNote {
-            level: bb_tui::fullscreen::FullscreenNoteLevel::Status,
-            text: resource_lines.join("\n"),
-        });
-    }
-
-    pub(super) fn publish_footer(&mut self) {
-        self.send_command(FullscreenCommand::SetFooter(self.current_footer_data()));
-    }
-
-    fn status_line(&self) -> String {
-        if let Some(status) = &self.retry_status {
-            return status.to_string();
-        }
-
-        let mut status = if self.streaming {
-            String::from("Working...")
-        } else {
-            String::new()
-        };
-        if !self.queued_prompts.is_empty() {
-            if status.is_empty() {
-                status = format!("Queued {}", self.queued_prompts.len());
-            } else {
-                status.push_str(&format!(" • queued {}", self.queued_prompts.len()));
-            }
-        }
-        status
-    }
-
-    fn current_footer_data(&self) -> FullscreenFooterData {
-        let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
-        let mut line1 = if let Some(branch) = detect_git_branch(&cwd) {
-            format!("{} ({branch})", shorten_home_path(&cwd))
-        } else {
-            shorten_home_path(&cwd)
-        };
-
-        if let Ok(Some(row)) =
-            store::get_session(&self.session_setup.conn, &self.session_setup.session_id)
-        {
-            if let Some(name) = row.name {
-                if !name.is_empty() {
-                    line1.push_str(" • ");
-                    line1.push_str(&name);
-                }
-            }
-        }
-
-        let (input_tokens, output_tokens, cache_read, cache_write, cost) =
-            self.footer_usage_totals();
-        let mut left_parts = Vec::new();
-        if input_tokens > 0 {
-            left_parts.push(format!("↑{}", format_tokens(input_tokens)));
-        }
-        if output_tokens > 0 {
-            left_parts.push(format!("↓{}", format_tokens(output_tokens)));
-        }
-        if cache_read > 0 {
-            left_parts.push(format!("R{}", format_tokens(cache_read)));
-        }
-        if cache_write > 0 {
-            left_parts.push(format!("W{}", format_tokens(cache_write)));
-        }
-        if cost > 0.0 {
-            left_parts.push(format!("${cost:.3}"));
-        }
-        let context_window = self.session_setup.model.context_window;
-        left_parts.push(format!(
-            "?/{ctx} (auto)",
-            ctx = format_tokens(context_window)
-        ));
-
-        let right = if self.session_setup.thinking_level == "off" {
-            format!(
-                "({}) {} • thinking off",
-                self.session_setup.model.provider, self.session_setup.model.id
-            )
-        } else {
-            format!(
-                "({}) {} • {}",
-                self.session_setup.model.provider,
-                self.session_setup.model.id,
-                self.session_setup.thinking_level
-            )
-        };
-
-        FullscreenFooterData {
-            line1,
-            line2_left: left_parts.join(" "),
-            line2_right: right,
-        }
-    }
-
-    fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
-        let mut total_input = 0_u64;
-        let mut total_output = 0_u64;
-        let mut total_cache_read = 0_u64;
-        let mut total_cache_write = 0_u64;
-        let mut total_cost = 0.0_f64;
-
-        if let Ok(rows) =
-            store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)
-        {
-            for row in rows {
-                if let Ok(entry) = store::parse_entry(&row) {
-                    if let bb_core::types::SessionEntry::Message {
-                        message: bb_core::types::AgentMessage::Assistant(message),
-                        ..
-                    } = entry
-                    {
-                        total_input += message.usage.input;
-                        total_output += message.usage.output;
-                        total_cache_read += message.usage.cache_read;
-                        total_cache_write += message.usage.cache_write;
-                        total_cost += message.usage.cost.total;
-                    }
-                }
-            }
-        }
-
-        (
-            total_input,
-            total_output,
-            total_cache_read,
-            total_cache_write,
-            total_cost,
-        )
     }
 }

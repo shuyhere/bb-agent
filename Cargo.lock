@@ -113,7 +113,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bb-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -128,6 +128,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "futures",
  "glob",
  "rand 0.8.5",
  "reqwest",
@@ -147,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "bb-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -161,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "bb-hooks"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -174,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "bb-plugin-host"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -189,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "bb-provider"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -208,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "bb-session"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -227,13 +228,15 @@ dependencies = [
 
 [[package]]
 name = "bb-tools"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64",
  "bb-core",
+ "bb-provider",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "similar",
@@ -247,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "bb-tui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -257,12 +260,15 @@ dependencies = [
  "chrono",
  "crossterm",
  "pulldown-cmark",
+ "rand 0.8.5",
+ "regex",
  "serde",
  "serde_json",
  "syntect",
  "thiserror",
  "tokio",
  "tracing",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
@@ -2058,6 +2064,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
 
 [[package]]
 name = "unicode-width"

@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
 
-use super::callback_server::{start_callback_server, CallbackParams, CallbackServerParts};
+use super::callback_server::{CallbackParams, CallbackServerParts, start_callback_server};
 use super::pkce::generate_pkce;
 use super::{OAuthCallbacks, OAuthCredentials};
 
-// ── Constants (matching pi) ──────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -25,9 +25,6 @@ struct TokenResponse {
     refresh_token: String,
     #[serde(default)]
     expires_in: i64,
-    #[serde(default)]
-    #[allow(dead_code)]
-    id_token: Option<String>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -38,7 +35,7 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
 
     let state = uuid::Uuid::new_v4().to_string();
 
-    // Build auth URL — must match pi exactly (no audience param).
+    // Build the OAuth authorization URL. No audience parameter is required.
     let auth_url = format!(
         "{AUTHORIZE_URL}?\
          response_type=code\
@@ -48,8 +45,7 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
          &code_challenge={challenge}\
          &code_challenge_method=S256\
          &state={state}\
-         &#[allow(dead_code)]
-    id_token_add_organizations=true\
+         &id_token_add_organizations=true\
          &codex_cli_simplified_flow=true\
          &originator=bb",
         redirect = url_encode(REDIRECT_URI),
@@ -67,7 +63,10 @@ pub async fn login_openai_codex(callbacks: OAuthCallbacks) -> Result<OAuthCreden
     let server = start_callback_server(CALLBACK_PORT, CALLBACK_PATH).await?;
 
     // Race: browser callback vs manual paste.
-    let CallbackServerParts { result_rx, cancel_tx } = server.into_parts();
+    let CallbackServerParts {
+        result_rx,
+        cancel_tx,
+    } = server.into_parts();
     let params = match callbacks.on_manual_input {
         Some(manual_rx) => {
             tokio::select! {
@@ -116,7 +115,10 @@ pub async fn refresh_openai_codex_token(refresh_token: &str) -> Result<OAuthCred
         anyhow::bail!("OpenAI token refresh failed ({status}): {body}");
     }
 
-    let token: TokenResponse = resp.json().await.context("Failed to parse token response")?;
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse token response")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     let account_id = extract_account_id(&token.access_token);
@@ -156,7 +158,10 @@ async fn exchange_code(code: &str, verifier: &str) -> Result<OAuthCredentials> {
         anyhow::bail!("OpenAI token exchange failed ({status}): {body}");
     }
 
-    let token: TokenResponse = resp.json().await.context("Failed to parse token response")?;
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse token response")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     let account_id = extract_account_id(&token.access_token);
@@ -201,7 +206,7 @@ fn extract_account_id(jwt: &str) -> Option<String> {
     None
 }
 
-// ── Input parsing (matches pi's parseAuthorizationInput) ────────────
+// ── Input parsing ────────────────────────────────────────────────────
 
 struct ParsedInput {
     code: Option<String>,
@@ -216,13 +221,22 @@ struct ParsedInput {
 fn parse_authorization_input(input: &str) -> ParsedInput {
     let value = input.trim();
     if value.is_empty() {
-        return ParsedInput { code: None, state: None };
+        return ParsedInput {
+            code: None,
+            state: None,
+        };
     }
 
     // Try as URL
     if let Ok(url) = url::Url::parse(value) {
-        let code = url.query_pairs().find(|(k, _)| k == "code").map(|(_, v)| v.to_string());
-        let state = url.query_pairs().find(|(k, _)| k == "state").map(|(_, v)| v.to_string());
+        let code = url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.to_string());
+        let state = url
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string());
         if code.is_some() {
             return ParsedInput { code, state };
         }

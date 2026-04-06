@@ -14,6 +14,7 @@ pub type Listener =
     Arc<dyn Fn(RuntimeAgentEvent, AgentAbortSignal) -> AgentFuture<()> + Send + Sync>;
 pub type ConvertToLlmFn =
     Arc<dyn Fn(Vec<AgentMessage>) -> AgentFuture<Vec<AgentMessage>> + Send + Sync>;
+pub type GetApiKeyFn = Arc<dyn Fn(String) -> AgentFuture<Option<String>> + Send + Sync>;
 pub type TransformContextFn = Arc<
     dyn Fn(Vec<AgentMessage>, AgentAbortSignal) -> AgentFuture<Vec<AgentMessage>> + Send + Sync,
 >;

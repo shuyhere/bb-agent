@@ -15,19 +15,24 @@ mod renderer;
 mod runtime;
 mod scheduler;
 mod search;
+pub mod spinner;
 mod streaming;
 mod terminal;
 mod tool_format;
 mod transcript;
 mod types;
+pub mod vibewords;
 mod viewport;
 
 #[cfg(test)]
 mod tests;
 
 pub use runtime::{run, run_with_channels};
-pub use types::{
-    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
-    FullscreenOutcome, FullscreenSubmission,
+pub use tool_format::{
+    format_tool_call_content, format_tool_call_title, format_tool_result_content,
 };
 pub use transcript::{BlockId, BlockKind, NewBlock, Transcript, TranscriptBlock, TranscriptError};
+pub use types::{
+    FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel,
+    FullscreenOutcome, FullscreenSubmission, HistoricalToolState,
+};

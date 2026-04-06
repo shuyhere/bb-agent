@@ -1,5 +1,5 @@
 use super::{file_ops::extract_file_operations, serialize::serialize_conversation, types::*};
-use bb_core::types::AgentMessage;
+use bb_core::types::{AgentMessage, SessionEntry};
 use bb_provider::{CompletionRequest, RequestOptions, StreamEvent};
 use tokio_util::sync::CancellationToken;
 
@@ -70,8 +70,12 @@ pub async fn compact(
     let messages: Vec<AgentMessage> = preparation
         .messages_to_summarize
         .iter()
-        .filter(|e| e.entry_type == "message")
-        .filter_map(|e| serde_json::from_str(&e.payload).ok())
+        .filter_map(
+            |entry| match serde_json::from_str::<SessionEntry>(&entry.payload).ok()? {
+                SessionEntry::Message { message, .. } => Some(message),
+                _ => None,
+            },
+        )
         .collect();
 
     // 2. Serialize conversation
@@ -103,6 +107,7 @@ pub async fn compact(
             "content": user_prompt
         })],
         tools: vec![],
+        extra_tool_schemas: vec![],
         model: model.to_string(),
         max_tokens: Some(4096),
         stream: false,
@@ -162,4 +167,3 @@ pub async fn compact(
         modified_files,
     })
 }
-

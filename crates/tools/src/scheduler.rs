@@ -1,7 +1,7 @@
 use bb_core::error::BbResult;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +13,12 @@ pub struct FileQueue {
     locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
+impl Default for FileQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileQueue {
     pub fn new() -> Self {
         Self {
@@ -21,17 +27,20 @@ impl FileQueue {
     }
 
     /// Acquire a lock for a specific file path.
-    pub async fn lock(&self, path: &PathBuf) -> Arc<Mutex<()>> {
+    pub async fn lock(&self, path: &Path) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().await;
         locks
-            .entry(path.clone())
+            .entry(path.to_path_buf())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
 }
 
-/// Execute multiple tool calls, potentially in parallel.
-/// Write-targeting tools are serialized per file.
+/// Execute multiple tool calls sequentially.
+///
+/// This helper currently preserves call order and does not run tools in parallel.
+/// `FileQueue` remains available for a future parallel implementation that needs
+/// per-file serialization for mutating tools.
 pub async fn execute_tool_calls(
     tools: &[Box<dyn Tool>],
     calls: &[(String, String, Value)], // (tool_call_id, tool_name, args)
@@ -58,9 +67,7 @@ pub async fn execute_tool_calls(
 
         // For simplicity in v1, execute sequentially.
         // Parallel execution with file queue can be added later.
-        let result = tool_ref
-            .execute(args.clone(), ctx, cancel.clone())
-            .await;
+        let result = tool_ref.execute(args.clone(), ctx, cancel.clone()).await;
         handles.push((call_id.clone(), result));
     }
 

@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use super::callbacks::{AfterToolCallFn, BeforeToolCallFn, ConvertToLlmFn, TransformContextFn};
+pub use crate::types::ThinkingLevel;
+
+use super::callbacks::{
+    AfterToolCallFn, BeforeToolCallFn, ConvertToLlmFn, GetApiKeyFn, TransformContextFn,
+};
 
 /// Configuration for the agent loop.
 pub struct AgentConfig {
@@ -11,7 +15,7 @@ pub struct AgentConfig {
     pub provider_name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct UsageCost {
     pub input: u64,
     pub output: u64,
@@ -20,19 +24,7 @@ pub struct UsageCost {
     pub total: u64,
 }
 
-impl Default for UsageCost {
-    fn default() -> Self {
-        Self {
-            input: 0,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-            total: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Usage {
     pub input: u64,
     pub output: u64,
@@ -40,19 +32,6 @@ pub struct Usage {
     pub cache_write: u64,
     pub total_tokens: u64,
     pub cost: UsageCost,
-}
-
-impl Default for Usage {
-    fn default() -> Self {
-        Self {
-            input: 0,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-            total_tokens: 0,
-            cost: UsageCost::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -86,42 +65,18 @@ impl Default for AgentModel {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ThinkingLevel {
-    Off,
-    Low,
-    Medium,
-    High,
-}
-
-impl Default for ThinkingLevel {
-    fn default() -> Self {
-        Self::Off
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum Transport {
+    #[default]
     Sse,
     Placeholder,
 }
 
-impl Default for Transport {
-    fn default() -> Self {
-        Self::Sse
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum ToolExecutionMode {
+    #[default]
     Parallel,
     Sequential,
-}
-
-impl Default for ToolExecutionMode {
-    fn default() -> Self {
-        Self::Parallel
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -236,8 +191,7 @@ pub struct AgentLoopConfig {
     pub after_tool_call: Option<AfterToolCallFn>,
     pub convert_to_llm: Option<ConvertToLlmFn>,
     pub transform_context: Option<TransformContextFn>,
-    pub get_api_key:
-        Option<Arc<dyn Fn(String) -> super::callbacks::AgentFuture<Option<String>> + Send + Sync>>,
+    pub get_api_key: Option<GetApiKeyFn>,
     pub get_steering_messages:
         Option<Arc<dyn Fn() -> super::callbacks::AgentFuture<Vec<AgentMessage>> + Send + Sync>>,
     pub get_follow_up_messages:

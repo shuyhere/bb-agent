@@ -1,12 +1,11 @@
 //! Tool call preparation, execution, finalization, and sequential/parallel dispatch.
 
 use crate::agent::{
-    AfterToolCallContext, AgentAbortSignal, AgentContextSnapshot, AgentEventSink,
-    AgentLoopConfig, AgentMessage, AgentMessageContent, AgentMessageRole, AgentTool,
-    BeforeToolCallContext, RuntimeAgentEvent,
+    AfterToolCallContext, AgentAbortSignal, AgentContextSnapshot, AgentEventSink, AgentLoopConfig,
+    AgentMessage, AgentMessageContent, AgentMessageRole, AgentTool, BeforeToolCallContext,
+    RuntimeAgentEvent,
 };
 use anyhow::Result;
-use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -22,8 +21,12 @@ pub(crate) async fn execute_tool_calls(
     signal: Option<AgentAbortSignal>,
     emit: AgentEventSink,
 ) -> Result<Vec<ToolResultMessage>> {
-    if matches!(config.tool_execution, crate::agent::ToolExecutionMode::Sequential) {
-        execute_tool_calls_sequential(current_context, assistant_message, config, signal, emit).await
+    if matches!(
+        config.tool_execution,
+        crate::agent::ToolExecutionMode::Sequential
+    ) {
+        execute_tool_calls_sequential(current_context, assistant_message, config, signal, emit)
+            .await
     } else {
         execute_tool_calls_parallel(current_context, assistant_message, config, signal, emit).await
     }
@@ -44,10 +47,19 @@ async fn execute_tool_calls_sequential(
         })
         .await?;
 
-        let preparation = prepare_tool_call(current_context, assistant_message, tool_call.clone(), config, signal.clone()).await;
+        let preparation = prepare_tool_call(
+            current_context,
+            assistant_message,
+            tool_call.clone(),
+            config,
+            signal.clone(),
+        )
+        .await;
         match preparation {
             Ok(prepared) => {
-                let executed = execute_prepared_tool_call(prepared.clone(), signal.clone(), emit.clone()).await;
+                let executed =
+                    execute_prepared_tool_call(prepared.clone(), signal.clone(), emit.clone())
+                        .await;
                 let finalized = finalize_executed_tool_call(
                     current_context,
                     assistant_message,
@@ -61,7 +73,15 @@ async fn execute_tool_calls_sequential(
                 results.push(finalized);
             }
             Err(immediate) => {
-                results.push(emit_tool_call_outcome(tool_call.clone(), immediate.result, immediate.is_error, emit.clone()).await?);
+                results.push(
+                    emit_tool_call_outcome(
+                        tool_call.clone(),
+                        immediate.result,
+                        immediate.is_error,
+                        emit.clone(),
+                    )
+                    .await?,
+                );
             }
         }
     }
@@ -85,10 +105,26 @@ async fn execute_tool_calls_parallel(
         })
         .await?;
 
-        match prepare_tool_call(current_context, assistant_message, tool_call.clone(), config, signal.clone()).await {
+        match prepare_tool_call(
+            current_context,
+            assistant_message,
+            tool_call.clone(),
+            config,
+            signal.clone(),
+        )
+        .await
+        {
             Ok(prepared) => prepared_calls.push(prepared),
             Err(immediate) => {
-                immediate_results.push(emit_tool_call_outcome(tool_call.clone(), immediate.result, immediate.is_error, emit.clone()).await?);
+                immediate_results.push(
+                    emit_tool_call_outcome(
+                        tool_call.clone(),
+                        immediate.result,
+                        immediate.is_error,
+                        emit.clone(),
+                    )
+                    .await?,
+                );
             }
         }
     }
@@ -104,7 +140,8 @@ async fn execute_tool_calls_parallel(
         let config = config.clone();
         let signal = signal.clone();
         tasks.push(tokio::spawn(async move {
-            let executed = execute_prepared_tool_call(prepared.clone(), signal.clone(), emit.clone()).await;
+            let executed =
+                execute_prepared_tool_call(prepared.clone(), signal.clone(), emit.clone()).await;
             let finalized = finalize_executed_tool_call(
                 &current_context,
                 &assistant_message,
@@ -180,9 +217,12 @@ async fn execute_prepared_tool_call(
 ) -> ExecutedToolCallOutcome {
     let _ = prepared;
 
-    // TODO: Wire real tool execution once AgentTool carries execution handlers in bb-core.
+    // Transitional legacy path: bb-core's hidden agent_loop compatibility layer does
+    // not execute tools directly, so it returns an explicit tool error result instead.
     ExecutedToolCallOutcome {
-        result: create_error_tool_result("Tool execution not yet wired in bb-core agent_loop"),
+        result: create_error_tool_result(
+            "bb-core's transitional legacy agent_loop does not execute tools directly",
+        ),
         is_error: true,
     }
 }
@@ -227,7 +267,6 @@ async fn finalize_executed_tool_call(
 pub(crate) fn create_error_tool_result(message: impl Into<String>) -> AgentToolResult {
     AgentToolResult {
         content: vec![AgentMessageContent::Text(message.into())],
-        details: Value::Object(Default::default()),
     }
 }
 
@@ -243,10 +282,7 @@ async fn emit_tool_call_outcome(
     .await?;
 
     let tool_result = ToolResultMessage {
-        tool_call_id: tool_call.id.clone(),
-        tool_name: tool_call.name.clone(),
         content: result.content.clone(),
-        details: result.details.clone(),
         is_error,
         timestamp: chrono::Utc::now().timestamp_millis(),
     };

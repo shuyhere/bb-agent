@@ -1,21 +1,33 @@
 //! Data types for the agent loop: events, messages, tool call/result structs.
 
-use crate::agent::{
-    AgentFuture, AgentMessage, AgentMessageContent, RuntimeAgentEvent,
-};
+use crate::agent::{AgentMessage, AgentMessageContent, RuntimeAgentEvent};
 use serde_json::Value;
-use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 /// Legacy UI-facing event type still used by existing BB-Agent layers.
 #[derive(Clone, Debug)]
 pub enum AgentLoopEvent {
-    TurnStart { turn_index: u32 },
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args_delta: String },
-    ToolExecuting { id: String, name: String },
+    TurnStart {
+        turn_index: u32,
+    },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args_delta: String,
+    },
+    ToolExecuting {
+        id: String,
+        name: String,
+    },
     ToolResult {
         id: String,
         name: String,
@@ -24,7 +36,9 @@ pub enum AgentLoopEvent {
         artifact_path: Option<String>,
         is_error: bool,
     },
-    TurnEnd { turn_index: u32 },
+    TurnEnd {
+        turn_index: u32,
+    },
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,
@@ -37,7 +51,9 @@ pub enum AgentLoopEvent {
         final_error: Option<String>,
     },
     AssistantDone,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Legacy context usage information still used by existing BB-Agent layers.
@@ -48,7 +64,7 @@ pub struct ContextUsage {
     pub percent: f64,
 }
 
-/// Pi-style event stream replacement for Rust.
+/// Legacy event stream replacement for Rust.
 pub struct AgentEventStream<TEvent, TResult> {
     receiver: mpsc::UnboundedReceiver<TEvent>,
     result: oneshot::Receiver<TResult>,
@@ -74,36 +90,30 @@ impl<TEvent, TResult> AgentEventStream<TEvent, TResult> {
 pub type AgentStream = AgentEventStream<RuntimeAgentEvent, Vec<AgentMessage>>;
 
 #[derive(Clone, Debug, Default)]
-pub struct AgentToolCall {
+pub(crate) struct AgentToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct AgentToolResult {
+pub(crate) struct AgentToolResult {
     pub content: Vec<AgentMessageContent>,
-    pub details: Value,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ToolResultMessage {
-    pub tool_call_id: String,
-    pub tool_name: String,
+pub(crate) struct ToolResultMessage {
     pub content: Vec<AgentMessageContent>,
-    pub details: Value,
     pub is_error: bool,
     pub timestamp: i64,
 }
 
 #[derive(Clone, Debug)]
-pub struct LoopAssistantMessage {
+pub(crate) struct LoopAssistantMessage {
     pub message: AgentMessage,
     pub tool_calls: Vec<AgentToolCall>,
     pub stop_reason: Option<String>,
 }
-
-pub type LoopEventSink = Arc<dyn Fn(RuntimeAgentEvent) -> AgentFuture<anyhow::Result<()>> + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedToolCall {
@@ -124,13 +134,15 @@ pub(crate) struct ExecutedToolCallOutcome {
     pub is_error: bool,
 }
 
-/// Minimal legacy steering/follow-up queue retained for CLI compatibility.
+/// Minimal legacy steering/follow-up queue retained only for legacy tests.
+#[cfg(test)]
 #[derive(Debug, Default)]
-pub struct MessageQueue {
+pub(crate) struct MessageQueue {
     steers: Vec<String>,
     follow_ups: Vec<String>,
 }
 
+#[cfg(test)]
 impl MessageQueue {
     pub fn new() -> Self {
         Self::default()

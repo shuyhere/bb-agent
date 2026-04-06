@@ -41,7 +41,10 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
 
             if *ch == query_chars[query_index] {
                 let is_word_boundary = i == 0
-                    || matches!(text_chars[i - 1], ' ' | '\t' | '\n' | '\r' | '-' | '_' | '.' | '/' | ':');
+                    || matches!(
+                        text_chars[i - 1],
+                        ' ' | '\t' | '\n' | '\r' | '-' | '_' | '.' | '/' | ':'
+                    );
 
                 if last_match_index == Some(i.saturating_sub(1)) {
                     consecutive_matches += 1;
@@ -144,27 +147,25 @@ fn swapped_query(query_lower: &str) -> Option<String> {
     }
 
     let first_digit = chars.iter().position(|c| c.is_ascii_digit());
-    if let Some(idx) = first_digit {
-        if idx > 0
-            && chars[..idx].iter().all(|c| c.is_ascii_lowercase())
-            && chars[idx..].iter().all(|c| c.is_ascii_digit())
-        {
-            let letters: String = chars[..idx].iter().collect();
-            let digits: String = chars[idx..].iter().collect();
-            return Some(format!("{digits}{letters}"));
-        }
+    if let Some(idx) = first_digit
+        && idx > 0
+        && chars[..idx].iter().all(|c| c.is_ascii_lowercase())
+        && chars[idx..].iter().all(|c| c.is_ascii_digit())
+    {
+        let letters: String = chars[..idx].iter().collect();
+        let digits: String = chars[idx..].iter().collect();
+        return Some(format!("{digits}{letters}"));
     }
 
     let first_letter = chars.iter().position(|c| c.is_ascii_lowercase());
-    if let Some(idx) = first_letter {
-        if idx > 0
-            && chars[..idx].iter().all(|c| c.is_ascii_digit())
-            && chars[idx..].iter().all(|c| c.is_ascii_lowercase())
-        {
-            let digits: String = chars[..idx].iter().collect();
-            let letters: String = chars[idx..].iter().collect();
-            return Some(format!("{letters}{digits}"));
-        }
+    if let Some(idx) = first_letter
+        && idx > 0
+        && chars[..idx].iter().all(|c| c.is_ascii_digit())
+        && chars[idx..].iter().all(|c| c.is_ascii_lowercase())
+    {
+        let digits: String = chars[..idx].iter().collect();
+        let letters: String = chars[idx..].iter().collect();
+        return Some(format!("{letters}{digits}"));
     }
 
     None

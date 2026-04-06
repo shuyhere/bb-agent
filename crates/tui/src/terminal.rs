@@ -1,4 +1,4 @@
-//! Terminal abstraction — matches pi-tui's terminal.ts.
+//! Terminal abstraction — matches the earlier TypeScript terminal layer.
 //!
 //! ProcessTerminal wraps crossterm to provide:
 //! - Raw mode enable/disable
@@ -10,9 +10,9 @@
 //! - Column/row queries
 
 use crossterm::{
-    cursor, execute,
+    cursor,
     event::{self, Event, KeyEvent},
-    terminal,
+    execute, terminal,
 };
 use std::io::{self, Write};
 use tokio::sync::mpsc;

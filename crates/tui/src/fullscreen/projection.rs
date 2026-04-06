@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
 use crate::markdown::MarkdownRenderer;
@@ -10,6 +10,7 @@ use super::transcript::{BlockId, BlockKind, Transcript, TranscriptBlock};
 pub enum ProjectedRowKind {
     Header,
     Content,
+    Spacer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +70,7 @@ struct CachedBlockRows {
 pub struct TranscriptProjector {
     width: usize,
     block_order: Vec<OrderedBlock>,
+    expanded_tool_blocks: BTreeSet<BlockId>,
     block_rows: HashMap<BlockId, CachedBlockRows>,
     projection: TranscriptProjection,
 }
@@ -78,9 +80,19 @@ impl TranscriptProjector {
         Self::default()
     }
 
-    pub fn project(&mut self, transcript: &mut Transcript, width: usize) -> TranscriptProjection {
+    pub fn project(
+        &mut self,
+        transcript: &mut Transcript,
+        width: usize,
+        expanded_tool_blocks: &std::collections::HashSet<BlockId>,
+    ) -> TranscriptProjection {
         let width = width.max(1);
         let width_changed = self.width != width;
+        let next_expanded_tool_blocks = expanded_tool_blocks
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let expanded_changed = self.expanded_tool_blocks != next_expanded_tool_blocks;
         let mut dirty_blocks = transcript.take_dirty_blocks();
         if width_changed {
             dirty_blocks.extend(transcript.all_block_ids());
@@ -93,6 +105,7 @@ impl TranscriptProjector {
         }
 
         if !(width_changed
+            || expanded_changed
             || order_changed
             || !dirty_blocks.is_empty()
             || self.projection.rows.is_empty())
@@ -101,6 +114,7 @@ impl TranscriptProjector {
         }
 
         self.width = width;
+        self.expanded_tool_blocks = next_expanded_tool_blocks;
         self.block_rows
             .retain(|block_id, _| next_order.iter().any(|entry| entry.block_id == *block_id));
 
@@ -177,8 +191,12 @@ fn compose_projection(
         ..TranscriptProjection::default()
     };
 
-    for entry in block_order {
+    let mut idx = 0usize;
+    while idx < block_order.len() {
+        let entry = &block_order[idx];
+
         let Some(rows) = cached_rows.get(&entry.block_id) else {
+            idx += 1;
             continue;
         };
 
@@ -218,58 +236,112 @@ fn compose_projection(
                 content_rows: content_start..content_end,
             },
         );
+
+        if should_insert_spacer(entry, block_order.get(idx + 1)) {
+            let index = projection.rows.len();
+            projection.rows.push(ProjectedRow {
+                index,
+                block_id: entry.block_id,
+                kind: ProjectedRowKind::Spacer,
+                depth: entry.depth,
+                text: String::new(),
+            });
+        }
+        idx += 1;
     }
 
     projection.total_rows = projection.rows.len();
     projection
 }
 
-fn render_header_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
-    if block.kind != BlockKind::ToolUse {
-        return Vec::new();
+fn is_summary_note(block: &TranscriptBlock) -> bool {
+    block.kind == BlockKind::SystemNote
+        && matches!(block.title.as_str(), "branch summary" | "compaction")
+}
+
+fn render_header_lines(block: &TranscriptBlock, width: usize, _depth: usize) -> Vec<String> {
+    if block.kind == BlockKind::ToolUse {
+        let header_text = if let Some((base, _status)) = block.title.rsplit_once(" • ") {
+            base.trim().to_string()
+        } else if block.title.trim().is_empty() {
+            "Tool".to_string()
+        } else {
+            block.title.trim().to_string()
+        };
+        return wrap_with_prefix(&header_text, width, "● ", "  ");
     }
 
-    let indent = "  ".repeat(depth);
-    let expandable = block.expandable || !block.children.is_empty();
-    let marker = if expandable {
-        if block.collapsed { "▸" } else { "▾" }
-    } else {
-        "•"
-    };
-    let first_prefix = format!("{indent}{marker} ");
-    let continuation_prefix = format!("{}  ", indent);
-    let header_text = if block.title.trim().is_empty() {
-        "tool".to_string()
-    } else {
-        block.title.clone()
-    };
+    if is_summary_note(block) {
+        let header_text = match block.title.as_str() {
+            "branch summary" => "◆ Branch Summary",
+            "compaction" => "◆ Compaction Summary",
+            other => other,
+        };
+        return wrap_with_prefix(header_text, width, "", "");
+    }
 
-    wrap_with_prefix(&header_text, width, &first_prefix, &continuation_prefix)
+    Vec::new()
+}
+
+fn should_insert_spacer(current: &OrderedBlock, next: Option<&OrderedBlock>) -> bool {
+    next.is_some_and(|next| next.depth <= current.depth)
 }
 
 fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
-    let prefix = format!("{}  ", "  ".repeat(depth + 1));
-    let mut lines = if block.content.trim().is_empty() {
-        Vec::new()
-    } else {
-        match block.kind {
-            BlockKind::UserMessage | BlockKind::AssistantMessage | BlockKind::Thinking => {
-                render_markdown_content_lines(&block.content, width, &prefix)
+    if block.content.trim().is_empty() {
+        return if is_summary_note(block) {
+            vec!["╰─ ".to_string()]
+        } else {
+            Vec::new()
+        };
+    }
+
+    match block.kind {
+        BlockKind::UserMessage => wrap_with_prefix(&block.content, width, "❯ ", "  "),
+        BlockKind::AssistantMessage => render_markdown_content_lines(&block.content, width, "", ""),
+        BlockKind::Thinking => render_markdown_content_lines(&block.content, width, "", ""),
+        BlockKind::SystemNote => {
+            if is_summary_note(block) {
+                render_summary_block_content(&block.content, width)
+            } else {
+                wrap_with_prefix(&block.content, width, "", "")
             }
-            _ => wrap_with_prefix(&block.content, width, &prefix, &prefix),
         }
-    };
-    apply_visual_padding(block, &mut lines);
+        BlockKind::ToolUse => {
+            let (first_prefix, continuation_prefix) = response_prefixes(depth, &block.content);
+            wrap_with_prefix(&block.content, width, first_prefix, continuation_prefix)
+        }
+        BlockKind::ToolResult => render_tool_result_content_lines(&block.content, width, depth),
+    }
+}
+
+fn render_summary_block_content(text: &str, width: usize) -> Vec<String> {
+    let mut lines = wrap_with_prefix(text, width, "│  ", "│  ");
+    lines.push("╰─ ".to_string());
     lines
 }
 
-fn render_markdown_content_lines(text: &str, width: usize, prefix: &str) -> Vec<String> {
-    let available_width = width.saturating_sub(visible_width(prefix)).max(1);
+fn render_markdown_content_lines(
+    text: &str,
+    width: usize,
+    first_prefix: &str,
+    continuation_prefix: &str,
+) -> Vec<String> {
+    let available_width = width
+        .saturating_sub(visible_width(first_prefix).max(visible_width(continuation_prefix)))
+        .max(1);
     let mut renderer = MarkdownRenderer::new(text);
+    let mut first = true;
     renderer
         .render(available_width as u16)
         .into_iter()
         .map(|line| {
+            let prefix = if first {
+                first = false;
+                first_prefix
+            } else {
+                continuation_prefix
+            };
             if line.is_empty() {
                 prefix.to_string()
             } else {
@@ -279,32 +351,77 @@ fn render_markdown_content_lines(text: &str, width: usize, prefix: &str) -> Vec<
         .collect()
 }
 
-fn apply_visual_padding(block: &TranscriptBlock, lines: &mut Vec<String>) {
-    match block.kind {
-        BlockKind::UserMessage => {
-            if !lines.is_empty() {
-                lines.insert(0, String::new());
-                lines.push(String::new());
-            }
-        }
-        BlockKind::AssistantMessage | BlockKind::Thinking => {
-            if !lines.is_empty() {
-                lines.insert(0, String::new());
-            }
-        }
-        BlockKind::ToolUse => {
-            if block.children.is_empty() && !lines.is_empty() {
-                lines.push(String::new());
-            }
-        }
-        BlockKind::ToolResult => {
-            if !lines.is_empty() {
-                lines.insert(0, String::new());
-                lines.push(String::new());
-            }
-        }
-        BlockKind::SystemNote => {}
+fn response_prefixes(depth: usize, content: &str) -> (&str, &str) {
+    if content.contains("(Ctrl+Shift+O tool expand)") {
+        ("  ", "  ")
+    } else if depth > 2 {
+        ("     ", "     ")
+    } else {
+        ("  ⎿  ", "     ")
     }
+}
+
+fn is_rendered_diff_line(line: &str) -> bool {
+    let stripped = crate::utils::strip_ansi(line);
+    if !stripped.starts_with("    ") {
+        return false;
+    }
+    let after = &stripped[4..];
+    if after.is_empty() {
+        return false;
+    }
+    match after.as_bytes()[0] {
+        b'-' | b'+' => after[1..]
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_digit()),
+        b' ' => {
+            after[1..]
+                .trim_start()
+                .starts_with(|c: char| c.is_ascii_digit())
+                || after.trim() == "..."
+        }
+        _ => false,
+    }
+}
+
+fn render_tool_result_content_lines(content: &str, width: usize, depth: usize) -> Vec<String> {
+    let logical_lines: Vec<&str> = if content.is_empty() {
+        vec![""]
+    } else {
+        content.split('\n').collect()
+    };
+
+    let (first_prefix, continuation_prefix) = response_prefixes(depth, content);
+    let mut out = Vec::new();
+    let mut first_non_diff = true;
+
+    for logical_line in logical_lines {
+        if is_rendered_diff_line(logical_line) {
+            // Preserve diff lines exactly so ANSI backgrounds survive unchanged,
+            // and avoid adding the normal tool-result prefix in front of them.
+            out.push(logical_line.to_string());
+            continue;
+        }
+
+        let initial_prefix = if first_non_diff {
+            first_prefix
+        } else {
+            continuation_prefix
+        };
+        out.extend(wrap_visual_line(
+            logical_line,
+            width,
+            initial_prefix,
+            continuation_prefix,
+        ));
+        first_non_diff = false;
+    }
+
+    if out.is_empty() {
+        out.push(first_prefix.to_string());
+    }
+
+    out
 }
 
 fn wrap_with_prefix(
@@ -320,9 +437,16 @@ fn wrap_with_prefix(
     };
 
     let mut out = Vec::new();
+    let mut first_line = true;
     for logical_line in logical_lines {
-        let wrapped = wrap_visual_line(logical_line, width, first_prefix, continuation_prefix);
+        let initial_prefix = if first_line {
+            first_prefix
+        } else {
+            continuation_prefix
+        };
+        let wrapped = wrap_visual_line(logical_line, width, initial_prefix, continuation_prefix);
         out.extend(wrapped);
+        first_line = false;
     }
 
     if out.is_empty() {
@@ -417,162 +541,4 @@ fn skip_leading_whitespace(line: &str, start: usize) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fullscreen::transcript::{BlockKind, NewBlock, Transcript};
-
-    #[test]
-    fn projects_collapsed_children_out_of_view() {
-        let mut transcript = Transcript::new();
-        let root = transcript.append_root_block(
-            NewBlock::new(BlockKind::ToolUse, "$ ls").with_content("timeout 5s"),
-        );
-        transcript
-            .append_child_block(root, NewBlock::new(BlockKind::ToolResult, "output").with_content("done"))
-            .expect("child block should be appended");
-        transcript
-            .set_collapsed(root, true)
-            .expect("collapse should succeed");
-
-        let mut projector = TranscriptProjector::new();
-        let projection = projector.project(&mut transcript, 40);
-        assert_eq!(projection.total_rows, 1);
-    }
-
-    #[test]
-    fn reuses_cached_rows_for_clean_blocks() {
-        let mut transcript = Transcript::new();
-        let first = transcript
-            .append_root_block(NewBlock::new(BlockKind::SystemNote, "first").with_content("alpha"));
-        let second = transcript
-            .append_root_block(NewBlock::new(BlockKind::SystemNote, "second").with_content("beta"));
-
-        let mut projector = TranscriptProjector::new();
-        let initial = projector.project(&mut transcript, 40);
-        let initial_first = initial
-            .rows_for_block(first)
-            .cloned()
-            .expect("first span should exist");
-        let initial_second = initial
-            .rows_for_block(second)
-            .cloned()
-            .expect("second span should exist");
-
-        transcript
-            .append_streamed_content(second, " gamma")
-            .expect("streaming append should succeed");
-        let updated = projector.project(&mut transcript, 40);
-
-        assert_eq!(
-            &updated.rows[initial_first.all_rows.clone()],
-            &initial.rows[initial_first.all_rows]
-        );
-        assert_ne!(
-            &updated.rows[initial_second.all_rows.clone()],
-            &initial.rows[initial_second.all_rows]
-        );
-    }
-
-    #[test]
-    fn width_change_rewraps_existing_cached_blocks() {
-        let mut transcript = Transcript::new();
-        transcript.append_root_block(
-            NewBlock::new(BlockKind::AssistantMessage, "assistant")
-                .with_content("this line wraps differently when the width changes"),
-        );
-
-        let mut projector = TranscriptProjector::new();
-        let wide = projector.project(&mut transcript, 40);
-        let narrow = projector.project(&mut transcript, 18);
-
-        assert!(narrow.total_rows > wide.total_rows);
-    }
-
-    #[test]
-    fn clean_projection_call_leaves_transcript_clean() {
-        let mut transcript = Transcript::new();
-        transcript.append_root_block(
-            NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content("hello"),
-        );
-
-        let mut projector = TranscriptProjector::new();
-        let _ = projector.project(&mut transcript, 40);
-        assert!(!transcript.has_dirty_blocks());
-
-        let _ = projector.project(&mut transcript, 40);
-        assert!(!transcript.has_dirty_blocks());
-    }
-
-    #[test]
-    fn projection_adds_visual_padding_for_chat_like_blocks() {
-        let mut transcript = Transcript::new();
-        let user = transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt").with_content("hello"),
-        );
-        let tool = transcript.append_root_block(
-            NewBlock::new(BlockKind::ToolUse, "bash").with_content("timeout 5s"),
-        );
-
-        let mut projector = TranscriptProjector::new();
-        let projection = projector.project(&mut transcript, 80);
-
-        let user_span = projection.rows_for_block(user).expect("user span");
-        let user_rows = &projection.rows[user_span.content_rows.clone()];
-        assert!(user_span.header_rows.is_empty());
-        assert!(user_rows.first().expect("user top pad").text.is_empty());
-        assert!(user_rows.last().expect("user bottom pad").text.is_empty());
-
-        let tool_span = projection.rows_for_block(tool).expect("tool span");
-        assert_eq!(tool_span.header_rows.len(), 1);
-        let tool_header = &projection.rows[tool_span.header_rows.start];
-        assert!(tool_header.text.contains("bash"));
-        assert!(!tool_header.text.contains("tool bash"));
-        let tool_rows = &projection.rows[tool_span.content_rows.clone()];
-        assert!(!tool_rows.first().expect("tool first body row").text.is_empty());
-
-        let result = transcript
-            .append_child_block(
-                tool,
-                NewBlock::new(BlockKind::ToolResult, "output").with_content("done"),
-            )
-            .expect("tool result");
-        let projection = projector.project(&mut transcript, 80);
-        let result_span = projection.rows_for_block(result).expect("result span");
-        assert!(result_span.header_rows.is_empty());
-        let result_rows = &projection.rows[result_span.content_rows.clone()];
-        assert!(result_rows.first().expect("result spacer row").text.is_empty());
-        assert!(result_rows.last().expect("result bottom pad").text.is_empty());
-    }
-
-    #[test]
-    fn assistant_blocks_use_markdown_renderer() {
-        let mut transcript = Transcript::new();
-        let assistant = transcript.append_root_block(
-            NewBlock::new(BlockKind::AssistantMessage, "assistant")
-                .with_content("# Heading\n\n- item"),
-        );
-
-        let mut projector = TranscriptProjector::new();
-        let projection = projector.project(&mut transcript, 80);
-        let span = projection.rows_for_block(assistant).expect("assistant span");
-        let rows = &projection.rows[span.content_rows.clone()];
-
-        assert!(rows.iter().any(|row| row.text.contains("\x1b[")));
-        assert!(rows.iter().any(|row| row.text.contains("Heading") || row.text.contains("item")));
-    }
-
-    #[test]
-    fn user_slash_commands_remain_visible_in_content_rows() {
-        let mut transcript = Transcript::new();
-        let user = transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt").with_content("/help"),
-        );
-
-        let mut projector = TranscriptProjector::new();
-        let projection = projector.project(&mut transcript, 80);
-        let span = projection.rows_for_block(user).expect("user span");
-        let rows = &projection.rows[span.content_rows.clone()];
-
-        assert!(rows.iter().any(|row| row.text.contains("/help")));
-    }
-}
+mod tests;

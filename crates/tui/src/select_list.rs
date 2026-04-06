@@ -60,6 +60,17 @@ impl SelectList {
             .map(|item| item.value.clone())
     }
 
+    pub fn set_selected_value(&mut self, value: &str) {
+        if let Some(filtered_index) = self
+            .filtered
+            .iter()
+            .position(|idx| self.items.get(*idx).is_some_and(|item| item.value == value))
+        {
+            self.selected = filtered_index;
+            self.adjust_scroll();
+        }
+    }
+
     /// Render the select list into styled lines.
     pub fn render(&self, width: u16) -> Vec<String> {
         let w = width as usize;
@@ -67,11 +78,7 @@ impl SelectList {
 
         // Optional search bar
         if self.show_search && !self.search.is_empty() {
-            let search_line = format!(
-                " {} {}",
-                "🔍".to_string(),
-                self.search.clone().with(Color::Yellow),
-            );
+            let search_line = format!(" {} {}", "🔍", self.search.clone().with(Color::Yellow),);
             lines.push(search_line);
             lines.push(format!("{}", "─".repeat(w.min(60)).with(Color::DarkGrey)));
         }
@@ -79,7 +86,9 @@ impl SelectList {
         if self.filtered.is_empty() {
             lines.push(format!(
                 "  {}",
-                "(no matching items)".with(Color::DarkGrey).attribute(Attribute::Dim)
+                "(no matching items)"
+                    .with(Color::DarkGrey)
+                    .attribute(Attribute::Dim)
             ));
             return lines;
         }
@@ -97,32 +106,33 @@ impl SelectList {
             ));
         }
 
+        let theme = crate::theme::theme();
+
         // Render visible items
         for vi in self.scroll_offset..end {
             let item_idx = self.filtered[vi];
             let item = &self.items[item_idx];
             let is_selected = vi == self.selected;
 
-            let marker = if is_selected { ">" } else { " " };
-
-            let label_part = if is_selected {
-                format!("{}", item.label.clone().bold().attribute(Attribute::Reverse))
+            let line = if is_selected {
+                let label = strip_ansi(&item.label);
+                let detail = item
+                    .detail
+                    .as_deref()
+                    .map(strip_ansi)
+                    .map(|d| format!(" {d}"))
+                    .unwrap_or_default();
+                format!("{}→ {}{}{}", theme.accent, label, detail, theme.reset)
             } else {
-                item.label.clone()
+                let detail_part = match &item.detail {
+                    Some(d) => format!(
+                        " {}",
+                        d.clone().with(Color::DarkGrey).attribute(Attribute::Dim)
+                    ),
+                    None => String::new(),
+                };
+                format!("  {}{}", item.label, detail_part)
             };
-
-            let detail_part = match &item.detail {
-                Some(d) => format!(" {}", d.clone().with(Color::DarkGrey).attribute(Attribute::Dim)),
-                None => String::new(),
-            };
-
-            let marker_styled = if is_selected {
-                format!("{}", marker.with(Color::Cyan).bold())
-            } else {
-                format!("{}", marker)
-            };
-
-            let line = format!("{} {}{}", marker_styled, label_part, detail_part);
 
             // Truncate to width if needed
             let visible = UnicodeWidthStr::width(strip_ansi(&line).as_str());
@@ -255,7 +265,9 @@ impl SelectList {
                 .items
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| fuzzy_match(&item.label, &query) || fuzzy_match(&item.value, &query))
+                .filter(|(_, item)| {
+                    fuzzy_match(&item.label, &query) || fuzzy_match(&item.value, &query)
+                })
                 .map(|(i, _)| i)
                 .collect();
         }
@@ -338,9 +350,21 @@ mod tests {
     #[test]
     fn test_fuzzy_filter() {
         let items = vec![
-            SelectItem { label: "Claude Sonnet 4".into(), detail: None, value: "cs4".into() },
-            SelectItem { label: "GPT-4o".into(), detail: None, value: "gpt4o".into() },
-            SelectItem { label: "Claude Opus 4".into(), detail: None, value: "co4".into() },
+            SelectItem {
+                label: "Claude Sonnet 4".into(),
+                detail: None,
+                value: "cs4".into(),
+            },
+            SelectItem {
+                label: "GPT-4o".into(),
+                detail: None,
+                value: "gpt4o".into(),
+            },
+            SelectItem {
+                label: "Claude Opus 4".into(),
+                detail: None,
+                value: "co4".into(),
+            },
         ];
         let mut list = SelectList::new(items, 10);
         list.set_search("clau");
@@ -382,9 +406,18 @@ mod tests {
         let list = SelectList::new(make_items(5), 3);
         let lines = list.render(80);
         assert!(!lines.is_empty());
-        // First visible item should have the > marker
         let first_item_line = &lines[0];
-        assert!(strip_ansi(first_item_line).contains(">"));
+        assert!(strip_ansi(first_item_line).starts_with("→ Item 0"));
+    }
+
+    #[test]
+    fn selected_item_uses_arrow_and_no_reverse_background() {
+        let list = SelectList::new(make_items(3), 3);
+        let line = &list.render(80)[0];
+        let plain = strip_ansi(line);
+
+        assert!(plain.starts_with("→ Item 0 detail 0"));
+        assert!(!line.contains("\x1b[7m"));
     }
 
     #[test]
@@ -393,7 +426,11 @@ mod tests {
         // Move to bottom so scroll offset changes
         list.move_down(9);
         let lines = list.render(80);
-        let joined = lines.iter().map(|l| strip_ansi(l)).collect::<Vec<_>>().join("\n");
+        let joined = lines
+            .iter()
+            .map(|l| strip_ansi(l))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("more above"));
     }
 }

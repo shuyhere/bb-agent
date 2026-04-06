@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::callback_server::{start_callback_server, CallbackParams, CallbackServerParts};
+use super::callback_server::{CallbackParams, CallbackServerParts, start_callback_server};
 use super::pkce::generate_pkce;
 use super::{OAuthCallbacks, OAuthCredentials};
 
-// ── Constants (matching pi) ──────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
@@ -33,10 +33,10 @@ struct TokenResponse {
 pub async fn login_anthropic(callbacks: OAuthCallbacks) -> Result<OAuthCredentials> {
     let (verifier, challenge) = generate_pkce();
 
-    // Pi uses the PKCE verifier as the state parameter for Anthropic.
+    // Reuse the PKCE verifier as the state parameter for Anthropic.
     let state = verifier.clone();
 
-    // Build auth URL — must match pi exactly.
+    // Build the OAuth authorization URL.
     let auth_url = format!(
         "{AUTHORIZE_URL}?\
          code=true\
@@ -62,7 +62,10 @@ pub async fn login_anthropic(callbacks: OAuthCallbacks) -> Result<OAuthCredentia
     let server = start_callback_server(CALLBACK_PORT, CALLBACK_PATH).await?;
 
     // Race: browser callback vs manual paste.
-    let CallbackServerParts { result_rx, cancel_tx } = server.into_parts();
+    let CallbackServerParts {
+        result_rx,
+        cancel_tx,
+    } = server.into_parts();
     let params = match callbacks.on_manual_input {
         Some(manual_rx) => {
             tokio::select! {
@@ -93,7 +96,7 @@ pub async fn login_anthropic(callbacks: OAuthCallbacks) -> Result<OAuthCredentia
 
 /// Refresh an existing Anthropic OAuth token.
 pub async fn refresh_anthropic_token(refresh_token: &str) -> Result<OAuthCredentials> {
-    // Anthropic uses JSON body for token requests — must match pi.
+    // Anthropic expects a JSON body for token refresh requests.
     let client = reqwest::Client::new();
     let resp = client
         .post(TOKEN_URL)
@@ -114,7 +117,10 @@ pub async fn refresh_anthropic_token(refresh_token: &str) -> Result<OAuthCredent
         anyhow::bail!("Anthropic token refresh failed ({status}): {body}");
     }
 
-    let token: TokenResponse = resp.json().await.context("Failed to parse token response")?;
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse token response")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     Ok(OAuthCredentials {
@@ -128,7 +134,7 @@ pub async fn refresh_anthropic_token(refresh_token: &str) -> Result<OAuthCredent
 // ── Internals ───────────────────────────────────────────────────────
 
 async fn exchange_code(code: &str, state: &str, verifier: &str) -> Result<OAuthCredentials> {
-    // Anthropic uses JSON body (not form-encoded) — must match pi exactly.
+    // Anthropic expects a JSON body (not form-encoded) for code exchange.
     let client = reqwest::Client::new();
     let resp = client
         .post(TOKEN_URL)
@@ -152,7 +158,10 @@ async fn exchange_code(code: &str, state: &str, verifier: &str) -> Result<OAuthC
         anyhow::bail!("Anthropic token exchange failed ({status}): {body}");
     }
 
-    let token: TokenResponse = resp.json().await.context("Failed to parse token response")?;
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse token response")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     Ok(OAuthCredentials {
@@ -163,7 +172,7 @@ async fn exchange_code(code: &str, state: &str, verifier: &str) -> Result<OAuthC
     })
 }
 
-// ── Input parsing (matches pi's parseAuthorizationInput) ────────────
+// ── Input parsing ────────────────────────────────────────────────────
 
 struct ParsedInput {
     code: Option<String>,
@@ -173,11 +182,20 @@ struct ParsedInput {
 fn parse_authorization_input(input: &str) -> ParsedInput {
     let value = input.trim();
     if value.is_empty() {
-        return ParsedInput { code: None, state: None };
+        return ParsedInput {
+            code: None,
+            state: None,
+        };
     }
     if let Ok(url) = url::Url::parse(value) {
-        let code = url.query_pairs().find(|(k, _)| k == "code").map(|(_, v)| v.to_string());
-        let state = url.query_pairs().find(|(k, _)| k == "state").map(|(_, v)| v.to_string());
+        let code = url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.to_string());
+        let state = url
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.to_string());
         if code.is_some() {
             return ParsedInput { code, state };
         }

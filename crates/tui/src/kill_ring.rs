@@ -19,12 +19,13 @@ impl KillRing {
         }
 
         if accumulate && !self.ring.is_empty() {
-            let last = self.ring.pop().expect("ring is not empty");
-            self.ring.push(if prepend {
-                format!("{text}{last}")
-            } else {
-                format!("{last}{text}")
-            });
+            if let Some(last) = self.ring.pop() {
+                self.ring.push(if prepend {
+                    format!("{text}{last}")
+                } else {
+                    format!("{last}{text}")
+                });
+            }
         } else {
             self.ring.push(text.to_string());
         }
@@ -37,8 +38,9 @@ impl KillRing {
 
     /// Move last entry to front (for yank-pop cycling).
     pub fn rotate(&mut self) {
-        if self.ring.len() > 1 {
-            let last = self.ring.pop().expect("ring length > 1");
+        if self.ring.len() > 1
+            && let Some(last) = self.ring.pop()
+        {
             self.ring.insert(0, last);
         }
     }

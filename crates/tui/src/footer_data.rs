@@ -61,7 +61,13 @@ fn find_git_paths(cwd: &Path) -> Option<GitPaths> {
 
 fn resolve_branch_with_git_sync(repo_dir: &Path) -> Option<String> {
     let output = Command::new("git")
-        .args(["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"])
+        .args([
+            "--no-optional-locks",
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+        ])
         .current_dir(repo_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

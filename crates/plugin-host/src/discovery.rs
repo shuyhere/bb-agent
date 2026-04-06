@@ -45,19 +45,19 @@ fn scan_dir(dir: &Path, scope: PluginScope, plugins: &mut Vec<PluginInfo>) {
         let path = entry.path();
 
         if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if ext == "ts" || ext == "js" {
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    plugins.push(PluginInfo {
-                        name,
-                        path,
-                        scope: scope.clone(),
-                    });
-                }
+            if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && (ext == "ts" || ext == "js")
+            {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                plugins.push(PluginInfo {
+                    name,
+                    path,
+                    scope: scope.clone(),
+                });
             }
         } else if path.is_dir() {
             // Check for index.ts inside directory

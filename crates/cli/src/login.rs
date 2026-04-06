@@ -29,12 +29,28 @@ enum AuthEntry {
 }
 
 const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
-    ("anthropic", "ANTHROPIC_API_KEY", "https://console.anthropic.com/settings/keys"),
-    ("openai-codex", "OPENAI_API_KEY", "https://platform.openai.com/api-keys"),
-    ("google", "GOOGLE_API_KEY", "https://aistudio.google.com/app/apikey"),
+    (
+        "anthropic",
+        "ANTHROPIC_API_KEY",
+        "https://console.anthropic.com/settings/keys",
+    ),
+    (
+        "openai-codex",
+        "OPENAI_API_KEY",
+        "https://platform.openai.com/api-keys",
+    ),
+    (
+        "google",
+        "GOOGLE_API_KEY",
+        "https://aistudio.google.com/app/apikey",
+    ),
     ("groq", "GROQ_API_KEY", "https://console.groq.com/keys"),
     ("xai", "XAI_API_KEY", "https://console.x.ai/"),
-    ("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/settings/keys"),
+    (
+        "openrouter",
+        "OPENROUTER_API_KEY",
+        "https://openrouter.ai/settings/keys",
+    ),
 ];
 
 /// Providers that use OAuth instead of API key paste.
@@ -46,23 +62,6 @@ pub fn provider_meta(provider: &str) -> (&str, &str) {
         .find(|(name, _, _)| *name == provider)
         .map(|(_, env_var, url)| (*env_var, *url))
         .unwrap_or(("API_KEY", ""))
-}
-
-#[allow(dead_code)]
-pub fn provider_has_env_key(provider: &str) -> bool {
-    let (env_var, _) = provider_meta(provider);
-    std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
-}
-
-pub fn save_api_key(provider: &str, key: &str) -> Result<()> {
-    let mut store = load_auth();
-    store.providers.insert(
-        provider.to_string(),
-        AuthEntry::ApiKey {
-            key: key.to_string(),
-        },
-    );
-    save_auth(&store)
 }
 
 pub fn remove_auth(provider: &str) -> Result<bool> {
@@ -96,7 +95,16 @@ fn save_auth(store: &AuthStore) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(store)?;
-    std::fs::write(&path, content)?;
+    std::fs::write(&path, &content)?;
+
+    // Restrict file permissions to owner-only (0600) on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&path, perms)?;
+    }
+
     Ok(())
 }
 
@@ -107,9 +115,20 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
             // Show provider selector
             println!("Available providers:");
             for (i, (name, _, url)) in KNOWN_PROVIDERS.iter().enumerate() {
-                let method_label = if OAUTH_PROVIDERS.contains(name) { "OAuth" } else { "API key" };
+                let method_label = if OAUTH_PROVIDERS.contains(name) {
+                    "OAuth"
+                } else {
+                    "API key"
+                };
                 let status = get_provider_status(name);
-                println!("  {}. {} ({}) {} ({})", i + 1, name, method_label, status, url);
+                println!(
+                    "  {}. {} ({}) {} ({})",
+                    i + 1,
+                    name,
+                    method_label,
+                    status,
+                    url
+                );
             }
             println!();
             print!("Select provider (number or name): ");
@@ -145,23 +164,29 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
         .unwrap_or((&provider, "API_KEY", ""));
 
     // Check if already have env var
-    if let Ok(key) = std::env::var(env_var) {
-        if !key.is_empty() {
-            println!("✓ {} is already set via environment variable {}", provider, env_var);
-            print!("Override with manual key? [y/N]: ");
-            std::io::stdout().flush()?;
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                return Ok(());
-            }
+    if let Ok(key) = std::env::var(env_var)
+        && !key.is_empty()
+    {
+        println!(
+            "✓ {} is already set via environment variable {}",
+            provider, env_var
+        );
+        print!("Override with manual key? [y/N]: ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            return Ok(());
         }
     }
 
     if !url.is_empty() {
         println!("\nGet your API key from: {url}");
     }
-    println!("(Tip: you can also set {} environment variable instead)\n", env_var);
+    println!(
+        "(Tip: you can also set {} environment variable instead)\n",
+        env_var
+    );
 
     print!("Enter API key for {provider}: ");
     std::io::stdout().flush()?;
@@ -263,14 +288,6 @@ pub async fn handle_logout(provider: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn list_known_providers() -> Vec<(String, bool)> {
-    KNOWN_PROVIDERS
-        .iter()
-        .map(|(name, _, _)| ((*name).to_string(), get_provider_status(name).starts_with('✓')))
-        .collect()
-}
-
 fn get_provider_status(name: &str) -> &'static str {
     let store = load_auth();
     if store.providers.contains_key(name) {
@@ -283,7 +300,10 @@ fn get_provider_status(name: &str) -> &'static str {
             .map(|(_, e, _)| *e)
             .unwrap_or("");
         if !env_var.is_empty() {
-            if std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false) {
+            if std::env::var(env_var)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+            {
                 "✓ (env)"
             } else {
                 "✗"
@@ -299,15 +319,6 @@ fn get_provider_status(name: &str) -> &'static str {
 pub enum AuthSource {
     BbAuth,
     EnvVar,
-}
-
-impl AuthSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            AuthSource::BbAuth => "bb",
-            AuthSource::EnvVar => "env",
-        }
-    }
 }
 
 /// Resolve which source provides auth for a provider, if any.
@@ -337,22 +348,6 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
         }
     }
     None
-}
-
-/// Check if a provider's stored credentials are OAuth (not API key).
-pub fn is_oauth_entry(provider: &str) -> bool {
-    let store = load_auth();
-    let keys: &[&str] = match provider {
-        "openai" => &["openai", "openai-codex"],
-        "openai-codex" => &["openai-codex", "openai"],
-        _ => &[provider],
-    };
-    for &k in keys {
-        if let Some(AuthEntry::OAuth { .. }) = store.providers.get(k) {
-            return true;
-        }
-    }
-    false
 }
 
 /// Resolve API key for a provider: auth.json first, then env var.
@@ -408,17 +403,22 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         if let Some(entry) = store.providers.get(key_name) {
             match entry {
                 AuthEntry::ApiKey { key } => return Some(key.clone()),
-                AuthEntry::OAuth { access, refresh, expires, .. } => {
+                AuthEntry::OAuth {
+                    access,
+                    refresh,
+                    expires,
+                    ..
+                } => {
                     let now_ms = chrono::Utc::now().timestamp_millis();
                     // If token is still valid (with 60s buffer), return it.
                     if *expires > now_ms + 60_000 {
                         return Some(access.clone());
                     }
                     // Try to auto-refresh.
-                    if !refresh.is_empty() {
-                        if let Some(creds) = try_refresh_sync(key_name, refresh) {
-                            return Some(creds);
-                        }
+                    if !refresh.is_empty()
+                        && let Some(creds) = try_refresh_sync(key_name, refresh)
+                    {
+                        return Some(creds);
                     }
                     // Return stale token as last resort (server will reject).
                     return Some(access.clone());
@@ -439,10 +439,10 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
     };
 
     for key in env_keys {
-        if let Ok(val) = std::env::var(key) {
-            if !val.is_empty() {
-                return Some(val);
-            }
+        if let Ok(val) = std::env::var(key)
+            && !val.is_empty()
+        {
+            return Some(val);
         }
     }
 
@@ -490,5 +490,3 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
     let _ = save_oauth_credentials(provider, &creds);
     Some(creds.access)
 }
-
-

@@ -13,9 +13,8 @@ use bb_tui::fullscreen::{
 };
 use tokio::sync::mpsc;
 
-use crate::interactive::{
-    InteractiveEntryOptions, InteractiveSessionSetup,
-    prepare_interactive_mode,
+use crate::session_bootstrap::{
+    SessionBootstrapOptions, SessionRuntimeSetup, prepare_session_runtime,
 };
 
 use controller::FullscreenController;
@@ -24,6 +23,7 @@ const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
 const RESUME_SESSION_MENU_ID: &str = "resume-session";
 const TREE_ENTRY_MENU_ID: &str = "tree-entry";
+const TREE_SUMMARY_MENU_ID: &str = "tree-summary";
 const FORK_ENTRY_MENU_ID: &str = "fork-entry";
 const LOGIN_PROVIDERS: &[&str] = &[
     "anthropic",
@@ -35,13 +35,10 @@ const LOGIN_PROVIDERS: &[&str] = &[
 ];
 const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex"];
 
-pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> {
-    let (runtime_host, options, session_setup) = prepare_interactive_mode(entry).await?;
-    let extra_slash_items = build_dynamic_slash_items(
-        &runtime_host,
-        &session_setup.extension_commands,
-    );
-    let config = build_fullscreen_config(&session_setup, extra_slash_items);
+pub async fn run_fullscreen_entry(entry: SessionBootstrapOptions) -> Result<()> {
+    let (runtime_host, options, session_setup) = prepare_session_runtime(entry).await?;
+    let extra_slash_items = build_dynamic_slash_items(&runtime_host);
+    let config = build_fullscreen_config(&session_setup, &options.prompt_label, extra_slash_items);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (submission_tx, submission_rx) = mpsc::unbounded_channel();
     let controller_command_tx = command_tx.clone();
@@ -68,9 +65,8 @@ pub async fn run_fullscreen_entry(entry: InteractiveEntryOptions) -> Result<()> 
     Ok(())
 }
 
-fn build_dynamic_slash_items(
+pub(super) fn build_dynamic_slash_items(
     runtime_host: &bb_core::agent_session_runtime::AgentSessionRuntimeHost,
-    _extension_commands: &crate::extensions::ExtensionCommandRegistry,
 ) -> Vec<bb_tui::select_list::SelectItem> {
     let mut items = Vec::new();
 
@@ -110,22 +106,34 @@ fn build_dynamic_slash_items(
 }
 
 fn build_fullscreen_config(
-    session_setup: &InteractiveSessionSetup,
+    session_setup: &SessionRuntimeSetup,
+    prompt_label: &str,
     extra_slash_items: Vec<bb_tui::select_list::SelectItem>,
 ) -> FullscreenAppConfig {
     let transcript = Transcript::new();
 
+    let title = if prompt_label.is_empty() || prompt_label == "default" {
+        format!("BB-Agent v{}", env!("CARGO_PKG_VERSION"))
+    } else {
+        format!(
+            "BB-Agent v{} • prompt: {}",
+            env!("CARGO_PKG_VERSION"),
+            prompt_label
+        )
+    };
+
     FullscreenAppConfig {
-        title: format!("BB-Agent v{}", env!("CARGO_PKG_VERSION")),
+        title,
         input_placeholder: "Type a prompt for BB-Agent…".to_string(),
         status_line: String::new(),
         footer: build_footer_data(session_setup),
         transcript,
         extra_slash_items,
+        cwd: session_setup.tool_ctx.cwd.clone(),
     }
 }
 
-fn build_footer_data(session_setup: &InteractiveSessionSetup) -> FullscreenFooterData {
+fn build_footer_data(session_setup: &SessionRuntimeSetup) -> FullscreenFooterData {
     let cwd_display = shorten_home_path(&session_setup.tool_ctx.cwd.display().to_string());
     let line1 = if let Some(branch) =
         detect_git_branch(&session_setup.tool_ctx.cwd.display().to_string())
@@ -158,10 +166,10 @@ fn build_footer_data(session_setup: &InteractiveSessionSetup) -> FullscreenFoote
 }
 
 fn shorten_home_path(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if path.starts_with(&home) {
-            return format!("~{}", &path[home.len()..]);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && path.starts_with(&home)
+    {
+        return format!("~{}", &path[home.len()..]);
     }
     path.to_string()
 }
@@ -169,20 +177,6 @@ fn shorten_home_path(path: &str) -> String {
 /// Shorten a path for display (home prefix + long paths).
 pub(super) fn shorten_path(path: &str) -> String {
     shorten_home_path(path)
-}
-
-/// Format a source scope label for display.
-#[allow(dead_code)]
-pub(super) fn format_source_scope(source: &str) -> &str {
-    if source.contains("global") {
-        "global"
-    } else if source.contains("project") {
-        "project"
-    } else if source.starts_with("package:") {
-        source
-    } else {
-        ""
-    }
 }
 
 fn format_tokens(count: u64) -> String {
@@ -200,8 +194,7 @@ fn format_tokens(count: u64) -> String {
 }
 
 fn base64_encode_simple(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     let mut i = 0;
     while i < data.len() {

@@ -30,6 +30,12 @@ pub struct AgentAbortController {
     state: Arc<AbortState>,
 }
 
+impl Default for AgentAbortController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentAbortController {
     pub fn new() -> Self {
         Self {

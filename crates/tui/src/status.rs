@@ -1,6 +1,6 @@
-//! Status bar / footer — matches pi's footer layout.
+//! Status bar / footer rendering.
 //!
-//! Pi's footer shows:
+//! The footer shows:
 //!   cwd | ↑input ↓output $cost (sub/api) context%/window (auto/manual) | provider model • thinking
 
 use crossterm::style::{Color, Stylize};
@@ -17,7 +17,7 @@ pub struct FooterData {
     pub cwd: String,
 }
 
-/// Render a full-width footer line matching pi's style.
+/// Render a full-width footer line.
 pub fn render_footer(data: &FooterData, width: usize) -> String {
     let pct = if data.context_window > 0 {
         (data.context_tokens as f64 / data.context_window as f64 * 100.0) as u64
@@ -33,25 +33,24 @@ pub fn render_footer(data: &FooterData, width: usize) -> String {
         Color::Green
     };
 
-    let left = format!(
-        "{}",
-        shorten_path(&data.cwd, 30).with(Color::DarkGrey),
-    );
+    let left = format!("{}", shorten_path(&data.cwd, 30).with(Color::DarkGrey),);
 
-    let center = format!(
-        "{}{}  {}",
-        format!("↑{} ↓{}", data.input_tokens, data.output_tokens).with(Color::DarkGrey),
-        if data.cost > 0.0 {
-            format!(" ${:.3}", data.cost).with(Color::DarkGrey).to_string()
-        } else {
-            String::new()
-        },
-        format!(
-            "{}%/{}k",
-            pct.to_string().with(pct_color),
-            data.context_window / 1000,
-        ),
+    let token_text = format!("↑{} ↓{}", data.input_tokens, data.output_tokens)
+        .with(Color::DarkGrey)
+        .to_string();
+    let cost_text = if data.cost > 0.0 {
+        format!(" ${:.3}", data.cost)
+            .with(Color::DarkGrey)
+            .to_string()
+    } else {
+        String::new()
+    };
+    let context_text = format!(
+        "{}%/{}k",
+        pct.to_string().with(pct_color),
+        data.context_window / 1000,
     );
+    let center = format!("{token_text}{cost_text}  {context_text}");
 
     let right = format!(
         "({}) {} {} {}",

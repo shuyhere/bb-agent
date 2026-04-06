@@ -19,9 +19,7 @@ pub use data::{
     Transport, Usage, UsageCost,
 };
 pub use events::{AgentEvent, AgentEventSink, RuntimeAgentEvent};
-pub use helpers::{
-    build_system_prompt, extract_text, extract_tool_calls, PendingToolCall, DEFAULT_SYSTEM_PROMPT,
-};
+pub use helpers::{DEFAULT_SYSTEM_PROMPT, build_system_prompt, extract_text};
 pub use queue::{PendingMessageQueue, QueueMode};
 pub use runtime::{Agent, AgentOptions};
 pub use state::{AgentState, AgentStateInit};

@@ -1,12 +1,16 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::agent_session_extensions::SessionStartReason;
+
+pub use crate::types::ThinkingLevel;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionStartEvent {
-    pub reason: String,
+    pub reason: SessionStartReason,
 }
 
 impl SessionStartEvent {
     pub fn startup() -> Self {
         Self {
-            reason: "startup".to_owned(),
+            reason: SessionStartReason::Startup,
         }
     }
 }
@@ -22,14 +26,4 @@ pub struct ModelRef {
     pub provider: String,
     pub id: String,
     pub reasoning: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThinkingLevel {
-    #[default]
-    Off,
-    Low,
-    Medium,
-    High,
-    XHigh,
 }

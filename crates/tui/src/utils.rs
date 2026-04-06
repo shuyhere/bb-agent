@@ -1,12 +1,18 @@
 //! ANSI-aware string utilities for terminal rendering.
 //!
-//! Ported from pi-tui's utils.ts. Handles:
+//! Ported from the earlier TypeScript TUI utilities. Handles:
 //! - Visible width calculation (strips ANSI, handles CJK/emoji)
 //! - Truncation to width (preserves ANSI codes)
 //! - Padding to width
 //! - ANSI code extraction and stripping
 
 use unicode_width::UnicodeWidthChar;
+
+fn next_char_at(s: &str, index: usize) -> Option<(char, usize)> {
+    s.get(index..)
+        .and_then(|tail| tail.chars().next())
+        .map(|ch| (ch, ch.len_utf8()))
+}
 
 /// Calculate the visible width of a string, excluding ANSI escape codes.
 pub fn visible_width(s: &str) -> usize {
@@ -20,10 +26,10 @@ pub fn visible_width(s: &str) -> usize {
     }
 
     let stripped = strip_ansi(s);
-    // Replace tabs with 3 spaces (matching pi behavior)
+    // Replace tabs with 3 spaces to preserve historical rendering behavior
     let stripped = stripped.replace('\t', "   ");
 
-    stripped.chars().map(|c| char_width(c)).sum()
+    stripped.chars().map(char_width).sum()
 }
 
 /// Width of a single character in terminal columns.
@@ -36,7 +42,7 @@ pub(crate) fn char_width(c: char) -> usize {
 
 /// Check if string is pure printable ASCII (no escape codes, no unicode).
 fn is_printable_ascii(s: &str) -> bool {
-    s.bytes().all(|b| b >= 0x20 && b <= 0x7e)
+    s.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
 /// Strip all ANSI escape sequences from a string.
@@ -46,15 +52,17 @@ pub fn strip_ansi(s: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            if let Some(skip) = ansi_sequence_len(bytes, i) {
-                i += skip;
-                continue;
-            }
+        if bytes[i] == 0x1b
+            && let Some(skip) = ansi_sequence_len(bytes, i)
+        {
+            i += skip;
+            continue;
         }
-        // Safe: we're copying byte by byte from valid UTF-8
-        result.push(s[i..].chars().next().unwrap());
-        i += s[i..].chars().next().unwrap().len_utf8();
+        let Some((ch, len)) = next_char_at(s, i) else {
+            break;
+        };
+        result.push(ch);
+        i += len;
     }
 
     result
@@ -76,7 +84,7 @@ pub(crate) fn ansi_sequence_len(bytes: &[u8], pos: usize) -> Option<usize> {
             while j < bytes.len() {
                 let b = bytes[j];
                 // CSI terminators: letters and a few special chars
-                if b >= 0x40 && b <= 0x7e {
+                if (0x40..=0x7e).contains(&b) {
                     return Some(j + 1 - pos);
                 }
                 j += 1;
@@ -131,26 +139,32 @@ pub fn truncate_to_width(s: &str, max_width: usize) -> String {
     let mut width = 0;
     let bytes = s.as_bytes();
     let mut i = 0;
-    let target = if max_width > 1 { max_width - 1 } else { max_width }; // room for …
+    let target = if max_width > 1 {
+        max_width - 1
+    } else {
+        max_width
+    }; // room for …
 
     while i < bytes.len() && width < target {
         // Skip ANSI sequences (include them in output but don't count width)
-        if bytes[i] == 0x1b {
-            if let Some(len) = ansi_sequence_len(bytes, i) {
-                result.push_str(&s[i..i + len]);
-                i += len;
-                continue;
-            }
+        if bytes[i] == 0x1b
+            && let Some(len) = ansi_sequence_len(bytes, i)
+        {
+            result.push_str(&s[i..i + len]);
+            i += len;
+            continue;
         }
 
-        let ch = s[i..].chars().next().unwrap();
+        let Some((ch, len)) = next_char_at(s, i) else {
+            break;
+        };
         let cw = char_width(ch);
         if width + cw > target {
             break;
         }
         result.push(ch);
         width += cw;
-        i += ch.len_utf8();
+        i += len;
     }
 
     result.push_str("\x1b[0m…");
@@ -238,20 +252,22 @@ pub fn extract_segments(
 
     while i < bytes.len() {
         // Handle ANSI escape sequences — include in whichever segment is active
-        if bytes[i] == 0x1b {
-            if let Some(len) = ansi_sequence_len(bytes, i) {
-                let seq = &s[i..i + len];
-                if col < before_width {
-                    before.push_str(seq);
-                } else if col >= after_start && aw < after_width {
-                    after.push_str(seq);
-                }
-                i += len;
-                continue;
+        if bytes[i] == 0x1b
+            && let Some(len) = ansi_sequence_len(bytes, i)
+        {
+            let seq = &s[i..i + len];
+            if col < before_width {
+                before.push_str(seq);
+            } else if col >= after_start && aw < after_width {
+                after.push_str(seq);
             }
+            i += len;
+            continue;
         }
 
-        let ch = s[i..].chars().next().unwrap();
+        let Some((ch, len)) = next_char_at(s, i) else {
+            break;
+        };
         let cw = char_width(ch);
 
         if cw == 0 {
@@ -261,7 +277,7 @@ pub fn extract_segments(
             } else if col >= after_start && aw < after_width {
                 after.push(ch);
             }
-            i += ch.len_utf8();
+            i += len;
             continue;
         }
 
@@ -274,7 +290,7 @@ pub fn extract_segments(
         }
 
         col += cw;
-        i += ch.len_utf8();
+        i += len;
     }
 
     ExtractedSegments {

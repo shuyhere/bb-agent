@@ -64,7 +64,9 @@ fn render_assistant(msg: &AssistantMessage) -> Vec<String> {
                     ));
                 }
             }
-            AssistantContent::ToolCall { name, arguments, .. } => {
+            AssistantContent::ToolCall {
+                name, arguments, ..
+            } => {
                 let args_str = serde_json::to_string(arguments).unwrap_or_default();
                 let preview = if args_str.len() > 100 {
                     format!("{}...", &args_str[..100])

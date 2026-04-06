@@ -2,8 +2,8 @@ use crate::component::Component;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::any::Any;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -53,12 +53,7 @@ impl Loader {
     }
 
     pub fn plain(message: impl Into<String>) -> Self {
-        Self::new(
-            None,
-            |s| s.to_string(),
-            |s| s.to_string(),
-            message,
-        )
+        Self::new(None, |s| s.to_string(), |s| s.to_string(), message)
     }
 
     pub fn start(&self) {
@@ -94,10 +89,10 @@ impl Loader {
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
-        if let Ok(mut worker) = self.worker.lock() {
-            if let Some(handle) = worker.take() {
-                let _ = handle.join();
-            }
+        if let Ok(mut worker) = self.worker.lock()
+            && let Some(handle) = worker.take()
+        {
+            let _ = handle.join();
         }
     }
 
@@ -116,10 +111,7 @@ impl Loader {
 
     fn line(&self) -> String {
         let (frame, message) = if let Ok(state) = self.state.lock() {
-            (
-                FRAMES[state.current_frame],
-                state.message.clone(),
-            )
+            (FRAMES[state.current_frame], state.message.clone())
         } else {
             (FRAMES[0], String::from("Loading..."))
         };
@@ -174,12 +166,7 @@ impl CancellableLoader {
     }
 
     pub fn plain(message: impl Into<String>) -> Self {
-        Self::new(
-            None,
-            |s| s.to_string(),
-            |s| s.to_string(),
-            message,
-        )
+        Self::new(None, |s| s.to_string(), |s| s.to_string(), message)
     }
 
     pub fn set_on_abort(&mut self, on_abort: impl Fn() + Send + Sync + 'static) {
@@ -205,10 +192,11 @@ impl Component for CancellableLoader {
     }
 
     fn handle_input(&mut self, key: &KeyEvent) {
-        if key.code == KeyCode::Esc && !self.aborted.swap(true, Ordering::SeqCst) {
-            if let Some(on_abort) = &self.on_abort {
-                on_abort();
-            }
+        if key.code == KeyCode::Esc
+            && !self.aborted.swap(true, Ordering::SeqCst)
+            && let Some(on_abort) = &self.on_abort
+        {
+            on_abort();
         }
     }
 

@@ -11,6 +11,12 @@ pub struct App {
     model_name: Option<String>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         Self { model_name: None }
@@ -37,11 +43,7 @@ impl App {
 
     /// Display the status bar.
     pub fn display_status(&self, tokens: Option<u64>, context_window: Option<u64>) {
-        let line = status::render_status(
-            self.model_name.as_deref(),
-            tokens,
-            context_window,
-        );
+        let line = status::render_status(self.model_name.as_deref(), tokens, context_window);
         if !line.is_empty() {
             println!("{line}");
         }
@@ -70,7 +72,11 @@ impl App {
             Ok(0) => None, // EOF
             Ok(_) => {
                 let trimmed = line.trim().to_string();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             }
             Err(_) => None,
         }

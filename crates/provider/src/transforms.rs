@@ -1,16 +1,20 @@
 //! Message transform helpers for cross-provider compatibility.
 //!
-//! Ported from pi's `transform-messages.ts`. Handles converting between
+//! Handles converting between
 //! Anthropic and OpenAI message formats, normalizing tool call IDs, and
 //! stripping thinking blocks for providers that don't support them.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+
+#[cfg(test)]
+mod tests;
 
 /// Ensure messages use Anthropic format before sending to the Anthropic API.
 ///
 /// - Converts OpenAI-style `tool_calls` on assistant messages into `tool_use` content blocks.
 /// - Converts `role: "tool"` messages into `role: "user"` with `tool_result` content blocks.
 /// - Normalizes tool call IDs to match Anthropic's `^[a-zA-Z0-9_-]+$` (max 64 chars).
+/// - Converts image content blocks to Anthropic's `{ type: "image", source: { type: "base64", ... } }` format.
 /// - Passes through user/assistant messages with content arrays unchanged.
 pub fn convert_messages_for_anthropic(messages: &[Value]) -> Vec<Value> {
     messages
@@ -18,10 +22,15 @@ pub fn convert_messages_for_anthropic(messages: &[Value]) -> Vec<Value> {
         .filter_map(|msg| {
             let role = msg["role"].as_str()?;
             match role {
-                "user" => Some(json!({
-                    "role": "user",
-                    "content": msg["content"],
-                })),
+                "user" => {
+                    // Pass through content — may be a string or array of blocks.
+                    // Image blocks from messages_to_provider already use Anthropic format:
+                    //   { type: "image", source: { type: "base64", media_type, data } }
+                    Some(json!({
+                        "role": "user",
+                        "content": msg["content"],
+                    }))
+                }
                 "assistant" => {
                     let mut content = Vec::new();
 
@@ -48,12 +57,9 @@ pub fn convert_messages_for_anthropic(messages: &[Value]) -> Vec<Value> {
                     // OpenAI-style tool_calls → Anthropic tool_use blocks
                     if let Some(tool_calls) = msg["tool_calls"].as_array() {
                         for tc in tool_calls {
-                            let id = normalize_tool_call_id(
-                                tc["id"].as_str().unwrap_or(""),
-                            );
+                            let id = normalize_tool_call_id(tc["id"].as_str().unwrap_or(""));
                             let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                            let args: Value =
-                                serde_json::from_str(args_str).unwrap_or(json!({}));
+                            let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
                             content.push(json!({
                                 "type": "tool_use",
                                 "id": id,
@@ -73,9 +79,8 @@ pub fn convert_messages_for_anthropic(messages: &[Value]) -> Vec<Value> {
                     }))
                 }
                 "tool" => {
-                    let tool_call_id = normalize_tool_call_id(
-                        msg["tool_call_id"].as_str().unwrap_or(""),
-                    );
+                    let tool_call_id =
+                        normalize_tool_call_id(msg["tool_call_id"].as_str().unwrap_or(""));
                     Some(json!({
                         "role": "user",
                         "content": [{
@@ -126,10 +131,11 @@ pub fn convert_messages_for_openai(messages: &[Value]) -> Vec<Value> {
                             }
                         }
                     } else {
-                        // Regular user message – flatten if single text block
+                        // Regular user message – convert image blocks to OpenAI format
+                        let converted = convert_content_blocks_for_openai(arr);
                         result.push(json!({
                             "role": "user",
-                            "content": flatten_content_array(arr),
+                            "content": converted,
                         }));
                     }
                 } else {
@@ -148,10 +154,10 @@ pub fn convert_messages_for_openai(messages: &[Value]) -> Vec<Value> {
                         let btype = block["type"].as_str().unwrap_or("");
                         match btype {
                             "text" => {
-                                if let Some(t) = block["text"].as_str() {
-                                    if !t.is_empty() {
-                                        text_parts.push(t.to_string());
-                                    }
+                                if let Some(t) = block["text"].as_str()
+                                    && !t.is_empty()
+                                {
+                                    text_parts.push(t.to_string());
                                 }
                             }
                             "tool_use" => {
@@ -212,6 +218,49 @@ pub fn convert_messages_for_openai(messages: &[Value]) -> Vec<Value> {
     result
 }
 
+/// Convert user content blocks from Anthropic/internal format to OpenAI format.
+///
+/// - Text blocks: `{ type: "text", text }` (same)
+/// - Image blocks: `{ type: "image", source: { ... } }` → `{ type: "image_url", image_url: { url: "data:..." } }`
+/// - If only text and a single block, flatten to plain string.
+fn convert_content_blocks_for_openai(arr: &[Value]) -> Value {
+    let has_images = arr.iter().any(|b| b["type"].as_str() == Some("image"));
+
+    if !has_images {
+        return flatten_content_array(arr);
+    }
+
+    // Convert each block
+    let blocks: Vec<Value> = arr
+        .iter()
+        .map(|block| {
+            let btype = block["type"].as_str().unwrap_or("");
+            match btype {
+                "text" => json!({
+                    "type": "text",
+                    "text": block["text"]
+                }),
+                "image" => {
+                    // Anthropic format: { source: { type: "base64", media_type, data } }
+                    let media_type = block["source"]["media_type"]
+                        .as_str()
+                        .unwrap_or("image/png");
+                    let data = block["source"]["data"].as_str().unwrap_or("");
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{media_type};base64,{data}")
+                        }
+                    })
+                }
+                _ => block.clone(),
+            }
+        })
+        .collect();
+
+    json!(blocks)
+}
+
 /// Remove thinking blocks from messages for providers that don't support them.
 ///
 /// - Removes `type: "thinking"` content blocks from assistant messages.
@@ -234,13 +283,13 @@ pub fn strip_thinking_blocks(messages: &[Value]) -> Vec<Value> {
                         let btype = block["type"].as_str().unwrap_or("");
                         if btype == "thinking" {
                             // Convert non-empty thinking to text for context preservation
-                            if let Some(text) = block["thinking"].as_str() {
-                                if !text.trim().is_empty() {
-                                    return Some(json!({
-                                        "type": "text",
-                                        "text": format!("[Thinking]\n{text}"),
-                                    }));
-                                }
+                            if let Some(text) = block["thinking"].as_str()
+                                && !text.trim().is_empty()
+                            {
+                                return Some(json!({
+                                    "type": "text",
+                                    "text": format!("[Thinking]\n{text}"),
+                                }));
                             }
                             None
                         } else {
@@ -341,153 +390,4 @@ fn flatten_content_array(arr: &[Value]) -> Value {
         }
     }
     json!(arr)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalize_tool_call_id_valid() {
-        assert_eq!(normalize_tool_call_id("toolu_abc123"), "toolu_abc123");
-        assert_eq!(normalize_tool_call_id("call-xyz"), "call-xyz");
-    }
-
-    #[test]
-    fn test_normalize_tool_call_id_special_chars() {
-        let long_id = "call_abc|def|ghi";
-        let normalized = normalize_tool_call_id(long_id);
-        assert!(normalized.len() <= 64);
-        assert!(normalized
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
-    }
-
-    #[test]
-    fn test_normalize_tool_call_id_too_long() {
-        let long_id = "a".repeat(200);
-        let normalized = normalize_tool_call_id(&long_id);
-        assert_eq!(normalized.len(), 64);
-    }
-
-    #[test]
-    fn test_normalize_tool_call_id_empty() {
-        assert_eq!(normalize_tool_call_id(""), "tool_0");
-    }
-
-    #[test]
-    fn test_convert_messages_for_anthropic_tool_calls() {
-        let messages = vec![json!({
-            "role": "assistant",
-            "content": "Let me search for that.",
-            "tool_calls": [{
-                "id": "call_123",
-                "function": {
-                    "name": "search",
-                    "arguments": "{\"query\": \"test\"}"
-                }
-            }]
-        })];
-        let result = convert_messages_for_anthropic(&messages);
-        assert_eq!(result.len(), 1);
-        let content = result[0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[1]["type"], "tool_use");
-        assert_eq!(content[1]["id"], "call_123");
-    }
-
-    #[test]
-    fn test_convert_messages_for_anthropic_tool_result() {
-        let messages = vec![json!({
-            "role": "tool",
-            "tool_call_id": "call_123",
-            "content": "search result here"
-        })];
-        let result = convert_messages_for_anthropic(&messages);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "user");
-        let content = result[0]["content"].as_array().unwrap();
-        assert_eq!(content[0]["type"], "tool_result");
-        assert_eq!(content[0]["tool_use_id"], "call_123");
-    }
-
-    #[test]
-    fn test_convert_messages_for_openai_tool_use() {
-        let messages = vec![json!({
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Let me check."},
-                {"type": "tool_use", "id": "toolu_abc", "name": "read", "input": {"path": "/tmp"}}
-            ]
-        })];
-        let result = convert_messages_for_openai(&messages);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "assistant");
-        assert_eq!(result[0]["content"], "Let me check.");
-        let tcs = result[0]["tool_calls"].as_array().unwrap();
-        assert_eq!(tcs.len(), 1);
-        assert_eq!(tcs[0]["id"], "toolu_abc");
-        assert_eq!(tcs[0]["function"]["name"], "read");
-    }
-
-    #[test]
-    fn test_convert_messages_for_openai_tool_result() {
-        let messages = vec![json!({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "toolu_abc",
-                "content": "file contents here"
-            }]
-        })];
-        let result = convert_messages_for_openai(&messages);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["role"], "tool");
-        assert_eq!(result[0]["tool_call_id"], "toolu_abc");
-    }
-
-    #[test]
-    fn test_strip_thinking_blocks() {
-        let messages = vec![json!({
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "Let me reason about this..."},
-                {"type": "text", "text": "Here is my answer."}
-            ]
-        })];
-        let result = strip_thinking_blocks(&messages);
-        assert_eq!(result.len(), 1);
-        let content = result[0]["content"].as_array().unwrap();
-        // thinking was converted to text
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["type"], "text");
-        assert!(content[0]["text"].as_str().unwrap().contains("[Thinking]"));
-        assert_eq!(content[1]["type"], "text");
-    }
-
-    #[test]
-    fn test_strip_thinking_blocks_empty() {
-        let messages = vec![json!({
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": ""}
-            ]
-        })];
-        let result = strip_thinking_blocks(&messages);
-        // Empty thinking stripped, empty message dropped
-        assert_eq!(result.len(), 0);
-    }
-
-    #[test]
-    fn test_strip_thinking_preserves_non_assistant() {
-        let messages = vec![
-            json!({"role": "user", "content": "Hello"}),
-            json!({"role": "assistant", "content": [
-                {"type": "text", "text": "Hi"}
-            ]}),
-        ];
-        let result = strip_thinking_blocks(&messages);
-        assert_eq!(result.len(), 2);
-    }
 }

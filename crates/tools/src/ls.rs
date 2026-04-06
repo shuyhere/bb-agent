@@ -1,12 +1,11 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
-use bb_core::types::ContentBlock;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{Tool, ToolContext, ToolResult, path::resolve_path, support::text_result};
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_DEPTH: usize = 3;
@@ -66,10 +65,7 @@ impl Tool for LsTool {
         }
 
         if !dir.is_dir() {
-            return Err(BbError::Tool(format!(
-                "Not a directory: {}",
-                dir.display()
-            )));
+            return Err(BbError::Tool(format!("Not a directory: {}", dir.display())));
         }
 
         // Load .gitignore patterns for the directory
@@ -89,32 +85,27 @@ impl Tool for LsTool {
             &gitignore,
         );
 
-        let mut text = if entries.is_empty() {
+        let text = if entries.is_empty() {
             "Directory is empty.".to_string()
         } else {
             entries.join("\n")
         };
 
-        if truncated {
-            text.push_str(&format!("\n\n[Output truncated at {limit} entries]"));
-        }
-
-        Ok(ToolResult {
-            content: vec![ContentBlock::Text { text }],
-            details: Some(json!({
+        Ok(text_result(
+            text,
+            Some(json!({
                 "entryCount": count,
                 "truncated": truncated,
             })),
-            is_error: false,
-            artifact_path: None,
-        })
+        ))
     }
 }
 
 /// Recursively list directory contents with tree-like indentation.
 /// Returns true if the limit was reached.
+#[allow(clippy::too_many_arguments)]
 fn list_dir_recursive(
-    root: &Path,
+    _root: &Path,
     dir: &Path,
     prefix: &str,
     depth: usize,
@@ -182,7 +173,7 @@ fn list_dir_recursive(
                 format!("{prefix}│   ")
             };
             let truncated = list_dir_recursive(
-                root,
+                _root,
                 &entry.path(),
                 &child_prefix,
                 depth + 1,
@@ -221,20 +212,11 @@ fn is_gitignored(name: &str, patterns: &[String]) -> bool {
             return true;
         }
         // Simple glob: pattern like *.ext
-        if let Some(suffix) = pattern.strip_prefix('*') {
-            if name.ends_with(suffix) {
-                return true;
-            }
+        if let Some(suffix) = pattern.strip_prefix('*')
+            && name.ends_with(suffix)
+        {
+            return true;
         }
     }
     false
-}
-
-fn resolve_path(cwd: &Path, path_str: &str) -> std::path::PathBuf {
-    let p = Path::new(path_str);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
-    }
 }

@@ -60,8 +60,12 @@ pub struct Theme {
     pub border_accent: String,
     pub border_muted: String,
 
-    // User message
+    // User / selected / custom blocks
     pub user_msg_bg: String,
+    pub selected_bg: String,
+    pub custom_msg_bg: String,
+    pub custom_msg_label: String,
+    pub info_bg: String,
 
     // Tool execution
     pub tool_pending_bg: String,
@@ -83,6 +87,8 @@ pub struct Theme {
     pub diff_added: String,
     pub diff_removed: String,
     pub diff_context: String,
+    pub diff_added_bg: String,
+    pub diff_removed_bg: String,
 
     // Raw ANSI codes used in existing files
     pub green: String,
@@ -95,7 +101,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Default dark theme matching pi's `dark.json` values.
+    /// Default dark theme for the fullscreen TUI.
     pub fn dark() -> Self {
         Self {
             // Text styles
@@ -105,7 +111,7 @@ impl Theme {
             bold: "\x1b[1m".into(),
             italic: "\x1b[3m".into(),
 
-            // Semantic – match pi's dark.json
+            // Semantic colors
             accent: hex_fg("#8abeb7"),
             success: hex_fg("#b5bd68"),
             error: hex_fg("#cc6666"),
@@ -116,13 +122,17 @@ impl Theme {
             border_accent: hex_fg("#00d7ff"),
             border_muted: hex_fg("#505050"),
 
-            // User message
+            // User / selected / custom blocks
             user_msg_bg: hex_bg("#343541"),
+            selected_bg: hex_bg("#3a3a4a"),
+            custom_msg_bg: hex_bg("#2d2838"),
+            custom_msg_label: hex_fg("#9575cd"),
+            info_bg: hex_bg("#3c3728"),
 
             // Tool execution
-            tool_pending_bg: hex_bg("#1e2a3a"),
-            tool_success_bg: hex_bg("#1e2a3a"),
-            tool_error_bg: hex_bg("#3a1e2a"),
+            tool_pending_bg: hex_bg("#282832"),
+            tool_success_bg: hex_bg("#283228"),
+            tool_error_bg: hex_bg("#3c2828"),
             tool_title: String::new(),
             tool_output: hex_fg("#808080"),
 
@@ -135,10 +145,12 @@ impl Theme {
             md_code: hex_fg("#8abeb7"),
             md_code_block: hex_fg("#b5bd68"),
 
-            // Diff
-            diff_added: "\x1b[32m".into(),
-            diff_removed: "\x1b[31m".into(),
-            diff_context: "\x1b[90m".into(),
+            // Diff colors aligned with the rest of the tool palette
+            diff_added: hex_fg("#b5bd68"),
+            diff_removed: hex_fg("#cc6666"),
+            diff_context: hex_fg("#808080"),
+            diff_added_bg: hex_bg("#283228"),
+            diff_removed_bg: hex_bg("#3c2828"),
 
             // Raw ANSI basic colors (kept for backward-compat with overlays)
             green: "\x1b[32m".into(),
@@ -168,6 +180,10 @@ impl Theme {
             border_accent: String::new(),
             border_muted: String::new(),
             user_msg_bg: String::new(),
+            selected_bg: String::new(),
+            custom_msg_bg: String::new(),
+            custom_msg_label: String::new(),
+            info_bg: String::new(),
             tool_pending_bg: String::new(),
             tool_success_bg: String::new(),
             tool_error_bg: String::new(),
@@ -181,6 +197,8 @@ impl Theme {
             diff_added: String::new(),
             diff_removed: String::new(),
             diff_context: String::new(),
+            diff_added_bg: String::new(),
+            diff_removed_bg: String::new(),
             green: String::new(),
             red: String::new(),
             yellow: String::new(),

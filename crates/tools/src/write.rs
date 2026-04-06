@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
-use bb_core::types::ContentBlock;
-use serde_json::{json, Value};
-use std::path::Path;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{Tool, ToolContext, ToolResult, path::resolve_path, support::text_result};
 
 pub struct WriteTool;
 
@@ -46,12 +44,7 @@ impl Tool for WriteTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| BbError::Tool("Missing 'content' parameter".into()))?;
 
-        let path_str = path_str.strip_prefix('@').unwrap_or(path_str);
-        let path = if Path::new(path_str).is_absolute() {
-            Path::new(path_str).to_path_buf()
-        } else {
-            ctx.cwd.join(path_str)
-        };
+        let path = resolve_path(&ctx.cwd, path_str);
 
         // Create parent directories
         if let Some(parent) = path.parent() {
@@ -65,16 +58,12 @@ impl Tool for WriteTool {
             .await
             .map_err(|e| BbError::Tool(format!("Failed to write {}: {e}", path.display())))?;
 
-        Ok(ToolResult {
-            content: vec![ContentBlock::Text {
-                text: format!("Successfully wrote {bytes} bytes to {path_str}"),
-            }],
-            details: Some(json!({
+        Ok(text_result(
+            format!("Successfully wrote {bytes} bytes to {path_str}"),
+            Some(json!({
                 "path": path_str,
                 "bytes": bytes,
             })),
-            is_error: false,
-            artifact_path: None,
-        })
+        ))
     }
 }

@@ -1,10 +1,6 @@
 use std::cell::RefCell;
 
-use crate::{
-    component::Component,
-    impl_as_any,
-    utils::visible_width,
-};
+use crate::{component::Component, impl_as_any, utils::visible_width};
 
 pub type CustomBgFn = Box<dyn Fn(&str) -> String + Send>;
 
@@ -65,10 +61,11 @@ impl Component for Text {
     fn render(&self, width: u16) -> Vec<String> {
         {
             let cache = self.cache.borrow();
-            if let Some(lines) = &cache.lines {
-                if cache.text.as_deref() == Some(self.text.as_str()) && cache.width == Some(width) {
-                    return lines.clone();
-                }
+            if let Some(lines) = &cache.lines
+                && cache.text.as_deref() == Some(self.text.as_str())
+                && cache.width == Some(width)
+            {
+                return lines.clone();
             }
         }
 

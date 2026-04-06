@@ -6,23 +6,14 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::types::{
-    BranchSummaryEntry, LabelChangeEntry, RuntimeMessage, SessionTreeEntry,
-    SessionTreeEntryKind, StoredCompactionEntry,
+    BranchSummaryEntry, LabelChangeEntry, RuntimeMessage, SessionTreeEntry, SessionTreeEntryKind,
+    StoredCompactionEntry,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SessionTreeState {
     entries: Vec<SessionTreeEntry>,
     leaf_id: Option<String>,
-}
-
-impl Default for SessionTreeState {
-    fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            leaf_id: None,
-        }
-    }
 }
 
 impl SessionTreeState {
@@ -149,4 +140,3 @@ impl SessionTreeState {
             .collect()
     }
 }
-

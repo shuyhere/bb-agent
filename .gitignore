@@ -1,1 +1,18 @@
 target/
+.bb-agent/
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+*.log
+auth.json
+
+# Internal dev files
+PLAN.md
+ROLLING-MERGE-QUEUE.md
+FULLSCREEN-TUI-PLAN.md
+FULLSCREEN-TUI-GAPS.md
+CODE_REVIEW_AND_OPTIMIZATION_PLAN.md
+BB_AGENT_TREE.txt
+knowledge/

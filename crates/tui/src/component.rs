@@ -1,6 +1,6 @@
 //! Component trait and Container — the building blocks of the TUI.
 //!
-//! Matches pi-tui's Component/Container model:
+//! Matches the TypeScript predecessor's Component/Container model:
 //! - Component renders to lines given a width
 //! - Container holds children and renders them vertically
 //! - Focusable components emit CURSOR_MARKER for hardware cursor positioning
@@ -46,8 +46,12 @@ pub trait Component: Send {
 #[macro_export]
 macro_rules! impl_as_any {
     () => {
-        fn as_any(&self) -> &dyn std::any::Any { self }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     };
 }
 

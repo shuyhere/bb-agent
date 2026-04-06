@@ -1,6 +1,6 @@
-mod types;
-mod models;
 mod lookup;
+mod models;
+mod types;
 
-pub use types::{Model, ApiType, CostConfig};
 pub use lookup::ModelRegistry;
+pub use types::{ApiType, CostConfig, Model};

@@ -21,12 +21,15 @@ pub struct FullscreenLayout {
     pub footer: Rect,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn compute_layout(size: Size, requested_input_lines: usize) -> FullscreenLayout {
-    compute_layout_with_footer(size, requested_input_lines, if size.height >= 14 { 2 } else { 0 })
+    compute_layout_with_footer(
+        size,
+        requested_input_lines,
+        if size.height >= 14 { 2 } else { 0 },
+    )
 }
 
-#[allow(dead_code)]
 pub fn compute_layout_with_footer(
     size: Size,
     requested_input_lines: usize,
@@ -40,7 +43,9 @@ pub fn compute_layout_with_footer(
     let max_footer_height = size.height.saturating_sub(header_height + 1);
     let footer_height = requested_footer_lines.min(max_footer_height);
     let status_height = 1u16.min(size.height.saturating_sub(header_height + footer_height));
-    let available_for_input = size.height.saturating_sub(header_height + status_height + footer_height);
+    let available_for_input = size
+        .height
+        .saturating_sub(header_height + status_height + footer_height);
     let min_input_height = available_for_input.min(3);
     let max_input_height = available_for_input.min(10).max(min_input_height);
     let requested_input_height = requested_input_lines as u16 + 2;

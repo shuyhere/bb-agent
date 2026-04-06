@@ -1,14 +1,29 @@
 use crossterm::{
     cursor,
-    event::{self, Event, KeyEvent, MouseEvent},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    time::Duration,
+};
 use tokio::sync::mpsc;
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
+
+fn write_emergency_restore_sequences(stdout: &mut io::Stdout) -> io::Result<()> {
+    // Disable bracketed paste, sync updates, common xterm/tmux mouse tracking modes,
+    // and make sure the cursor is visible again.
+    write!(
+        stdout,
+        "\x1b[?2004l\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?25h"
+    )?;
+    stdout.flush()
+}
 
 #[derive(Debug, Clone)]
 pub enum FullscreenEvent {
@@ -22,14 +37,22 @@ pub struct FullscreenTerminal {
     stdout: io::Stdout,
     active: bool,
     sync_updates_supported: bool,
+    mouse_capture_enabled: bool,
 }
 
 impl FullscreenTerminal {
     pub fn enter() -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+        let _ = write_emergency_restore_sequences(&mut stdout);
+        let _ = terminal::disable_raw_mode();
+
+        terminal::enable_raw_mode()?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            cursor::Hide
+        )?;
         write!(stdout, "\x1b[?2004h")?;
         stdout.flush()?;
 
@@ -37,16 +60,12 @@ impl FullscreenTerminal {
             stdout,
             active: true,
             sync_updates_supported: sync_updates_supported(),
+            mouse_capture_enabled: true,
         })
     }
 
     pub fn size(&self) -> io::Result<(u16, u16)> {
         terminal::size()
-    }
-
-    #[allow(dead_code)]
-    pub fn sync_updates_supported(&self) -> bool {
-        self.sync_updates_supported
     }
 
     pub fn write_raw(&mut self, data: &str) -> io::Result<()> {
@@ -71,11 +90,17 @@ impl FullscreenTerminal {
             return Ok(());
         }
 
-        write!(self.stdout, "\x1b[?2004l")?;
-        execute!(self.stdout, cursor::Show, LeaveAlternateScreen)?;
-        self.stdout.flush()?;
-        terminal::disable_raw_mode()?;
+        let _ = write_emergency_restore_sequences(&mut self.stdout);
+        let _ = execute!(
+            self.stdout,
+            DisableMouseCapture,
+            cursor::Show,
+            LeaveAlternateScreen
+        );
+        let _ = self.stdout.flush();
+        let _ = terminal::disable_raw_mode();
         self.active = false;
+        self.mouse_capture_enabled = false;
         Ok(())
     }
 }
@@ -90,35 +115,77 @@ pub fn spawn_event_reader() -> mpsc::UnboundedReceiver<FullscreenEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
 
     std::thread::spawn(move || {
-        loop {
-            match event::read() {
-                Ok(Event::Key(key)) => {
-                    if tx.send(FullscreenEvent::Key(key)).is_err() {
-                        break;
+        while let Ok(event) = event::read() {
+            if let Event::Mouse(mouse) = event {
+                if matches!(mouse.kind, MouseEventKind::Drag(_)) {
+                    let mut latest_drag = mouse;
+                    loop {
+                        match event::poll(Duration::from_millis(0)) {
+                            Ok(true) => match event::read() {
+                                Ok(Event::Mouse(next_mouse))
+                                    if matches!(next_mouse.kind, MouseEventKind::Drag(_)) =>
+                                {
+                                    latest_drag = next_mouse;
+                                }
+                                Ok(other) => {
+                                    if !send_fullscreen_event(
+                                        &tx,
+                                        FullscreenEvent::Mouse(latest_drag),
+                                    ) {
+                                        return;
+                                    }
+                                    if !forward_event(&tx, other) {
+                                        return;
+                                    }
+                                    break;
+                                }
+                                Err(_) => return,
+                            },
+                            Ok(false) => {
+                                if !send_fullscreen_event(&tx, FullscreenEvent::Mouse(latest_drag))
+                                {
+                                    return;
+                                }
+                                break;
+                            }
+                            Err(_) => return,
+                        }
                     }
+                    continue;
                 }
-                Ok(Event::Mouse(mouse)) => {
-                    if tx.send(FullscreenEvent::Mouse(mouse)).is_err() {
-                        break;
-                    }
+
+                if !send_fullscreen_event(&tx, FullscreenEvent::Mouse(mouse)) {
+                    break;
                 }
-                Ok(Event::Resize(width, height)) => {
-                    if tx.send(FullscreenEvent::Resize(width, height)).is_err() {
-                        break;
-                    }
-                }
-                Ok(Event::Paste(text)) => {
-                    if tx.send(FullscreenEvent::Paste(text)).is_err() {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => break,
+                continue;
+            }
+
+            if !forward_event(&tx, event) {
+                break;
             }
         }
     });
 
     rx
+}
+
+fn forward_event(tx: &mpsc::UnboundedSender<FullscreenEvent>, event: Event) -> bool {
+    match event {
+        Event::Key(key) => send_fullscreen_event(tx, FullscreenEvent::Key(key)),
+        Event::Mouse(mouse) => send_fullscreen_event(tx, FullscreenEvent::Mouse(mouse)),
+        Event::Resize(width, height) => {
+            send_fullscreen_event(tx, FullscreenEvent::Resize(width, height))
+        }
+        Event::Paste(text) => send_fullscreen_event(tx, FullscreenEvent::Paste(text)),
+        _ => true,
+    }
+}
+
+fn send_fullscreen_event(
+    tx: &mpsc::UnboundedSender<FullscreenEvent>,
+    event: FullscreenEvent,
+) -> bool {
+    tx.send(event).is_ok()
 }
 
 fn sync_updates_supported() -> bool {

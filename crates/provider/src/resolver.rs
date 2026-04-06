@@ -25,11 +25,7 @@ pub fn parse_model_arg(input: &str) -> (Option<String>, String, Option<String>) 
     if let Some(pos) = model_part.find('/') {
         let provider = &model_part[..pos];
         let model_id = &model_part[pos + 1..];
-        (
-            Some(provider.to_string()),
-            model_id.to_string(),
-            thinking,
-        )
+        (Some(provider.to_string()), model_id.to_string(), thinking)
     } else {
         (None, model_part.to_string(), thinking)
     }
@@ -49,10 +45,10 @@ pub fn fuzzy_find_model(
 
     for model in models {
         // Filter by provider if specified
-        if let Some(prov) = provider {
-            if model.provider != prov {
-                continue;
-            }
+        if let Some(prov) = provider
+            && model.provider != prov
+        {
+            continue;
         }
 
         let score = fuzzy_score(&pattern_lower, &model.id.to_lowercase());
@@ -121,7 +117,7 @@ pub fn fuzzy_score(pattern: &str, text: &str) -> u32 {
 
     for pc in pattern.chars() {
         let mut found = false;
-        while let Some(tc) = text_chars.next() {
+        for tc in text_chars.by_ref() {
             if tc == pc {
                 matched += 1;
                 if prev_was_boundary {
@@ -221,7 +217,10 @@ mod tests {
     fn test_fuzzy_score_prefers_shorter() {
         let short = fuzzy_score("sonnet", "claude-sonnet-4");
         let long = fuzzy_score("sonnet", "claude-sonnet-4-20250514");
-        assert!(short > long, "shorter candidate should score higher: {short} vs {long}");
+        assert!(
+            short > long,
+            "shorter candidate should score higher: {short} vs {long}"
+        );
     }
 
     #[test]
@@ -231,7 +230,11 @@ mod tests {
         let found = fuzzy_find_model(&registry, "sonnet", Some("anthropic"));
         assert!(found.is_some());
         let m = found.unwrap();
-        assert!(m.id.contains("sonnet"), "should find sonnet model, got {}", m.id);
+        assert!(
+            m.id.contains("sonnet"),
+            "should find sonnet model, got {}",
+            m.id
+        );
         assert_eq!(m.provider, "anthropic");
     }
 

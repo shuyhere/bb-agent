@@ -1,23 +1,45 @@
+use crate::theme::theme;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
-use unicode_width::UnicodeWidthStr;
+
+mod blocks;
+mod cache;
+mod github;
+mod text;
+
+use blocks::{
+    has_markdown_syntax, markdown_block_tokens, render_plain_text, stable_token_count,
+    trim_blank_edges,
+};
+use cache::{get_cached_render, put_cached_render, text_hash};
+#[cfg(test)]
+use github::auto_link_github_refs_with_repo;
+use github::{auto_link_github_refs, create_hyperlink};
+use text::{strip_ansi, visible_width, word_wrap_ansi};
 
 // ANSI escape codes
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
+const UNDERLINE: &str = "\x1b[4m";
 const STRIKETHROUGH: &str = "\x1b[9m";
-const HEADING_H1: &str = "\x1b[1;97m";
-const HEADING_H2: &str = "\x1b[1;36m";
-const HEADING_H3: &str = "\x1b[1;33m";
-const HEADING_DEFAULT: &str = "\x1b[1;37m";
-const CODE_INLINE: &str = "\x1b[38;5;223m";
+static HEADING_H1: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+    Box::leak(format!("{}{}{}", theme().md_heading, BOLD, UNDERLINE).into_boxed_str())
+});
+static HEADING_H2: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+    Box::leak(format!("{}{}", theme().md_heading, BOLD).into_boxed_str())
+});
+static HEADING_H3: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+    Box::leak(format!("{}{}", theme().border_accent, BOLD).into_boxed_str())
+});
+static HEADING_DEFAULT: std::sync::LazyLock<&'static str> =
+    std::sync::LazyLock::new(|| Box::leak(format!("{}{}", theme().accent, BOLD).into_boxed_str()));
+const CODE_INLINE: &str = "\x1b[38;5;75m";
 const CODE_BORDER: &str = "\x1b[90m";
 const QUOTE_PREFIX: &str = "\x1b[90m│\x1b[0m ";
 const BULLET: &str = "\x1b[90m•\x1b[0m";
-const LINK_URL: &str = "\x1b[4;90m";
 const DIM: &str = "\x1b[2m";
 
 pub struct MarkdownRenderer {
@@ -41,10 +63,10 @@ impl MarkdownRenderer {
     }
 
     pub fn render(&mut self, width: u16) -> Vec<String> {
-        if let Some((cached_width, ref lines)) = self.cached_lines {
-            if cached_width == width {
-                return lines.clone();
-            }
+        if let Some((cached_width, ref lines)) = self.cached_lines
+            && cached_width == width
+        {
+            return lines.clone();
         }
         let lines = render_markdown(&self.text, width);
         self.cached_lines = Some((width, lines.clone()));
@@ -65,6 +87,12 @@ struct RenderState {
     // In code block
     code_block: Option<String>, // language
     code_block_lines: Vec<String>,
+    // In markdown table
+    in_table: bool,
+    in_table_head: bool,
+    table_rows: Vec<(bool, Vec<String>)>,
+    table_row: Vec<String>,
+    table_cell: String,
     // Block quote depth
     quote_depth: usize,
     // List stack: None = unordered, Some(n) = ordered starting at n
@@ -73,6 +101,7 @@ struct RenderState {
     list_counters: Vec<u64>,
     // Link state
     link_url: Option<String>,
+    link_start_len: Option<usize>,
     // Whether we are inside a paragraph
     in_paragraph: bool,
     // Syntect lazy-loaded
@@ -90,10 +119,16 @@ impl RenderState {
             heading: None,
             code_block: None,
             code_block_lines: Vec::new(),
+            in_table: false,
+            in_table_head: false,
+            table_rows: Vec::new(),
+            table_row: Vec::new(),
+            table_cell: String::new(),
             quote_depth: 0,
             list_stack: Vec::new(),
             list_counters: Vec::new(),
             link_url: None,
+            link_start_len: None,
             in_paragraph: false,
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
@@ -102,15 +137,25 @@ impl RenderState {
 
     fn push_style(&mut self, code: &'static str) {
         self.style_stack.push(code);
-        self.current_line.push_str(code);
+        if self.in_table {
+            self.table_cell.push_str(code);
+        } else {
+            self.current_line.push_str(code);
+        }
     }
 
     fn pop_style(&mut self) {
         self.style_stack.pop();
-        self.current_line.push_str(RESET);
-        // Re-apply remaining styles
-        for &s in &self.style_stack {
-            self.current_line.push_str(s);
+        if self.in_table {
+            self.table_cell.push_str(RESET);
+            for &style in &self.style_stack {
+                self.table_cell.push_str(style);
+            }
+        } else {
+            self.current_line.push_str(RESET);
+            for &style in &self.style_stack {
+                self.current_line.push_str(style);
+            }
         }
     }
 
@@ -118,34 +163,22 @@ impl RenderState {
         self.style_stack.iter().copied().collect()
     }
 
-    /// Compute line prefix for quotes and list nesting
     fn line_prefix(&self) -> String {
         let mut prefix = String::new();
-        // Quote prefix
         for _ in 0..self.quote_depth {
             prefix.push_str(QUOTE_PREFIX);
         }
         prefix
     }
 
-    /// Compute prefix width (visible characters)
     fn prefix_width(&self) -> usize {
-        // Each quote level adds "│ " = 2 visible chars
         self.quote_depth * 2
     }
 
-    /// Get list indent prefix for the current nesting level
     fn list_indent(&self) -> String {
-        // Each list level adds 2 spaces of indent
         "  ".repeat(self.list_stack.len().saturating_sub(1))
     }
 
-    #[allow(dead_code)]
-    fn list_indent_width(&self) -> usize {
-        self.list_stack.len().saturating_sub(1) * 2
-    }
-
-    /// Flush current_line buffer to lines, performing word-wrap
     fn flush_line(&mut self) {
         if self.current_line.is_empty() {
             return;
@@ -160,23 +193,149 @@ impl RenderState {
         }
     }
 
-    /// Push a blank separator line
     fn push_blank(&mut self) {
-        // Don't push blank at the very start or after another blank
-        if !self.lines.is_empty() {
-            let last = self.lines.last().unwrap();
-            if !strip_ansi(last).trim().is_empty() {
-                let prefix = self.line_prefix();
-                self.lines.push(prefix);
-            }
+        if self
+            .lines
+            .last()
+            .is_some_and(|last| !strip_ansi(last).trim().is_empty())
+        {
+            let prefix = self.line_prefix();
+            self.lines.push(prefix);
         }
     }
 
     fn push_text(&mut self, text: &str) {
-        self.current_line.push_str(text);
+        if self.in_table {
+            self.table_cell.push_str(text);
+        } else {
+            self.current_line.push_str(text);
+        }
     }
 
-    /// Render code block with syntax highlighting
+    fn flush_table_cell(&mut self) {
+        let cell = self.table_cell.trim().to_string();
+        self.table_row.push(cell);
+        self.table_cell.clear();
+    }
+
+    fn flush_table_row(&mut self) {
+        if self.table_row.is_empty() {
+            return;
+        }
+        self.table_rows
+            .push((self.in_table_head, std::mem::take(&mut self.table_row)));
+    }
+
+    fn render_table(&mut self) {
+        if self.table_rows.is_empty() {
+            return;
+        }
+
+        let prefix = self.line_prefix();
+        let prefix_w = self.prefix_width();
+        let avail = (self.width as usize).saturating_sub(prefix_w).max(1);
+        let column_count = self
+            .table_rows
+            .iter()
+            .map(|(_, row)| row.len())
+            .max()
+            .unwrap_or(0);
+        if column_count == 0 {
+            self.table_rows.clear();
+            return;
+        }
+
+        let separator_width = if column_count > 0 {
+            (column_count.saturating_sub(1)) * 3 + 4
+        } else {
+            0
+        };
+        let min_col_width = 3usize;
+        let mut widths = vec![min_col_width; column_count];
+        for (_, row) in &self.table_rows {
+            for (index, cell) in row.iter().enumerate() {
+                widths[index] = widths[index].max(visible_width(cell));
+            }
+        }
+
+        let max_content_width = avail.saturating_sub(separator_width).max(column_count);
+        while widths.iter().sum::<usize>() > max_content_width {
+            if let Some((idx, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width) {
+                if widths[idx] <= min_col_width {
+                    break;
+                }
+                widths[idx] -= 1;
+            } else {
+                break;
+            }
+        }
+
+        let top_border = widths
+            .iter()
+            .map(|width| "─".repeat(*width + 2))
+            .collect::<Vec<_>>()
+            .join("┬");
+        self.lines
+            .push(format!("{prefix}{DIM}┌{top_border}┐{RESET}"));
+
+        let rows = std::mem::take(&mut self.table_rows);
+        for (is_header, row) in rows {
+            let wrapped_cells = (0..column_count)
+                .map(|index| {
+                    let cell = row.get(index).map(String::as_str).unwrap_or("");
+                    let mut wrapped = word_wrap_ansi(cell, widths[index]);
+                    if wrapped.is_empty() {
+                        wrapped.push(String::new());
+                    }
+                    wrapped
+                })
+                .collect::<Vec<_>>();
+            let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+
+            for line_index in 0..row_height {
+                let mut line = format!("{prefix}{DIM}│{RESET} ");
+                for col in 0..column_count {
+                    if col > 0 {
+                        line.push_str(&format!(" {DIM}│{RESET} "));
+                    }
+                    let cell_line = wrapped_cells[col]
+                        .get(line_index)
+                        .cloned()
+                        .unwrap_or_default();
+                    let pad = widths[col].saturating_sub(visible_width(&cell_line));
+                    if is_header {
+                        line.push_str(BOLD);
+                    }
+                    line.push_str(&cell_line);
+                    line.push_str(&" ".repeat(pad));
+                    if is_header {
+                        line.push_str(RESET);
+                    }
+                }
+                line.push_str(&format!(" {DIM}│{RESET}"));
+                self.lines.push(line);
+            }
+
+            if is_header {
+                let separator = widths
+                    .iter()
+                    .map(|width| "─".repeat(*width + 2))
+                    .collect::<Vec<_>>()
+                    .join("┼");
+                self.lines
+                    .push(format!("{prefix}{DIM}├{separator}┤{RESET}"));
+            }
+        }
+
+        let bottom_border = widths
+            .iter()
+            .map(|width| "─".repeat(*width + 2))
+            .collect::<Vec<_>>()
+            .join("┴");
+        self.lines
+            .push(format!("{prefix}{DIM}└{bottom_border}┘{RESET}"));
+    }
+
     fn render_code_block(&mut self) {
         let lang = self.code_block.take().unwrap_or_default();
         let code_lines = std::mem::take(&mut self.code_block_lines);
@@ -184,7 +343,6 @@ impl RenderState {
         let prefix_w = self.prefix_width();
         let avail = (self.width as usize).saturating_sub(prefix_w);
 
-        // Top border with language label
         let label = if lang.is_empty() {
             String::new()
         } else {
@@ -201,7 +359,6 @@ impl RenderState {
         );
         self.lines.push(top_border);
 
-        // Syntax highlight
         let syntax = self
             .syntax_set
             .find_syntax_by_token(&lang)
@@ -226,8 +383,7 @@ impl RenderState {
                 styled.push_str(text);
                 styled.push_str(RESET);
             }
-            let inner_width = avail.saturating_sub(4); // "│ " on each side
-            // Truncate if needed (simplified - no wrap inside code blocks)
+            let inner_width = avail.saturating_sub(4);
             let vis_width = visible_width(&styled);
             let padding = if inner_width > vis_width {
                 " ".repeat(inner_width - vis_width)
@@ -240,7 +396,6 @@ impl RenderState {
             ));
         }
 
-        // Bottom border
         let bottom_border = format!(
             "{}{}└{}┘{}",
             prefix,
@@ -253,8 +408,56 @@ impl RenderState {
 }
 
 fn render_markdown(text: &str, width: u16) -> Vec<String> {
+    if !has_markdown_syntax(text) {
+        return render_plain_text(text, width);
+    }
+    render_markdown_streaming(text, width)
+}
+
+fn render_markdown_streaming(text: &str, width: u16) -> Vec<String> {
+    let tokens = markdown_block_tokens(text);
+    if tokens.is_empty() {
+        return vec![String::new()];
+    }
+
+    let stable_count = stable_token_count(text, &tokens);
+    let mut lines: Vec<String> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0
+            && !lines
+                .last()
+                .is_some_and(|line| strip_ansi(line).trim().is_empty())
+        {
+            lines.push(String::new());
+        }
+
+        let rendered = if index < stable_count {
+            render_markdown_block_cached(&token.text, width)
+        } else {
+            render_markdown_block(&token.text, width)
+        };
+        lines.extend(trim_blank_edges(rendered));
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn render_markdown_block_cached(text: &str, width: u16) -> Vec<String> {
+    let key = (text_hash(text), width);
+    if let Some(lines) = get_cached_render(key) {
+        return lines;
+    }
+
+    let lines = render_markdown_block(text, width);
+    put_cached_render(key, lines.clone());
+    lines
+}
+
+fn render_markdown_block(text: &str, width: u16) -> Vec<String> {
     let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_TASKLISTS);
 
@@ -270,12 +473,18 @@ fn render_markdown(text: &str, width: u16) -> Vec<String> {
             Event::SoftBreak => {
                 if state.code_block.is_some() {
                     state.code_block_lines.push(String::new());
+                } else if state.in_table {
+                    state.table_cell.push(' ');
                 } else {
                     state.push_text(" ");
                 }
             }
             Event::HardBreak => {
-                state.flush_line();
+                if state.in_table {
+                    state.table_cell.push(' ');
+                } else {
+                    state.flush_line();
+                }
             }
             Event::Rule => {
                 state.flush_line();
@@ -296,7 +505,6 @@ fn render_markdown(text: &str, width: u16) -> Vec<String> {
         }
     }
 
-    // Flush remaining
     state.flush_line();
     state.lines
 }
@@ -317,13 +525,12 @@ fn handle_start(state: &mut RenderState, tag: Tag) {
             state.push_blank();
             state.heading = Some(level);
             let style = match level {
-                HeadingLevel::H1 => HEADING_H1,
-                HeadingLevel::H2 => HEADING_H2,
-                HeadingLevel::H3 => HEADING_H3,
-                _ => HEADING_DEFAULT,
+                HeadingLevel::H1 => *HEADING_H1,
+                HeadingLevel::H2 => *HEADING_H2,
+                HeadingLevel::H3 => *HEADING_H3,
+                _ => *HEADING_DEFAULT,
             };
             state.push_style(style);
-            // Add heading marker
             let marker = match level {
                 HeadingLevel::H1 => "# ",
                 HeadingLevel::H2 => "## ",
@@ -337,6 +544,27 @@ fn handle_start(state: &mut RenderState, tag: Tag) {
         Tag::BlockQuote(_) => {
             state.flush_line();
             state.quote_depth += 1;
+            state.push_style(ITALIC);
+        }
+        Tag::Table(_) => {
+            state.flush_line();
+            state.push_blank();
+            state.in_table = true;
+            state.in_table_head = false;
+            state.table_rows.clear();
+            state.table_row.clear();
+            state.table_cell.clear();
+            state.in_paragraph = false;
+        }
+        Tag::TableHead => {
+            state.in_table_head = true;
+        }
+        Tag::TableRow => {
+            state.table_row.clear();
+            state.table_cell.clear();
+        }
+        Tag::TableCell => {
+            state.table_cell.clear();
         }
         Tag::CodeBlock(kind) => {
             state.flush_line();
@@ -359,21 +587,26 @@ fn handle_start(state: &mut RenderState, tag: Tag) {
         Tag::Item => {
             state.flush_line();
             let indent = state.list_indent();
-
             let is_ordered = state
                 .list_stack
                 .last()
-                .map(|s| s.is_some())
+                .map(|stack| stack.is_some())
                 .unwrap_or(false);
 
             if is_ordered {
-                let counter_val = {
-                    let c = state.list_counters.last_mut().unwrap();
-                    let v = *c;
-                    *c += 1;
-                    v
+                let counter_val = if let Some(counter) = state.list_counters.last_mut() {
+                    let value = *counter;
+                    *counter += 1;
+                    value
+                } else {
+                    1
                 };
-                state.push_text(&format!("{}{}. ", indent, counter_val));
+                let depth = state.list_stack.len().saturating_sub(1);
+                state.push_text(&format!(
+                    "{}{} ",
+                    indent,
+                    ordered_list_marker(depth, counter_val)
+                ));
             } else {
                 state.push_text(&format!("{}{} ", indent, BULLET));
             }
@@ -389,6 +622,7 @@ fn handle_start(state: &mut RenderState, tag: Tag) {
         }
         Tag::Link { dest_url, .. } => {
             state.link_url = Some(dest_url.to_string());
+            state.link_start_len = Some(current_text_target(state).len());
         }
         _ => {}
     }
@@ -406,8 +640,38 @@ fn handle_end(state: &mut RenderState, tag: TagEnd) {
             state.heading = None;
         }
         TagEnd::BlockQuote(_) => {
+            state.pop_style();
             state.flush_line();
             state.quote_depth = state.quote_depth.saturating_sub(1);
+        }
+        TagEnd::Table => {
+            if !state.table_cell.is_empty() {
+                state.flush_table_cell();
+            }
+            if !state.table_row.is_empty() {
+                state.flush_table_row();
+            }
+            state.render_table();
+            state.in_table = false;
+            state.in_table_head = false;
+            state.table_row.clear();
+            state.table_cell.clear();
+            state.push_blank();
+        }
+        TagEnd::TableHead => {
+            if !state.table_cell.is_empty() {
+                state.flush_table_cell();
+            }
+            if !state.table_row.is_empty() {
+                state.flush_table_row();
+            }
+            state.in_table_head = false;
+        }
+        TagEnd::TableRow => {
+            state.flush_table_row();
+        }
+        TagEnd::TableCell => {
+            state.flush_table_cell();
         }
         TagEnd::CodeBlock => {
             state.render_code_block();
@@ -424,22 +688,16 @@ fn handle_end(state: &mut RenderState, tag: TagEnd) {
         TagEnd::Item => {
             state.flush_line();
         }
-        TagEnd::Strong => {
-            state.pop_style();
-        }
-        TagEnd::Emphasis => {
-            state.pop_style();
-        }
-        TagEnd::Strikethrough => {
+        TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough => {
             state.pop_style();
         }
         TagEnd::Link => {
-            if let Some(url) = state.link_url.take() {
-                state.push_text(&format!(" ({}{}{})", LINK_URL, url, RESET));
-                // Re-apply active styles after reset
-                let styles = state.active_styles();
-                if !styles.is_empty() {
-                    state.push_text(&styles);
+            if let (Some(url), Some(start)) = (state.link_url.take(), state.link_start_len.take()) {
+                let target = current_text_target_mut(state);
+                if start <= target.len() {
+                    let raw_link_text = target[start..].to_string();
+                    target.truncate(start);
+                    target.push_str(&create_hyperlink(&url, &raw_link_text));
                 }
             }
         }
@@ -449,310 +707,80 @@ fn handle_end(state: &mut RenderState, tag: TagEnd) {
 
 fn handle_text(state: &mut RenderState, text: &str) {
     if state.code_block.is_some() {
-        // Collect code block lines
         for line in text.split('\n') {
             state.code_block_lines.push(line.to_string());
         }
-        // If text ends with \n, last push was an empty string representing the trailing newline.
-        // Remove it to avoid extra blank line.
         if text.ends_with('\n') && !state.code_block_lines.is_empty() {
             state.code_block_lines.pop();
         }
-    } else {
+    } else if state.link_url.is_some() {
         state.push_text(text);
+    } else {
+        state.push_text(&auto_link_github_refs(text));
     }
 }
 
 fn handle_inline_code(state: &mut RenderState, code: &str) {
     state.push_text(&format!("{}`{}`{}", CODE_INLINE, code, RESET));
-    // Re-apply active styles
     let styles = state.active_styles();
     if !styles.is_empty() {
         state.push_text(&styles);
     }
 }
 
-/// Strip ANSI escape codes to get visible text
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::new();
-    let mut in_escape = false;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            in_escape = true;
-            continue;
-        }
-        if in_escape {
-            if c.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-            continue;
-        }
-        result.push(c);
-    }
-    result
-}
-
-/// Compute visible width of a string with ANSI codes
-fn visible_width(s: &str) -> usize {
-    UnicodeWidthStr::width(strip_ansi(s).as_str())
-}
-
-/// Word-wrap text with ANSI codes to fit within `max_width`.
-fn word_wrap_ansi(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_width: usize = 0;
-
-    // Track active ANSI codes so we can carry them across lines
-    let mut active_codes: Vec<String> = Vec::new();
-
-    // Split into segments: ANSI codes and visible text
-    let segments = split_ansi_segments(text);
-
-    for segment in segments {
-        if segment.starts_with('\x1b') {
-            // It's an ANSI escape code
-            current.push_str(&segment);
-            // Track it
-            if segment.contains("[0m") {
-                active_codes.clear();
-            } else {
-                active_codes.push(segment);
-            }
-            continue;
-        }
-
-        // Visible text - word wrap it
-        for word in WordSplitter::new(&segment) {
-            let word_w = UnicodeWidthStr::width(word);
-
-            if current_width + word_w > max_width && current_width > 0 {
-                // Wrap: close current line and start new one
-                current.push_str(RESET);
-                lines.push(current);
-                current = active_codes.join("");
-
-                // Skip leading space on new line
-                let trimmed = word.trim_start();
-                let trimmed_w = UnicodeWidthStr::width(trimmed);
-                current.push_str(trimmed);
-                current_width = trimmed_w;
-            } else {
-                current.push_str(word);
-                current_width += word_w;
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
-}
-
-/// Split a string into ANSI escape segments and text segments.
-fn split_ansi_segments(text: &str) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Flush current text segment
-            if !current.is_empty() {
-                segments.push(std::mem::take(&mut current));
-            }
-            // Start collecting escape sequence
-            let mut esc = String::new();
-            esc.push(c);
-            while let Some(&nc) = chars.peek() {
-                esc.push(nc);
-                chars.next();
-                if nc.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-            segments.push(esc);
-        } else {
-            current.push(c);
-        }
-    }
-
-    if !current.is_empty() {
-        segments.push(current);
-    }
-
-    segments
-}
-
-/// Helper to split text into words while preserving spaces as part of the word.
-struct WordSplitter<'a> {
-    remaining: &'a str,
-}
-
-impl<'a> WordSplitter<'a> {
-    fn new(s: &'a str) -> Self {
-        Self { remaining: s }
+fn current_text_target(state: &RenderState) -> &String {
+    if state.in_table {
+        &state.table_cell
+    } else {
+        &state.current_line
     }
 }
 
-impl<'a> Iterator for WordSplitter<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining.is_empty() {
-            return None;
-        }
-
-        // Find next space boundary
-        let bytes = self.remaining.as_bytes();
-        // Find end of current chunk (non-space then space, or space then non-space)
-        let mut i = 0;
-        let starts_with_space = bytes[0] == b' ';
-
-        if starts_with_space {
-            // Consume all spaces
-            while i < bytes.len() && bytes[i] == b' ' {
-                i += 1;
-            }
-        } else {
-            // Consume until space
-            while i < bytes.len() && bytes[i] != b' ' {
-                i += 1;
-            }
-        }
-
-        let (chunk, rest) = self.remaining.split_at(i);
-        self.remaining = rest;
-        Some(chunk)
+fn current_text_target_mut(state: &mut RenderState) -> &mut String {
+    if state.in_table {
+        &mut state.table_cell
+    } else {
+        &mut state.current_line
     }
+}
+
+fn ordered_list_marker(depth: usize, counter: u64) -> String {
+    match depth {
+        0 | 1 => format!("{counter}."),
+        2 => {
+            let index = counter.saturating_sub(1) as u8;
+            let ch = (b'a' + (index % 26)) as char;
+            format!("{ch}.")
+        }
+        _ => format!("{}.", to_roman(counter)),
+    }
+}
+
+fn to_roman(mut value: u64) -> String {
+    let numerals = [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut out = String::new();
+    for (amount, glyph) in numerals {
+        while value >= amount {
+            value -= amount;
+            out.push_str(glyph);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_basic_render() {
-        let md = "# Hello\n\nThis is a paragraph.\n\n## Subheading\n\n- item 1\n- item 2\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        assert!(lines.len() >= 5, "Expected at least 5 lines, got {}", lines.len());
-        // Check heading is present
-        let joined = lines.join("\n");
-        assert!(joined.contains("Hello"));
-        assert!(joined.contains("Subheading"));
-        assert!(joined.contains("item 1"));
-    }
-
-    #[test]
-    fn test_code_block() {
-        let md = "```rust\nfn main() {}\n```\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        // Should have top border, code line, bottom border
-        assert!(lines.len() >= 3, "Expected at least 3 lines for code block, got {}", lines.len());
-        let joined = lines.join("\n");
-        assert!(joined.contains("main"));
-    }
-
-    #[test]
-    fn test_word_wrap() {
-        let long = "word ".repeat(20);
-        let md = format!("{}\n", long.trim());
-        let mut renderer = MarkdownRenderer::new(&md);
-        let lines = renderer.render(30);
-        assert!(lines.len() > 1, "Expected wrapping at width 30");
-    }
-
-    #[test]
-    fn test_inline_formatting() {
-        let md = "This is **bold** and *italic* and ~~struck~~.\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        let joined = lines.join("\n");
-        assert!(joined.contains("bold"));
-        assert!(joined.contains("italic"));
-        assert!(joined.contains("struck"));
-    }
-
-    #[test]
-    fn test_blockquote() {
-        let md = "> This is a quote\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        let joined = lines.join("\n");
-        assert!(joined.contains("│"));
-        assert!(joined.contains("quote"));
-    }
-
-    #[test]
-    fn test_ordered_list() {
-        let md = "1. first\n2. second\n3. third\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        let joined = lines.join("\n");
-        assert!(joined.contains("1."));
-        assert!(joined.contains("first"));
-    }
-
-    #[test]
-    fn test_horizontal_rule() {
-        let md = "---\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(40);
-        let joined = lines.join("\n");
-        assert!(joined.contains("─"));
-    }
-
-    #[test]
-    fn test_caching() {
-        let md = "# Test\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines1 = renderer.render(80);
-        let lines2 = renderer.render(80);
-        assert_eq!(lines1, lines2);
-        // Different width should re-render
-        let _lines3 = renderer.render(40);
-        assert!(renderer.cached_lines.as_ref().unwrap().0 == 40);
-    }
-
-    #[test]
-    fn test_strip_ansi() {
-        assert_eq!(strip_ansi("\x1b[1mhello\x1b[0m"), "hello");
-        assert_eq!(strip_ansi("no codes"), "no codes");
-    }
-
-    #[test]
-    fn test_visible_width() {
-        assert_eq!(visible_width("\x1b[1mhi\x1b[0m"), 2);
-    }
-
-    #[test]
-    fn test_link() {
-        let md = "[click here](https://example.com)\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        let joined = lines.join("\n");
-        assert!(joined.contains("click here"));
-        assert!(joined.contains("example.com"));
-    }
-
-    #[test]
-    fn test_inline_code() {
-        let md = "Use `cargo build` to compile.\n";
-        let mut renderer = MarkdownRenderer::new(md);
-        let lines = renderer.render(80);
-        let joined = lines.join("\n");
-        assert!(joined.contains("cargo build"));
-    }
-}
+mod tests;

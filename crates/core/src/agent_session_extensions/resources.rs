@@ -1,6 +1,4 @@
-use super::types::{
-    ExtensionsResult, PromptTemplateInfo, ResourceExtensionPaths, SkillCatalog,
-};
+use super::types::{ExtensionsResult, PromptTemplateInfo, ResourceExtensionPaths, SkillCatalog};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ResourceCatalogState {

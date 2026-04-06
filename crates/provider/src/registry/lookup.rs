@@ -10,6 +10,12 @@ pub struct ModelRegistry {
     models: Vec<Model>,
 }
 
+impl Default for ModelRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelRegistry {
     pub fn new() -> Self {
         Self {
@@ -75,11 +81,11 @@ impl ModelRegistry {
     /// Load additional models from a JSON file.
     /// The file should contain an array of model objects.
     pub fn load_from_file(&mut self, path: &Path) {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(models) = serde_json::from_str::<Vec<Model>>(&content) {
-                for model in models {
-                    self.add(model);
-                }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && let Ok(models) = serde_json::from_str::<Vec<Model>>(&content)
+        {
+            for model in models {
+                self.add(model);
             }
         }
     }
@@ -92,10 +98,10 @@ impl ModelRegistry {
         let mut best: Option<(&Model, u32)> = None;
 
         for model in &self.models {
-            if let Some(prov) = provider {
-                if model.provider != prov {
-                    continue;
-                }
+            if let Some(prov) = provider
+                && model.provider != prov
+            {
+                continue;
             }
 
             let score = fuzzy_score(&pattern_lower, &model.id.to_lowercase())

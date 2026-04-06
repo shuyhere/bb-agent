@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
-    let mut result = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -131,14 +131,14 @@ impl Editor {
 
             // Copy (Ctrl+C)
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                if self.has_selection() {
-                    if let Some(text) = self.selected_text() {
-                        // Try to copy to system clipboard via OSC 52
-                        let encoded = base64_encode(&text);
-                        let osc = format!("\x1b]52;c;{}\x07", encoded);
-                        let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
-                    }
+                if self.has_selection()
+                    && let Some(text) = self.selected_text()
+                {
+                    // Try to copy to system clipboard via OSC 52
+                    let encoded = base64_encode(&text);
+                    let osc = format!("\x1b]52;c;{}\x07", encoded);
+                    let _ = std::io::Write::write_all(&mut std::io::stdout(), osc.as_bytes());
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
                 }
             }
 

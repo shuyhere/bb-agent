@@ -84,7 +84,7 @@ pub enum SessionEntry {
     ThinkingLevelChange {
         #[serde(flatten)]
         base: EntryBase,
-        thinking_level: String,
+        thinking_level: ThinkingLevel,
     },
     #[serde(rename = "custom")]
     Custom {
@@ -153,19 +153,51 @@ impl SessionEntry {
 // Session context (what gets sent to LLM)
 // =============================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    #[default]
     Off,
     Minimal,
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh", alias = "xHigh")]
+    XHigh,
 }
 
-impl Default for ThinkingLevel {
-    fn default() -> Self {
-        Self::Off
+impl ThinkingLevel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    pub const fn reasoning_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+impl std::fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -215,4 +247,37 @@ pub struct SessionHeader {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThinkingLevel;
+
+    #[test]
+    fn thinking_level_parse_and_display_cover_all_variants() {
+        let cases = [
+            ("off", ThinkingLevel::Off),
+            ("minimal", ThinkingLevel::Minimal),
+            ("low", ThinkingLevel::Low),
+            ("medium", ThinkingLevel::Medium),
+            ("high", ThinkingLevel::High),
+            ("xhigh", ThinkingLevel::XHigh),
+        ];
+
+        for (text, level) in cases {
+            assert_eq!(ThinkingLevel::parse(text), Some(level));
+            assert_eq!(level.as_str(), text);
+            assert_eq!(level.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn thinking_level_serde_accepts_legacy_xhigh_alias() {
+        let parsed: ThinkingLevel = serde_json::from_str("\"xHigh\"").unwrap();
+        assert_eq!(parsed, ThinkingLevel::XHigh);
+        assert_eq!(
+            serde_json::to_string(&ThinkingLevel::XHigh).unwrap(),
+            "\"xhigh\""
+        );
+    }
 }

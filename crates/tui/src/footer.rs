@@ -1,4 +1,4 @@
-//! Footer component — ported from pi's interactive footer.
+//! Footer component.
 //!
 //! Shows:
 //!   Line 1: cwd (branch) • session-name
@@ -15,7 +15,13 @@ pub use crate::footer_data::{FooterDataProvider, ReadonlyFooterDataProvider};
 /// Detect git branch for the given cwd.
 pub fn detect_git_branch(cwd: &str) -> Option<String> {
     let output = Command::new("git")
-        .args(["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"])
+        .args([
+            "--no-optional-locks",
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+        ])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -38,7 +44,7 @@ pub fn detect_git_branch(cwd: &str) -> Option<String> {
 /// Data needed to render the footer.
 #[derive(Clone, Debug)]
 pub struct FooterData {
-    /// Model identifier shown in footer (pi uses model id, not display name)
+    /// Model identifier shown in footer (uses model id, not display name)
     pub model_name: String,
     pub provider: String,
     pub cwd: String,
@@ -114,10 +120,10 @@ impl Component for Footer {
         let data = &self.data;
 
         let mut pwd = data.cwd.clone();
-        if let Ok(home) = std::env::var("HOME") {
-            if pwd.starts_with(&home) {
-                pwd = format!("~{}", &pwd[home.len()..]);
-            }
+        if let Ok(home) = std::env::var("HOME")
+            && pwd.starts_with(&home)
+        {
+            pwd = format!("~{}", &pwd[home.len()..]);
         }
         if let Some(branch) = &data.git_branch {
             pwd = format!("{pwd} ({branch})");
@@ -202,7 +208,8 @@ impl Component for Footer {
             if available_for_right > 0 {
                 let truncated_right = truncate_to_width(&right_side, available_for_right);
                 let truncated_right_width = visible_width(&truncated_right);
-                let padding = " ".repeat(width.saturating_sub(stats_left_width + truncated_right_width));
+                let padding =
+                    " ".repeat(width.saturating_sub(stats_left_width + truncated_right_width));
                 format!("{stats_left}{padding}{truncated_right}")
             } else {
                 stats_left.clone()

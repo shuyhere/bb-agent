@@ -24,7 +24,7 @@ impl PrintTurnResult {
     }
 }
 
-/// Thin single-shot adapter that mirrors pi's print-mode layering:
+/// Thin single-shot adapter for print mode:
 /// the CLI owns I/O, while prompt sequencing is owned by core session code.
 pub struct ThinPrintSession<F> {
     run_turn: F,
@@ -50,10 +50,12 @@ impl<F> ThinPrintSession<F> {
     {
         let result = (self.run_turn)(text.into()).await?;
         self.last_result = Some(result);
-        Ok(self
-            .last_result
-            .as_ref()
-            .expect("thin print session stores the last turn result"))
+        Ok(match self.last_result.as_ref() {
+            Some(result) => result,
+            None => {
+                unreachable!("ThinPrintSession must retain the last turn result after prompt()")
+            }
+        })
     }
 
     pub async fn run<Fut, E>(

@@ -74,11 +74,22 @@ impl BoxComponent {
     }
 
     fn invalidate_cache(&self) {
-        *self.cache.lock().expect("box cache poisoned") = None;
+        *self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
-    fn match_cache(&self, width: u16, child_lines: &[String], bg_sample: Option<&str>) -> Option<Vec<String>> {
-        let cache = self.cache.lock().expect("box cache poisoned");
+    fn match_cache(
+        &self,
+        width: u16,
+        child_lines: &[String],
+        bg_sample: Option<&str>,
+    ) -> Option<Vec<String>> {
+        let cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cache = cache.as_ref()?;
 
         if cache.width != width {
@@ -160,7 +171,10 @@ impl Component for BoxComponent {
             result.push(self.apply_bg("", width));
         }
 
-        *self.cache.lock().expect("box cache poisoned") = Some(RenderCache {
+        *self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(RenderCache {
             child_lines,
             width,
             bg_sample,

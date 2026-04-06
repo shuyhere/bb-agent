@@ -1,0 +1,210 @@
+use std::io;
+use std::time::{Duration, Instant};
+
+use tokio::sync::mpsc;
+
+use crate::fullscreen::frame::build_frame;
+use crate::fullscreen::renderer::FullscreenRenderer;
+use crate::fullscreen::scheduler::{RenderIntent, RenderScheduler};
+use crate::fullscreen::terminal::{FullscreenEvent, FullscreenTerminal, spawn_event_reader};
+use crate::fullscreen::types::{
+    FullscreenAppConfig, FullscreenCommand, FullscreenOutcome, FullscreenSubmission,
+};
+
+use super::{FullscreenState, Size};
+
+pub async fn run(config: FullscreenAppConfig) -> io::Result<FullscreenOutcome> {
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let (submission_tx, _submission_rx) = mpsc::unbounded_channel();
+    run_with_channels(config, command_rx, submission_tx).await
+}
+
+pub async fn run_with_channels(
+    config: FullscreenAppConfig,
+    mut command_rx: mpsc::UnboundedReceiver<FullscreenCommand>,
+    submission_tx: mpsc::UnboundedSender<FullscreenSubmission>,
+) -> io::Result<FullscreenOutcome> {
+    let mut terminal = FullscreenTerminal::enter()?;
+    let (width, height) = terminal.size()?;
+    let mut state = FullscreenState::new(config, Size { width, height });
+    let mut renderer = FullscreenRenderer::new();
+    let mut events = spawn_event_reader();
+    let mut scheduler = RenderScheduler::default();
+    let mut command_open = true;
+    let mut tick = tokio::time::interval(Duration::from_millis(80));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    render_now(&mut terminal, &mut renderer, &mut state)?;
+    apply_pending_terminal_state(&mut terminal, &mut state)?;
+    flush_submissions(&mut state, &submission_tx);
+
+    loop {
+        if state.should_quit {
+            break;
+        }
+
+        let scheduled_deadline = scheduler.next_flush_at();
+        let scheduled_flush = async move {
+            match scheduled_deadline {
+                Some(deadline) => {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(scheduled_flush);
+
+        tokio::select! {
+            maybe_event = events.recv() => {
+                let Some(event) = maybe_event else {
+                    break;
+                };
+
+                match event {
+                    FullscreenEvent::Key(key) => state.on_key(key),
+                    FullscreenEvent::Mouse(mouse) => state.on_mouse(mouse),
+                    FullscreenEvent::Resize(width, height) => state.on_resize(width, height),
+                    FullscreenEvent::Paste(text) => state.on_paste(&text),
+                }
+
+                if state.dirty {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.clear();
+                }
+                apply_pending_terminal_state(&mut terminal, &mut state)?;
+                flush_submissions(&mut state, &submission_tx);
+            }
+            maybe_command = command_rx.recv(), if command_open => {
+                match maybe_command {
+                    Some(command) => apply_render_intent(
+                        state.apply_command(command),
+                        &mut scheduler,
+                        &mut terminal,
+                        &mut renderer,
+                        &mut state,
+                    )?,
+                    None => {
+                        command_open = false;
+                        state.should_quit = true;
+                        state.dirty = true;
+                    }
+                }
+            }
+            _ = &mut scheduled_flush => {
+                if scheduler.should_flush(Instant::now()) {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.on_flushed();
+                }
+            }
+            _ = tick.tick() => {
+                state.on_tick();
+                if state.dirty {
+                    render_now(&mut terminal, &mut renderer, &mut state)?;
+                    scheduler.clear();
+                }
+            }
+        }
+
+        apply_pending_terminal_state(&mut terminal, &mut state)?;
+        flush_submissions(&mut state, &submission_tx);
+    }
+
+    if scheduler.is_dirty() || state.dirty {
+        render_now(&mut terminal, &mut renderer, &mut state)?;
+        scheduler.on_flushed();
+    }
+    apply_pending_terminal_state(&mut terminal, &mut state)?;
+
+    Ok(state.outcome())
+}
+
+fn base64_encode_simple(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < data.len() {
+        let b0 = data[i] as u32;
+        let b1 = if i + 1 < data.len() {
+            data[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < data.len() {
+            data[i + 2] as u32
+        } else {
+            0
+        };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        let c0 = ((n >> 18) & 0x3F) as usize;
+        let c1 = ((n >> 12) & 0x3F) as usize;
+        let c2 = ((n >> 6) & 0x3F) as usize;
+        let c3 = (n & 0x3F) as usize;
+        out.push(TABLE[c0] as char);
+        out.push(TABLE[c1] as char);
+        out.push(if i + 1 < data.len() {
+            TABLE[c2] as char
+        } else {
+            '='
+        });
+        out.push(if i + 2 < data.len() {
+            TABLE[c3] as char
+        } else {
+            '='
+        });
+        i += 3;
+    }
+    out
+}
+
+fn apply_pending_terminal_state(
+    terminal: &mut FullscreenTerminal,
+    state: &mut FullscreenState,
+) -> io::Result<()> {
+    if let Some(text) = state.take_pending_clipboard_copy() {
+        let encoded = base64_encode_simple(text.as_bytes());
+        terminal.write_raw(&format!("\x1b]52;c;{encoded}\x07"))?;
+    }
+    Ok(())
+}
+
+fn apply_render_intent(
+    intent: RenderIntent,
+    scheduler: &mut RenderScheduler,
+    terminal: &mut FullscreenTerminal,
+    renderer: &mut FullscreenRenderer,
+    state: &mut FullscreenState,
+) -> io::Result<()> {
+    match intent {
+        RenderIntent::None => {}
+        RenderIntent::Schedule => scheduler.mark_dirty(Instant::now()),
+        RenderIntent::Render => {
+            render_now(terminal, renderer, state)?;
+            scheduler.on_flushed();
+        }
+    }
+    Ok(())
+}
+
+fn render_now(
+    terminal: &mut FullscreenTerminal,
+    renderer: &mut FullscreenRenderer,
+    state: &mut FullscreenState,
+) -> io::Result<()> {
+    if !state.take_dirty() {
+        return Ok(());
+    }
+    state.prepare_for_render();
+    let frame = build_frame(state);
+    renderer.render(terminal, &frame)
+}
+
+fn flush_submissions(
+    state: &mut FullscreenState,
+    submission_tx: &mpsc::UnboundedSender<FullscreenSubmission>,
+) {
+    for submitted in state.take_pending_submissions() {
+        if submission_tx.send(submitted).is_err() {
+            break;
+        }
+    }
+}

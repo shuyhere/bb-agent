@@ -1,15 +1,19 @@
-pub mod error;
+//! Provider integrations, streaming abstractions, and model resolution for BB-Agent.
+
+pub mod anthropic;
+mod error;
+pub mod google;
+pub mod openai;
 pub mod registry;
 pub mod resolver;
-pub mod openai;
-pub mod anthropic;
-pub mod google;
-pub mod retry;
-pub mod streaming;
-pub mod traits;
-pub mod transforms;
-pub mod types;
+mod retry;
+mod streaming;
+mod traits;
+mod transforms;
+mod types;
 
+pub use error::{ProviderError, Result};
+pub use streaming::{CollectedResponse, CollectedToolCall};
 pub use traits::Provider;
 pub use types::{
     CompletionRequest, ProviderRetryEvent, RequestOptions, RetryCallback, StreamEvent, UsageInfo,

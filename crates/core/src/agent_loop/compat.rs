@@ -1,4 +1,4 @@
-/// Legacy CLI/session compatibility helpers used during runtime loop migration.
+//! Legacy CLI/session compatibility helpers used during runtime loop migration.
 
 /// Check if a provider error message indicates a context overflow.
 pub fn is_context_overflow(msg: &str) -> bool {

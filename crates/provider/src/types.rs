@@ -8,6 +8,8 @@ pub struct CompletionRequest {
     pub system_prompt: String,
     pub messages: Vec<serde_json::Value>,
     pub tools: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_tool_schemas: Vec<serde_json::Value>,
     pub model: String,
     pub max_tokens: Option<u32>,
     pub stream: bool,
@@ -48,14 +50,45 @@ pub struct RequestOptions {
 /// A streaming event from the provider.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
-    TextDelta { text: String },
-    ThinkingDelta { text: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, arguments_delta: String },
-    ToolCallEnd { id: String },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        arguments_delta: String,
+    },
+    ToolCallEnd {
+        id: String,
+    },
+    ServerToolUseStart {
+        id: String,
+        name: String,
+    },
+    ServerToolUseDelta {
+        id: String,
+        arguments_delta: String,
+    },
+    ServerToolUseEnd {
+        id: String,
+    },
+    ServerToolResult {
+        tool_use_id: String,
+        name: String,
+        result: serde_json::Value,
+        is_error: bool,
+    },
     Usage(UsageInfo),
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

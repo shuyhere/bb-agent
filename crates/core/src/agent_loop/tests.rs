@@ -1,9 +1,11 @@
-use super::{is_context_overflow, is_rate_limited, MessageQueue};
+use super::{MessageQueue, is_context_overflow, is_rate_limited};
 
 #[test]
 fn test_is_context_overflow() {
     assert!(is_context_overflow("HTTP 400: context_length_exceeded"));
-    assert!(is_context_overflow("maximum context length is 200000 tokens"));
+    assert!(is_context_overflow(
+        "maximum context length is 200000 tokens"
+    ));
     assert!(is_context_overflow("too many tokens in the request"));
     assert!(is_context_overflow("request too large for model"));
     assert!(is_context_overflow("prompt is too long"));

@@ -7,6 +7,8 @@ use crate::slash_commands::shared_slash_command_select_items;
 use crate::undo_stack::UndoStack;
 use std::path::PathBuf;
 
+pub(super) type SubmitFn = Box<dyn Fn(&str) + Send>;
+
 /// Editor state.
 pub(super) struct EditorState {
     pub(super) lines: Vec<String>,
@@ -45,7 +47,7 @@ pub struct Editor {
     /// Current position while browsing history (-1 = live).
     pub(super) history_index: isize,
     /// Callback when user submits.
-    pub(super) on_submit: Option<Box<dyn Fn(&str) + Send>>,
+    pub(super) on_submit: Option<SubmitFn>,
     /// Whether submit is disabled.
     pub disable_submit: bool,
     /// Border color escape code (default: dim).
@@ -83,7 +85,7 @@ impl Editor {
             history_index: -1,
             on_submit: None,
             disable_submit: false,
-            border_color: "\x1b[38;2;178;148;187m".to_string(), // pi-style purple
+            border_color: "\x1b[38;2;178;148;187m".to_string(), // legacy purple accent
             slash_menu: None,
             slash_commands: shared_slash_command_select_items(),
             kill_ring: KillRing::default(),

@@ -2,9 +2,10 @@ use anyhow::{Result, anyhow, bail};
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{
-    ModelRef, PrintTurnResult, PrintTurnStopReason, ThinPrintSession, load_agents_md,
-    parse_model_arg,
+    ModelRef, PrintTurnResult, PrintTurnStopReason, ThinPrintSession, parse_model_arg,
 };
+
+use crate::agents_md::load_agents_md;
 use bb_core::agent_session_runtime::{
     CreateAgentSessionRuntimeOptions, create_agent_session_runtime,
 };
@@ -109,16 +110,25 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let tool_defs = build_tool_defs(&builtin_tools);
     let skill_section = build_skill_system_prompt_section(&session_resources);
     let system_prompt = format!("{system_prompt}{skill_section}");
-    let tool_ctx = ToolContext {
-        cwd: cwd.clone(),
-        artifacts_dir,
-        on_output: None,
-    };
 
     let provider: Arc<dyn bb_provider::Provider> = match model.api {
         ApiType::AnthropicMessages => Arc::new(AnthropicProvider::new()),
         ApiType::GoogleGenerative => Arc::new(GoogleProvider::new()),
         _ => Arc::new(OpenAiProvider::new()),
+    };
+
+    let tool_ctx = ToolContext {
+        cwd: cwd.clone(),
+        artifacts_dir,
+        on_output: None,
+        web_search: Some(bb_tools::WebSearchRuntime {
+            provider: provider.clone(),
+            model: model.clone(),
+            api_key: api_key.clone(),
+            base_url: base_url.clone(),
+            headers: std::collections::HashMap::new(),
+            enabled: true,
+        }),
     };
 
     let bootstrap = bb_core::agent_session_runtime::AgentSessionRuntimeBootstrap {
@@ -229,7 +239,7 @@ fn resolve_session_id(
             return Ok(s.session_id.clone());
         }
     }
-    store::create_session(conn, cwd_str).map_err(Into::into)
+    store::create_session(conn, cwd_str)
 }
 
 fn select_tools(cli: &Cli) -> Vec<Box<dyn Tool>> {

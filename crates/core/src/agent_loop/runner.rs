@@ -1,5 +1,5 @@
-//! Main agent loop orchestration: `agent_loop`, `agent_loop_continue`,
-//! `run_agent_loop`, `run_agent_loop_continue`, and `run_loop`.
+//! Main legacy agent loop orchestration retained behind the transitional
+//! `agent_loop` / `agent_loop_continue` compatibility entry points.
 
 use crate::agent::{
     AgentAbortSignal, AgentContextSnapshot, AgentEventSink, AgentFuture, AgentLoopConfig,
@@ -13,7 +13,20 @@ use super::streaming::stream_assistant_response;
 use super::tool_execution::{execute_tool_calls, tool_result_to_agent_message};
 use super::types::AgentStream;
 
+fn fallback_error_messages(
+    model: &crate::agent::AgentModel,
+    error: anyhow::Error,
+) -> Vec<AgentMessage> {
+    vec![AgentMessage::assistant_error(
+        model,
+        "error",
+        error.to_string(),
+    )]
+}
+
 /// Start an agent loop with newly-added prompt messages.
+#[doc(hidden)]
+#[deprecated(note = "legacy transitional agent_loop surface; prefer bb_core::agent::Agent")]
 pub fn agent_loop(
     prompts: Vec<AgentMessage>,
     context: AgentContextSnapshot,
@@ -33,14 +46,21 @@ pub fn agent_loop(
             })
         });
 
+        let model = config.model.clone();
+        #[allow(deprecated)]
         let result = run_agent_loop(prompts, context, config, sink, signal, stream_fn).await;
-        let _ = result_tx.send(result.unwrap_or_default());
+        let _ = result_tx.send(match result {
+            Ok(messages) => messages,
+            Err(error) => fallback_error_messages(&model, error),
+        });
     });
 
     super::types::AgentEventStream::new(event_rx, result_rx)
 }
 
 /// Continue an agent loop without appending a new prompt message first.
+#[doc(hidden)]
+#[deprecated(note = "legacy transitional agent_loop surface; prefer bb_core::agent::Agent")]
 pub fn agent_loop_continue(
     context: AgentContextSnapshot,
     config: AgentLoopConfig,
@@ -59,14 +79,19 @@ pub fn agent_loop_continue(
             })
         });
 
+        let model = config.model.clone();
+        #[allow(deprecated)]
         let result = run_agent_loop_continue(context, config, sink, signal, stream_fn).await;
-        let _ = result_tx.send(result.unwrap_or_default());
+        let _ = result_tx.send(match result {
+            Ok(messages) => messages,
+            Err(error) => fallback_error_messages(&model, error),
+        });
     });
 
     super::types::AgentEventStream::new(event_rx, result_rx)
 }
 
-pub async fn run_agent_loop(
+async fn run_agent_loop(
     prompts: Vec<AgentMessage>,
     context: AgentContextSnapshot,
     config: AgentLoopConfig,
@@ -78,19 +103,24 @@ pub async fn run_agent_loop(
     let mut current_context = context;
     current_context.messages.extend(prompts.clone());
 
-    emit.emit(RuntimeAgentEvent::MessageStart {
-        message: AgentMessage::user_text("[agent_start]"),
-    })
-    .await?;
-
     for prompt in prompts {
-        emit.emit(RuntimeAgentEvent::MessageStart { message: prompt.clone() })
-            .await?;
+        emit.emit(RuntimeAgentEvent::MessageStart {
+            message: prompt.clone(),
+        })
+        .await?;
         emit.emit(RuntimeAgentEvent::MessageEnd { message: prompt })
             .await?;
     }
 
-    run_loop(&mut current_context, &mut new_messages, &config, signal, &emit, stream_fn).await?;
+    run_loop(
+        &mut current_context,
+        &mut new_messages,
+        &config,
+        signal,
+        &emit,
+        stream_fn,
+    )
+    .await?;
 
     emit.emit(RuntimeAgentEvent::AgentEnd {
         messages: new_messages.clone(),
@@ -100,7 +130,7 @@ pub async fn run_agent_loop(
     Ok(new_messages)
 }
 
-pub async fn run_agent_loop_continue(
+async fn run_agent_loop_continue(
     context: AgentContextSnapshot,
     config: AgentLoopConfig,
     emit: AgentEventSink,
@@ -110,7 +140,15 @@ pub async fn run_agent_loop_continue(
     let mut current_context = context;
     let mut new_messages = Vec::new();
 
-    run_loop(&mut current_context, &mut new_messages, &config, signal, &emit, stream_fn).await?;
+    run_loop(
+        &mut current_context,
+        &mut new_messages,
+        &config,
+        signal,
+        &emit,
+        stream_fn,
+    )
+    .await?;
 
     emit.emit(RuntimeAgentEvent::AgentEnd {
         messages: new_messages.clone(),
@@ -135,12 +173,7 @@ async fn run_loop(
         let mut has_more_tool_calls = true;
 
         while has_more_tool_calls || !pending_messages.is_empty() {
-            if !first_turn {
-                emit.emit(RuntimeAgentEvent::TurnEnd {
-                    message: AgentMessage::user_text("[turn_start]"),
-                })
-                .await?;
-            } else {
+            if first_turn {
                 first_turn = false;
             }
 
@@ -159,11 +192,21 @@ async fn run_loop(
                 }
             }
 
-            let assistant = stream_assistant_response(current_context, config, signal.clone(), emit.clone(), stream_fn.clone()).await?;
+            let assistant = stream_assistant_response(
+                current_context,
+                config,
+                signal.clone(),
+                emit.clone(),
+                stream_fn.clone(),
+            )
+            .await?;
             current_context.messages.push(assistant.message.clone());
             new_messages.push(assistant.message.clone());
 
-            if matches!(assistant.stop_reason.as_deref(), Some("error") | Some("aborted")) {
+            if matches!(
+                assistant.stop_reason.as_deref(),
+                Some("error") | Some("aborted")
+            ) {
                 emit.emit(RuntimeAgentEvent::TurnEnd {
                     message: assistant.message,
                 })

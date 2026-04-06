@@ -9,6 +9,6 @@ pub use messages::{
     UserMessage,
 };
 pub use session::{
-    CompactionSettings, EntryBase, EntryId, ModelInfo, SessionContext, SessionEntry,
-    SessionHeader, ThinkingLevel,
+    CompactionSettings, EntryBase, EntryId, ModelInfo, SessionContext, SessionEntry, SessionHeader,
+    ThinkingLevel,
 };

@@ -1,371 +1,68 @@
+mod anthropic;
+mod google;
+mod groq;
+mod openai;
+mod openrouter;
+
 use super::types::{ApiType, CostConfig, Model};
 
 pub(crate) fn builtin_models() -> Vec<Model> {
-    vec![
-        // =====================================================================
-        // Anthropic — Claude 4 series (latest aliases + dated snapshots)
-        // =====================================================================
-        Model {
-            id: "claude-sonnet-4-6".into(),
-            name: "Claude Sonnet 4.6".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 1_000_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
-        },
-        Model {
-            id: "claude-opus-4-6".into(),
-            name: "Claude Opus 4.6".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 1_000_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
-        },
-        Model {
-            id: "claude-sonnet-4-20250514".into(),
-            name: "Claude Sonnet 4".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
-        },
-        Model {
-            id: "claude-opus-4-20250514".into(),
-            name: "Claude Opus 4".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 32_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
-        },
-        Model {
-            id: "claude-haiku-4-5-20251001".into(),
-            name: "Claude Haiku 4.5".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
-        },
-        // Claude 4 Haiku (fast, cheap)
-        Model {
-            id: "claude-haiku-4-20260115".into(),
-            name: "Claude Haiku 4".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.625 },
-        },
-        // Claude 4 Sonnet (balanced)
-        Model {
-            id: "claude-sonnet-4-20260115".into(),
-            name: "Claude Sonnet 4 (Jan 2026)".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
-        },
-        // Claude 4 Opus (most capable)
-        Model {
-            id: "claude-opus-4-20260115".into(),
-            name: "Claude Opus 4 (Jan 2026)".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 32_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
-        },
-        // =====================================================================
-        // Anthropic — Older models
-        // =====================================================================
-        Model {
-            id: "claude-3-5-haiku-20241022".into(),
-            name: "Claude 3.5 Haiku".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 8_192,
-            reasoning: false,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
-        },
-        Model {
-            id: "claude-3-7-sonnet-20250219".into(),
-            name: "Claude 3.7 Sonnet".into(),
-            provider: "anthropic".into(),
-            api: ApiType::AnthropicMessages,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://api.anthropic.com".into()),
-            cost: CostConfig { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
-        },
-        // =====================================================================
-        // OpenAI — GPT-5 series
-        // =====================================================================
-        Model {
-            id: "gpt-5.4".into(),
-            name: "GPT-5.4".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 272_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.5, output: 10.0, ..Default::default() },
-        },
-        Model {
-            id: "gpt-5.2".into(),
-            name: "GPT-5.2".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 400_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
-        },
-        Model {
-            id: "gpt-5.1-codex".into(),
-            name: "GPT-5.1 Codex".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 400_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
-        },
-        Model {
-            id: "gpt-5".into(),
-            name: "GPT-5".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 400_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
-        },
-        Model {
-            id: "gpt-5-mini".into(),
-            name: "GPT-5 Mini".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 400_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 0.3, output: 1.2, ..Default::default() },
-        },
-        // =====================================================================
-        // OpenAI — GPT-4o / o-series
-        // =====================================================================
-        Model {
-            id: "gpt-4o".into(),
-            name: "GPT-4o".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 16_384,
-            reasoning: false,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.5, output: 10.0, ..Default::default() },
-        },
-        Model {
-            id: "gpt-4o-mini".into(),
-            name: "GPT-4o Mini".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 16_384,
-            reasoning: false,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 0.15, output: 0.6, ..Default::default() },
-        },
-        Model {
-            id: "o3".into(),
-            name: "o3".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 200_000,
-            max_tokens: 100_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
-        },
-        Model {
-            id: "o3-mini".into(),
-            name: "o3-mini".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 200_000,
-            max_tokens: 100_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 1.1, output: 4.4, ..Default::default() },
-        },
-        Model {
-            id: "o4-mini".into(),
-            name: "o4-mini".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 200_000,
-            max_tokens: 100_000,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 1.1, output: 4.4, ..Default::default() },
-        },
-        Model {
-            id: "gpt-4-turbo".into(),
-            name: "GPT-4 Turbo".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 4_096,
-            reasoning: false,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 10.0, output: 30.0, ..Default::default() },
-        },
-        Model {
-            id: "o1-mini".into(),
-            name: "o1-mini".into(),
-            provider: "openai".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 65_536,
-            reasoning: true,
-            base_url: Some("https://api.openai.com/v1".into()),
-            cost: CostConfig { input: 3.0, output: 12.0, ..Default::default() },
-        },
-        // =====================================================================
-        // Google — Gemini 2.5 series
-        // =====================================================================
-        Model {
-            id: "gemini-2.5-flash".into(),
-            name: "Gemini 2.5 Flash".into(),
-            provider: "google".into(),
-            api: ApiType::GoogleGenerative,
-            context_window: 1_048_576,
-            max_tokens: 65_536,
-            reasoning: true,
-            base_url: Some("https://generativelanguage.googleapis.com".into()),
-            cost: CostConfig { input: 0.15, output: 0.6, ..Default::default() },
-        },
-        Model {
-            id: "gemini-2.5-pro".into(),
-            name: "Gemini 2.5 Pro".into(),
-            provider: "google".into(),
-            api: ApiType::GoogleGenerative,
-            context_window: 1_048_576,
-            max_tokens: 65_536,
-            reasoning: true,
-            base_url: Some("https://generativelanguage.googleapis.com".into()),
-            cost: CostConfig { input: 1.25, output: 10.0, ..Default::default() },
-        },
-        Model {
-            id: "gemini-2.5-flash-lite".into(),
-            name: "Gemini 2.5 Flash Lite".into(),
-            provider: "google".into(),
-            api: ApiType::GoogleGenerative,
-            context_window: 1_048_576,
-            max_tokens: 65_536,
-            reasoning: false,
-            base_url: Some("https://generativelanguage.googleapis.com".into()),
-            cost: CostConfig { input: 0.075, output: 0.3, ..Default::default() },
-        },
-        // =====================================================================
-        // Groq (OpenAI-compatible)
-        // =====================================================================
-        Model {
-            id: "llama-3.3-70b-versatile".into(),
-            name: "Llama 3.3 70B".into(),
-            provider: "groq".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 32_768,
-            reasoning: false,
-            base_url: Some("https://api.groq.com/openai/v1".into()),
-            cost: CostConfig { input: 0.59, output: 0.79, ..Default::default() },
-        },
-        Model {
-            id: "llama-3.1-8b-instant".into(),
-            name: "Llama 3.1 8B Instant".into(),
-            provider: "groq".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 131_072,
-            max_tokens: 8_192,
-            reasoning: false,
-            base_url: Some("https://api.groq.com/openai/v1".into()),
-            cost: CostConfig { input: 0.05, output: 0.08, ..Default::default() },
-        },
-        Model {
-            id: "mixtral-8x7b-32768".into(),
-            name: "Mixtral 8x7B".into(),
-            provider: "groq".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 32_768,
-            max_tokens: 32_768,
-            reasoning: false,
-            base_url: Some("https://api.groq.com/openai/v1".into()),
-            cost: CostConfig { input: 0.24, output: 0.24, ..Default::default() },
-        },
-        // =====================================================================
-        // OpenRouter (OpenAI-compatible)
-        // =====================================================================
-        Model {
-            id: "anthropic/claude-sonnet-4".into(),
-            name: "Claude Sonnet 4 (OpenRouter)".into(),
-            provider: "openrouter".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://openrouter.ai/api/v1".into()),
-            cost: CostConfig { input: 3.0, output: 15.0, ..Default::default() },
-        },
-        Model {
-            id: "anthropic/claude-opus-4".into(),
-            name: "Claude Opus 4 (OpenRouter)".into(),
-            provider: "openrouter".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 200_000,
-            max_tokens: 32_000,
-            reasoning: true,
-            base_url: Some("https://openrouter.ai/api/v1".into()),
-            cost: CostConfig { input: 15.0, output: 75.0, ..Default::default() },
-        },
-        Model {
-            id: "openai/gpt-5".into(),
-            name: "GPT-5 (OpenRouter)".into(),
-            provider: "openrouter".into(),
-            api: ApiType::OpenaiCompletions,
-            context_window: 256_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            base_url: Some("https://openrouter.ai/api/v1".into()),
-            cost: CostConfig { input: 2.0, output: 8.0, ..Default::default() },
-        },
-    ]
+    let mut models = Vec::new();
+    models.extend(anthropic::builtin_models());
+    models.extend(openai::builtin_models());
+    models.extend(google::builtin_models());
+    models.extend(groq::builtin_models());
+    models.extend(openrouter::builtin_models());
+    models
+}
+
+pub(super) struct RuntimeInfo {
+    reasoning: bool,
+    base_url: &'static str,
+}
+
+pub(super) fn runtime(reasoning: bool, base_url: &'static str) -> RuntimeInfo {
+    RuntimeInfo {
+        reasoning,
+        base_url,
+    }
+}
+
+pub(super) fn model(
+    id: &str,
+    name: &str,
+    provider: &str,
+    api: ApiType,
+    limits: (u64, u64),
+    runtime: RuntimeInfo,
+    cost: CostConfig,
+) -> Model {
+    Model {
+        id: id.into(),
+        name: name.into(),
+        provider: provider.into(),
+        api,
+        context_window: limits.0,
+        max_tokens: limits.1,
+        reasoning: runtime.reasoning,
+        base_url: Some(runtime.base_url.into()),
+        cost,
+    }
+}
+
+pub(super) fn cost(input: f64, output: f64, cache_read: f64, cache_write: f64) -> CostConfig {
+    CostConfig {
+        input,
+        output,
+        cache_read,
+        cache_write,
+    }
+}
+
+pub(super) fn simple_cost(input: f64, output: f64) -> CostConfig {
+    CostConfig {
+        input,
+        output,
+        ..Default::default()
+    }
 }

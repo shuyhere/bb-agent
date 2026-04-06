@@ -2,6 +2,15 @@
 name = "bb-hooks"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Hook event types and event bus for BB-Agent extensions."
+documentation = "https://docs.rs/bb-hooks"
+keywords = ["agent", "hooks", "events", "extensions", "bb-agent"]
+categories = ["development-tools", "asynchronous"]
 
 [dependencies]
 bb-core.workspace = true

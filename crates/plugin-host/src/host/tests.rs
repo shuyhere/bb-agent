@@ -55,7 +55,7 @@ async fn test_load_plugins_with_sample() {
     )
     .unwrap();
 
-    let mut host = PluginHost::load_plugins(&[plugin_path.clone()])
+    let mut host = PluginHost::load_plugins(std::slice::from_ref(&plugin_path))
         .await
         .unwrap();
 
@@ -196,7 +196,7 @@ async fn test_extension_ui_plumbing() {
     // Use default UI handler (returns defaults for dialogs, logs notifications)
     let ui_handler: types::SharedUiHandler = std::sync::Arc::new(types::DefaultUiHandler);
 
-    let mut host = PluginHost::load_plugins(&[plugin_path.clone()])
+    let mut host = PluginHost::load_plugins(std::slice::from_ref(&plugin_path))
         .await
         .unwrap();
     host.set_ui_handler(ui_handler);

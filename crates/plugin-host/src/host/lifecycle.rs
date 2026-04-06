@@ -42,8 +42,14 @@ impl PluginHost {
             .spawn()
             .map_err(|e| PluginHostError::SpawnFailed(format!("node: {e}")))?;
 
-        let stdin = child.stdin.take().expect("stdin piped");
-        let stdout = child.stdout.take().expect("stdout piped");
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| PluginHostError::SpawnFailed("node stdin pipe missing".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| PluginHostError::SpawnFailed("node stdout pipe missing".into()))?;
 
         info!(
             "Plugin host spawned (pid: {:?}), loading {} plugin(s)",

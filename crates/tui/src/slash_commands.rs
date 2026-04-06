@@ -123,6 +123,27 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         accepts_arguments: false,
     },
     SlashCommandSpec {
+        command: "/install",
+        menu_detail: "Install package source: npm:pkg, git:repo, path, or URL",
+        help_usage: "/install [-l|--local] <source>",
+        help_detail: "Install a package source and auto-reload skills/extensions/prompts. Sources can be npm:pkg, git:repo/url, a local path, or an archive URL. Use -l/--local for project-only install.",
+        accepts_arguments: true,
+    },
+    SlashCommandSpec {
+        command: "/update",
+        menu_detail: "Check for a newer BB-Agent version",
+        help_usage: "/update",
+        help_detail: "Check for updates now",
+        accepts_arguments: false,
+    },
+    SlashCommandSpec {
+        command: "/image",
+        menu_detail: "Attach image to next prompt",
+        help_usage: "/image <path>",
+        help_detail: "Attach an image file to the next message sent to the model",
+        accepts_arguments: true,
+    },
+    SlashCommandSpec {
         command: "/help",
         menu_detail: "Show help",
         help_usage: "/help",
@@ -170,6 +191,33 @@ pub fn shared_slash_command_select_items() -> Vec<SelectItem> {
         .collect()
 }
 
+pub fn install_help_lines() -> Vec<String> {
+    vec![
+        "Usage:".into(),
+        "  /install [-l|--local] <source>".into(),
+        String::new(),
+        "Description:".into(),
+        "  Install a package source and auto-reload skills, extensions, and prompts.".into(),
+        "  Use /install --help to show this guide again.".into(),
+        String::new(),
+        "Supported source forms:".into(),
+        "  npm:<package>                       Install from npm".into(),
+        "  git:<repo-or-url>                  Install from git".into(),
+        "  ./path or /absolute/path           Install from a local directory".into(),
+        "  https://...                        Install from a remote archive/repo URL".into(),
+        String::new(),
+        "Options:".into(),
+        "  -l, --local                        Install into the detected project root only".into(),
+        String::new(),
+        "Examples:".into(),
+        "  /install npm:bb-example-skill".into(),
+        "  /install -l npm:my-project-skill".into(),
+        "  /install -l ./my-skill".into(),
+        "  /install git:https://github.com/org/repo.git".into(),
+        "  /install https://example.com/package.tar.gz".into(),
+    ]
+}
+
 pub fn shared_slash_command_help_lines() -> Vec<String> {
     let usage_width = shared_slash_commands()
         .iter()
@@ -186,6 +234,13 @@ pub fn shared_slash_command_help_lines() -> Vec<String> {
             width = usage_width
         )
     }));
+    lines.push(String::new());
+    lines.push("  Install examples:".into());
+    lines.push("    /install npm:bb-example-skill".into());
+    lines.push("    /install -l ./my-skill".into());
+    lines.push("    /install git:https://github.com/org/repo.git".into());
+    lines.push("    /install https://example.com/package.tar.gz".into());
+    lines.push("    /install --help".into());
     lines.push(String::new());
     lines.push("  Shortcuts:".into());
     lines.push("    Ctrl+C         Abort / clear".into());
@@ -212,12 +267,17 @@ mod tests {
         let help = shared_slash_command_help_lines().join("\n");
         assert!(help.contains("/model [name]"));
         assert!(help.contains("/name <name>"));
+        assert!(help.contains("/install [-l|--local] <source>"));
+        assert!(help.contains("npm:bb-example-skill"));
+        assert!(help.contains("/update"));
     }
 
     #[test]
     fn submission_match_handles_argument_forms() {
         assert!(matches_shared_local_slash_submission("/model claude"));
         assert!(matches_shared_local_slash_submission("/name demo"));
+        assert!(matches_shared_local_slash_submission("/install npm:demo"));
+        assert!(matches_shared_local_slash_submission("/update"));
         assert!(!matches_shared_local_slash_submission("/help extra"));
     }
 }

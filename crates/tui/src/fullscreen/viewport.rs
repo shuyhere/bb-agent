@@ -26,14 +26,6 @@ impl ViewportState {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn with_total_rows(viewport_height: usize, total_projected_rows: usize) -> Self {
-        let mut state = Self::new(viewport_height);
-        state.set_total_rows(total_projected_rows);
-        state.jump_to_bottom();
-        state
-    }
-
     pub fn visible_row_range(&self) -> std::ops::Range<usize> {
         let end = (self.viewport_top + self.viewport_height).min(self.total_projected_rows);
         self.viewport_top.min(end)..end
@@ -42,20 +34,6 @@ impl ViewportState {
     pub fn bottom_top(&self) -> usize {
         self.total_projected_rows
             .saturating_sub(self.viewport_height)
-    }
-
-    pub fn is_at_bottom(&self) -> bool {
-        self.viewport_top >= self.bottom_top()
-    }
-
-    #[allow(dead_code)]
-    pub fn set_total_rows(&mut self, total_projected_rows: usize) {
-        self.total_projected_rows = total_projected_rows;
-        if self.auto_follow {
-            self.viewport_top = self.bottom_top();
-        } else {
-            self.clamp_to_bounds();
-        }
     }
 
     pub fn set_viewport_height(&mut self, viewport_height: usize) {
@@ -67,24 +45,32 @@ impl ViewportState {
     }
 
     pub fn scroll_up(&mut self, rows: usize) {
+        if rows == 0 {
+            return;
+        }
         self.viewport_top = self.viewport_top.saturating_sub(rows);
         self.auto_follow = false;
     }
 
     pub fn scroll_down(&mut self, rows: usize) {
         self.viewport_top = (self.viewport_top + rows).min(self.bottom_top());
-        if self.is_at_bottom() {
+        // Re-enable auto-follow when at or near the bottom. During
+        // streaming the bottom moves continuously, so a small threshold
+        // (half a viewport) lets the user snap back by scrolling down
+        // without having to land on the exact last row.
+        let near_threshold = self.viewport_height / 2;
+        if self.viewport_top + near_threshold >= self.bottom_top() {
+            self.viewport_top = self.bottom_top();
             self.auto_follow = true;
         }
     }
 
-    #[allow(dead_code)]
     pub fn jump_to_bottom(&mut self) {
         self.viewport_top = self.bottom_top();
         self.auto_follow = true;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn jump_to_top(&mut self) {
         self.viewport_top = 0;
         self.auto_follow = false;
@@ -104,9 +90,11 @@ impl ViewportState {
         projection: &TranscriptProjection,
         block_id: BlockId,
     ) -> Option<ViewportAnchor> {
-        let row = projection
-            .header_row_for_block(block_id)
-            .or_else(|| projection.rows_for_block(block_id).map(|span| span.all_rows.start))?;
+        let row = projection.header_row_for_block(block_id).or_else(|| {
+            projection
+                .rows_for_block(block_id)
+                .map(|span| span.all_rows.start)
+        })?;
         Some(ViewportAnchor {
             block_id,
             screen_offset: row.saturating_sub(self.viewport_top),
@@ -134,7 +122,11 @@ impl ViewportState {
         self.total_projected_rows = next_projection.total_rows;
         if let Some(next_row) = next_projection
             .header_row_for_block(anchor.block_id)
-            .or_else(|| next_projection.rows_for_block(anchor.block_id).map(|span| span.all_rows.start))
+            .or_else(|| {
+                next_projection
+                    .rows_for_block(anchor.block_id)
+                    .map(|span| span.all_rows.start)
+            })
         {
             self.viewport_top = next_row.saturating_sub(anchor.screen_offset);
             self.clamp_to_bounds();

@@ -38,7 +38,10 @@ impl CollectedResponse {
                         arguments: String::new(),
                     });
                 }
-                StreamEvent::ToolCallDelta { id, arguments_delta } => {
+                StreamEvent::ToolCallDelta {
+                    id,
+                    arguments_delta,
+                } => {
                     if let Some(tc) = tool_calls.iter_mut().find(|tc| tc.id == *id) {
                         tc.arguments.push_str(arguments_delta);
                     }

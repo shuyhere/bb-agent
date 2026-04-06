@@ -16,8 +16,9 @@ use crate::slash::LocalSlashCommandHost;
 use super::controller::FullscreenController;
 use super::formatting::format_assistant_text;
 use super::{
-    copy_text_to_clipboard, FORK_ENTRY_MENU_ID, LOGIN_PROVIDERS, LOGIN_PROVIDER_MENU_ID,
-    LOGOUT_PROVIDER_MENU_ID, OAUTH_PROVIDERS, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID,
+    FORK_ENTRY_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS, LOGOUT_PROVIDER_MENU_ID,
+    OAUTH_PROVIDERS, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID,
+    copy_text_to_clipboard,
 };
 
 fn fullscreen_auth_method_label(provider: &str) -> &'static str {
@@ -70,6 +71,9 @@ impl FullscreenController {
         &mut self,
         menu_id: &str,
         value: &str,
+        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+            bb_tui::fullscreen::FullscreenSubmission,
+        >,
     ) -> Result<()> {
         match menu_id {
             "model" => {
@@ -83,7 +87,11 @@ impl FullscreenController {
             }
             "settings" => self.open_setting_values_menu(value),
             RESUME_SESSION_MENU_ID => self.handle_resume_session(value)?,
-            TREE_ENTRY_MENU_ID => self.handle_tree_navigate(value)?,
+            TREE_ENTRY_MENU_ID => self.open_tree_summary_menu(value)?,
+            TREE_SUMMARY_MENU_ID => {
+                self.handle_tree_summary_selection(value, submission_rx)
+                    .await?
+            }
             FORK_ENTRY_MENU_ID => self.handle_fork_from_entry(value)?,
             LOGIN_PROVIDER_MENU_ID => {
                 let (_env_var, url) = crate::login::provider_meta(value);
@@ -123,10 +131,7 @@ impl FullscreenController {
         Ok(())
     }
 
-    pub(super) fn handle_model_selection_command(
-        &mut self,
-        search: Option<&str>,
-    ) -> Result<()> {
+    pub(super) fn handle_model_selection_command(&mut self, search: Option<&str>) -> Result<()> {
         let search_term = search.unwrap_or_default().trim();
         if let Some(model) = self.find_exact_model_match(search_term) {
             self.apply_model_selection(model);
@@ -164,12 +169,22 @@ impl FullscreenController {
                 format!("Select model matching '{search_term}'")
             },
             items,
+            selected_value: None,
         });
         Ok(())
     }
 
+    fn current_color_theme_name(&self) -> &'static str {
+        self.color_theme.name()
+    }
+
     fn open_settings_menu(&mut self) {
         let items = vec![
+            SelectItem {
+                label: format!("Color theme [{}]", self.current_color_theme_name()),
+                detail: Some("User input block & spinner colors".to_string()),
+                value: "color-theme".to_string(),
+            },
             SelectItem {
                 label: format!("Thinking level [{}]", self.session_setup.thinking_level),
                 detail: Some("Reasoning depth".to_string()),
@@ -214,11 +229,16 @@ impl FullscreenController {
             menu_id: "settings".to_string(),
             title: "Settings".to_string(),
             items,
+            selected_value: None,
         });
     }
 
     fn open_setting_values_menu(&mut self, setting_id: &str) {
         let (title, values): (&str, Vec<&str>) = match setting_id {
+            "color-theme" => (
+                "Color theme",
+                vec!["pink", "lavender", "ocean", "mint", "sunset", "slate"],
+            ),
             "thinking" => (
                 "Thinking level",
                 vec!["off", "low", "medium", "high", "xhigh"],
@@ -246,21 +266,33 @@ impl FullscreenController {
                     value: value.to_string(),
                 })
                 .collect(),
+            selected_value: None,
         });
     }
 
     fn apply_setting_value(&mut self, setting_id: &str, value: &str) -> Result<()> {
         match setting_id {
+            "color-theme" => {
+                if let Some(theme) = bb_tui::fullscreen::spinner::ColorTheme::from_name(value) {
+                    self.color_theme = theme;
+                    self.send_command(FullscreenCommand::SetColorTheme(theme));
+                    // Persist to settings
+                    let mut settings = bb_core::settings::Settings::load_global();
+                    settings.color_theme = Some(value.to_string());
+                    let _ = settings.save_global();
+                    self.mark_local_settings_saved();
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Color theme: {value}"
+                    )));
+                } else {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Unknown color theme: {value}"
+                    )));
+                }
+            }
             "thinking" => {
-                self.session_setup.thinking_level = value.to_string();
-                let level = match value {
-                    "off" => ThinkingLevel::Off,
-                    "low" | "minimal" => ThinkingLevel::Low,
-                    "medium" => ThinkingLevel::Medium,
-                    "high" => ThinkingLevel::High,
-                    "xhigh" => ThinkingLevel::XHigh,
-                    _ => ThinkingLevel::Medium,
-                };
+                let level = ThinkingLevel::parse(value).unwrap_or(ThinkingLevel::Medium);
+                self.session_setup.thinking_level = level.as_str().to_string();
                 self.runtime_host.session_mut().set_thinking_level(level);
                 self.publish_footer();
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
@@ -275,6 +307,7 @@ impl FullscreenController {
                     self.session_setup.retry_base_delay_ms,
                     self.session_setup.retry_max_delay_ms,
                 )?;
+                self.mark_local_settings_saved();
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Auto-retry: {value}"
                 )));
@@ -290,6 +323,7 @@ impl FullscreenController {
                     self.session_setup.retry_base_delay_ms,
                     self.session_setup.retry_max_delay_ms,
                 )?;
+                self.mark_local_settings_saved();
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Retry attempts: {}",
                     self.session_setup.retry_max_retries
@@ -307,6 +341,7 @@ impl FullscreenController {
                     self.session_setup.retry_base_delay_ms,
                     self.session_setup.retry_max_delay_ms,
                 )?;
+                self.mark_local_settings_saved();
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Retry base delay: {value}"
                 )));
@@ -323,6 +358,7 @@ impl FullscreenController {
                     self.session_setup.retry_base_delay_ms,
                     self.session_setup.retry_max_delay_ms,
                 )?;
+                self.mark_local_settings_saved();
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Retry max delay: {value}"
                 )));
@@ -340,9 +376,7 @@ impl FullscreenController {
         let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
         let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
             ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
-            ApiType::GoogleGenerative => {
-                "https://generativelanguage.googleapis.com".to_string()
-            }
+            ApiType::GoogleGenerative => "https://generativelanguage.googleapis.com".to_string(),
             _ => "https://api.openai.com/v1".to_string(),
         });
         let new_provider: std::sync::Arc<dyn bb_provider::Provider> = match model.api {
@@ -366,6 +400,14 @@ impl FullscreenController {
         self.session_setup.provider = new_provider;
         self.session_setup.api_key = api_key;
         self.session_setup.base_url = base_url;
+        self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
+            provider: self.session_setup.provider.clone(),
+            model: self.session_setup.model.clone(),
+            api_key: self.session_setup.api_key.clone(),
+            base_url: self.session_setup.base_url.clone(),
+            headers: std::collections::HashMap::new(),
+            enabled: true,
+        });
         let status = format!("Model: {display}");
         self.options.model_display = Some(display);
         self.publish_footer();
@@ -392,8 +434,7 @@ impl FullscreenController {
         let needle = search_term.trim().to_ascii_lowercase();
         self.get_model_candidates().into_iter().find(|model| {
             let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
-            let provider_colon_id =
-                format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
+            let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
             model.id.eq_ignore_ascii_case(&needle)
                 || model.name.eq_ignore_ascii_case(&needle)
                 || provider_id == needle
@@ -402,25 +443,24 @@ impl FullscreenController {
     }
 
     fn copy_last_assistant_message(&mut self) -> Result<()> {
-        let session_context = context::build_context(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        )?;
-        let last_text = session_context
-            .messages
-            .into_iter()
-            .rev()
-            .find_map(|message| match message {
-                AgentMessage::Assistant(message) => {
-                    let text = format_assistant_text(&message);
-                    if text.trim().is_empty() {
-                        None
-                    } else {
-                        Some(text)
+        let session_context =
+            context::build_context(&self.session_setup.conn, &self.session_setup.session_id)?;
+        let last_text =
+            session_context
+                .messages
+                .into_iter()
+                .rev()
+                .find_map(|message| match message {
+                    AgentMessage::Assistant(message) => {
+                        let text = format_assistant_text(&message);
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
                     }
-                }
-                _ => None,
-            });
+                    _ => None,
+                });
 
         if let Some(text) = last_text {
             copy_text_to_clipboard(&text)?;
@@ -447,6 +487,7 @@ impl FullscreenController {
                     value: (*provider).to_string(),
                 })
                 .collect(),
+            selected_value: None,
         });
     }
 
@@ -469,6 +510,7 @@ impl FullscreenController {
                     value: provider,
                 })
                 .collect(),
+            selected_value: None,
         });
     }
 }
@@ -506,7 +548,7 @@ impl LocalSlashCommandHost for FullscreenController {
     }
 
     fn slash_tree(&mut self) -> Result<()> {
-        self.open_tree_menu()
+        self.open_tree_menu(None)
     }
 
     fn slash_fork(&mut self) -> Result<()> {
@@ -547,15 +589,16 @@ impl LocalSlashCommandHost for FullscreenController {
     }
 
     fn slash_session_info(&mut self) -> Result<()> {
+        let summary = crate::session_info::collect_session_info_summary(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &self.session_setup.model.provider,
+            &self.session_setup.model.id,
+            &self.session_setup.thinking_level,
+        )?;
         self.send_command(FullscreenCommand::PushNote {
             level: FullscreenNoteLevel::Status,
-            text: format!(
-                "Session: {}\nModel: {}/{}\nThinking: {}",
-                self.session_setup.session_id,
-                self.session_setup.model.provider,
-                self.session_setup.model.id,
-                self.session_setup.thinking_level
-            ),
+            text: crate::session_info::render_session_info_text(&summary),
         });
         Ok(())
     }
@@ -612,9 +655,9 @@ impl LocalSlashCommandHost for FullscreenController {
             &file_path,
         ) {
             Ok(abs_path) => {
-                self.send_command(FullscreenCommand::SetStatusLine(
-                    format!("Exported to: {abs_path}"),
-                ));
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Exported to: {abs_path}"
+                )));
             }
             Err(e) => {
                 self.send_command(FullscreenCommand::PushNote {
@@ -633,9 +676,66 @@ impl LocalSlashCommandHost for FullscreenController {
             ));
             return Ok(());
         };
-        self.send_command(FullscreenCommand::SetStatusLine(
-            format!("Import from {path} not yet supported in fullscreen mode."),
-        ));
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Import from {path} not yet supported in fullscreen mode."
+        )));
+        Ok(())
+    }
+
+    fn slash_image(&mut self, path: &str) -> Result<()> {
+        use base64::Engine;
+
+        let resolved = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            self.session_setup.tool_ctx.cwd.join(path)
+        };
+
+        // Read and validate the file
+        let data = match std::fs::read(&resolved) {
+            Ok(d) => d,
+            Err(e) => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Cannot read image: {e}"),
+                });
+                return Ok(());
+            }
+        };
+
+        // Detect MIME type from extension
+        let mime_type = match resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref()
+        {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            _ => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: "Unsupported image format. Use png, jpg, gif, or webp.".to_string(),
+                });
+                return Ok(());
+            }
+        };
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+        let display_path = super::shorten_path(path);
+        let size_kb = data.len() / 1024;
+
+        self.pending_images.push(super::controller::PendingImage {
+            data: encoded,
+            mime_type: mime_type.to_string(),
+        });
+
+        let count = self.pending_images.len();
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "📎 {display_path} ({size_kb}KB, {mime_type}) attached — {count} image(s) pending. Type your prompt and press Enter."
+        )));
         Ok(())
     }
 }

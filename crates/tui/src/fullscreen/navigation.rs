@@ -1,5 +1,5 @@
 use super::runtime::FullscreenState;
-use super::transcript::BlockId;
+use super::transcript::{BlockId, BlockKind};
 
 impl FullscreenState {
     pub(crate) fn sync_focus_tracking(&mut self) {
@@ -23,12 +23,31 @@ impl FullscreenState {
         }
     }
 
-    pub(super) fn default_focus_block(&self) -> Option<BlockId> {
+    pub(super) fn visible_tool_use_blocks(&self) -> Vec<BlockId> {
         self.visible_header_blocks()
-            .last()
-            .copied()
-            .or_else(|| self.last_focusable_block())
-            .or_else(|| self.first_focusable_block())
+            .into_iter()
+            .filter(|block_id| {
+                self.transcript
+                    .block(*block_id)
+                    .is_some_and(|block| block.kind == BlockKind::ToolUse)
+            })
+            .collect()
+    }
+
+    pub(super) fn default_focus_block(&self) -> Option<BlockId> {
+        if matches!(self.mode, super::types::FullscreenMode::Transcript) {
+            self.visible_tool_use_blocks()
+                .last()
+                .copied()
+                .or_else(|| self.last_focusable_block())
+                .or_else(|| self.first_focusable_block())
+        } else {
+            self.visible_header_blocks()
+                .last()
+                .copied()
+                .or_else(|| self.last_focusable_block())
+                .or_else(|| self.first_focusable_block())
+        }
     }
 
     pub(crate) fn visible_header_blocks(&self) -> Vec<BlockId> {
@@ -37,6 +56,9 @@ impl FullscreenState {
             let Some(row) = self.projection.row(row_index) else {
                 continue;
             };
+            if row.kind == super::projection::ProjectedRowKind::Spacer {
+                continue;
+            }
             if visible.last().copied() == Some(row.block_id) {
                 continue;
             }
@@ -52,6 +74,15 @@ impl FullscreenState {
             .rows
             .iter()
             .filter(|row| self.focus_row_for_block(row.block_id) == Some(row.index))
+            .filter(|row| {
+                if matches!(self.mode, super::types::FullscreenMode::Transcript) {
+                    self.transcript
+                        .block(row.block_id)
+                        .is_some_and(|block| block.kind == BlockKind::ToolUse)
+                } else {
+                    true
+                }
+            })
             .map(|row| row.block_id)
             .collect()
     }
@@ -151,8 +182,10 @@ impl FullscreenState {
     }
 
     pub(super) fn focus_row_for_block(&self, block_id: BlockId) -> Option<usize> {
-        self.projection
-            .header_row_for_block(block_id)
-            .or_else(|| self.projection.rows_for_block(block_id).map(|span| span.all_rows.start))
+        self.projection.header_row_for_block(block_id).or_else(|| {
+            self.projection
+                .rows_for_block(block_id)
+                .map(|span| span.all_rows.start)
+        })
     }
 }

@@ -18,7 +18,6 @@ function resolveJiti() {
         const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
         if (globalRoot) {
             candidates.push(path.join(globalRoot, 'jiti'));
-            candidates.push(path.join(globalRoot, '@mariozechner', 'pi-coding-agent', 'node_modules', 'jiti'));
         }
     } catch (_error) {
         // Ignore lookup failures and fall back to normal resolution.

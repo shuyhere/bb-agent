@@ -30,10 +30,7 @@ impl ModelSelector {
             .map(|m| {
                 let thinking_tag = if m.reasoning { " reasoning" } else { "" };
                 let ctx = format_context(m.context_window);
-                let detail = format!(
-                    "[{}] {}ctx{}",
-                    m.provider, ctx, thinking_tag,
-                );
+                let detail = format!("[{}] {}ctx{}", m.provider, ctx, thinking_tag,);
                 SelectItem {
                     label: m.id.clone(),
                     detail: Some(format!("{} · {}", detail, m.name)),
@@ -63,7 +60,11 @@ impl ModelSelector {
                 if let Some(pos) = value.find(':') {
                     let provider = &value[..pos];
                     let model_id = &value[pos + 1..];
-                    if let Some(model) = self.models.iter().find(|m| m.provider == provider && m.id == model_id) {
+                    if let Some(model) = self
+                        .models
+                        .iter()
+                        .find(|m| m.provider == provider && m.id == model_id)
+                    {
                         Some(Ok(ModelSelection {
                             provider: model.provider.clone(),
                             model_id: model.id.clone(),

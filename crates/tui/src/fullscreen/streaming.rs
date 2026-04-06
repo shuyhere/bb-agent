@@ -143,21 +143,22 @@ impl FullscreenState {
         };
 
         let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
-        let status = if tool.result_content.is_some() {
-            if tool.is_error { "error" } else { "done" }
-        } else if tool.execution_started {
-            "running"
+        let title = if tool.result_content.is_some() {
+            let status = if tool.is_error { "error" } else { "done" };
+            format!("{display_name} • {status}")
         } else {
-            "collecting"
+            display_name
+        };
+        let _ = self.transcript.update_title(tool.tool_use_id, title);
+        let expanded = self.is_tool_block_expanded(tool.tool_use_id);
+        let tool_use_content = if tool.result_content.is_some() {
+            format_tool_call_content(&tool.name, &tool.raw_args, expanded)
+        } else {
+            String::new()
         };
         let _ = self
             .transcript
-            .update_title(tool.tool_use_id, format!("{display_name} • {status}"));
-        let expanded = self.is_tool_block_expanded(tool.tool_use_id);
-        let _ = self.transcript.replace_content(
-            tool.tool_use_id,
-            format_tool_call_content(&tool.name, &tool.raw_args, expanded),
-        );
+            .replace_content(tool.tool_use_id, tool_use_content);
 
         if let Some(result_content) = tool.result_content.clone() {
             let Some(tool_result_id) = self.ensure_tool_result_block(id) else {
@@ -165,7 +166,11 @@ impl FullscreenState {
             };
             let _ = self.transcript.update_title(
                 tool_result_id,
-                if tool.is_error { "error output" } else { "output" },
+                if tool.is_error {
+                    "error output"
+                } else {
+                    "output"
+                },
             );
             let formatted = format_tool_result_content(
                 &tool.name,
@@ -178,14 +183,6 @@ impl FullscreenState {
             let _ = self
                 .transcript
                 .replace_tool_result_content(tool_result_id, formatted);
-        } else if tool.execution_started {
-            let Some(tool_result_id) = self.ensure_tool_result_block(id) else {
-                return;
-            };
-            let _ = self.transcript.update_title(tool_result_id, "output");
-            let _ = self
-                .transcript
-                .replace_tool_result_content(tool_result_id, "executing...".to_string());
         }
 
         self.projection_dirty = true;

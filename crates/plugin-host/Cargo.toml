@@ -2,6 +2,13 @@
 name = "bb-plugin-host"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Plugin discovery and host runtime for BB-Agent extensions."
+publish = false
 
 [dependencies]
 bb-core.workspace = true

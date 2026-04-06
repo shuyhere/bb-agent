@@ -20,19 +20,61 @@ impl FullscreenState {
             return;
         }
 
+        // Expand paste markers back to full content before submitting.
+        let expanded = self.expand_paste_markers(&submitted);
+
+        // Show the collapsed version in transcript (keeps it readable)
         self.transcript.append_root_block(
             NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
         );
         self.submitted_inputs.push(submitted.clone());
-        self.pending_submissions
-            .push_back(FullscreenSubmission::Input(submitted));
+
+        // Include any pending image attachments with this submission.
+        let image_paths = self.take_pending_image_paths();
+        if image_paths.is_empty() {
+            self.pending_submissions
+                .push_back(FullscreenSubmission::Input(expanded));
+        } else {
+            self.pending_submissions
+                .push_back(FullscreenSubmission::InputWithImages {
+                    text: expanded,
+                    image_paths,
+                });
+        }
+
         self.input.clear();
         self.cursor = 0;
         self.slash_menu = None;
         self.select_menu = None;
+        self.at_file_menu = None;
         self.status_line = "Working...".to_string();
+        // Clear paste storage after submit
+        self.paste_storage.clear();
+        self.paste_counter = 0;
         self.projection_dirty = true;
         self.dirty = true;
+    }
+
+    /// Expand `[paste #N ...]` markers back to their stored content.
+    fn expand_paste_markers(&self, text: &str) -> String {
+        if self.paste_storage.is_empty() {
+            return text.to_string();
+        }
+        let mut result = text.to_string();
+        for (&id, content) in &self.paste_storage {
+            // Match markers like [paste #1 +123 lines] or [paste #1 1234 chars]
+            let patterns = [format!("[paste #{id} "), format!("[paste #{id}]")];
+            for pat in &patterns {
+                if let Some(start) = result.find(pat.as_str()) {
+                    // Find the closing bracket
+                    if let Some(end) = result[start..].find(']') {
+                        result.replace_range(start..start + end + 1, content);
+                        break; // Only replace first occurrence per ID
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub(super) fn submit_local_command(&mut self, submitted: String) {
@@ -50,6 +92,7 @@ impl FullscreenState {
         self.input.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.update_slash_menu();
+        self.update_at_file_menu();
         self.dirty = true;
     }
 
@@ -57,6 +100,7 @@ impl FullscreenState {
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.update_slash_menu();
+        self.update_at_file_menu();
         self.dirty = true;
     }
 
@@ -68,6 +112,7 @@ impl FullscreenState {
         self.input.drain(prev..self.cursor);
         self.cursor = prev;
         self.update_slash_menu();
+        self.update_at_file_menu();
         self.dirty = true;
     }
 
@@ -77,6 +122,7 @@ impl FullscreenState {
         }
         self.cursor = previous_boundary(&self.input, self.cursor);
         self.update_slash_menu();
+        self.update_at_file_menu();
         self.dirty = true;
     }
 
@@ -86,6 +132,7 @@ impl FullscreenState {
         }
         self.cursor = next_boundary(&self.input, self.cursor);
         self.update_slash_menu();
+        self.update_at_file_menu();
         self.dirty = true;
     }
 }

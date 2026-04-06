@@ -55,7 +55,15 @@ impl FullscreenState {
             return;
         }
 
-        let blocks = self.focusable_blocks();
+        let blocks: Vec<_> = self.projection.rows.iter().map(|row| row.block_id).fold(
+            Vec::new(),
+            |mut blocks, block_id| {
+                if !blocks.contains(&block_id) {
+                    blocks.push(block_id);
+                }
+                blocks
+            },
+        );
         if blocks.is_empty() {
             return;
         }

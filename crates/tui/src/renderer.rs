@@ -1,6 +1,6 @@
-//! Scrollback-based differential renderer — ported from pi's tui.ts doRender.
+//! Scrollback-based differential renderer.
 //!
-//! Key concepts from pi:
+//! Key concepts:
 //! - `hardwareCursorRow`: absolute row in scrollback buffer where cursor is
 //! - `viewportTop`: which scrollback row is at the top of the visible terminal
 //! - `computeLineDiff`: converts absolute row to relative cursor movement
@@ -10,16 +10,11 @@
 use crate::component::CURSOR_MARKER;
 use crate::terminal::Terminal;
 use crate::tui_core::is_termux;
-use crate::utils::visible_width;
-
 use std::sync::OnceLock;
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
-/// OSC 133;A — shell prompt marker re-used as a line-boundary reset.
-#[allow(dead_code)]
-const LINE_RESET_MARKER: &str = "\x1b]133;A\x07";
 
 /// Cached check for the `BB_DEBUG_REDRAW` environment variable.
 fn debug_redraw_enabled() -> bool {
@@ -56,25 +51,6 @@ fn log_redraw(reason: &str, prev_len: usize, new_len: usize, height: u16) {
             use std::io::Write;
             f.write_all(msg.as_bytes())
         });
-}
-
-/// Write width-overflow debug info to `~/.bb-agent/tui-crash.log`.
-#[allow(dead_code)]
-fn write_crash_log(line_idx: usize, line_width: usize, term_width: usize, all_lines: &[String]) {
-    let Ok(home) = std::env::var("HOME") else {
-        return;
-    };
-    let dir = format!("{home}/.bb-agent");
-    let _ = std::fs::create_dir_all(&dir);
-    let path = format!("{dir}/tui-crash.log");
-    let now = chrono::Utc::now().to_rfc3339();
-    let mut data = format!(
-        "Width overflow at {now}\nTerminal width: {term_width}\nLine {line_idx} visible width: {line_width}\n\n=== All rendered lines ===\n"
-    );
-    for (i, l) in all_lines.iter().enumerate() {
-        data.push_str(&format!("[{i}] (w={}) {l}\n", visible_width(l)));
-    }
-    let _ = std::fs::write(&path, data.as_bytes());
 }
 
 pub struct Renderer {
@@ -133,9 +109,13 @@ impl Renderer {
         let cursor_pos = self.find_cursor(new_lines);
 
         // Quick check: if line count + content haven't changed at all, skip everything.
-        if !width_changed && !height_changed
+        if !width_changed
+            && !height_changed
             && new_lines.len() == self.prev_lines.len()
-            && new_lines.iter().zip(self.prev_lines.iter()).all(|(a, b)| a == b)
+            && new_lines
+                .iter()
+                .zip(self.prev_lines.iter())
+                .all(|(a, b)| a == b)
         {
             // Nothing changed — just reposition cursor if needed.
             self.position_hardware_cursor(cursor_pos, terminal);
@@ -196,7 +176,10 @@ impl Renderer {
         if height_changed {
             if !in_termux() {
                 log_redraw(
-                    &format!("terminal height changed ({} -> {})", self.prev_height, height),
+                    &format!(
+                        "terminal height changed ({} -> {})",
+                        self.prev_height, height
+                    ),
                     self.prev_lines.len(),
                     new_lines.len(),
                     height,
@@ -209,7 +192,10 @@ impl Renderer {
         // Content shrunk and clear_on_shrink is enabled
         if needs_shrink_clear {
             log_redraw(
-                &format!("clearOnShrink (maxLinesRendered={})", self.max_lines_rendered),
+                &format!(
+                    "clearOnShrink (maxLinesRendered={})",
+                    self.max_lines_rendered
+                ),
                 self.prev_lines.len(),
                 new_lines.len(),
                 height,
@@ -224,16 +210,6 @@ impl Renderer {
         self.diff_render(&new_lines, height_usize, terminal);
         self.position_hardware_cursor(cursor_pos, terminal);
         self.save_state(&new_lines, width, height);
-    }
-
-    /// Append SEGMENT_RESET (ANSI reset + hyperlink close) to each line to
-    /// prevent colour/style bleed across line boundaries.
-    #[allow(dead_code)]
-    fn apply_line_resets(lines: &[String]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| format!("{l}{SEGMENT_RESET}"))
-            .collect()
     }
 
     fn full_render(&mut self, lines: &[String], terminal: &mut dyn Terminal, clear: bool) {
@@ -294,8 +270,9 @@ impl Renderer {
             return;
         }
 
-        let first = first_changed.unwrap();
-        let last = last_changed.unwrap();
+        let (Some(first), Some(last)) = (first_changed, last_changed) else {
+            return;
+        };
         let append_start = new_count > prev_count && first == prev_count && first > 0;
 
         let mut buf = String::new();
@@ -304,7 +281,7 @@ impl Renderer {
         let mut hw_row = self.hw_cursor_row;
         let mut viewport_top = self.prev_viewport_top;
 
-        // Pi's computeLineDiff: convert absolute row to relative cursor movement
+        // Convert absolute row positions to relative cursor movement
         let compute_line_diff =
             |target: usize, cur_hw: usize, prev_vt: usize, cur_vt: usize| -> isize {
                 let current_screen = cur_hw as isize - prev_vt as isize;
@@ -345,12 +322,17 @@ impl Renderer {
 
         // Render only changed lines (first..=last)
         let render_end = last.min(new_count.saturating_sub(1));
-        for i in first..=render_end {
+        for (i, line) in new_lines
+            .iter()
+            .enumerate()
+            .take(render_end + 1)
+            .skip(first)
+        {
             if i > first {
                 buf.push_str("\r\n");
             }
             buf.push_str("\x1b[2K");
-            buf.push_str(&new_lines[i]);
+            buf.push_str(line);
         }
 
         let mut final_cursor_row = render_end;
@@ -376,8 +358,8 @@ impl Renderer {
 
         self.hw_cursor_row = final_cursor_row;
         self.max_lines_rendered = self.max_lines_rendered.max(new_count);
-        self.prev_viewport_top = viewport_top
-            .max(final_cursor_row.saturating_sub(height.saturating_sub(1)));
+        self.prev_viewport_top =
+            viewport_top.max(final_cursor_row.saturating_sub(height.saturating_sub(1)));
     }
 
     fn find_cursor(&self, lines: &[String]) -> Option<(usize, usize)> {

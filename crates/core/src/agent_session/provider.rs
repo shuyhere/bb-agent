@@ -5,16 +5,47 @@ pub fn messages_to_provider(messages: &[crate::types::AgentMessage]) -> Vec<serd
         .iter()
         .filter_map(|msg| match msg {
             crate::types::AgentMessage::User(user) => {
-                let text = user
+                let has_images = user
                     .content
                     .iter()
-                    .filter_map(|block| match block {
-                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(serde_json::json!({"role": "user", "content": text}))
+                    .any(|block| matches!(block, crate::types::ContentBlock::Image { .. }));
+
+                if has_images {
+                    // Multi-modal: build a content array with text + image blocks
+                    let content: Vec<serde_json::Value> = user
+                        .content
+                        .iter()
+                        .map(|block| match block {
+                            crate::types::ContentBlock::Text { text } => serde_json::json!({
+                                "type": "text",
+                                "text": text
+                            }),
+                            crate::types::ContentBlock::Image { data, mime_type } => {
+                                serde_json::json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": data
+                                    }
+                                })
+                            }
+                        })
+                        .collect();
+                    Some(serde_json::json!({"role": "user", "content": content}))
+                } else {
+                    // Text-only: send as plain string (more compatible)
+                    let text = user
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(serde_json::json!({"role": "user", "content": text}))
+                }
             }
             crate::types::AgentMessage::Assistant(assistant) => {
                 let text = agent::extract_text(&assistant.content);

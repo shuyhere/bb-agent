@@ -14,9 +14,19 @@ impl FullscreenController {
         prompt: String,
         submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
+        // Drain any pending images into PromptOptions
+        let mut opts = PromptOptions::default();
+        let pending = std::mem::take(&mut self.pending_images);
+        for img in &pending {
+            opts.images.push(bb_core::agent_session::ImageContent {
+                source: img.data.clone(),
+                mime_type: Some(img.mime_type.clone()),
+            });
+        }
+
         self.runtime_host
             .session_mut()
-            .prompt(prompt.clone(), PromptOptions::default())
+            .prompt(prompt.clone(), opts)
             .map_err(anyhow::Error::new)?;
 
         if self.session_setup.api_key.trim().is_empty() {
@@ -32,7 +42,7 @@ impl FullscreenController {
         }
 
         self.ensure_session_row_created()?;
-        self.append_user_entry_to_db(&prompt)?;
+        self.append_user_entry_to_db_with_images(&prompt, &pending)?;
         self.auto_name_session(&prompt);
         self.publish_footer();
         self.publish_status();
@@ -77,6 +87,7 @@ impl FullscreenController {
                 cwd: self.session_setup.tool_ctx.cwd.clone(),
                 artifacts_dir: self.session_setup.tool_ctx.artifacts_dir.clone(),
                 on_output: None,
+                web_search: self.session_setup.tool_ctx.web_search.clone(),
             },
             thinking: if self.session_setup.thinking_level == "off" {
                 None
@@ -132,6 +143,28 @@ impl FullscreenController {
                 }
                 maybe_prompt = submission_rx.recv() => {
                     match maybe_prompt {
+                        Some(FullscreenSubmission::InputWithImages { text, image_paths }) => {
+                            self.attach_images_from_paths(&image_paths);
+                            let text = text.trim().to_string();
+                            if text.is_empty() || text == "/" {
+                                continue;
+                            }
+                            if self.handle_local_submission(&text).await? {
+                                if self.shutdown_requested {
+                                    self.abort_token.cancel();
+                                    aborted = true;
+                                    break;
+                                }
+                                continue;
+                            }
+                            self.queued_prompts.push_back(text);
+                            self.publish_status();
+                            if self.shutdown_requested {
+                                self.abort_token.cancel();
+                                aborted = true;
+                                break;
+                            }
+                        }
                         Some(FullscreenSubmission::Input(text)) => {
                             let text = text.trim().to_string();
                             if text.is_empty() || text == "/" {
@@ -154,12 +187,18 @@ impl FullscreenController {
                             }
                         }
                         Some(FullscreenSubmission::MenuSelection { menu_id, value }) => {
-                            self.handle_menu_selection(&menu_id, &value).await?;
+                            self.handle_menu_selection(&menu_id, &value, submission_rx).await?;
                             if self.shutdown_requested {
                                 self.abort_token.cancel();
                                 aborted = true;
                                 break;
                             }
+                        }
+                        Some(FullscreenSubmission::CancelLocalAction) => {
+                            // During streaming, cancel aborts the current turn.
+                            self.abort_token.cancel();
+                            aborted = true;
+                            break;
                         }
                         None => {
                             self.abort_token.cancel();
@@ -222,9 +261,7 @@ impl FullscreenController {
     fn handle_turn_event(&mut self, event: TurnEvent) {
         match event {
             TurnEvent::TurnStart { turn_index } => {
-                self.send_command(FullscreenCommand::TurnStart {
-                    turn_index,
-                });
+                self.send_command(FullscreenCommand::TurnStart { turn_index });
             }
             TurnEvent::TextDelta(text) => {
                 self.send_command(FullscreenCommand::TextDelta(text));
@@ -233,18 +270,12 @@ impl FullscreenController {
                 self.send_command(FullscreenCommand::ThinkingDelta(text));
             }
             TurnEvent::ToolCallStart { id, name } => {
-                self.send_command(FullscreenCommand::ToolCallStart {
-                    id,
-                    name,
-                });
+                self.send_command(FullscreenCommand::ToolCallStart { id, name });
             }
             TurnEvent::ToolCallDelta { id, args } => {
-                self.send_command(FullscreenCommand::ToolCallDelta {
-                    id,
-                    args,
-                });
+                self.send_command(FullscreenCommand::ToolCallDelta { id, args });
             }
-            TurnEvent::ToolExecuting { id, .. } => {
+            TurnEvent::ToolExecuting { id } => {
                 self.send_command(FullscreenCommand::ToolExecuting { id });
             }
             TurnEvent::ToolResult {
@@ -264,7 +295,7 @@ impl FullscreenController {
                     is_error,
                 });
             }
-            TurnEvent::TurnEnd { .. } => {
+            TurnEvent::TurnEnd => {
                 self.retry_status = None;
                 self.send_command(FullscreenCommand::TurnEnd);
                 self.publish_status();
@@ -287,7 +318,7 @@ impl FullscreenController {
                 ));
                 self.publish_status();
             }
-            TurnEvent::AutoRetryEnd { .. } => {
+            TurnEvent::AutoRetryEnd => {
                 self.retry_status = None;
                 self.publish_status();
             }

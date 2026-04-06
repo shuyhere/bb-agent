@@ -1,12 +1,14 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
-use bb_core::types::ContentBlock;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{
+    Tool, ToolContext, ToolResult, path::resolve_path, support::text_result,
+    text::format_limited_results,
+};
 
 const DEFAULT_LIMIT: usize = 1000;
 
@@ -149,35 +151,13 @@ async fn find_with_find_cmd(
 
 fn format_results(results: Vec<String>, limit: usize) -> BbResult<ToolResult> {
     let total = results.len();
-    let truncated = total >= limit;
-    let output = results.join("\n");
+    let (text, truncated) = format_limited_results(&results, "No files found.", limit);
 
-    let mut text = if output.is_empty() {
-        "No files found.".to_string()
-    } else {
-        output
-    };
-
-    if truncated {
-        text.push_str(&format!("\n\n[Results truncated at {limit} matches]"));
-    }
-
-    Ok(ToolResult {
-        content: vec![ContentBlock::Text { text }],
-        details: Some(json!({
+    Ok(text_result(
+        text,
+        Some(json!({
             "matchCount": total,
             "truncated": truncated,
         })),
-        is_error: false,
-        artifact_path: None,
-    })
-}
-
-fn resolve_path(cwd: &Path, path_str: &str) -> std::path::PathBuf {
-    let p = Path::new(path_str);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
-    }
+    ))
 }

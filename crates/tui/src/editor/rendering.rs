@@ -109,8 +109,11 @@ impl Editor {
             }
 
             // Try to break at word boundary
-            if end < chars.len() && last_space.is_some() && last_space.unwrap() > pos {
-                end = last_space.unwrap() + 1;
+            if let Some(last_space) = last_space
+                && end < chars.len()
+                && last_space > pos
+            {
+                end = last_space + 1;
             }
 
             let start_byte = chars[..pos].iter().collect::<String>().len();
@@ -138,7 +141,6 @@ impl Editor {
                 cursor_pos: Some(0),
                 line_index: 0,
                 byte_start: 0,
-                byte_end: 0,
             });
             return layout;
         }
@@ -166,7 +168,6 @@ impl Editor {
                             cursor_pos: Some(adjusted.min(text.len())),
                             line_index: i,
                             byte_start: *start_byte,
-                            byte_end: *end_byte,
                         });
                     } else {
                         layout.push(LayoutLine {
@@ -175,7 +176,6 @@ impl Editor {
                             cursor_pos: None,
                             line_index: i,
                             byte_start: *start_byte,
-                            byte_end: *end_byte,
                         });
                     }
                 } else {
@@ -185,7 +185,6 @@ impl Editor {
                         cursor_pos: None,
                         line_index: i,
                         byte_start: *start_byte,
-                        byte_end: *end_byte,
                     });
                 }
             }
@@ -203,9 +202,6 @@ struct LayoutLine {
     line_index: usize,
     /// Byte offset in the original line where this chunk starts.
     byte_start: usize,
-    /// Byte offset in the original line where this chunk ends.
-    #[allow(dead_code)]
-    byte_end: usize,
 }
 
 impl Component for Editor {
@@ -295,52 +291,40 @@ impl Component for Editor {
                 }
             }
 
-            if ll.has_cursor && emit_cursor {
-                if let Some(pos) = ll.cursor_pos {
-                    // Re-render with cursor marker (on top of any selection)
-                    // We need to work from the raw text for cursor positioning
-                    let raw_before = &ll.text[..pos.min(ll.text.len())];
-                    let raw_after = &ll.text[pos.min(ll.text.len())..];
+            if ll.has_cursor
+                && emit_cursor
+                && let Some(pos) = ll.cursor_pos
+            {
+                // Re-render with cursor marker (on top of any selection)
+                // We need to work from the raw text for cursor positioning
+                let raw_before = &ll.text[..pos.min(ll.text.len())];
+                let raw_after = &ll.text[pos.min(ll.text.len())..];
 
-                    let marker = CURSOR_MARKER;
+                let marker = CURSOR_MARKER;
 
-                    // Build display with both selection highlight and cursor
-                    if let Some(((sl, sc), (el, ec))) = sel_range {
-                        let li = ll.line_index;
-                        if li >= sl && li <= el {
-                            let chunk_start = ll.byte_start;
-                            let sel_start_in_line = if li == sl { sc } else { 0 };
-                            let sel_end_in_line = if li == el {
-                                ec
-                            } else {
-                                self.state.lines[li].len()
-                            };
-                            let hl_start = sel_start_in_line
-                                .max(chunk_start)
-                                .saturating_sub(chunk_start);
-                            let hl_end = sel_end_in_line
-                                .min(chunk_start + ll.text.len())
-                                .saturating_sub(chunk_start);
+                // Build display with both selection highlight and cursor
+                if let Some(((sl, sc), (el, ec))) = sel_range {
+                    let li = ll.line_index;
+                    if li >= sl && li <= el {
+                        let chunk_start = ll.byte_start;
+                        let sel_start_in_line = if li == sl { sc } else { 0 };
+                        let sel_end_in_line = if li == el {
+                            ec
+                        } else {
+                            self.state.lines[li].len()
+                        };
+                        let hl_start = sel_start_in_line
+                            .max(chunk_start)
+                            .saturating_sub(chunk_start);
+                        let hl_end = sel_end_in_line
+                            .min(chunk_start + ll.text.len())
+                            .saturating_sub(chunk_start);
 
-                            if hl_start < hl_end && hl_end <= ll.text.len() {
-                                // Build the line char by char with selection and cursor
-                                display = Self::render_line_with_selection_and_cursor(
-                                    &ll.text, pos, hl_start, hl_end, marker,
-                                );
-                            } else if !raw_after.is_empty() {
-                                let first_char: String = raw_after
-                                    .chars()
-                                    .next()
-                                    .map(|c| c.to_string())
-                                    .unwrap_or_default();
-                                let rest = &raw_after[first_char.len()..];
-                                display = format!(
-                                    "{}{}\x1b[7m{}\x1b[0m{}",
-                                    raw_before, marker, first_char, rest
-                                );
-                            } else {
-                                display = format!("{}{}\x1b[7m \x1b[0m", raw_before, marker);
-                            }
+                        if hl_start < hl_end && hl_end <= ll.text.len() {
+                            // Build the line char by char with selection and cursor
+                            display = Self::render_line_with_selection_and_cursor(
+                                &ll.text, pos, hl_start, hl_end, marker,
+                            );
                         } else if !raw_after.is_empty() {
                             let first_char: String = raw_after
                                 .chars()
@@ -369,6 +353,19 @@ impl Component for Editor {
                     } else {
                         display = format!("{}{}\x1b[7m \x1b[0m", raw_before, marker);
                     }
+                } else if !raw_after.is_empty() {
+                    let first_char: String = raw_after
+                        .chars()
+                        .next()
+                        .map(|c| c.to_string())
+                        .unwrap_or_default();
+                    let rest = &raw_after[first_char.len()..];
+                    display = format!(
+                        "{}{}\x1b[7m{}\x1b[0m{}",
+                        raw_before, marker, first_char, rest
+                    );
+                } else {
+                    display = format!("{}{}\x1b[7m \x1b[0m", raw_before, marker);
                 }
             }
 

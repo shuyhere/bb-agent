@@ -1,8 +1,8 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-#[allow(dead_code)]
-const CURRENT_VERSION: i32 = 1;
+#[cfg(test)]
+const CURRENT_VERSION: i32 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS entries (
@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 "#;
 
+const MIGRATION_V2: &str = r#"
+ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_sessions_parent_session
+    ON sessions(parent_session_id);
+"#;
+
 /// Initialize database schema, applying migrations as needed.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     let current = get_version(conn);
@@ -50,8 +56,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         set_version(conn, 1)?;
     }
 
-    // Future migrations:
-    // if current < 2 { ... set_version(conn, 2)?; }
+    if current < 2 {
+        conn.execute_batch(MIGRATION_V2)?;
+        set_version(conn, 2)?;
+    }
 
     Ok(())
 }
@@ -82,10 +90,18 @@ mod tests {
     fn test_init_schema() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        assert_eq!(get_version(&conn), 1);
+        assert_eq!(get_version(&conn), CURRENT_VERSION);
 
         // Idempotent
         init_schema(&conn).unwrap();
-        assert_eq!(get_version(&conn), 1);
+        assert_eq!(get_version(&conn), CURRENT_VERSION);
+
+        let mut stmt = conn.prepare("PRAGMA table_info(sessions)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.contains(&"parent_session_id".to_string()));
     }
 }

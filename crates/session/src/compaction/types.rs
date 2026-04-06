@@ -11,7 +11,6 @@ pub struct CompactionPreparation {
     pub is_split_turn: bool,
 }
 
-
 #[derive(Debug)]
 pub struct CompactionResult {
     pub summary: String,
@@ -20,4 +19,3 @@ pub struct CompactionResult {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
 }
-

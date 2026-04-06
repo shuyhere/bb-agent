@@ -26,12 +26,6 @@ pub struct CallbackServerParts {
 }
 
 impl CallbackServer {
-    /// Cancel the background listener.
-    #[allow(dead_code)]
-    pub fn cancel(self) {
-        let _ = self.cancel_tx.send(());
-    }
-
     /// Destructure into individual fields so they can be used in
     /// `tokio::select!` without partial-move issues.
     pub fn into_parts(self) -> CallbackServerParts {
@@ -109,14 +103,8 @@ async fn handle_connection(
 
     let params = parse_query(query_part);
 
-    let code = params
-        .get("code")
-        .cloned()
-        .unwrap_or_default();
-    let state = params
-        .get("state")
-        .cloned()
-        .unwrap_or_default();
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
 
     if code.is_empty() {
         // Check for error
@@ -151,10 +139,7 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .filter(|s| !s.is_empty())
         .filter_map(|pair| {
             let (k, v) = pair.split_once('=')?;
-            Some((
-                url_decode(k),
-                url_decode(v),
-            ))
+            Some((url_decode(k), url_decode(v)))
         })
         .collect()
 }
@@ -168,11 +153,11 @@ fn url_decode(s: &str) -> String {
                 let hi = chars.next().unwrap_or(b'0');
                 let lo = chars.next().unwrap_or(b'0');
                 let hex = [hi, lo];
-                if let Ok(s) = std::str::from_utf8(&hex) {
-                    if let Ok(val) = u8::from_str_radix(s, 16) {
-                        result.push(val as char);
-                        continue;
-                    }
+                if let Ok(s) = std::str::from_utf8(&hex)
+                    && let Ok(val) = u8::from_str_radix(s, 16)
+                {
+                    result.push(val as char);
+                    continue;
                 }
                 result.push('%');
                 result.push(hi as char);

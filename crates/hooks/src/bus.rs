@@ -11,14 +11,18 @@ pub type SharedEventBus = Arc<EventBus>;
 pub type HandlerFn = Arc<dyn Fn(&Event) -> Option<HookResult> + Send + Sync>;
 
 struct HandlerEntry {
-    #[allow(dead_code)]
-    plugin_id: String,
     handler: HandlerFn,
 }
 
 /// Event bus for dispatching hook events.
 pub struct EventBus {
     handlers: RwLock<HashMap<String, Vec<HandlerEntry>>>,
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventBus {
@@ -34,17 +38,12 @@ impl EventBus {
     }
 
     /// Register a handler for an event type.
-    #[allow(dead_code)]
-    pub async fn on(&self, event_type: &str, plugin_id: &str, handler: HandlerFn) {
+    pub async fn on(&self, event_type: &str, _plugin_id: &str, handler: HandlerFn) {
         let mut handlers = self.handlers.write().await;
         handlers
             .entry(event_type.to_string())
             .or_default()
-            .push(HandlerEntry {
-    #[allow(dead_code)]
-                plugin_id: plugin_id.to_string(),
-                handler,
-            });
+            .push(HandlerEntry { handler });
     }
 
     /// Check if any handlers are registered for an event type.
@@ -164,14 +163,15 @@ mod tests {
             "tool_call",
             "safety",
             Arc::new(|event| {
-                if let Event::ToolCall(tc) = event {
-                    if tc.tool_name == "bash" && tc.input.to_string().contains("rm -rf") {
-                        return Some(HookResult {
-                            block: Some(true),
-                            reason: Some("Dangerous command".into()),
-                            ..Default::default()
-                        });
-                    }
+                if let Event::ToolCall(tc) = event
+                    && tc.tool_name == "bash"
+                    && tc.input.to_string().contains("rm -rf")
+                {
+                    return Some(HookResult {
+                        block: Some(true),
+                        reason: Some("Dangerous command".into()),
+                        ..Default::default()
+                    });
                 }
                 None
             }),
@@ -313,15 +313,15 @@ mod tests {
             "tool_result",
             "content-filter",
             Arc::new(|event| {
-                if let Event::ToolResult(tr) = event {
-                    if tr.tool_name == "bash" {
-                        return Some(HookResult {
-                            content: Some(vec![
-                                serde_json::json!({ "Text": { "text": "[redacted]" } }),
-                            ]),
-                            ..Default::default()
-                        });
-                    }
+                if let Event::ToolResult(tr) = event
+                    && tr.tool_name == "bash"
+                {
+                    return Some(HookResult {
+                        content: Some(vec![
+                            serde_json::json!({ "Text": { "text": "[redacted]" } }),
+                        ]),
+                        ..Default::default()
+                    });
                 }
                 None
             }),

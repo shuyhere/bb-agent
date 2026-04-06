@@ -1,37 +1,42 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod error;
+mod agents_md;
 mod extensions;
 
 mod fullscreen;
-#[path = "interactive.rs"]
-mod interactive;
 mod login;
 mod models;
 mod oauth;
 mod run;
+mod session_bootstrap;
+mod session_info;
+mod session_navigation;
 mod slash;
 mod turn_runner;
+mod update_check;
 
 #[derive(Parser)]
 #[command(
     name = "bb",
-    about = "BB-Agent — a minimal Rust-native coding agent",
+    about = "BB-Agent — a Rust-native coding agent",
     version,
     after_help = r#"Examples:
-  bb                                  Interactive mode
-  bb "List all .rs files in src/"     Interactive with initial prompt
+  bb                                  Fullscreen mode
+  bb "List all .rs files in src/"     Fullscreen with initial prompt
   bb -p "What is 2+2?"               Print mode (non-interactive)
   bb -c                               Continue previous session
   bb -r                               Resume: pick a session
-  bb --fullscreen-transcript          Shared fullscreen transcript shell
   bb --model anthropic/claude-sonnet-4-20250514
   bb --model sonnet:high              Model with thinking level
   bb --list-models                    List all available models
   bb --list-models sonnet             Search models
   bb login                            Login to a provider (OAuth)
-  bb logout                           Logout from a provider"#
+  bb logout                           Logout from a provider
+  bb install npm:bb-example-skill     Install a global package source
+  bb install --local ./my-skill       Install a local/project package source
+  bb list                             List configured package sources
+  bb update                           Update installed package sources"#
 )]
 struct Cli {
     #[command(subcommand)]
@@ -53,13 +58,21 @@ struct Cli {
     #[arg(long)]
     api_key: Option<String>,
 
-    /// System prompt override
+    /// System prompt override (use @filepath to load from file)
     #[arg(long)]
     system_prompt: Option<String>,
 
     /// Append to system prompt
     #[arg(long)]
     append_system_prompt: Option<String>,
+
+    /// Use a named system prompt template from ~/.bb-agent/system-prompts/<name>.md
+    #[arg(short = 't', long = "template")]
+    system_prompt_template: Option<String>,
+
+    /// List available system prompt templates
+    #[arg(long)]
+    list_templates: bool,
 
     /// Thinking level: off, low, medium, high
     #[arg(long)]
@@ -109,8 +122,12 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Launch the shared fullscreen transcript shell (`--fullscreen` kept as a legacy alias)
-    #[arg(long = "fullscreen-transcript", visible_alias = "fullscreen")]
+    /// Legacy no-op flag kept for compatibility; fullscreen is now the default
+    #[arg(
+        long = "fullscreen-transcript",
+        visible_alias = "fullscreen",
+        hide = true
+    )]
     fullscreen_transcript: bool,
 
     /// Initial prompt / messages
@@ -130,12 +147,29 @@ enum Commands {
         /// Provider name
         provider: Option<String>,
     },
-    /// Install a package source into settings
+    #[command(after_help = r#"Examples:
+  bb install npm:bb-example-skill
+  bb install --local npm:my-project-skill
+  bb install --local ./my-skill
+  bb install git:https://github.com/org/repo.git
+  bb install https://example.com/package.tar.gz
+
+Source forms:
+  npm:<package>             Install from npm
+  git:<repo-or-url>         Install from git
+  ./path or /abs/path       Install from a local directory
+  https://...               Install from a remote archive/repo URL
+
+Notes:
+  --local installs into the detected project root's .bb-agent directory.
+  Without --local, installs go into ~/.bb-agent and are available globally.
+"#)]
+    /// Install a package source into settings (supports npm:pkg, git:repo/url, local path, or archive URL)
     Install {
         /// Install into project-local settings instead of global settings
         #[arg(short = 'l', long = "local")]
         local: bool,
-        /// Package source: local path, npm:pkg, git:repo, or URL
+        /// Package source, e.g. npm:bb-example-skill, git:https://github.com/org/repo.git, ./my-skill, or https://example.com/package.tar.gz
         source: String,
     },
     /// Remove a package source from settings
@@ -248,6 +282,56 @@ async fn main() -> Result<()> {
         };
     }
 
+    // Handle --list-templates
+    if cli.list_templates {
+        let templates_dir = bb_core::config::global_dir().join("system-prompts");
+        if templates_dir.is_dir() {
+            let mut found = false;
+            if let Ok(entries) = std::fs::read_dir(&templates_dir) {
+                let mut names: Vec<String> = entries
+                    .flatten()
+                    .filter(|e| {
+                        e.path().is_file()
+                            && e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+                    })
+                    .filter_map(|e| {
+                        e.path()
+                            .file_stem()
+                            .and_then(|s| s.to_str().map(String::from))
+                    })
+                    .collect();
+                names.sort();
+                for name in &names {
+                    let path = templates_dir.join(format!("{name}.md"));
+                    let desc = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|c| {
+                            c.lines()
+                                .find(|l| !l.trim().is_empty() && l.trim() != "---")
+                                .map(|l| {
+                                    let s = l.trim().trim_start_matches("# ");
+                                    if s.len() > 60 {
+                                        format!("{}...", &s[..57])
+                                    } else {
+                                        s.to_string()
+                                    }
+                                })
+                        })
+                        .unwrap_or_default();
+                    println!("  {name:20} {desc}");
+                    found = true;
+                }
+            }
+            if !found {
+                println!("No templates found in {}", templates_dir.display());
+            }
+        } else {
+            println!("No templates directory. Create templates at:");
+            println!("  {}/", templates_dir.display());
+        }
+        return Ok(());
+    }
+
     // Handle --list-models
     if let Some(search) = &cli.list_models {
         let search_term = match search {
@@ -265,14 +349,48 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Process @file arguments from messages
+    // Resolve system prompt template or @file
     let mut cli = cli;
+    if let Some(template_name) = &cli.system_prompt_template {
+        let templates_dir = bb_core::config::global_dir().join("system-prompts");
+        let template_path = templates_dir.join(format!("{template_name}.md"));
+        if !template_path.is_file() {
+            eprintln!(
+                "Error: system prompt template '{}' not found at {}",
+                template_name,
+                template_path.display()
+            );
+            eprintln!("Available templates (bb --list-templates):");
+            if let Ok(entries) = std::fs::read_dir(&templates_dir) {
+                for e in entries.flatten() {
+                    if e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+                        && let Some(name) = e.path().file_stem().and_then(|s| s.to_str())
+                    {
+                        eprintln!("  {name}");
+                    }
+                }
+            }
+            std::process::exit(1);
+        }
+        cli.system_prompt = Some(std::fs::read_to_string(&template_path)?);
+    } else if let Some(ref sp) = cli.system_prompt
+        && let Some(path) = sp.strip_prefix('@')
+    {
+        match std::fs::read_to_string(path) {
+            Ok(content) => cli.system_prompt = Some(content),
+            Err(e) => {
+                eprintln!("Error: could not read system prompt file '{}': {}", path, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Process @file arguments from messages
     let mut prompt_parts = Vec::new();
     let mut regular_messages = Vec::new();
 
     for msg in &cli.messages {
-        if msg.starts_with('@') {
-            let path = &msg[1..];
+        if let Some(path) = msg.strip_prefix('@') {
             match std::fs::read_to_string(path) {
                 Ok(content) => {
                     prompt_parts.push(format!("Contents of {}:\n```\n{}\n```", path, content));
@@ -297,30 +415,13 @@ async fn main() -> Result<()> {
         };
     }
 
-    let use_fullscreen = fullscreen_transcript_requested(&cli);
-
-    // Print mode stays a thin entry layer; interactive mode owns the legacy TUI controller.
-    // The fullscreen entry remains available behind an explicit flag until its UX reaches parity.
+    // Print mode stays thin; interactive terminal usage now defaults to fullscreen.
     if cli.print {
         run::run_print_mode(cli).await
-    } else if use_fullscreen {
-        fullscreen::run_fullscreen_entry(interactive::InteractiveEntryOptions::from(&cli))
-            .await
     } else {
-        interactive::run_interactive(interactive::InteractiveEntryOptions::from(&cli)).await
+        fullscreen::run_fullscreen_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
+            .await
     }
-}
-
-fn fullscreen_transcript_requested(cli: &Cli) -> bool {
-    cli.fullscreen_transcript
-        || env_flag_enabled("BB_FULLSCREEN_TRANSCRIPT")
-        || env_flag_enabled("BB_FULLSCREEN")
-}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
 }
 
 // Cli is already visible to submodules via crate::Cli

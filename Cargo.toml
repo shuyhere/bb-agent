@@ -12,10 +12,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 authors = ["BB-Agent Contributors"]
+repository = "https://github.com/shuyhere/bb-agent"
+homepage = "https://github.com/shuyhere/bb-agent"
+readme = "README.md"
 
 [workspace.dependencies]
 # Shared deps across crates
@@ -40,10 +43,10 @@ rand = "0.8"
 base64 = "0.22"
 
 # Internal crates
-bb-core = { path = "crates/core" }
-bb-session = { path = "crates/session" }
-bb-tools = { path = "crates/tools" }
-bb-provider = { path = "crates/provider" }
-bb-hooks = { path = "crates/hooks" }
-bb-plugin-host = { path = "crates/plugin-host" }
-bb-tui = { path = "crates/tui" }
+bb-core = { version = "0.0.1", path = "crates/core" }
+bb-session = { version = "0.0.1", path = "crates/session" }
+bb-tools = { version = "0.0.1", path = "crates/tools" }
+bb-provider = { version = "0.0.1", path = "crates/provider" }
+bb-hooks = { version = "0.0.1", path = "crates/hooks" }
+bb-plugin-host = { version = "0.0.1", path = "crates/plugin-host" }
+bb-tui = { version = "0.0.1", path = "crates/tui" }

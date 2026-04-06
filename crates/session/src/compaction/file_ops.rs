@@ -12,32 +12,32 @@ pub fn extract_file_operations(messages: &[AgentMessage]) -> (Vec<String>, Vec<S
     let mut modified_files = HashSet::new();
 
     for msg in messages {
-        match msg {
-            AgentMessage::Assistant(a) => {
-                for block in &a.content {
-                    if let AssistantContent::ToolCall { name, arguments, .. } = block {
-                        match name.as_str() {
-                            "read" => {
-                                if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
-                                    read_files.insert(path.to_string());
-                                }
+        if let AgentMessage::Assistant(a) = msg {
+            for block in &a.content {
+                if let AssistantContent::ToolCall {
+                    name, arguments, ..
+                } = block
+                {
+                    match name.as_str() {
+                        "read" => {
+                            if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                                read_files.insert(path.to_string());
                             }
-                            "edit" | "write" => {
-                                if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
-                                    modified_files.insert(path.to_string());
-                                }
-                            }
-                            "bash" => {
-                                if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
-                                    extract_bash_file_ops(cmd, &mut modified_files);
-                                }
-                            }
-                            _ => {}
                         }
+                        "edit" | "write" => {
+                            if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+                                modified_files.insert(path.to_string());
+                            }
+                        }
+                        "bash" => {
+                            if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
+                                extract_bash_file_ops(cmd, &mut modified_files);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -67,26 +67,26 @@ fn extract_bash_file_ops(cmd: &str, modified: &mut HashSet<String>) {
             let rest = &cmd[i + 1..];
             let rest = rest.trim_start_matches('>');
             let rest = rest.trim_start();
-            if let Some(file) = rest.split_whitespace().next() {
-                if !file.is_empty() && !file.starts_with('&') {
-                    modified.insert(file.to_string());
-                }
+            if let Some(file) = rest.split_whitespace().next()
+                && !file.is_empty()
+                && !file.starts_with('&')
+            {
+                modified.insert(file.to_string());
             }
         }
     }
     // Detect tee command
-    if cmd.contains("tee ") {
-        if let Some(pos) = cmd.find("tee ") {
-            let after = &cmd[pos + 4..];
-            // Skip flags
-            for token in after.split_whitespace() {
-                if token.starts_with('-') {
-                    continue;
-                }
-                modified.insert(token.to_string());
-                break;
+    if cmd.contains("tee ")
+        && let Some(pos) = cmd.find("tee ")
+    {
+        let after = &cmd[pos + 4..];
+        // Skip flags
+        for token in after.split_whitespace() {
+            if token.starts_with('-') {
+                continue;
             }
+            modified.insert(token.to_string());
+            break;
         }
     }
 }
-

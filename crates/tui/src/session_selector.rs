@@ -22,10 +22,9 @@ impl SessionSelector {
         let items: Vec<SelectItem> = sessions
             .iter()
             .map(|s| {
-                let label = s
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("Session {}", &s.session_id[..8.min(s.session_id.len())]));
+                let label = s.name.clone().unwrap_or_else(|| {
+                    format!("Session {}", &s.session_id[..8.min(s.session_id.len())])
+                });
                 let detail = format!(
                     "{} entries · updated {}",
                     s.entry_count,
@@ -47,10 +46,7 @@ impl SessionSelector {
 
     /// Render the selector.
     pub fn render(&self, width: u16) -> Vec<String> {
-        let mut lines = vec![
-            format!("Resume Session"),
-            format!(""),
-        ];
+        let mut lines = vec![format!("Resume Session"), format!("")];
         lines.extend(self.list.render(width));
         lines
     }
@@ -118,6 +114,7 @@ mod tests {
                 name: Some("refactor-tui".into()),
                 leaf_id: Some("abc123".into()),
                 entry_count: 42,
+                parent_session_id: None,
             },
             SessionRow {
                 session_id: "eeee-ffff-1111-2222".into(),
@@ -127,6 +124,7 @@ mod tests {
                 name: None,
                 leaf_id: Some("def456".into()),
                 entry_count: 7,
+                parent_session_id: None,
             },
         ]
     }

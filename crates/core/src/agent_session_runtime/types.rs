@@ -111,27 +111,13 @@ impl Default for RetrySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct BranchSummarySettings {
-    pub reserve_tokens: usize,
-}
-
-impl Default for BranchSummarySettings {
-    fn default() -> Self {
-        Self {
-            reserve_tokens: 1_024,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeModelRef {
     pub provider: String,
     pub id: String,
     pub context_window: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RuntimeCost {
     pub total_microunits: u64,
 }
@@ -148,14 +134,6 @@ pub struct RuntimeUsage {
 impl RuntimeUsage {
     pub fn total_context_tokens(&self) -> usize {
         self.input + self.output + self.cache_read + self.cache_write
-    }
-}
-
-impl Default for RuntimeCost {
-    fn default() -> Self {
-        Self {
-            total_microunits: 0,
-        }
     }
 }
 
@@ -276,23 +254,12 @@ pub struct TreePreparation {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NavigateTreeOptions {
     pub summarize: bool,
     pub custom_instructions: Option<String>,
     pub replace_instructions: Option<bool>,
     pub label: Option<String>,
-}
-
-impl Default for NavigateTreeOptions {
-    fn default() -> Self {
-        Self {
-            summarize: false,
-            custom_instructions: None,
-            replace_instructions: None,
-            label: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -360,21 +327,11 @@ pub struct BashExecutionState {
     pub pending_messages: Vec<BashExecutionMessage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RetryState {
     pub attempt: u32,
     pub in_progress: bool,
     pub abort_requested: bool,
-}
-
-impl Default for RetryState {
-    fn default() -> Self {
-        Self {
-            attempt: 0,
-            in_progress: false,
-            abort_requested: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

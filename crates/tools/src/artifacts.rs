@@ -34,11 +34,26 @@ pub fn maybe_offload(
     (truncated, Some(path))
 }
 
+fn safe_char_boundary_at_or_before(s: &str, max_bytes: usize) -> usize {
+    let capped = max_bytes.min(s.len());
+    if s.is_char_boundary(capped) {
+        return capped;
+    }
+    let mut last = 0usize;
+    for (idx, _) in s.char_indices() {
+        if idx > capped {
+            break;
+        }
+        last = idx;
+    }
+    last
+}
+
 fn truncate_with_hint(content: &str, max_bytes: usize, path: &Path) -> String {
-    // Find last newline before max_bytes to avoid splitting mid-line
-    let cut = content[..max_bytes]
-        .rfind('\n')
-        .unwrap_or(max_bytes);
+    // Find last newline before max_bytes to avoid splitting mid-line,
+    // but never cut through a UTF-8 character.
+    let safe_cut = safe_char_boundary_at_or_before(content, max_bytes);
+    let cut = content[..safe_cut].rfind('\n').unwrap_or(safe_cut);
 
     let preview = &content[..cut];
     let total_lines = content.lines().count();
@@ -51,31 +66,6 @@ fn truncate_with_hint(content: &str, max_bytes: usize, path: &Path) -> String {
         path = path.display(),
         next_line = preview_lines + 1,
     )
-}
-
-/// Clean up expired artifacts older than `max_age`.
-pub fn cleanup(artifacts_dir: &Path, max_age: std::time::Duration) -> u64 {
-    let mut removed = 0u64;
-    let entries = match std::fs::read_dir(artifacts_dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                if let Ok(age) = now.duration_since(modified) {
-                    if age > max_age {
-                        if std::fs::remove_file(entry.path()).is_ok() {
-                            removed += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    removed
 }
 
 #[cfg(test)]
@@ -101,5 +91,15 @@ mod tests {
         // Full content on disk
         let on_disk = fs::read_to_string(path.unwrap()).unwrap();
         assert_eq!(on_disk.len(), 500);
+    }
+
+    #[test]
+    fn test_offload_large_does_not_split_utf8_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!("{}─tail", "x".repeat(99));
+        let (result, path) = maybe_offload(&content, dir.path(), Some(100));
+        assert!(path.is_some());
+        assert!(result.contains("[Truncated."));
+        assert!(!result.contains("�"));
     }
 }

@@ -25,7 +25,7 @@ pub enum ApiType {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CostConfig {
-    pub input: f64,   // per million tokens
+    pub input: f64, // per million tokens
     pub output: f64,
     pub cache_read: f64,
     pub cache_write: f64,

@@ -1,15 +1,10 @@
 use super::data::AgentMessage;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum QueueMode {
     All,
+    #[default]
     OneAtATime,
-}
-
-impl Default for QueueMode {
-    fn default() -> Self {
-        Self::OneAtATime
-    }
 }
 
 #[derive(Clone, Debug)]

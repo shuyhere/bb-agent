@@ -31,7 +31,9 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
                     match block {
                         AssistantContent::Text { text } => text_parts.push(text.clone()),
                         AssistantContent::Thinking { .. } => {}
-                        AssistantContent::ToolCall { name, arguments, .. } => {
+                        AssistantContent::ToolCall {
+                            name, arguments, ..
+                        } => {
                             let args_str = format_tool_args(name, arguments);
                             tool_parts.push(format!("{name}({args_str})"));
                         }
@@ -116,4 +118,3 @@ fn format_tool_args(_name: &str, arguments: &serde_json::Value) -> String {
         None => arguments.to_string(),
     }
 }
-
