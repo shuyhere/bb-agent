@@ -61,6 +61,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
 
     let mut registry = ModelRegistry::new();
     registry.load_custom_models(&settings);
+    login::add_cached_github_copilot_models(&mut registry);
     let model = registry
         .find(&provider_name, &model_id)
         .cloned()
@@ -86,10 +87,19 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         Some(key) => key.clone(),
         None => login::resolve_api_key(&provider_name).unwrap_or_default(),
     };
-    let base_url = model
-        .base_url
-        .clone()
-        .unwrap_or_else(|| "https://api.openai.com/v1".into());
+    let base_url = if provider_name == "github-copilot" {
+        login::github_copilot_api_base_url()
+    } else {
+        model
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com/v1".into())
+    };
+    let headers = if provider_name == "github-copilot" {
+        login::github_copilot_runtime_headers()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     auto_install_missing_packages(&cwd, &settings);
 
@@ -126,7 +136,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             model: model.clone(),
             api_key: api_key.clone(),
             base_url: base_url.clone(),
-            headers: std::collections::HashMap::new(),
+            headers: headers.clone(),
             enabled: true,
         }),
     };
@@ -183,6 +193,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         provider,
         api_key,
         base_url,
+        headers,
         tools: builtin_tools,
         tool_defs,
         tool_ctx,

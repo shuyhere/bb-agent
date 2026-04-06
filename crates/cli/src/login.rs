@@ -134,7 +134,7 @@ pub(crate) fn provider_login_hint(provider: &str) -> String {
         "github-copilot" => {
             let target = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
             format!(
-                "OAuth preview. Supports github.com or a GitHub Enterprise Server domain. Current target: {target}."
+                "Uses GitHub device/browser auth, then exchanges the GitHub token for a Copilot runtime token. Supports github.com or GitHub Enterprise Server. Current target: {target}."
             )
         }
         other => {
@@ -232,6 +232,26 @@ pub(crate) fn save_github_copilot_config(domain: &str) -> Result<()> {
     save_auth(&store)
 }
 
+fn save_oauth_state(
+    provider: &str,
+    access: String,
+    refresh: String,
+    expires: i64,
+    extra: serde_json::Value,
+) -> Result<()> {
+    let mut store = load_auth();
+    store.providers.insert(
+        provider.to_string(),
+        AuthEntry::OAuth {
+            access,
+            refresh,
+            expires,
+            extra,
+        },
+    );
+    save_auth(&store)
+}
+
 pub(crate) fn github_copilot_domain() -> Option<String> {
     let store = load_auth();
     match store.providers.get("github-copilot") {
@@ -245,34 +265,73 @@ pub(crate) fn github_copilot_domain() -> Option<String> {
 }
 
 pub(crate) fn github_copilot_api_base_url() -> String {
-    let authority = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
-    if authority.eq_ignore_ascii_case("github.com") {
-        "https://api.githubcopilot.com".to_string()
-    } else {
-        format!("https://{authority}/api/copilot")
+    if let Ok(url) = std::env::var("GH_COPILOT_API_URL")
+        && !url.trim().is_empty()
+    {
+        return url;
+    }
+    if let Ok(url) = std::env::var("GITHUB_COPILOT_API_URL")
+        && !url.trim().is_empty()
+    {
+        return url;
+    }
+
+    let store = load_auth();
+    if let Some(AuthEntry::OAuth { extra, .. }) = store.providers.get("github-copilot")
+        && let Some(url) = extra
+            .get("copilot_api_base_url")
+            .and_then(|value| value.as_str())
+        && !url.trim().is_empty()
+    {
+        return url.to_string();
+    }
+
+    "https://api.githubcopilot.com".to_string()
+}
+
+pub(crate) fn github_copilot_runtime_headers() -> std::collections::HashMap<String, String> {
+    crate::oauth::github_copilot::github_copilot_runtime_headers()
+}
+
+pub(crate) fn github_copilot_cached_models() -> Vec<String> {
+    let store = load_auth();
+    let Some(AuthEntry::OAuth { extra, .. }) = store.providers.get("github-copilot") else {
+        return Vec::new();
+    };
+    extra
+        .get("copilot_models")
+        .and_then(|value| value.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn add_cached_github_copilot_models(
+    registry: &mut bb_provider::registry::ModelRegistry,
+) {
+    for model_id in github_copilot_cached_models() {
+        if registry.find("github-copilot", &model_id).is_none() {
+            registry.add(bb_provider::registry::Model {
+                id: model_id.clone(),
+                name: model_id.clone(),
+                provider: "github-copilot".to_string(),
+                api: bb_provider::registry::ApiType::OpenaiCompletions,
+                context_window: 128_000,
+                max_tokens: 16_384,
+                reasoning: true,
+                base_url: Some(github_copilot_api_base_url()),
+                cost: Default::default(),
+            });
+        }
     }
 }
 
 pub(crate) fn normalize_github_domain(input: &str) -> Result<String> {
-    let value = input.trim().trim_end_matches('/');
-    if value.is_empty() {
-        anyhow::bail!("GitHub domain cannot be empty");
-    }
-
-    let host = if value.contains("://") {
-        url::Url::parse(value)
-            .ok()
-            .and_then(|url| url.host_str().map(ToString::to_string))
-            .unwrap_or_else(|| value.to_string())
-    } else {
-        value.split('/').next().unwrap_or(value).to_string()
-    };
-
-    let host = host.trim().trim_end_matches('/').to_ascii_lowercase();
-    if host.is_empty() || host.contains(' ') {
-        anyhow::bail!("Invalid GitHub domain: {input}");
-    }
-    Ok(host)
+    crate::oauth::github_copilot::normalize_authority(input)
 }
 
 pub(crate) fn configured_providers() -> Vec<String> {
@@ -500,23 +559,9 @@ fn get_provider_status(name: &str) -> &'static str {
         };
     }
 
-    // Check env var
-    let env_var = KNOWN_PROVIDERS
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .map(|(_, e, _)| *e)
-        .unwrap_or("");
-    if !env_var.is_empty() {
-        if std::env::var(env_var)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-        {
-            "✓ (env)"
-        } else {
-            "✗"
-        }
-    } else {
-        "✗"
+    match auth_source(name) {
+        Some(AuthSource::EnvVar) => "✓ (env)",
+        _ => "✗",
     }
 }
 
@@ -543,6 +588,7 @@ pub fn auth_source(provider: &str) -> Option<AuthSource> {
     let env_keys: &[&str] = match provider {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" | "openai-codex" => &["OPENAI_API_KEY"],
+        "github-copilot" => &["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"],
         "google" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
         "groq" => &["GROQ_API_KEY"],
         "xai" => &["XAI_API_KEY"],
@@ -594,6 +640,10 @@ pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Resul
 }
 
 pub fn resolve_api_key(provider: &str) -> Option<String> {
+    if provider == "github-copilot" {
+        return resolve_github_copilot_api_key();
+    }
+
     // Determine the list of auth-store keys to probe.  "openai" models should
     // also pick up "openai-codex" OAuth tokens, and vice-versa.
     let store_keys: &[&str] = match provider {
@@ -655,6 +705,174 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
     None
 }
 
+fn resolve_github_copilot_api_key() -> Option<String> {
+    for key in ["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"] {
+        if let Ok(val) = std::env::var(key)
+            && !val.trim().is_empty()
+        {
+            return Some(val);
+        }
+    }
+
+    let store = load_auth();
+    let entry = store.providers.get("github-copilot")?.clone();
+    let AuthEntry::OAuth {
+        access,
+        refresh,
+        expires,
+        extra,
+    } = entry
+    else {
+        return None;
+    };
+
+    let authority = extra
+        .get("domain")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(github_copilot_domain)
+        .unwrap_or_else(|| "github.com".to_string());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    if let Some(token) = extra.get("copilot_token").and_then(|value| value.as_str())
+        && let Some(expires_at) = extra
+            .get("copilot_expires_at")
+            .and_then(|value| value.as_i64())
+        && expires_at > now_ms + 300_000
+        && !token.trim().is_empty()
+    {
+        return Some(token.to_string());
+    }
+
+    if expires <= now_ms + 60_000
+        && !refresh.trim().is_empty()
+        && let Some(creds) = try_refresh_sync("github-copilot", &refresh)
+    {
+        return Some(creds);
+    }
+
+    if access.trim().is_empty() {
+        return None;
+    }
+
+    let refreshed = refresh_github_copilot_runtime_sync(&authority, &access)?;
+    let mut extra = extra;
+    merge_github_copilot_runtime_extra(&mut extra, &authority, &refreshed);
+    let _ = save_oauth_state("github-copilot", access, refresh, expires, extra);
+    Some(refreshed.copilot_token)
+}
+
+fn merge_github_copilot_runtime_extra(
+    extra: &mut serde_json::Value,
+    authority: &str,
+    runtime: &crate::oauth::github_copilot::CopilotRuntimeSession,
+) {
+    let mut map = extra.as_object().cloned().unwrap_or_default();
+    map.insert(
+        "domain".to_string(),
+        serde_json::Value::String(authority.to_string()),
+    );
+    map.insert(
+        "login".to_string(),
+        runtime
+            .login
+            .as_ref()
+            .map(|value| serde_json::Value::String(value.clone()))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    map.insert(
+        "copilot_token".to_string(),
+        serde_json::Value::String(runtime.copilot_token.clone()),
+    );
+    map.insert(
+        "copilot_expires_at".to_string(),
+        serde_json::Value::Number(runtime.copilot_expires_at_ms.into()),
+    );
+    map.insert(
+        "copilot_api_base_url".to_string(),
+        serde_json::Value::String(runtime.api_base_url.clone()),
+    );
+    map.insert(
+        "copilot_models".to_string(),
+        serde_json::Value::Array(
+            runtime
+                .models
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    map.insert(
+        "organization_list".to_string(),
+        serde_json::Value::Array(
+            runtime
+                .organization_list
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    map.insert(
+        "enterprise_list".to_string(),
+        serde_json::Value::Array(
+            runtime
+                .enterprise_list
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    map.insert(
+        "sku".to_string(),
+        runtime
+            .sku
+            .as_ref()
+            .map(|value| serde_json::Value::String(value.clone()))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    map.insert(
+        "copilot_endpoints".to_string(),
+        serde_json::to_value(runtime.raw_endpoints.clone()).unwrap_or(serde_json::Value::Null),
+    );
+    *extra = serde_json::Value::Object(map);
+}
+
+fn refresh_github_copilot_runtime_sync(
+    authority: &str,
+    github_access_token: &str,
+) -> Option<crate::oauth::github_copilot::CopilotRuntimeSession> {
+    let rt = match tokio::runtime::Handle::try_current() {
+        Ok(_handle) => {
+            let authority = authority.to_string();
+            let github_access_token = github_access_token.to_string();
+            return std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().ok()?;
+                rt.block_on(
+                    crate::oauth::github_copilot::exchange_github_token_for_copilot_session(
+                        &authority,
+                        &github_access_token,
+                    ),
+                )
+                .ok()
+            })
+            .join()
+            .ok()
+            .flatten();
+        }
+        Err(_) => tokio::runtime::Runtime::new().ok()?,
+    };
+    rt.block_on(
+        crate::oauth::github_copilot::exchange_github_token_for_copilot_session(
+            authority,
+            github_access_token,
+        ),
+    )
+    .ok()
+}
+
 /// Best-effort synchronous token refresh.
 ///
 /// Tries to enter the tokio runtime; if we're already inside one we
@@ -700,5 +918,14 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
 
     // Persist the refreshed credentials.
     let _ = save_oauth_credentials(provider, &creds);
-    Some(creds.access)
+    if provider == "github-copilot" {
+        creds
+            .extra
+            .get("copilot_token")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .or(Some(creds.access))
+    } else {
+        Some(creds.access)
+    }
 }

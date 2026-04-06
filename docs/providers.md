@@ -8,7 +8,7 @@ BB-Agent supports multiple LLM providers out of the box.
 |----------|-------------|--------|
 | **Anthropic** | OAuth or `ANTHROPIC_API_KEY` | Claude Opus, Sonnet, Haiku |
 | **OpenAI** | OAuth or `OPENAI_API_KEY` | GPT-4o, GPT-4.1, o1, o3, o4-mini |
-| **GitHub Copilot** | OAuth/device-flow skeleton + stored authority | Runtime skeleton |
+| **GitHub Copilot** | OAuth/device flow or `GH_COPILOT_TOKEN` | Copilot chat models |
 | **Google** | `GOOGLE_API_KEY` | Gemini 2.5 Pro, Flash |
 | **Groq** | `GROQ_API_KEY` | Llama, Mixtral |
 | **xAI** | `XAI_API_KEY` | Grok |
@@ -17,24 +17,25 @@ BB-Agent supports multiple LLM providers out of the box.
 
 ## Authentication
 
-### OAuth Login (Anthropic, OpenAI, GitHub Copilot preview)
+### OAuth Login (Anthropic, OpenAI, GitHub Copilot)
 
 ```bash
 bb login anthropic        # Opens browser for OAuth
 bb login openai-codex     # Opens browser for OAuth
-bb login github-copilot   # Stores github.com or GHES host for upcoming OAuth flow
+bb login github-copilot   # GitHub device flow + Copilot token exchange
 ```
 
-For GitHub Copilot, `bb` currently supports:
+For GitHub Copilot, `bb` now supports:
 - stored authority-aware configuration (`github.com` or GitHub Enterprise Server domain)
-- fullscreen/CLI browser + device-flow auth scaffolding
-- token storage/refresh plumbing skeleton
-- runtime/model skeleton under the `github-copilot` provider
+- GitHub device/browser auth flow
+- GitHub OAuth token persistence in `auth.json`
+- Copilot runtime token exchange via GitHub's Copilot token endpoint
+- Copilot runtime token refresh by re-exchanging the saved GitHub OAuth session
+- `/models` validation and cached Copilot model discovery
 
-Still not implemented yet:
-- real Copilot token exchange
-- real Copilot token refresh
-- verified production request/streaming support
+Current limitations:
+- Copilot request behavior is wired through the OpenAI-compatible runtime path and may still need endpoint/header adjustments for some models or enterprise installations
+- Enterprise endpoint behavior still needs more real-world validation
 
 ### API Key Login
 
@@ -56,6 +57,8 @@ export GOOGLE_API_KEY="..."
 export GROQ_API_KEY="..."
 export XAI_API_KEY="..."
 export OPENROUTER_API_KEY="..."
+export GH_COPILOT_TOKEN="..."        # Direct Copilot runtime token
+export GITHUB_COPILOT_TOKEN="..."    # Equivalent env fallback
 ```
 
 ### Check Status

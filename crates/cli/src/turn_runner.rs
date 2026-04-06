@@ -25,6 +25,7 @@ pub(crate) struct TurnConfig {
     pub provider: Arc<dyn Provider>,
     pub api_key: String,
     pub base_url: String,
+    pub headers: std::collections::HashMap<String, String>,
     pub tools: Vec<Box<dyn Tool>>,
     pub tool_defs: Vec<serde_json::Value>,
     pub tool_ctx: ToolContext,

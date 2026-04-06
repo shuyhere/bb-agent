@@ -86,6 +86,7 @@ pub struct SessionRuntimeSetup {
     pub model: bb_provider::registry::Model,
     pub api_key: String,
     pub base_url: String,
+    pub headers: std::collections::HashMap<String, String>,
     pub tools: Vec<Box<dyn Tool>>,
     pub tool_defs: Vec<serde_json::Value>,
     pub tool_ctx: ToolContext,
@@ -147,6 +148,7 @@ pub(crate) async fn prepare_session_runtime(
 
     let mut registry = ModelRegistry::new();
     registry.load_custom_models(&settings);
+    login::add_cached_github_copilot_models(&mut registry);
     let model = registry
         .find(&provider_name, &model_id)
         .cloned()
@@ -183,6 +185,11 @@ pub(crate) async fn prepare_session_runtime(
         ApiType::GoogleGenerative => Arc::new(GoogleProvider::new()),
         _ => Arc::new(OpenAiProvider::new()),
     };
+    let headers = if provider_name == "github-copilot" {
+        login::github_copilot_runtime_headers()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     auto_install_missing_packages(&cwd, &settings);
 
@@ -212,7 +219,7 @@ pub(crate) async fn prepare_session_runtime(
             model: model.clone(),
             api_key: api_key.clone(),
             base_url: base_url.clone(),
-            headers: std::collections::HashMap::new(),
+            headers: headers.clone(),
             enabled: true,
         }),
     };
@@ -246,6 +253,7 @@ pub(crate) async fn prepare_session_runtime(
         model,
         api_key,
         base_url,
+        headers,
         tools: builtin_tools,
         tool_defs,
         tool_ctx,

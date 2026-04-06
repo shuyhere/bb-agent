@@ -81,6 +81,7 @@ impl FullscreenController {
             provider: self.session_setup.provider.clone(),
             api_key: self.session_setup.api_key.clone(),
             base_url: self.session_setup.base_url.clone(),
+            headers: self.session_setup.headers.clone(),
             tools,
             tool_defs: self.session_setup.tool_defs.clone(),
             tool_ctx: bb_tools::ToolContext {

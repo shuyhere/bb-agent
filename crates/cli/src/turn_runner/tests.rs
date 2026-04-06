@@ -107,6 +107,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         }),
         api_key: "dummy".to_string(),
         base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
         tools: vec![Box::new(PanicTool)],
         tool_defs: vec![json!({
             "type": "function",

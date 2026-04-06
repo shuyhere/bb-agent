@@ -8,7 +8,6 @@ use bb_provider::{
     StreamEvent,
 };
 use bb_session::context;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::TurnConfig;
@@ -306,7 +305,7 @@ fn build_request_options(
     RequestOptions {
         api_key: config.api_key.clone(),
         base_url: config.base_url.clone(),
-        headers: HashMap::new(),
+        headers: config.headers.clone(),
         cancel: config.cancel.clone(),
         retry_callback: Some(retry_callback),
         max_retries: if config.retry_enabled {

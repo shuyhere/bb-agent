@@ -572,6 +572,11 @@ impl FullscreenController {
                 _ => "https://api.openai.com/v1".to_string(),
             })
         };
+        let headers = if model.provider == "github-copilot" {
+            crate::login::github_copilot_runtime_headers()
+        } else {
+            std::collections::HashMap::new()
+        };
         let new_provider: std::sync::Arc<dyn bb_provider::Provider> = match model.api {
             ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
             ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
@@ -597,12 +602,13 @@ impl FullscreenController {
         self.session_setup.provider = new_provider;
         self.session_setup.api_key = api_key;
         self.session_setup.base_url = base_url;
+        self.session_setup.headers = headers.clone();
         self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
             provider: self.session_setup.provider.clone(),
             model: self.session_setup.model.clone(),
             api_key: self.session_setup.api_key.clone(),
             base_url: self.session_setup.base_url.clone(),
-            headers: std::collections::HashMap::new(),
+            headers,
             enabled: true,
         });
         let status = if let Some(level) = thinking_override {
@@ -620,6 +626,21 @@ impl FullscreenController {
         let available = crate::login::authenticated_providers();
         let mut registry = ModelRegistry::new();
         registry.load_custom_models(&Settings::load_merged(&self.session_setup.tool_ctx.cwd));
+        for model_id in crate::login::github_copilot_cached_models() {
+            if registry.find("github-copilot", &model_id).is_none() {
+                registry.add(Model {
+                    id: model_id.clone(),
+                    name: model_id.clone(),
+                    provider: "github-copilot".to_string(),
+                    api: ApiType::OpenaiCompletions,
+                    context_window: 128_000,
+                    max_tokens: 16_384,
+                    reasoning: true,
+                    base_url: Some(crate::login::github_copilot_api_base_url()),
+                    cost: Default::default(),
+                });
+            }
+        }
         registry
             .list()
             .iter()

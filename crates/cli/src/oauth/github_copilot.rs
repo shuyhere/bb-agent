@@ -1,50 +1,514 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use reqwest::header::{ACCEPT, AUTHORIZATION};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::time::{Duration, sleep};
 
 use super::{OAuthCallbacks, OAuthCredentials, OAuthDeviceCode};
 
-fn verification_uri_for_authority(authority: &str) -> String {
-    if authority.eq_ignore_ascii_case("github.com") {
-        "https://github.com/login/device".to_string()
-    } else {
-        format!("https://{authority}/login/device")
-    }
+const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+const CLIENT_SECRET: &str = "350ee525b5da0e4a54c6e8e043edc1b99cc02f19";
+const API_VERSION: &str = "2025-04-01";
+const DEVICE_FLOW_SCOPES: &str = "repo workflow";
+
+#[derive(Debug, Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: i64,
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccessTokenResponse {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
+    refresh_token_expires_in: Option<i64>,
+    scope: Option<String>,
+    token_type: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInfoResponse {
+    login: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotTokenEnvelope {
+    token: String,
+    expires_at: i64,
+    #[serde(default)]
+    refresh_in: i64,
+    #[serde(default)]
+    organization_list: Vec<String>,
+    #[serde(default)]
+    enterprise_list: Vec<String>,
+    #[serde(default)]
+    sku: Option<String>,
+    #[serde(default)]
+    endpoints: Option<CopilotEndpoints>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct CopilotEndpoints {
+    #[serde(default)]
+    pub api: Option<String>,
+    #[serde(default)]
+    pub telemetry: Option<String>,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CopilotRuntimeSession {
+    pub login: Option<String>,
+    pub copilot_token: String,
+    pub copilot_expires_at_ms: i64,
+    pub api_base_url: String,
+    pub models: Vec<String>,
+    pub raw_endpoints: Option<CopilotEndpoints>,
+    pub organization_list: Vec<String>,
+    pub enterprise_list: Vec<String>,
+    pub sku: Option<String>,
 }
 
 pub async fn login_github_copilot(
     authority: &str,
     callbacks: OAuthCallbacks,
 ) -> Result<OAuthCredentials> {
-    let verification_uri = verification_uri_for_authority(authority);
+    let authority = normalize_authority(authority)?;
+    let server_url = server_url_for_authority(&authority);
 
-    (callbacks.on_auth)(verification_uri.clone());
-
+    let device = request_device_code(&server_url).await?;
+    (callbacks.on_auth)(device.verification_uri.clone());
+    if let Some(ref on_device_code) = callbacks.on_device_code {
+        on_device_code(OAuthDeviceCode {
+            user_code: device.user_code.clone(),
+            verification_uri: device.verification_uri.clone(),
+        });
+    }
     if let Some(ref on_progress) = callbacks.on_progress {
         on_progress(format!(
-            "GitHub Copilot authority selected: {authority}. Device/browser auth scaffolding is ready, but token exchange is not implemented yet."
+            "Open {} and enter code {}",
+            device.verification_uri, device.user_code
         ));
     }
 
-    if let Some(ref on_device_code) = callbacks.on_device_code {
-        on_device_code(OAuthDeviceCode {
-            user_code: "pending-server-issued-code".to_string(),
-            verification_uri: verification_uri.clone(),
-        });
+    let access = poll_device_flow(&server_url, &device, callbacks.on_manual_input).await?;
+    let github_access_token = access
+        .access_token
+        .clone()
+        .context("GitHub device flow returned no access token")?;
+
+    if let Some(ref on_progress) = callbacks.on_progress {
+        on_progress("Fetching Copilot account and runtime token…".to_string());
     }
 
-    if let Some(manual_rx) = callbacks.on_manual_input {
-        let _ = manual_rx.await;
-    }
+    let runtime =
+        exchange_github_token_for_copilot_session(&authority, &github_access_token).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let github_access_expires_ms = access
+        .expires_in
+        .map(|seconds| now_ms + seconds * 1000)
+        .unwrap_or(now_ms + 365 * 24 * 60 * 60 * 1000);
+    let github_refresh_expires_ms = access
+        .refresh_token_expires_in
+        .map(|seconds| now_ms + seconds * 1000);
 
-    anyhow::bail!(
-        "GitHub Copilot OAuth/device flow is not implemented yet in bb; authority, dialog flow, and token plumbing skeleton are in place"
-    )
+    Ok(OAuthCredentials {
+        access: github_access_token,
+        refresh: access.refresh_token.unwrap_or_default(),
+        expires: github_access_expires_ms,
+        extra: json!({
+            "domain": authority,
+            "github_app_id": CLIENT_ID,
+            "github_scopes": access.scope,
+            "github_token_type": access.token_type,
+            "github_access_expires_at": github_access_expires_ms,
+            "github_refresh_expires_at": github_refresh_expires_ms,
+            "login": runtime.login,
+            "copilot_token": runtime.copilot_token,
+            "copilot_expires_at": runtime.copilot_expires_at_ms,
+            "copilot_api_base_url": runtime.api_base_url,
+            "copilot_endpoints": runtime.raw_endpoints,
+            "copilot_models": runtime.models,
+            "organization_list": runtime.organization_list,
+            "enterprise_list": runtime.enterprise_list,
+            "sku": runtime.sku,
+        }),
+    })
 }
 
 pub async fn refresh_github_copilot_token(
-    _refresh_token: &str,
+    refresh_token: &str,
     authority: &str,
 ) -> Result<OAuthCredentials> {
-    anyhow::bail!(
-        "GitHub Copilot token refresh is not implemented yet in bb for authority {authority}"
-    )
+    if refresh_token.trim().is_empty() {
+        anyhow::bail!("No GitHub refresh token available for GitHub Copilot");
+    }
+
+    let authority = normalize_authority(authority)?;
+    let server_url = server_url_for_authority(&authority);
+    let refreshed = refresh_github_access_token(&server_url, refresh_token).await?;
+    let github_access_token = refreshed
+        .access_token
+        .clone()
+        .context("GitHub refresh response returned no access token")?;
+    let runtime =
+        exchange_github_token_for_copilot_session(&authority, &github_access_token).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let github_access_expires_ms = refreshed
+        .expires_in
+        .map(|seconds| now_ms + seconds * 1000)
+        .unwrap_or(now_ms + 365 * 24 * 60 * 60 * 1000);
+    let github_refresh_expires_ms = refreshed
+        .refresh_token_expires_in
+        .map(|seconds| now_ms + seconds * 1000);
+
+    Ok(OAuthCredentials {
+        access: github_access_token,
+        refresh: refreshed
+            .refresh_token
+            .unwrap_or_else(|| refresh_token.to_string()),
+        expires: github_access_expires_ms,
+        extra: json!({
+            "domain": authority,
+            "github_app_id": CLIENT_ID,
+            "github_scopes": refreshed.scope,
+            "github_token_type": refreshed.token_type,
+            "github_access_expires_at": github_access_expires_ms,
+            "github_refresh_expires_at": github_refresh_expires_ms,
+            "login": runtime.login,
+            "copilot_token": runtime.copilot_token,
+            "copilot_expires_at": runtime.copilot_expires_at_ms,
+            "copilot_api_base_url": runtime.api_base_url,
+            "copilot_endpoints": runtime.raw_endpoints,
+            "copilot_models": runtime.models,
+            "organization_list": runtime.organization_list,
+            "enterprise_list": runtime.enterprise_list,
+            "sku": runtime.sku,
+        }),
+    })
+}
+
+pub async fn exchange_github_token_for_copilot_session(
+    authority: &str,
+    github_access_token: &str,
+) -> Result<CopilotRuntimeSession> {
+    let authority = normalize_authority(authority)?;
+    let api_url = dotcom_api_url_for_authority(&authority);
+    let login = fetch_user_login(&api_url, github_access_token).await.ok();
+    let envelope = fetch_copilot_token_envelope(&api_url, github_access_token).await?;
+    let api_base_url = envelope
+        .endpoints
+        .as_ref()
+        .and_then(|endpoints| endpoints.api.clone())
+        .unwrap_or_else(|| "https://api.githubcopilot.com".to_string());
+    let models = fetch_copilot_models(&api_base_url, &envelope.token)
+        .await
+        .unwrap_or_default();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let copilot_expires_at_ms = if envelope.refresh_in > 0 {
+        now_ms + (envelope.refresh_in + 60) * 1000
+    } else {
+        envelope.expires_at * 1000
+    };
+
+    Ok(CopilotRuntimeSession {
+        login,
+        copilot_token: envelope.token,
+        copilot_expires_at_ms,
+        api_base_url,
+        models,
+        raw_endpoints: envelope.endpoints,
+        organization_list: envelope.organization_list,
+        enterprise_list: envelope.enterprise_list,
+        sku: envelope.sku,
+    })
+}
+
+pub fn normalize_authority(input: &str) -> Result<String> {
+    let value = input.trim().trim_end_matches('/');
+    if value.is_empty() {
+        anyhow::bail!("GitHub authority cannot be empty");
+    }
+
+    let host = if value.contains("://") {
+        url::Url::parse(value)
+            .ok()
+            .and_then(|url| url.host_str().map(ToString::to_string))
+            .unwrap_or_else(|| value.to_string())
+    } else {
+        value.split('/').next().unwrap_or(value).to_string()
+    };
+
+    let host = host.trim().to_ascii_lowercase();
+    if host.is_empty() || host.contains(' ') {
+        anyhow::bail!("Invalid GitHub authority: {input}");
+    }
+    Ok(host)
+}
+
+pub fn server_url_for_authority(authority: &str) -> String {
+    if authority.eq_ignore_ascii_case("github.com") {
+        "https://github.com".to_string()
+    } else {
+        format!("https://{authority}")
+    }
+}
+
+pub fn dotcom_api_url_for_authority(authority: &str) -> String {
+    if authority.eq_ignore_ascii_case("github.com") {
+        "https://api.github.com".to_string()
+    } else {
+        format!("https://api.{authority}")
+    }
+}
+
+async fn request_device_code(server_url: &str) -> Result<DeviceCodeResponse> {
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/login/device/code",
+            server_url.trim_end_matches('/')
+        ))
+        .header(ACCEPT, "application/json")
+        .form(&[("client_id", CLIENT_ID), ("scope", DEVICE_FLOW_SCOPES)])
+        .send()
+        .await
+        .context("Failed to start GitHub device flow")?
+        .error_for_status()
+        .context("GitHub device flow initiation failed")?
+        .json::<DeviceCodeResponse>()
+        .await
+        .context("Failed to parse GitHub device flow response")
+}
+
+async fn poll_device_flow(
+    server_url: &str,
+    device: &DeviceCodeResponse,
+    cancel_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+) -> Result<AccessTokenResponse> {
+    let started = std::time::Instant::now();
+    let expires = Duration::from_secs(device.expires_in.max(1) as u64);
+    let mut interval_secs = device.interval.unwrap_or(5).max(1);
+    let client = reqwest::Client::new();
+    let mut cancel_rx = cancel_rx;
+
+    loop {
+        if started.elapsed() >= expires {
+            anyhow::bail!("GitHub device code expired before authorization completed");
+        }
+
+        let wait = sleep(Duration::from_secs(interval_secs));
+        tokio::pin!(wait);
+        tokio::select! {
+            _ = &mut wait => {}
+            manual = async {
+                match cancel_rx.as_mut() {
+                    Some(rx) => rx.await.ok(),
+                    None => None,
+                }
+            }, if cancel_rx.is_some() => {
+                let value = manual.unwrap_or_default();
+                if value.trim().is_empty() {
+                    anyhow::bail!("Manual input cancelled");
+                }
+                anyhow::bail!("GitHub Copilot device flow does not accept pasted callback URLs; complete the browser/device verification instead");
+            }
+        }
+
+        let response = client
+            .post(format!(
+                "{}/login/oauth/access_token",
+                server_url.trim_end_matches('/')
+            ))
+            .header(ACCEPT, "application/json")
+            .form(&[
+                ("client_id", CLIENT_ID),
+                ("device_code", device.device_code.as_str()),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await
+            .context("Failed while polling GitHub device flow")?
+            .error_for_status()
+            .context("GitHub device flow polling failed")?
+            .json::<AccessTokenResponse>()
+            .await
+            .context("Failed to parse GitHub device token response")?;
+
+        if let Some(token) = response.access_token.as_ref()
+            && !token.trim().is_empty()
+        {
+            return Ok(response);
+        }
+
+        match response.error.as_deref() {
+            Some("authorization_pending") => continue,
+            Some("slow_down") => {
+                interval_secs += 5;
+                continue;
+            }
+            Some(error) => anyhow::bail!(
+                "GitHub device flow failed: {}",
+                response
+                    .error_description
+                    .unwrap_or_else(|| error.to_string())
+            ),
+            None => anyhow::bail!("GitHub device flow returned no access token"),
+        }
+    }
+}
+
+async fn refresh_github_access_token(
+    server_url: &str,
+    refresh_token: &str,
+) -> Result<AccessTokenResponse> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "{}/login/oauth/access_token",
+            server_url.trim_end_matches('/')
+        ))
+        .header(ACCEPT, "application/json")
+        .form(&[
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ])
+        .send()
+        .await
+        .context("Failed to refresh GitHub access token")?
+        .error_for_status()
+        .context("GitHub refresh token exchange failed")?
+        .json::<AccessTokenResponse>()
+        .await
+        .context("Failed to parse GitHub refresh response")?;
+
+    if let Some(token) = response.access_token.as_ref()
+        && !token.trim().is_empty()
+    {
+        Ok(response)
+    } else {
+        anyhow::bail!(
+            "GitHub refresh token exchange returned no access token: {}",
+            response
+                .error_description
+                .or(response.error)
+                .unwrap_or_else(|| "unknown error".to_string())
+        )
+    }
+}
+
+async fn fetch_user_login(api_url: &str, github_access_token: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/user", api_url.trim_end_matches('/')))
+        .header(ACCEPT, "application/json")
+        .header("X-GitHub-Api-Version", API_VERSION)
+        .header(AUTHORIZATION, format!("token {github_access_token}"))
+        .send()
+        .await
+        .context("Failed to fetch GitHub user info")?
+        .error_for_status()
+        .context("GitHub user info request failed")?
+        .json::<UserInfoResponse>()
+        .await
+        .context("Failed to parse GitHub user info response")?;
+
+    response
+        .login
+        .filter(|login| !login.trim().is_empty())
+        .context("GitHub user info response did not include login")
+}
+
+async fn fetch_copilot_token_envelope(
+    api_url: &str,
+    github_access_token: &str,
+) -> Result<CopilotTokenEnvelope> {
+    let client = reqwest::Client::new();
+    client
+        .get(format!(
+            "{}/copilot_internal/v2/token",
+            api_url.trim_end_matches('/')
+        ))
+        .header(ACCEPT, "application/json")
+        .header("X-GitHub-Api-Version", API_VERSION)
+        .header(AUTHORIZATION, format!("token {github_access_token}"))
+        .send()
+        .await
+        .context("Failed to exchange GitHub token for Copilot token")?
+        .error_for_status()
+        .context("GitHub Copilot token exchange failed")?
+        .json::<CopilotTokenEnvelope>()
+        .await
+        .context("Failed to parse GitHub Copilot token envelope")
+}
+
+async fn fetch_copilot_models(api_base_url: &str, copilot_token: &str) -> Result<Vec<String>> {
+    #[derive(Debug, Deserialize)]
+    struct ModelsResponse {
+        #[serde(default)]
+        data: Vec<ModelEntry>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ModelEntry {
+        id: String,
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/models", api_base_url.trim_end_matches('/')))
+        .header(ACCEPT, "application/json")
+        .header(AUTHORIZATION, format!("Bearer {copilot_token}"))
+        .header("OpenAI-Organization", "github-copilot")
+        .send()
+        .await
+        .context("Failed to validate GitHub Copilot /models endpoint")?
+        .error_for_status()
+        .context("GitHub Copilot /models request failed")?;
+
+    let text = response
+        .text()
+        .await
+        .context("Failed to read GitHub Copilot /models response")?;
+
+    if let Ok(parsed) = serde_json::from_str::<ModelsResponse>(&text) {
+        return Ok(parsed.data.into_iter().map(|model| model.id).collect());
+    }
+    if let Ok(parsed) = serde_json::from_str::<Vec<ModelEntry>>(&text) {
+        return Ok(parsed.into_iter().map(|model| model.id).collect());
+    }
+
+    anyhow::bail!("Unsupported GitHub Copilot /models response: {text}")
+}
+
+pub fn github_copilot_runtime_headers() -> std::collections::HashMap<String, String> {
+    let mut headers = std::collections::HashMap::new();
+    headers.insert(
+        "OpenAI-Organization".to_string(),
+        "github-copilot".to_string(),
+    );
+    headers.insert(
+        "Editor-Version".to_string(),
+        format!("bb-agent/{}", env!("CARGO_PKG_VERSION")),
+    );
+    headers.insert(
+        "Editor-Plugin-Version".to_string(),
+        format!("bb-agent/{}", env!("CARGO_PKG_VERSION")),
+    );
+    headers.insert(
+        "Copilot-Language-Server-Version".to_string(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
+    headers.insert("X-GitHub-Api-Version".to_string(), API_VERSION.to_string());
+    headers
 }
