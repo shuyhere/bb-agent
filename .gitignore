@@ -8,6 +8,10 @@ target/
 *.log
 auth.json
 
+# npm
+node_modules/
+native/
+
 # Internal dev files
 PLAN.md
 ROLLING-MERGE-QUEUE.md

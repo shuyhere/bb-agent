@@ -2,6 +2,56 @@
 
 A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, multi-provider support, tool use, session persistence, branching, extensions, and skills.
 
+## Install
+
+### npm (recommended)
+
+```bash
+npm install -g bb-agent
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/shuyhere/bb-agent.git
+cd bb-agent
+cargo install --path crates/cli
+```
+
+## Getting Started
+
+### 1. Login to a provider
+
+```bash
+bb login              # Interactive provider selection
+bb login anthropic    # Login to Anthropic (OAuth)
+bb login openai-codex # Login to OpenAI (OAuth)
+bb login google       # Login to Google (API key)
+```
+
+Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
+
+### 2. Start the TUI
+
+```bash
+bb
+```
+
+That's it! Run `bb` to launch the fullscreen interactive terminal UI. Type your prompt and press Enter.
+
+### More ways to use `bb`
+
+```bash
+bb                                    # Launch the fullscreen TUI
+bb "Explain this codebase"            # TUI with an initial prompt
+bb -p "What is 2+2?"                  # Print mode (non-interactive, pipe-friendly)
+bb -c                                 # Continue your last session
+bb -r                                 # Resume: pick from previous sessions
+bb --model sonnet                     # Use a specific model
+bb --model sonnet:high                # Model with extended thinking
+bb --list-models                      # List all available models
+```
+
 ## Features
 
 - **Fullscreen TUI** — rich terminal interface with streaming output, markdown rendering, syntax highlighting
@@ -13,51 +63,18 @@ A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, m
 - **System prompt templates** — save and switch between named prompt configurations
 - **OAuth login** — browser-based login for Anthropic and OpenAI
 
-## Quick start
+## System Prompt Templates
 
-### Build from source
-
-```bash
-git clone https://github.com/shuyhere/bb-agent.git
-cd bb-agent
-cargo install --path crates/cli
-```
-
-### Login
+Save prompt templates in `~/.bb-agent/system-prompts/` and switch between them:
 
 ```bash
-bb login              # Interactive provider selection
-bb login anthropic    # Login to Anthropic (OAuth)
-bb login openai-codex # Login to OpenAI (OAuth)
-bb login google       # Login to Google (API key)
-```
-
-Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
-
-### Usage
-
-```bash
-bb                                    # Fullscreen interactive mode
-bb "Explain this codebase"            # Start with an initial prompt
-bb -p "What is 2+2?"                  # Print mode (non-interactive)
-bb -c                                 # Continue previous session
-bb -r                                 # Resume: pick a session
-bb --model sonnet                     # Use a specific model
-bb --model anthropic/claude-sonnet-4-20250514:high  # Model with thinking
-bb --list-models                      # List available models
-```
-
-### System prompt templates
-
-```bash
-# Save templates in ~/.bb-agent/system-prompts/
 bb --list-templates                   # List available templates
 bb -t coding                          # Start with "coding" template
 bb -t research                        # Start with "research" template
-bb --system-prompt @path/to/file.md   # Load prompt from file
+bb --system-prompt @path/to/file.md   # Load prompt from any file
 ```
 
-### Extensions & Skills
+## Extensions & Skills
 
 ```bash
 bb install npm:some-skill             # Install a global package
@@ -99,7 +116,7 @@ BB-Agent uses layered configuration:
 }
 ```
 
-## Keyboard shortcuts
+## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
@@ -113,7 +130,7 @@ BB-Agent uses layered configuration:
 | `/` | Slash commands menu |
 | `@` | File mention autocomplete |
 
-## Workspace crates
+## Workspace Crates
 
 | Crate | Description |
 |-------|-------------|
@@ -126,15 +143,6 @@ BB-Agent uses layered configuration:
 | `bb-tui` | Terminal UI components and fullscreen experience |
 | `bb-cli` | The `bb` command-line application |
 
-## Development
-
-```bash
-cargo build --workspace              # Build all
-cargo test --workspace --release     # Run all tests
-cargo fmt --all                      # Format
-cargo clippy --workspace             # Lint
-```
-
 ## Documentation
 
 - [Configuration Reference](docs/configuration.md) — settings.json, AGENTS.md, templates
@@ -145,11 +153,15 @@ cargo clippy --workspace             # Lint
 - [Changelog](CHANGELOG.md) — release history
 - [Security](SECURITY.md) — vulnerability reporting, security model
 
+## Development
+
+```bash
+cargo build --workspace              # Build all
+cargo test --workspace --release     # Run all tests
+cargo fmt --all                      # Format
+cargo clippy --workspace             # Lint
+```
+
 ## License
 
-Licensed under either of:
-
-- [MIT License](LICENSE-MIT)
-- [Apache License, Version 2.0](LICENSE-APACHE)
-
-at your option.
+[MIT License](LICENSE)

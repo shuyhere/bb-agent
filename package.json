@@ -1,0 +1,47 @@
+{
+  "name": "bb-agent",
+  "version": "0.0.1",
+  "description": "BB-Agent — a Rust-native AI coding agent for the terminal",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shuyhere/bb-agent.git"
+  },
+  "homepage": "https://github.com/shuyhere/bb-agent",
+  "author": "shuyhere",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "terminal",
+    "tui",
+    "llm",
+    "anthropic",
+    "claude",
+    "openai",
+    "rust"
+  ],
+  "bin": {
+    "bb": "bin/bb"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

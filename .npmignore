@@ -1,0 +1,26 @@
+# Source code (not needed for npm — binary is downloaded)
+crates/
+target/
+.cargo/
+.bb-agent/
+.git/
+.github/
+knowledge/
+
+# Dev files
+*.db
+*.db-shm
+*.db-wal
+*.log
+auth.json
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+FULLSCREEN-TUI-PLAN.md
+FULLSCREEN-TUI-GAPS.md
+CODE_REVIEW_AND_OPTIMIZATION_PLAN.md
+ROLLING-MERGE-QUEUE.md
+PLAN.md
+BB_AGENT_TREE.txt
+
+# Keep: bin/, scripts/, README.md, LICENSE, package.json, docs/, CHANGELOG.md

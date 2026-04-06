@@ -89,4 +89,4 @@ Instructions for the agent...
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same terms as the project: MIT OR Apache-2.0.
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

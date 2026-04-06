@@ -14,7 +14,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 authors = ["BB-Agent Contributors"]
 repository = "https://github.com/shuyhere/bb-agent"
 homepage = "https://github.com/shuyhere/bb-agent"
