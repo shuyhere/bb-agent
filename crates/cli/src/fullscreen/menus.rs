@@ -93,7 +93,7 @@ impl FullscreenController {
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Status,
                     text: format!(
-                        "Login provider: {label}\nMode: {mode}{open_line}\n{hint}\nUse `bb login {value}` in a normal terminal to complete authentication."
+                        "Use `/login` to sign in.\nProvider: {label}\nMode: {mode}{open_line}\n{hint}"
                     ),
                 });
             }

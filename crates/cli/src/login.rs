@@ -70,7 +70,7 @@ pub(crate) fn provider_display_name(provider: &str) -> String {
         "anthropic" => "Claude Pro/Max".to_string(),
         "openai-codex" => "ChatGPT Plus/Pro (Codex)".to_string(),
         "openai" => "OpenAI".to_string(),
-        "google" => "Google".to_string(),
+        "google" => "Google Gemini".to_string(),
         "groq" => "Groq".to_string(),
         "xai" => "xAI".to_string(),
         "openrouter" => "OpenRouter".to_string(),
@@ -92,7 +92,10 @@ pub(crate) fn provider_login_hint(provider: &str) -> String {
             "Requires ChatGPT Plus or Pro subscription. Uses browser OAuth, not OpenAI API keys."
                 .to_string()
         }
-        "anthropic" => "Uses browser OAuth for Claude subscription login.".to_string(),
+        "anthropic" => {
+            "Requires Claude Pro or Max subscription. Uses browser OAuth, not Anthropic API keys."
+                .to_string()
+        }
         other => {
             let (env_var, url) = provider_meta(other);
             if url.is_empty() {
