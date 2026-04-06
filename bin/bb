@@ -31,15 +31,17 @@ if (!binary) {
   console.error(`
 BB-Agent binary not found.
 
-Install it with:
-  cargo install --git https://github.com/shuyhere/bb-agent --bin bb crates/cli
+Install Rust (if needed):
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  source ~/.cargo/env
 
-Or clone and build:
+Then build BB-Agent:
   git clone https://github.com/shuyhere/bb-agent.git
   cd bb-agent && cargo install --path crates/cli
 
-Need Rust? https://rustup.rs
-`);
+Then run:
+  bb
+`;
   process.exit(1);
 }
 

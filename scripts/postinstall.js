@@ -130,17 +130,17 @@ async function main() {
   const platform = `${os.platform()}-${os.arch()}`;
   console.log("");
   console.log("╔══════════════════════════════════════════════════════════════╗");
-  console.log("║  BB-Agent: no prebuilt binary available for " + platform.padEnd(16) + "║");
+  console.log("║  BB-Agent: no prebuilt binary for " + platform.padEnd(19) + "       ║");
   console.log("║                                                              ║");
-  console.log("║  To install, run:                                            ║");
-  console.log("║    cargo install --git https://github.com/shuyhere/bb-agent  ║");
-  console.log("║                  --bin bb crates/cli                         ║");
+  console.log("║  Install Rust (if needed):                                   ║");
+  console.log("║    curl --proto '=https' --tlsv1.2 -sSf https://rustup.rs|sh ║");
+  console.log("║    source ~/.cargo/env                                       ║");
   console.log("║                                                              ║");
-  console.log("║  Or clone and build:                                         ║");
+  console.log("║  Then build BB-Agent:                                        ║");
   console.log("║    git clone https://github.com/shuyhere/bb-agent.git        ║");
   console.log("║    cd bb-agent && cargo install --path crates/cli            ║");
   console.log("║                                                              ║");
-  console.log("║  Need Rust? https://rustup.rs                                ║");
+  console.log("║  Then run:  bb                                               ║");
   console.log("╚══════════════════════════════════════════════════════════════╝");
   console.log("");
 }
@@ -148,5 +148,5 @@ async function main() {
 main().catch((err) => {
   // Never fail npm install — just print instructions
   console.error("BB-Agent postinstall notice:", err.message);
-  console.log("Install manually: cargo install --git https://github.com/shuyhere/bb-agent --bin bb crates/cli");
+  console.log("Install manually: git clone https://github.com/shuyhere/bb-agent.git && cd bb-agent && cargo install --path crates/cli");
 });

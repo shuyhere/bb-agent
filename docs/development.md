@@ -23,21 +23,20 @@ The project includes a `rust-toolchain.toml` that pins the exact Rust version. R
 ```bash
 git clone https://github.com/shuyhere/bb-agent.git
 cd bb-agent
-cargo build --release
-```
-
-The binary is at `target/release/bb`. To install it into your PATH:
-
-```bash
 cargo install --path crates/cli
 ```
 
-Now run it:
+This compiles the optimized `bb` binary and installs it to `~/.cargo/bin/bb`.
+Rust adds `~/.cargo/bin` to your PATH during installation.
+
+Verify:
 
 ```bash
 bb --version
 bb
 ```
+
+> **Tip:** `cargo install --path crates/cli` is equivalent to `cargo build --release` + copying `target/release/bb` to your PATH. Use `cargo build --release` during development when you don't want to overwrite your installed version.
 
 ## Dev Mode Workflow
 

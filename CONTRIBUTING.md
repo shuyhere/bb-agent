@@ -7,11 +7,18 @@ For full setup instructions, project structure, and debugging tips, see the [Dev
 ## Quick Start
 
 ```bash
+# Install Rust (if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Clone, build, install
 git clone https://github.com/shuyhere/bb-agent.git
 cd bb-agent
-cargo build --release
 cargo install --path crates/cli
-bb    # verify it works
+
+# Verify
+bb --version
+bb
 ```
 
 ### Prerequisites
