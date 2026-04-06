@@ -66,6 +66,11 @@ impl FullscreenState {
                 self.dirty = true;
                 RenderIntent::Render
             }
+            FullscreenCommand::SetLocalActionActive(active) => {
+                self.local_action_active = active;
+                self.dirty = true;
+                RenderIntent::Render
+            }
             FullscreenCommand::SetExtraSlashItems(items) => {
                 self.extra_slash_items = items;
                 self.slash_menu = None;

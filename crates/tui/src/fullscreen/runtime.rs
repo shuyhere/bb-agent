@@ -48,6 +48,7 @@ pub struct FullscreenState {
     pub(crate) projection_dirty: bool,
     pub(super) pending_submissions: VecDeque<FullscreenSubmission>,
     pub(super) active_turn: Option<ActiveTurnState>,
+    pub(super) local_action_active: bool,
     pub(super) expanded_tool_blocks: std::collections::HashSet<BlockId>,
     /// Persistent tool call state — survives after active_turn is cleared.
     pub(super) all_tool_states: std::collections::HashMap<String, super::streaming::ToolCallState>,
@@ -98,6 +99,7 @@ impl FullscreenState {
             projection_dirty: true,
             pending_submissions: VecDeque::new(),
             active_turn: None,
+            local_action_active: false,
             expanded_tool_blocks: std::collections::HashSet::new(),
             all_tool_states: std::collections::HashMap::new(),
             extra_slash_items: config.extra_slash_items,
@@ -141,6 +143,10 @@ impl FullscreenState {
 
     pub(crate) fn has_active_turn(&self) -> bool {
         self.active_turn.as_ref().is_some_and(|turn| !turn.finished)
+    }
+
+    pub(crate) fn has_cancellable_action(&self) -> bool {
+        self.has_active_turn() || self.local_action_active
     }
 
     pub fn prepare_for_render(&mut self) {

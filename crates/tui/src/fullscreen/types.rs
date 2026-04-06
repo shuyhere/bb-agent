@@ -94,6 +94,7 @@ pub enum FullscreenCommand {
         tool_states: HashMap<String, HistoricalToolState>,
     },
     SetInput(String),
+    SetLocalActionActive(bool),
     SetExtraSlashItems(Vec<SelectItem>),
     OpenSelectMenu {
         menu_id: String,

@@ -113,6 +113,12 @@ impl FullscreenController {
                         "Tree navigation cancelled".to_string(),
                     ));
                     self.open_tree_summary_menu(&target_entry_id)?;
+                } else if self.pending_login_api_key_provider.take().is_some() {
+                    self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                    self.send_command(FullscreenCommand::SetInput(String::new()));
+                    self.send_command(FullscreenCommand::SetStatusLine(
+                        "Authentication cancelled".to_string(),
+                    ));
                 } else if let Some(cancel) = self.local_action_cancel.take() {
                     cancel.cancel();
                 } else {
@@ -156,14 +162,17 @@ impl FullscreenController {
         if let Some(provider) = self.pending_login_api_key_provider.clone() {
             let key = text.trim().to_string();
             if key.is_empty() || key == "/" {
+                self.pending_login_api_key_provider = None;
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
                 self.send_command(FullscreenCommand::SetStatusLine(
-                    "API key entry cancelled".to_string(),
+                    "Authentication cancelled".to_string(),
                 ));
                 return Ok(());
             }
             self.pending_login_api_key_provider = None;
             crate::login::save_api_key(&provider, key)?;
             self.send_command(FullscreenCommand::SetInput(String::new()));
+            self.send_command(FullscreenCommand::SetLocalActionActive(false));
             self.send_command(FullscreenCommand::SetStatusLine(format!(
                 "Logged in to {}",
                 crate::login::provider_display_name(&provider)

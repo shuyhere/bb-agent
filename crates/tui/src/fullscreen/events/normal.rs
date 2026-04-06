@@ -163,7 +163,7 @@ impl FullscreenState {
                 } else if !self.viewport.auto_follow {
                     self.viewport.jump_to_bottom();
                     self.status_line = String::new();
-                } else if self.has_active_turn() {
+                } else if self.has_cancellable_action() {
                     self.pending_submissions
                         .push_back(FullscreenSubmission::CancelLocalAction);
                     self.status_line = "cancel requested".to_string();

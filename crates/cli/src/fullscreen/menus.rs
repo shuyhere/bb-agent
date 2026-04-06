@@ -86,7 +86,7 @@ impl FullscreenController {
             }
             LOGIN_METHOD_MENU_ID => {
                 if let Some(provider) = value.strip_prefix("oauth:") {
-                    self.begin_oauth_login(provider).await?;
+                    self.begin_oauth_login(provider, submission_rx).await?;
                 } else if let Some(provider) = value.strip_prefix("api_key:") {
                     self.begin_api_key_login(provider);
                 } else {
@@ -565,23 +565,36 @@ impl FullscreenController {
         });
     }
 
-    async fn begin_oauth_login(&mut self, provider: &str) -> Result<()> {
+    async fn begin_oauth_login(
+        &mut self,
+        provider: &str,
+        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+            bb_tui::fullscreen::FullscreenSubmission,
+        >,
+    ) -> Result<()> {
         use crate::oauth::OAuthCallbacks;
+        use bb_tui::fullscreen::FullscreenSubmission;
+        use tokio::sync::oneshot;
 
         let provider = crate::login::provider_oauth_variant(provider).unwrap_or(provider);
         let label = crate::login::provider_display_name(provider);
-        let command_tx = self.command_tx.clone();
+        let (manual_tx, manual_rx) = oneshot::channel::<String>();
+        let mut manual_tx = Some(manual_tx);
 
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Starting OAuth login for {label}..."
         )));
 
+        let command_tx = self.command_tx.clone();
+        let label_for_auth = label.clone();
         let callbacks = OAuthCallbacks {
             on_auth: Box::new(move |url: String| {
                 let _ = command_tx.send(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Status,
                     text: format!(
-                        "Use `/login` to sign in.\nProvider: {label}\nMode: OAuth\nOpen: {url}"
+                        "Use `/login` to sign in.\nProvider: {label_for_auth}\nMode: OAuth\nOpen: {url}\nIf the browser opens on another machine, paste the full localhost callback URL into the input box here and press Enter.\nPress Esc to cancel."
                     ),
                 });
                 #[cfg(target_os = "macos")]
@@ -589,7 +602,7 @@ impl FullscreenController {
                 #[cfg(not(target_os = "macos"))]
                 let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }),
-            on_manual_input: None,
+            on_manual_input: Some(manual_rx),
             on_progress: Some(Box::new({
                 let command_tx = self.command_tx.clone();
                 move |msg: String| {
@@ -598,12 +611,87 @@ impl FullscreenController {
             })),
         };
 
-        crate::login::run_oauth_login(provider, callbacks).await?;
-        self.send_command(FullscreenCommand::SetStatusLine(format!(
-            "Logged in to {}",
-            crate::login::provider_display_name(provider)
-        )));
-        Ok(())
+        let login = crate::login::run_oauth_login(provider, callbacks);
+        tokio::pin!(login);
+
+        let mut cancelled = false;
+        let outcome = loop {
+            tokio::select! {
+                maybe_submission = submission_rx.recv() => {
+                    match maybe_submission {
+                        Some(FullscreenSubmission::CancelLocalAction) => {
+                            cancelled = true;
+                            if let Some(tx) = manual_tx.take() {
+                                let _ = tx.send(String::new());
+                            }
+                            break Ok::<_, anyhow::Error>(());
+                        }
+                        Some(FullscreenSubmission::Input(text)) => {
+                            let text = text.trim().to_string();
+                            if !text.is_empty()
+                                && let Some(tx) = manual_tx.take()
+                            {
+                                let _ = tx.send(text);
+                                self.send_command(FullscreenCommand::SetInput(String::new()));
+                                self.send_command(FullscreenCommand::SetStatusLine(
+                                    "Processing pasted callback...".to_string(),
+                                ));
+                            }
+                        }
+                        Some(FullscreenSubmission::InputWithImages { text, .. }) => {
+                            let text = text.trim().to_string();
+                            if !text.is_empty()
+                                && let Some(tx) = manual_tx.take()
+                            {
+                                let _ = tx.send(text);
+                                self.send_command(FullscreenCommand::SetInput(String::new()));
+                                self.send_command(FullscreenCommand::SetStatusLine(
+                                    "Processing pasted callback...".to_string(),
+                                ));
+                            }
+                        }
+                        Some(FullscreenSubmission::MenuSelection { .. }) => {}
+                        None => {
+                            cancelled = true;
+                            if let Some(tx) = manual_tx.take() {
+                                let _ = tx.send(String::new());
+                            }
+                            break Ok::<_, anyhow::Error>(());
+                        }
+                    }
+                }
+                result = &mut login => {
+                    break result;
+                }
+            }
+        };
+
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+        match outcome {
+            Ok(()) => {
+                if cancelled {
+                    self.send_command(FullscreenCommand::SetStatusLine(
+                        "Authentication cancelled".to_string(),
+                    ));
+                } else {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Logged in to {}",
+                        crate::login::provider_display_name(provider)
+                    )));
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Authentication failed: {err}"),
+                });
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Authentication failed".to_string(),
+                ));
+                Ok(())
+            }
+        }
     }
 
     fn begin_api_key_login(&mut self, provider: &str) {
@@ -611,11 +699,12 @@ impl FullscreenController {
         self.pending_login_api_key_provider = Some(provider.to_string());
         let (_env_var, url) = crate::login::provider_meta(provider);
         let label = crate::login::provider_display_name(provider);
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
         self.send_command(FullscreenCommand::PushNote {
             level: FullscreenNoteLevel::Status,
             text: format!(
-                "Use `/login` to sign in.\nProvider: {label}\nMode: API key\nOpen: {url}\nPaste your API key into the input box below and press Enter."
+                "Use `/login` to sign in.\nProvider: {label}\nMode: API key\nOpen: {url}\nPaste your API key into the input box below and press Enter.\nPress Esc to cancel."
             ),
         });
         self.send_command(FullscreenCommand::SetStatusLine(format!(
