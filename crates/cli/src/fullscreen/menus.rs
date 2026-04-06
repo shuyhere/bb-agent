@@ -8,7 +8,10 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::{context, store};
-use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel};
+use bb_tui::fullscreen::{
+    FullscreenAuthDialog, FullscreenAuthStep, FullscreenAuthStepState, FullscreenCommand,
+    FullscreenNoteLevel,
+};
 use bb_tui::select_list::SelectItem;
 
 use crate::slash::LocalSlashCommandHost;
@@ -36,6 +39,119 @@ fn fullscreen_auth_status_detail(provider: &str) -> String {
             "({}) [not authenticated]",
             fullscreen_auth_method_label(provider)
         ),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OAuthDialogStage {
+    Preparing,
+    WaitingForBrowser,
+    ProcessingCallback,
+    ExchangingTokens,
+}
+
+fn auth_step(label: &str, state: FullscreenAuthStepState) -> FullscreenAuthStep {
+    FullscreenAuthStep {
+        label: label.to_string(),
+        state: Some(state),
+    }
+}
+
+fn build_oauth_dialog(
+    label: &str,
+    status: &str,
+    stage: OAuthDialogStage,
+    url: Option<String>,
+    launcher_hint: Option<String>,
+) -> FullscreenAuthDialog {
+    let steps = match stage {
+        OAuthDialogStage::Preparing => vec![
+            auth_step("Open sign-in page", FullscreenAuthStepState::Active),
+            auth_step(
+                "Complete sign-in in your browser",
+                FullscreenAuthStepState::Pending,
+            ),
+            auth_step(
+                "Return via localhost callback or paste it here",
+                FullscreenAuthStepState::Pending,
+            ),
+            auth_step("Save credentials", FullscreenAuthStepState::Pending),
+        ],
+        OAuthDialogStage::WaitingForBrowser => vec![
+            auth_step("Open sign-in page", FullscreenAuthStepState::Done),
+            auth_step(
+                "Complete sign-in in your browser",
+                FullscreenAuthStepState::Active,
+            ),
+            auth_step(
+                "Return via localhost callback or paste it here",
+                FullscreenAuthStepState::Pending,
+            ),
+            auth_step("Save credentials", FullscreenAuthStepState::Pending),
+        ],
+        OAuthDialogStage::ProcessingCallback => vec![
+            auth_step("Open sign-in page", FullscreenAuthStepState::Done),
+            auth_step(
+                "Complete sign-in in your browser",
+                FullscreenAuthStepState::Done,
+            ),
+            auth_step(
+                "Return via localhost callback or paste it here",
+                FullscreenAuthStepState::Active,
+            ),
+            auth_step("Save credentials", FullscreenAuthStepState::Pending),
+        ],
+        OAuthDialogStage::ExchangingTokens => vec![
+            auth_step("Open sign-in page", FullscreenAuthStepState::Done),
+            auth_step(
+                "Complete sign-in in your browser",
+                FullscreenAuthStepState::Done,
+            ),
+            auth_step(
+                "Return via localhost callback or paste it here",
+                FullscreenAuthStepState::Done,
+            ),
+            auth_step("Save credentials", FullscreenAuthStepState::Active),
+        ],
+    };
+
+    let mut lines = Vec::new();
+    if let Some(hint) = launcher_hint {
+        lines.push(hint);
+    }
+    if url.is_some() {
+        lines.push(
+            "If the browser opens on another machine, paste the full localhost callback URL below and press Enter."
+                .to_string(),
+        );
+    } else {
+        lines.push("The authorization URL will appear below.".to_string());
+    }
+
+    FullscreenAuthDialog {
+        title: format!("Sign in to {label}"),
+        status: Some(status.to_string()),
+        steps,
+        url,
+        lines,
+        input_label: Some("Localhost callback URL".to_string()),
+        input_placeholder: Some("Paste full localhost callback URL here".to_string()),
+    }
+}
+
+fn build_api_key_dialog(label: &str, url: &str) -> FullscreenAuthDialog {
+    FullscreenAuthDialog {
+        title: format!("Sign in to {label}"),
+        status: Some("Paste your API key to continue".to_string()),
+        steps: vec![
+            auth_step("Open API key page if needed", FullscreenAuthStepState::Done),
+            auth_step("Paste API key", FullscreenAuthStepState::Active),
+            auth_step("Save credentials", FullscreenAuthStepState::Pending),
+        ],
+        url: Some(url.to_string()),
+        lines: vec!["Your input stays local and will be stored in auth.json.".to_string()],
+        input_label: Some("API key".to_string()),
+        input_placeholder: Some("Paste API key here".to_string()),
     }
 }
 
@@ -583,29 +699,24 @@ impl FullscreenController {
     ) -> Result<()> {
         use crate::oauth::OAuthCallbacks;
         use bb_tui::fullscreen::FullscreenSubmission;
+        use std::sync::{Arc, Mutex};
         use tokio::sync::oneshot;
 
         let provider = crate::login::provider_oauth_variant(provider).unwrap_or(provider);
         let label = crate::login::provider_display_name(provider);
         let (manual_tx, manual_rx) = oneshot::channel::<String>();
         let mut manual_tx = Some(manual_tx);
+        let dialog_shared = Arc::new(Mutex::new((None::<String>, None::<String>)));
 
         self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
-        self.send_command(FullscreenCommand::OpenAuthDialog(
-            bb_tui::fullscreen::FullscreenAuthDialog {
-                title: format!("Sign in to {label}"),
-                lines: vec![
-                    "Waiting for browser authentication...".to_string(),
-                    "".to_string(),
-                    "The authorization URL will appear below.".to_string(),
-                ],
-                input_label: Some(
-                    "Paste the full localhost callback URL here and press Enter if needed:"
-                        .to_string(),
-                ),
-            },
-        ));
+        self.send_command(FullscreenCommand::OpenAuthDialog(build_oauth_dialog(
+            &label,
+            "Starting browser sign-in…",
+            OAuthDialogStage::Preparing,
+            None,
+            None,
+        )));
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Starting OAuth login for {label}..."
         )));
@@ -613,39 +724,48 @@ impl FullscreenController {
         let command_tx = self.command_tx.clone();
         let label_for_auth = label.clone();
         let callbacks = OAuthCallbacks {
-            on_auth: Box::new(move |url: String| {
-                let opened = crate::login::try_open_browser(&url);
-                let launcher_hint = if opened {
-                    "A browser should open locally."
-                } else {
-                    "No local browser launcher detected. Open the URL manually."
-                };
-                let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
-                    bb_tui::fullscreen::FullscreenAuthDialog {
-                        title: format!("Sign in to {label_for_auth}"),
-                        lines: vec![
-                            "Open this URL to continue authentication:".to_string(),
-                            "".to_string(),
-                            url.clone(),
-                            "".to_string(),
-                            launcher_hint.to_string(),
-                            "If the browser opens on another machine, paste the full localhost callback URL below and press Enter.".to_string(),
-                        ],
-                        input_label: Some("Localhost callback URL".to_string()),
-                    },
-                ));
+            on_auth: Box::new({
+                let dialog_shared = dialog_shared.clone();
+                move |url: String| {
+                    let opened = crate::login::try_open_browser(&url);
+                    let launcher_hint = if opened {
+                        "A browser should open locally."
+                    } else {
+                        "No local browser launcher detected. Open the URL manually."
+                    };
+                    if let Ok(mut shared) = dialog_shared.lock() {
+                        shared.0 = Some(url.clone());
+                        shared.1 = Some(launcher_hint.to_string());
+                    }
+                    let _ =
+                        command_tx.send(FullscreenCommand::UpdateAuthDialog(build_oauth_dialog(
+                            &label_for_auth,
+                            "Waiting for browser authentication…",
+                            OAuthDialogStage::WaitingForBrowser,
+                            Some(url),
+                            Some(launcher_hint.to_string()),
+                        )));
+                }
             }),
             on_manual_input: Some(manual_rx),
             on_progress: Some(Box::new({
                 let command_tx = self.command_tx.clone();
+                let label = label.clone();
+                let dialog_shared = dialog_shared.clone();
                 move |msg: String| {
+                    let (url, launcher_hint) = if let Ok(shared) = dialog_shared.lock() {
+                        (shared.0.clone(), shared.1.clone())
+                    } else {
+                        (None, None)
+                    };
+                    let stage = if msg.contains("Exchanging authorization code") {
+                        OAuthDialogStage::ExchangingTokens
+                    } else {
+                        OAuthDialogStage::WaitingForBrowser
+                    };
                     let _ = command_tx.send(FullscreenCommand::SetStatusLine(msg.clone()));
                     let _ = command_tx.send(FullscreenCommand::UpdateAuthDialog(
-                        bb_tui::fullscreen::FullscreenAuthDialog {
-                            title: format!("Sign in to {label}"),
-                            lines: vec![msg],
-                            input_label: Some("Localhost callback URL".to_string()),
-                        },
+                        build_oauth_dialog(&label, &msg, stage, url, launcher_hint),
                     ));
                 }
             })),
@@ -673,6 +793,20 @@ impl FullscreenController {
                             {
                                 let _ = tx.send(text);
                                 self.send_command(FullscreenCommand::SetInput(String::new()));
+                                let (url, launcher_hint) = if let Ok(shared) = dialog_shared.lock() {
+                                    (shared.0.clone(), shared.1.clone())
+                                } else {
+                                    (None, None)
+                                };
+                                self.send_command(FullscreenCommand::UpdateAuthDialog(
+                                    build_oauth_dialog(
+                                        &label,
+                                        "Processing pasted callback…",
+                                        OAuthDialogStage::ProcessingCallback,
+                                        url,
+                                        launcher_hint,
+                                    ),
+                                ));
                                 self.send_command(FullscreenCommand::SetStatusLine(
                                     "Processing pasted callback...".to_string(),
                                 ));
@@ -685,6 +819,20 @@ impl FullscreenController {
                             {
                                 let _ = tx.send(text);
                                 self.send_command(FullscreenCommand::SetInput(String::new()));
+                                let (url, launcher_hint) = if let Ok(shared) = dialog_shared.lock() {
+                                    (shared.0.clone(), shared.1.clone())
+                                } else {
+                                    (None, None)
+                                };
+                                self.send_command(FullscreenCommand::UpdateAuthDialog(
+                                    build_oauth_dialog(
+                                        &label,
+                                        "Processing pasted callback…",
+                                        OAuthDialogStage::ProcessingCallback,
+                                        url,
+                                        launcher_hint,
+                                    ),
+                                ));
                                 self.send_command(FullscreenCommand::SetStatusLine(
                                     "Processing pasted callback...".to_string(),
                                 ));
@@ -743,18 +891,9 @@ impl FullscreenController {
         let label = crate::login::provider_display_name(provider);
         self.send_command(FullscreenCommand::SetLocalActionActive(true));
         self.send_command(FullscreenCommand::SetInput(String::new()));
-        self.send_command(FullscreenCommand::OpenAuthDialog(
-            bb_tui::fullscreen::FullscreenAuthDialog {
-                title: format!("Sign in to {label}"),
-                lines: vec![
-                    format!("Open: {url}"),
-                    "".to_string(),
-                    "Paste your API key below and press Enter.".to_string(),
-                    "Your input stays local and will be stored in auth.json.".to_string(),
-                ],
-                input_label: Some("API key".to_string()),
-            },
-        ));
+        self.send_command(FullscreenCommand::OpenAuthDialog(build_api_key_dialog(
+            &label, url,
+        )));
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Paste API key for {label} and press Enter"
         )));

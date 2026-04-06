@@ -2,6 +2,11 @@ use super::*;
 
 impl FullscreenState {
     pub(super) fn on_normal_key(&mut self, key: KeyEvent) {
+        if self.auth_dialog.is_some() {
+            self.on_auth_dialog_key(key);
+            return;
+        }
+
         if let Some(menu) = self.tree_menu.as_mut() {
             let ctrl_submit = matches!(key.code, KeyCode::Char('j') | KeyCode::Char('m'))
                 && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -213,5 +218,99 @@ impl FullscreenState {
             }
             _ => {}
         }
+    }
+
+    fn on_auth_dialog_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.pending_submissions
+                    .push_back(FullscreenSubmission::CancelLocalAction);
+                self.status_line = "cancel requested".to_string();
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                self.submit_auth_dialog_input();
+            }
+            KeyCode::Char('j' | 'm') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_auth_dialog_input();
+            }
+            KeyCode::Backspace => {
+                self.backspace();
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            KeyCode::Left => {
+                self.move_left();
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            KeyCode::Right => {
+                self.move_right();
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            KeyCode::Home => {
+                self.cursor = 0;
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            KeyCode::End => {
+                self.cursor = self.input.len();
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some(url) = self
+                    .auth_dialog
+                    .as_ref()
+                    .and_then(|dialog| dialog.url.clone())
+                {
+                    self.pending_clipboard_copy = Some(url);
+                    self.status_line = "Copied login URL to clipboard".to_string();
+                } else {
+                    self.status_line = "No login URL to copy yet".to_string();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.status_line = format!("ignored Ctrl+{ch}");
+                self.dirty = true;
+            }
+            KeyCode::Tab => {}
+            KeyCode::Char(ch) => {
+                self.insert_char(ch);
+                self.slash_menu = None;
+                self.at_file_menu = None;
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_auth_dialog_input(&mut self) {
+        let submitted = self.input.trim_end().to_string();
+        if submitted.trim().is_empty() {
+            self.status_line = "empty authentication input ignored".to_string();
+            self.dirty = true;
+            return;
+        }
+
+        self.pending_submissions
+            .push_back(FullscreenSubmission::Input(submitted));
+        self.input.clear();
+        self.cursor = 0;
+        self.slash_menu = None;
+        self.at_file_menu = None;
+        self.paste_storage.clear();
+        self.paste_counter = 0;
+        self.status_line = "Submitting authentication input...".to_string();
+        self.dirty = true;
     }
 }

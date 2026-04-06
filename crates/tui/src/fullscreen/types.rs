@@ -16,11 +16,28 @@ pub struct FullscreenFooterData {
     pub line2_right: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FullscreenAuthStepState {
+    Pending,
+    Active,
+    Done,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FullscreenAuthStep {
+    pub label: String,
+    pub state: Option<FullscreenAuthStepState>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FullscreenAuthDialog {
     pub title: String,
+    pub status: Option<String>,
+    pub steps: Vec<FullscreenAuthStep>,
+    pub url: Option<String>,
     pub lines: Vec<String>,
     pub input_label: Option<String>,
+    pub input_placeholder: Option<String>,
 }
 
 #[derive(Clone, Debug)]

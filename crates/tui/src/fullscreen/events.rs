@@ -58,6 +58,15 @@ impl FullscreenState {
                 self.dirty = true;
                 return;
             }
+            _ => {}
+        }
+
+        if self.auth_dialog.is_some() && matches!(self.mode, FullscreenMode::Normal) {
+            self.on_normal_key(key);
+            return;
+        }
+
+        match key.code {
             KeyCode::Char('o' | 'O') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if matches!(self.mode, FullscreenMode::Normal) {
                     self.toggle_transcript_mode();

@@ -1,7 +1,7 @@
 use unicode_width::UnicodeWidthChar;
 
 use crate::theme::theme;
-use crate::utils::{pad_to_width, truncate_to_width, visible_width};
+use crate::utils::{pad_to_width, truncate_to_width, visible_width, word_wrap};
 
 use super::super::runtime::FullscreenState;
 
@@ -191,6 +191,52 @@ pub(crate) fn blank_line(width: usize) -> String {
 
 type AuthDialogRender = (Vec<(usize, String)>, Option<(u16, u16)>);
 
+fn push_wrapped_line(lines: &mut Vec<String>, line: &str, width: usize) {
+    if line.is_empty() {
+        lines.push(String::new());
+    } else {
+        lines.extend(word_wrap(line, width));
+    }
+}
+
+fn render_auth_step(step: &super::super::types::FullscreenAuthStep, width: usize) -> Vec<String> {
+    let t = theme();
+    let prefix = match step.state {
+        Some(super::super::types::FullscreenAuthStepState::Done) => {
+            format!("{}✓{} ", t.success, t.reset)
+        }
+        Some(super::super::types::FullscreenAuthStepState::Active) => {
+            format!("{}●{} ", t.accent, t.reset)
+        }
+        _ => format!("{}○{} ", t.dim, t.reset),
+    };
+
+    let wrapped = word_wrap(&step.label, width.saturating_sub(2).max(1));
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                format!("{prefix}{line}")
+            } else {
+                format!("  {line}")
+            }
+        })
+        .collect()
+}
+
+fn render_clickable_url(url: &str) -> String {
+    let t = theme();
+    format!(
+        "\x1b]8;;{url}\x07{}\x1b[4m{}{}\x1b]8;;\x07",
+        t.md_link, url, t.reset
+    )
+}
+
+fn render_dialog_row(width: usize, start_x: usize, row: String) -> String {
+    pad_to_width(&format!("{}{}", " ".repeat(start_x), row), width)
+}
+
 pub(crate) fn render_auth_dialog(
     state: &FullscreenState,
     width: usize,
@@ -206,21 +252,70 @@ pub(crate) fn render_auth_dialog(
     let inner_width = box_width.saturating_sub(4);
 
     let mut content = Vec::new();
+    let mut input_row_in_content = None;
+    let input_prefix = "› ";
+
     content.push(format!("{}{}{}", t.bold, dialog.title, t.reset));
-    content.push(String::new());
-    content.extend(dialog.lines.iter().map(|line| line.to_string()));
+
+    if let Some(status) = &dialog.status {
+        content.push(String::new());
+        push_wrapped_line(
+            &mut content,
+            &format!("{}{}● {}{}", t.accent, t.bold, status, t.reset),
+            inner_width,
+        );
+    }
+
+    if !dialog.steps.is_empty() {
+        content.push(String::new());
+        for step in &dialog.steps {
+            content.extend(render_auth_step(step, inner_width));
+        }
+    }
+
+    if let Some(url) = &dialog.url {
+        content.push(String::new());
+        content.push(format!(
+            "{}Authorization URL (click if supported){}",
+            t.dim, t.reset
+        ));
+        content.push(render_clickable_url(url));
+        content.push(format!(
+            "{}Alt+C copies this URL to your clipboard{}",
+            t.dim, t.reset
+        ));
+    }
+
+    if !dialog.lines.is_empty() {
+        content.push(String::new());
+        for line in &dialog.lines {
+            push_wrapped_line(&mut content, line, inner_width);
+        }
+    }
+
     if let Some(label) = &dialog.input_label {
         content.push(String::new());
         content.push(format!("{}{}{}", t.dim, label, t.reset));
-        let input = if state.input.is_empty() {
-            format!("{}Paste here...{}", t.dim, t.reset)
+        let placeholder = dialog
+            .input_placeholder
+            .as_deref()
+            .unwrap_or("Paste here...");
+        let input_value = if state.input.is_empty() {
+            format!("{}{}{}", t.muted, placeholder, t.reset)
         } else {
             state.input.clone()
         };
-        content.push(input);
+        content.push(format!("{}{}{}", t.accent, input_prefix, input_value));
+        input_row_in_content = Some(content.len() - 1);
     }
+
     content.push(String::new());
-    content.push(format!("{}Esc to cancel{}", t.dim, t.reset));
+    let shortcuts = if dialog.url.is_some() {
+        "Esc to cancel • Alt+C copy URL"
+    } else {
+        "Esc to cancel"
+    };
+    content.push(format!("{}{}{}", t.dim, shortcuts, t.reset));
 
     let box_height = content
         .len()
@@ -231,7 +326,14 @@ pub(crate) fn render_auth_dialog(
 
     let mut rendered = Vec::new();
     let border = "─".repeat(box_width.saturating_sub(2));
-    rendered.push((start_y, format!("{}┌{}┐{}", t.border_accent, border, t.reset)));
+    rendered.push((
+        start_y,
+        render_dialog_row(
+            width,
+            start_x,
+            format!("{}┌{}┐{}", t.border_accent, border, t.reset),
+        ),
+    ));
     for row in 0..box_height.saturating_sub(2) {
         let content_line = content
             .get(row)
@@ -240,20 +342,37 @@ pub(crate) fn render_auth_dialog(
         let padded = pad_to_width(&content_line, inner_width);
         rendered.push((
             start_y + 1 + row,
-            format!("{}│{}{}{}│{}", t.border_accent, t.reset, padded, t.border_accent, t.reset),
+            render_dialog_row(
+                width,
+                start_x,
+                format!(
+                    "{}│{}{}{}│{}",
+                    t.border_accent, t.reset, padded, t.border_accent, t.reset
+                ),
+            ),
         ));
     }
     rendered.push((
         start_y + box_height.saturating_sub(1),
-        format!("{}└{}┘{}", t.border_accent, border, t.reset),
+        render_dialog_row(
+            width,
+            start_x,
+            format!("{}└{}┘{}", t.border_accent, border, t.reset),
+        ),
     ));
 
-    let cursor = dialog.input_label.as_ref().map(|_| {
-        let input_row = start_y + box_height.saturating_sub(4);
-        let input_col = start_x + 2 + visible_width(&truncate_to_width(&state.input, inner_width));
+    let cursor = input_row_in_content.map(|row_index| {
+        let input_text = if state.input.is_empty() {
+            String::new()
+        } else {
+            state.input.clone()
+        };
+        let input_row = start_y + 1 + row_index;
+        let display = truncate_to_width(&format!("{input_prefix}{input_text}"), inner_width);
+        let input_col = start_x + 2 + visible_width(&display);
         (
             input_col.min(width.saturating_sub(1)) as u16,
-            input_row as u16,
+            input_row.min(height.saturating_sub(1)) as u16,
         )
     });
 
