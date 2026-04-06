@@ -11,50 +11,44 @@ const https = require("https");
 const VERSION = "0.0.1";
 const REPO = "shuyhere/bb-agent";
 const NATIVE_DIR = path.join(__dirname, "..", "native");
+const DOWNLOAD_TIMEOUT_MS = 15_000;
 
 function getTarget() {
   const platform = os.platform();
   const arch = os.arch();
 
-  const platformMap = {
-    darwin: "apple-darwin",
-    linux: "unknown-linux-gnu",
-  };
-  const archMap = {
-    x64: "x86_64",
-    arm64: "aarch64",
-  };
+  const platformMap = { darwin: "apple-darwin", linux: "unknown-linux-gnu" };
+  const archMap = { x64: "x86_64", arm64: "aarch64" };
 
-  const rustPlatform = platformMap[platform];
-  const rustArch = archMap[arch];
-
-  if (!rustPlatform || !rustArch) {
-    return null;
-  }
-
-  return `${rustArch}-${rustPlatform}`;
+  const p = platformMap[platform];
+  const a = archMap[arch];
+  if (!p || !a) return null;
+  return `${a}-${p}`;
 }
 
-function downloadBinary(url, dest) {
+function downloadBinary(url, dest, timeoutMs) {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Download timed out")), timeoutMs);
+
     const follow = (url, redirects = 0) => {
-      if (redirects > 5) return reject(new Error("Too many redirects"));
-      https
-        .get(url, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return follow(res.headers.location, redirects + 1);
-          }
-          if (res.statusCode !== 200) {
-            return reject(new Error(`HTTP ${res.statusCode}`));
-          }
-          const file = fs.createWriteStream(dest);
-          res.pipe(file);
-          file.on("finish", () => {
-            file.close();
-            resolve();
-          });
-        })
-        .on("error", reject);
+      if (redirects > 5) { clearTimeout(timer); return reject(new Error("Too many redirects")); }
+
+      const mod = url.startsWith("https") ? https : require("http");
+      const req = mod.get(url, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return follow(res.headers.location, redirects + 1);
+        }
+        if (res.statusCode !== 200) {
+          clearTimeout(timer);
+          return reject(new Error(`HTTP ${res.statusCode}`));
+        }
+        const file = fs.createWriteStream(dest);
+        res.pipe(file);
+        file.on("finish", () => { clearTimeout(timer); file.close(); resolve(); });
+        file.on("error", (e) => { clearTimeout(timer); reject(e); });
+      });
+      req.on("error", (e) => { clearTimeout(timer); reject(e); });
+      req.on("timeout", () => { req.destroy(); clearTimeout(timer); reject(new Error("Request timed out")); });
     };
     follow(url);
   });
@@ -64,115 +58,95 @@ async function tryDownloadPrebuilt(target) {
   const assetName = `bb-${target}`;
   const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${assetName}`;
 
-  console.log(`Downloading BB-Agent v${VERSION} for ${target}...`);
-
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
   const dest = path.join(NATIVE_DIR, "bb");
 
   try {
-    await downloadBinary(url, dest);
+    console.log(`Downloading BB-Agent v${VERSION} for ${target}...`);
+    await downloadBinary(url, dest, DOWNLOAD_TIMEOUT_MS);
     fs.chmodSync(dest, 0o755);
-    console.log("BB-Agent binary installed successfully.");
+
+    // Verify the binary is executable
+    try {
+      execSync(`"${dest}" --version`, { stdio: "pipe", timeout: 5000 });
+    } catch {
+      // Binary may not run on this platform (e.g. wrong arch) — remove it
+      fs.unlinkSync(dest);
+      return false;
+    }
+
+    console.log("✓ BB-Agent binary installed successfully.");
     return true;
   } catch (err) {
-    // Prebuilt not available for this platform
+    // Clean up partial download
+    try { fs.unlinkSync(dest); } catch {}
     return false;
   }
 }
 
-function tryCargoInstall() {
-  // Check if cargo is available
-  try {
-    execSync("cargo --version", { stdio: "ignore" });
-  } catch {
-    return false;
+function findInPath(name) {
+  const dirs = (process.env.PATH || "").split(path.delimiter);
+  for (const dir of dirs) {
+    const full = path.join(dir, name);
+    try {
+      fs.accessSync(full, fs.constants.X_OK);
+      return full;
+    } catch {}
   }
-
-  console.log("Building BB-Agent from source with cargo (this may take a few minutes)...");
-  const packageDir = path.join(__dirname, "..");
-
-  try {
-    fs.mkdirSync(NATIVE_DIR, { recursive: true });
-    const binDest = path.join(NATIVE_DIR, "bb");
-    execSync(
-      `cargo build --release --manifest-path "${path.join(packageDir, "crates", "cli", "Cargo.toml")}"`,
-      { stdio: "inherit", cwd: packageDir }
-    );
-    const built = path.join(packageDir, "target", "release", "bb");
-    if (fs.existsSync(built)) {
-      fs.copyFileSync(built, binDest);
-      fs.chmodSync(binDest, 0o755);
-      console.log("BB-Agent built and installed successfully.");
-      return true;
-    }
-  } catch (err) {
-    console.error("Cargo build failed:", err.message);
-  }
-  return false;
+  return null;
 }
 
 function checkExistingInstall() {
-  // If bb is already in PATH (e.g. from cargo install), skip
-  const envPath = process.env.PATH || "";
-  const dirs = envPath.split(path.delimiter);
-  for (const dir of dirs) {
-    const full = path.join(dir, "bb");
-    try {
-      fs.accessSync(full, fs.constants.X_OK);
-      const version = execSync(`"${full}" --version`, { encoding: "utf8" }).trim();
-      console.log(`BB-Agent already installed: ${version} (${full})`);
-      return true;
-    } catch {
-      // not found
-    }
+  const existing = findInPath("bb");
+  if (!existing) return false;
+
+  try {
+    const version = execSync(`"${existing}" --version`, { encoding: "utf8", timeout: 5000 }).trim();
+    console.log(`✓ BB-Agent already installed: ${version} (${existing})`);
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 async function main() {
-  // Skip in CI or if explicitly told to
   if (process.env.BB_SKIP_POSTINSTALL) {
-    console.log("Skipping BB-Agent postinstall (BB_SKIP_POSTINSTALL set).");
     return;
   }
 
-  // Check if already installed
-  if (checkExistingInstall()) {
-    return;
-  }
+  // Already installed via cargo install?
+  if (checkExistingInstall()) return;
 
   const target = getTarget();
 
-  // Try prebuilt binary first
+  // Try prebuilt binary
   if (target) {
-    const downloaded = await tryDownloadPrebuilt(target);
-    if (downloaded) return;
+    const ok = await tryDownloadPrebuilt(target);
+    if (ok) return;
   }
 
-  // Fall back to cargo build
-  if (tryCargoInstall()) return;
-
-  // Nothing worked
-  console.error(
-    "\n" +
-    "================================================================\n" +
-    " BB-Agent postinstall: could not install binary.\n" +
-    "\n" +
-    " No prebuilt binary found for your platform, and Rust/Cargo\n" +
-    " is not installed.\n" +
-    "\n" +
-    " To install manually:\n" +
-    "   1. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
-    "   2. Clone and build:\n" +
-    "      git clone https://github.com/shuyhere/bb-agent.git\n" +
-    "      cd bb-agent\n" +
-    "      cargo install --path crates/cli\n" +
-    "   3. Run: bb\n" +
-    "================================================================\n"
-  );
+  // No prebuilt available — print instructions instead of trying cargo build
+  // (cargo build takes 5+ minutes and would appear to hang)
+  const platform = `${os.platform()}-${os.arch()}`;
+  console.log("");
+  console.log("╔══════════════════════════════════════════════════════════════╗");
+  console.log("║  BB-Agent: no prebuilt binary available for " + platform.padEnd(16) + "║");
+  console.log("║                                                              ║");
+  console.log("║  To install, run:                                            ║");
+  console.log("║    cargo install --git https://github.com/shuyhere/bb-agent  ║");
+  console.log("║                  --bin bb crates/cli                         ║");
+  console.log("║                                                              ║");
+  console.log("║  Or clone and build:                                         ║");
+  console.log("║    git clone https://github.com/shuyhere/bb-agent.git        ║");
+  console.log("║    cd bb-agent && cargo install --path crates/cli            ║");
+  console.log("║                                                              ║");
+  console.log("║  Need Rust? https://rustup.rs                                ║");
+  console.log("╚══════════════════════════════════════════════════════════════╝");
+  console.log("");
 }
 
 main().catch((err) => {
-  console.error("postinstall error:", err.message);
-  // Don't fail npm install — the binary just won't be available
+  // Never fail npm install — just print instructions
+  console.error("BB-Agent postinstall notice:", err.message);
+  console.log("Install manually: cargo install --git https://github.com/shuyhere/bb-agent --bin bb crates/cli");
 });

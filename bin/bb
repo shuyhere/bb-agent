@@ -5,75 +5,46 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 
-function getBinaryPath() {
-  const platform = os.platform();
-  const arch = os.arch();
-
-  const platformMap = {
-    darwin: "apple-darwin",
-    linux: "unknown-linux-gnu",
-  };
-  const archMap = {
-    x64: "x86_64",
-    arm64: "aarch64",
-  };
-
-  const target = `${archMap[arch]}-${platformMap[platform]}`;
-  if (!target || target.includes("undefined")) {
-    console.error(`Unsupported platform: ${platform}-${arch}`);
-    process.exit(1);
+function findBinary() {
+  // 1. Check native/ dir (downloaded by postinstall)
+  const nativeBin = path.join(__dirname, "..", "native", "bb");
+  if (fs.existsSync(nativeBin)) {
+    try { fs.accessSync(nativeBin, fs.constants.X_OK); return nativeBin; } catch {}
   }
 
-  // Check for binary in the package directory
-  const binDir = path.join(__dirname, "..", "native");
-  const binName = platform === "win32" ? "bb.exe" : "bb";
-  const binPath = path.join(binDir, binName);
-
-  if (fs.existsSync(binPath)) {
-    return binPath;
-  }
-
-  // Check if bb is available in PATH (cargo install)
-  const pathBin = findInPath("bb");
-  if (pathBin) {
-    return pathBin;
-  }
-
-  console.error(
-    "BB-Agent binary not found.\n\n" +
-    "The postinstall script may have failed. Try:\n" +
-    "  1. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
-    "  2. Build manually: cargo install --path crates/cli\n" +
-    "  3. Then run: bb\n"
-  );
-  process.exit(1);
-}
-
-function findInPath(name) {
-  const envPath = process.env.PATH || "";
-  const dirs = envPath.split(path.delimiter);
+  // 2. Check PATH (cargo install)
+  const dirs = (process.env.PATH || "").split(path.delimiter);
   for (const dir of dirs) {
-    const full = path.join(dir, name);
-    try {
-      fs.accessSync(full, fs.constants.X_OK);
-      return full;
-    } catch {
-      // not found in this dir
-    }
+    // Skip our own bin/ dir to avoid infinite recursion
+    if (path.resolve(dir) === path.resolve(__dirname)) continue;
+    const full = path.join(dir, "bb");
+    try { fs.accessSync(full, fs.constants.X_OK); return full; } catch {}
   }
+
   return null;
 }
 
-const binary = getBinaryPath();
-const args = process.argv.slice(2);
+const binary = findBinary();
+
+if (!binary) {
+  console.error(`
+BB-Agent binary not found.
+
+Install it with:
+  cargo install --git https://github.com/shuyhere/bb-agent --bin bb crates/cli
+
+Or clone and build:
+  git clone https://github.com/shuyhere/bb-agent.git
+  cd bb-agent && cargo install --path crates/cli
+
+Need Rust? https://rustup.rs
+`);
+  process.exit(1);
+}
 
 try {
-  execFileSync(binary, args, { stdio: "inherit" });
+  execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
 } catch (err) {
-  if (err.status !== null) {
-    process.exit(err.status);
-  }
-  process.exit(1);
+  process.exit(err.status || 1);
 }

@@ -4,19 +4,30 @@ A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, m
 
 ## Install
 
-### npm (recommended)
+### From source (all platforms)
+
+Requires [Rust](https://rustup.rs):
 
 ```bash
-npm install -g bb-agent
+cargo install --git https://github.com/shuyhere/bb-agent --bin bb crates/cli
 ```
 
-### Build from source
+Or clone first:
 
 ```bash
 git clone https://github.com/shuyhere/bb-agent.git
 cd bb-agent
 cargo install --path crates/cli
 ```
+
+### npm (Linux x86_64 — prebuilt binary)
+
+```bash
+npm install -g bb-agent
+```
+
+> **macOS / other platforms:** npm install will print instructions to build from source.
+> Prebuilt binaries for macOS are coming soon.
 
 ## Getting Started
 
