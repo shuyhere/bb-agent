@@ -434,7 +434,7 @@ async fn fetch_copilot_token_envelope(
     github_access_token: &str,
 ) -> Result<CopilotTokenEnvelope> {
     let client = reqwest::Client::new();
-    client
+    let response = client
         .get(format!(
             "{}/copilot_internal/v2/token",
             api_url.trim_end_matches('/')
@@ -444,11 +444,35 @@ async fn fetch_copilot_token_envelope(
         .header(AUTHORIZATION, format!("token {github_access_token}"))
         .send()
         .await
-        .context("Failed to exchange GitHub token for Copilot token")?
-        .error_for_status()
-        .context("GitHub Copilot token exchange failed")?
-        .json::<CopilotTokenEnvelope>()
+        .context("Failed to exchange GitHub token for Copilot token")?;
+
+    let status = response.status();
+    let body = response
+        .text()
         .await
+        .context("Failed to read GitHub Copilot token exchange response")?;
+
+    if !status.is_success() {
+        let lower = body.to_ascii_lowercase();
+        let hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "GitHub accepted the device login, but the Copilot token exchange was unauthorized. Try logging in again."
+        } else if status == reqwest::StatusCode::FORBIDDEN {
+            "This GitHub account may not have Copilot enabled, or org/enterprise policy may block Copilot access."
+        } else if lower.contains("copilot") && lower.contains("business") {
+            "GitHub indicates a Copilot plan/policy issue for this account."
+        } else {
+            "GitHub rejected the Copilot token exchange."
+        };
+
+        anyhow::bail!(
+            "GitHub Copilot token exchange failed (HTTP {}): {}\n{}",
+            status,
+            body,
+            hint
+        );
+    }
+
+    serde_json::from_str::<CopilotTokenEnvelope>(&body)
         .context("Failed to parse GitHub Copilot token envelope")
 }
 
