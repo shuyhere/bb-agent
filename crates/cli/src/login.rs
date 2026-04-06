@@ -107,6 +107,26 @@ pub(crate) fn provider_login_hint(provider: &str) -> String {
     }
 }
 
+pub(crate) fn provider_oauth_variant(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" => Some("anthropic"),
+        "openai" | "openai-codex" => Some("openai-codex"),
+        _ => None,
+    }
+}
+
+pub(crate) fn provider_api_key_variant(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" => Some("anthropic"),
+        "openai" | "openai-codex" => Some("openai"),
+        "google" => Some("google"),
+        "groq" => Some("groq"),
+        "xai" => Some("xai"),
+        "openrouter" => Some("openrouter"),
+        _ => None,
+    }
+}
+
 pub fn remove_auth(provider: &str) -> Result<bool> {
     let mut store = load_auth();
     let removed = store.providers.remove(provider).is_some();
@@ -149,6 +169,29 @@ fn save_auth(store: &AuthStore) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn save_api_key(provider: &str, key: String) -> Result<()> {
+    let mut store = load_auth();
+    store
+        .providers
+        .insert(provider.to_string(), AuthEntry::ApiKey { key });
+    save_auth(&store)
+}
+
+pub(crate) async fn run_oauth_login(
+    provider: &str,
+    callbacks: crate::oauth::OAuthCallbacks,
+) -> Result<()> {
+    use crate::oauth;
+
+    let creds = match provider {
+        "anthropic" => oauth::login_anthropic(callbacks).await?,
+        "openai-codex" => oauth::login_openai_codex(callbacks).await?,
+        other => anyhow::bail!("No OAuth flow for provider: {other}"),
+    };
+
+    save_oauth_credentials(provider, &creds)
 }
 
 pub async fn handle_login(provider: Option<&str>) -> Result<()> {
@@ -241,12 +284,7 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    // Save to auth store
-    let mut store = load_auth();
-    store
-        .providers
-        .insert(provider.clone(), AuthEntry::ApiKey { key });
-    save_auth(&store)?;
+    save_api_key(&provider, key)?;
 
     println!("✓ API key saved for {provider}");
     println!("  Stored in: {}", auth_path().display());
@@ -256,7 +294,7 @@ pub async fn handle_login(provider: Option<&str>) -> Result<()> {
 
 /// Run the OAuth browser flow from a plain terminal (non-TUI).
 async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
-    use crate::oauth::{self, OAuthCallbacks};
+    use crate::oauth::OAuthCallbacks;
 
     println!("Starting OAuth login for {provider}…");
 
@@ -274,13 +312,7 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
         })),
     };
 
-    let creds = match provider {
-        "anthropic" => oauth::login_anthropic(callbacks).await?,
-        "openai-codex" => oauth::login_openai_codex(callbacks).await?,
-        other => anyhow::bail!("No OAuth flow for provider: {other}"),
-    };
-
-    save_oauth_credentials(provider, &creds)?;
+    run_oauth_login(provider, callbacks).await?;
     println!("✓ Logged in to {provider}");
     println!("  Stored in: {}", auth_path().display());
     Ok(())

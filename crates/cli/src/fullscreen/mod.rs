@@ -20,20 +20,13 @@ use crate::session_bootstrap::{
 use controller::FullscreenController;
 
 const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
+const LOGIN_METHOD_MENU_ID: &str = "login-method";
 const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
 const RESUME_SESSION_MENU_ID: &str = "resume-session";
 const TREE_ENTRY_MENU_ID: &str = "tree-entry";
 const TREE_SUMMARY_MENU_ID: &str = "tree-summary";
 const FORK_ENTRY_MENU_ID: &str = "fork-entry";
-const LOGIN_PROVIDERS: &[&str] = &[
-    "anthropic",
-    "openai-codex",
-    "openai",
-    "google",
-    "groq",
-    "xai",
-    "openrouter",
-];
+const LOGIN_PROVIDERS: &[&str] = &["anthropic", "openai", "google", "groq", "xai", "openrouter"];
 
 pub async fn run_fullscreen_entry(entry: SessionBootstrapOptions) -> Result<()> {
     let (runtime_host, options, session_setup) = prepare_session_runtime(entry).await?;

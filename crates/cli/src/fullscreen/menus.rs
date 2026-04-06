@@ -16,8 +16,9 @@ use crate::slash::LocalSlashCommandHost;
 use super::controller::FullscreenController;
 use super::formatting::format_assistant_text;
 use super::{
-    FORK_ENTRY_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS, LOGOUT_PROVIDER_MENU_ID,
-    RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
+    FORK_ENTRY_MENU_ID, LOGIN_METHOD_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS,
+    LOGOUT_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID,
+    copy_text_to_clipboard,
 };
 
 fn fullscreen_auth_method_label(provider: &str) -> &'static str {
@@ -81,21 +82,19 @@ impl FullscreenController {
             }
             FORK_ENTRY_MENU_ID => self.handle_fork_from_entry(value)?,
             LOGIN_PROVIDER_MENU_ID => {
-                let (_env_var, url) = crate::login::provider_meta(value);
-                let mode = crate::login::provider_auth_method(value);
-                let label = crate::login::provider_display_name(value);
-                let hint = crate::login::provider_login_hint(value);
-                let open_line = if url.is_empty() {
-                    String::new()
+                self.open_login_method_menu(value);
+            }
+            LOGIN_METHOD_MENU_ID => {
+                if let Some(provider) = value.strip_prefix("oauth:") {
+                    self.begin_oauth_login(provider).await?;
+                } else if let Some(provider) = value.strip_prefix("api_key:") {
+                    self.begin_api_key_login(provider);
                 } else {
-                    format!("\nOpen: {url}")
-                };
-                self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: format!(
-                        "Use `/login` to sign in.\nProvider: {label}\nMode: {mode}{open_line}\n{hint}"
-                    ),
-                });
+                    self.send_command(FullscreenCommand::PushNote {
+                        level: FullscreenNoteLevel::Error,
+                        text: format!("Unknown login method selection: {value}"),
+                    });
+                }
             }
             LOGOUT_PROVIDER_MENU_ID => {
                 if crate::login::remove_auth(value)? {
@@ -472,13 +471,156 @@ impl FullscreenController {
             items: LOGIN_PROVIDERS
                 .iter()
                 .map(|provider| SelectItem {
-                    label: fullscreen_auth_display_name(provider),
+                    label: match *provider {
+                        "anthropic" => "Anthropic".to_string(),
+                        "openai" => "OpenAI".to_string(),
+                        "google" => "Google Gemini".to_string(),
+                        "groq" => "Groq".to_string(),
+                        "xai" => "xAI".to_string(),
+                        "openrouter" => "OpenRouter".to_string(),
+                        _ => (*provider).to_string(),
+                    },
                     detail: Some(fullscreen_auth_status_detail(provider)),
                     value: (*provider).to_string(),
                 })
                 .collect(),
             selected_value: None,
         });
+    }
+
+    fn open_login_method_menu(&mut self, provider: &str) {
+        let mut items = Vec::new();
+        match provider {
+            "anthropic" => {
+                items.push(SelectItem {
+                    label: "Claude Pro/Max".to_string(),
+                    detail: Some("OAuth subscription login".to_string()),
+                    value: "oauth:anthropic".to_string(),
+                });
+                items.push(SelectItem {
+                    label: "Anthropic API key".to_string(),
+                    detail: Some("Use ANTHROPIC_API_KEY or paste a key".to_string()),
+                    value: "api_key:anthropic".to_string(),
+                });
+            }
+            "openai" => {
+                items.push(SelectItem {
+                    label: "ChatGPT Plus/Pro (Codex)".to_string(),
+                    detail: Some("OAuth subscription login".to_string()),
+                    value: "oauth:openai-codex".to_string(),
+                });
+                items.push(SelectItem {
+                    label: "OpenAI API key".to_string(),
+                    detail: Some("Use OPENAI_API_KEY or paste a key".to_string()),
+                    value: "api_key:openai".to_string(),
+                });
+            }
+            "google" => {
+                items.push(SelectItem {
+                    label: "Google API key".to_string(),
+                    detail: Some("Use GOOGLE_API_KEY or paste a key".to_string()),
+                    value: "api_key:google".to_string(),
+                });
+            }
+            "groq" => {
+                items.push(SelectItem {
+                    label: "Groq API key".to_string(),
+                    detail: Some("Use GROQ_API_KEY or paste a key".to_string()),
+                    value: "api_key:groq".to_string(),
+                });
+            }
+            "xai" => {
+                items.push(SelectItem {
+                    label: "xAI API key".to_string(),
+                    detail: Some("Use XAI_API_KEY or paste a key".to_string()),
+                    value: "api_key:xai".to_string(),
+                });
+            }
+            "openrouter" => {
+                items.push(SelectItem {
+                    label: "OpenRouter API key".to_string(),
+                    detail: Some("Use OPENROUTER_API_KEY or paste a key".to_string()),
+                    value: "api_key:openrouter".to_string(),
+                });
+            }
+            _ => {}
+        }
+
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id: LOGIN_METHOD_MENU_ID.to_string(),
+            title: format!(
+                "Login method: {}",
+                match provider {
+                    "anthropic" => "Anthropic",
+                    "openai" => "OpenAI",
+                    "google" => "Google Gemini",
+                    "groq" => "Groq",
+                    "xai" => "xAI",
+                    "openrouter" => "OpenRouter",
+                    _ => provider,
+                }
+            ),
+            items,
+            selected_value: None,
+        });
+    }
+
+    async fn begin_oauth_login(&mut self, provider: &str) -> Result<()> {
+        use crate::oauth::OAuthCallbacks;
+
+        let provider = crate::login::provider_oauth_variant(provider).unwrap_or(provider);
+        let label = crate::login::provider_display_name(provider);
+        let command_tx = self.command_tx.clone();
+
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Starting OAuth login for {label}..."
+        )));
+
+        let callbacks = OAuthCallbacks {
+            on_auth: Box::new(move |url: String| {
+                let _ = command_tx.send(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: format!(
+                        "Use `/login` to sign in.\nProvider: {label}\nMode: OAuth\nOpen: {url}"
+                    ),
+                });
+                #[cfg(target_os = "macos")]
+                let _ = std::process::Command::new("open").arg(&url).spawn();
+                #[cfg(not(target_os = "macos"))]
+                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            }),
+            on_manual_input: None,
+            on_progress: Some(Box::new({
+                let command_tx = self.command_tx.clone();
+                move |msg: String| {
+                    let _ = command_tx.send(FullscreenCommand::SetStatusLine(msg));
+                }
+            })),
+        };
+
+        crate::login::run_oauth_login(provider, callbacks).await?;
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Logged in to {}",
+            crate::login::provider_display_name(provider)
+        )));
+        Ok(())
+    }
+
+    fn begin_api_key_login(&mut self, provider: &str) {
+        let provider = crate::login::provider_api_key_variant(provider).unwrap_or(provider);
+        self.pending_login_api_key_provider = Some(provider.to_string());
+        let (_env_var, url) = crate::login::provider_meta(provider);
+        let label = crate::login::provider_display_name(provider);
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Status,
+            text: format!(
+                "Use `/login` to sign in.\nProvider: {label}\nMode: API key\nOpen: {url}\nPaste your API key into the input box below and press Enter."
+            ),
+        });
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Paste API key for {label} and press Enter"
+        )));
     }
 
     fn open_logout_provider_menu(&mut self) {

@@ -153,6 +153,24 @@ impl FullscreenController {
             return Ok(());
         }
 
+        if let Some(provider) = self.pending_login_api_key_provider.clone() {
+            let key = text.trim().to_string();
+            if key.is_empty() || key == "/" {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "API key entry cancelled".to_string(),
+                ));
+                return Ok(());
+            }
+            self.pending_login_api_key_provider = None;
+            crate::login::save_api_key(&provider, key)?;
+            self.send_command(FullscreenCommand::SetInput(String::new()));
+            self.send_command(FullscreenCommand::SetStatusLine(format!(
+                "Logged in to {}",
+                crate::login::provider_display_name(&provider)
+            )));
+            return Ok(());
+        }
+
         let text = text.trim().to_string();
         if text.is_empty() || text == "/" {
             return Ok(());
