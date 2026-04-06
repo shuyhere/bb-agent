@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bb_core::agent_session::{ModelRef, ThinkingLevel};
+use bb_core::agent_session::{ModelRef, ThinkingLevel, parse_model_arg};
 use bb_core::agent_session_runtime::RuntimeModelRef;
 use bb_core::settings::Settings;
 use bb_core::types::AgentMessage;
@@ -40,6 +40,13 @@ fn fullscreen_auth_status_detail(provider: &str) -> String {
             fullscreen_auth_method_label(provider)
         ),
     }
+}
+
+#[derive(Default)]
+struct NormalizedModelSelection {
+    provider_filter: Option<String>,
+    match_term: String,
+    thinking_override: Option<ThinkingLevel>,
 }
 
 #[derive(Clone, Copy)]
@@ -181,8 +188,8 @@ impl FullscreenController {
     ) -> Result<()> {
         match menu_id {
             "model" => {
-                if let Some(model) = self.find_exact_model_match(value) {
-                    self.apply_model_selection(model);
+                if let Some((model, thinking)) = self.find_exact_model_match(value) {
+                    self.apply_model_selection(model, thinking);
                 } else {
                     self.send_command(FullscreenCommand::SetStatusLine(format!(
                         "Model not found: {value}"
@@ -238,22 +245,35 @@ impl FullscreenController {
 
     pub(super) fn handle_model_selection_command(&mut self, search: Option<&str>) -> Result<()> {
         let search_term = search.unwrap_or_default().trim();
-        if let Some(model) = self.find_exact_model_match(search_term) {
-            self.apply_model_selection(model);
+        if let Some((model, thinking)) = self.find_exact_model_match(search_term) {
+            self.apply_model_selection(model, thinking);
+            return Ok(());
+        }
+        if let Some((model, thinking)) = self.find_unique_model_match(search_term) {
+            self.apply_model_selection(model, thinking);
             return Ok(());
         }
 
+        let normalized = self.normalize_model_selection(search_term);
+        let needle = normalized.match_term.to_ascii_lowercase();
         let mut items: Vec<SelectItem> = self
             .get_model_candidates()
             .into_iter()
             .filter(|model| {
-                if search_term.is_empty() {
+                if let Some(provider) = normalized.provider_filter.as_deref()
+                    && model.provider != provider
+                {
+                    return false;
+                }
+                if needle.is_empty() {
                     true
                 } else {
-                    let needle = search_term.to_ascii_lowercase();
                     let provider_id =
                         format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+                    let provider_colon_id =
+                        format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
                     provider_id.contains(&needle)
+                        || provider_colon_id.contains(&needle)
                         || model.id.to_ascii_lowercase().contains(&needle)
                         || model.name.to_ascii_lowercase().contains(&needle)
                 }
@@ -477,7 +497,7 @@ impl FullscreenController {
         Ok(())
     }
 
-    fn apply_model_selection(&mut self, model: Model) {
+    fn apply_model_selection(&mut self, model: Model, thinking_override: Option<ThinkingLevel>) {
         let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
         let base_url = model.base_url.clone().unwrap_or_else(|| match model.api {
             ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
@@ -496,6 +516,10 @@ impl FullscreenController {
             id: model.id.clone(),
             reasoning: model.reasoning,
         });
+        if let Some(level) = thinking_override {
+            self.session_setup.thinking_level = level.as_str().to_string();
+            self.runtime_host.session_mut().set_thinking_level(level);
+        }
         self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
             provider: model.provider.clone(),
             id: model.id.clone(),
@@ -513,7 +537,11 @@ impl FullscreenController {
             headers: std::collections::HashMap::new(),
             enabled: true,
         });
-        let status = format!("Model: {display}");
+        let status = if let Some(level) = thinking_override {
+            format!("Model: {display} • thinking: {}", level.as_str())
+        } else {
+            format!("Model: {display}")
+        };
         self.options.model_display = Some(display);
         self.publish_footer();
         self.send_command(FullscreenCommand::SetStatusLine(status));
@@ -535,16 +563,94 @@ impl FullscreenController {
             .collect()
     }
 
-    fn find_exact_model_match(&self, search_term: &str) -> Option<Model> {
-        let needle = search_term.trim().to_ascii_lowercase();
-        self.get_model_candidates().into_iter().find(|model| {
+    fn find_exact_model_match(&self, search_term: &str) -> Option<(Model, Option<ThinkingLevel>)> {
+        let normalized = self.normalize_model_selection(search_term);
+        let needle = normalized.match_term.to_ascii_lowercase();
+        self.get_model_candidates().into_iter().find_map(|model| {
+            if let Some(provider) = normalized.provider_filter.as_deref()
+                && model.provider != provider
+            {
+                return None;
+            }
             let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
             let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
-            model.id.eq_ignore_ascii_case(&needle)
+            let matched = model.id.eq_ignore_ascii_case(&needle)
                 || model.name.eq_ignore_ascii_case(&needle)
                 || provider_id == needle
-                || provider_colon_id == needle
+                || provider_colon_id == needle;
+            matched.then_some((model, normalized.thinking_override))
         })
+    }
+
+    fn find_unique_model_match(&self, search_term: &str) -> Option<(Model, Option<ThinkingLevel>)> {
+        let normalized = self.normalize_model_selection(search_term);
+        if normalized.match_term.is_empty() {
+            return None;
+        }
+        let needle = normalized.match_term.to_ascii_lowercase();
+        let mut matches = self.get_model_candidates().into_iter().filter(|model| {
+            if let Some(provider) = normalized.provider_filter.as_deref()
+                && model.provider != provider
+            {
+                return false;
+            }
+            let provider_id = format!("{}/{}", model.provider, model.id).to_ascii_lowercase();
+            let provider_colon_id = format!("{}:{}", model.provider, model.id).to_ascii_lowercase();
+            provider_id.contains(&needle)
+                || provider_colon_id.contains(&needle)
+                || model.id.to_ascii_lowercase().contains(&needle)
+                || model.name.to_ascii_lowercase().contains(&needle)
+        });
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some((first, normalized.thinking_override))
+    }
+
+    fn normalize_model_selection(&self, search_term: &str) -> NormalizedModelSelection {
+        let search_term = search_term.trim();
+        if search_term.is_empty() {
+            return NormalizedModelSelection::default();
+        }
+
+        let current_provider = self.session_setup.model.provider.as_str();
+        let (parsed_provider, parsed_model, thinking_override) =
+            parse_model_arg(Some(current_provider), Some(search_term));
+        let thinking_override = thinking_override.as_deref().and_then(ThinkingLevel::parse);
+
+        if search_term.contains('/') {
+            return NormalizedModelSelection {
+                provider_filter: Some(parsed_provider),
+                match_term: parsed_model,
+                thinking_override,
+            };
+        }
+
+        if let Some((provider, model)) = search_term.split_once(':')
+            && !provider.is_empty()
+            && !model.is_empty()
+            && self
+                .get_model_candidates()
+                .iter()
+                .any(|candidate| candidate.provider.eq_ignore_ascii_case(provider))
+        {
+            return NormalizedModelSelection {
+                provider_filter: Some(provider.to_string()),
+                match_term: model.to_string(),
+                thinking_override,
+            };
+        }
+
+        NormalizedModelSelection {
+            provider_filter: None,
+            match_term: if parsed_provider == current_provider {
+                parsed_model
+            } else {
+                search_term.to_string()
+            },
+            thinking_override,
+        }
     }
 
     fn copy_last_assistant_message(&mut self) -> Result<()> {

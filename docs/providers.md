@@ -89,7 +89,13 @@ Press `Ctrl+P` to cycle through models, or use:
 ```
 /model sonnet
 /model gpt-4o
+/model openai/gpt-4o
+/model openai:gpt-4o
+/model sonnet:high
+/model anthropic/claude-sonnet-4-20250514:low
 ```
+
+`/model` now accepts common provider/model and thinking-suffix formats directly during a conversation.
 
 ### Default Model
 
