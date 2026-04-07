@@ -746,6 +746,23 @@ pub(crate) fn preferred_model_for_provider(provider: &str) -> Option<String> {
 pub(crate) fn preferred_startup_provider_and_model(
     settings: &bb_core::settings::Settings,
 ) -> Option<(String, String)> {
+    if let Some(provider) = load_auth().last_provider {
+        let normalized = normalize_provider_for_model_selection(&provider);
+        if provider_has_auth(&provider) || provider_has_auth(&normalized) {
+            let model = if settings.default_provider.as_deref() == Some(provider.as_str())
+                || settings.default_provider.as_deref() == Some(normalized.as_str())
+            {
+                settings
+                    .default_model
+                    .clone()
+                    .or_else(|| preferred_model_for_provider(&normalized))?
+            } else {
+                preferred_model_for_provider(&normalized)?
+            };
+            return Some((normalized, model));
+        }
+    }
+
     if let Some(provider) = settings.default_provider.as_deref()
         && provider_has_auth(provider)
     {
@@ -755,13 +772,6 @@ pub(crate) fn preferred_startup_provider_and_model(
             .clone()
             .or_else(|| preferred_model_for_provider(&provider))?;
         return Some((provider, model));
-    }
-
-    if let Some(provider) = load_auth().last_provider
-        && provider_has_auth(&provider)
-    {
-        let model = preferred_model_for_provider(&provider)?;
-        return Some((normalize_provider_for_model_selection(&provider), model));
     }
 
     let authenticated = authenticated_providers();
