@@ -5,6 +5,7 @@ mod agents_md;
 mod extensions;
 
 mod fullscreen;
+mod input_files;
 mod login;
 mod models;
 mod oauth;

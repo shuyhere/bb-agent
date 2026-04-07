@@ -17,7 +17,7 @@ use super::{
     transcript::{BlockId, BlockKind},
     types::{FullscreenMode, FullscreenSubmission},
 };
-use clipboard::try_read_clipboard_image;
+use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
 
 impl FullscreenState {
     pub fn on_tick(&mut self) {
@@ -81,9 +81,11 @@ impl FullscreenState {
                 if matches!(self.mode, FullscreenMode::Normal) {
                     if let Some((path, size)) = try_read_clipboard_image() {
                         self.on_image_attached(path, size);
+                    } else if let Some(text) = try_read_clipboard_text() {
+                        self.on_paste(&text);
                     } else {
                         self.status_line =
-                            "No image in clipboard (need xclip or wl-paste)".to_string();
+                            "No clipboard text or image available for paste".to_string();
                         self.dirty = true;
                     }
                 }

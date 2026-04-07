@@ -296,11 +296,20 @@ fn list_files_via_fd(query: &str, cwd: &Path, max: usize) -> Option<Vec<SelectIt
             SelectItem {
                 label: label.clone(),
                 detail: None,
-                value: format!("@{line}"),
+                value: format_at_file_value(line),
             }
         })
         .collect();
     Some(items)
+}
+
+fn format_at_file_value(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("@\"{escaped}\"")
+    } else {
+        format!("@{path}")
+    }
 }
 
 fn list_files_via_readdir(query: &str, cwd: &Path, max: usize) -> Vec<SelectItem> {
@@ -338,11 +347,12 @@ fn list_files_via_readdir(query: &str, cwd: &Path, max: usize) -> Vec<SelectItem
                 name.clone()
             };
             let display = if is_dir { format!("{name}/") } else { name };
-            let value = if is_dir {
-                format!("@{rel}/")
+            let raw_value = if is_dir {
+                format!("{rel}/")
             } else {
-                format!("@{rel}")
+                rel.clone()
             };
+            let value = format_at_file_value(&raw_value);
             SelectItem {
                 label: display,
                 detail: None,

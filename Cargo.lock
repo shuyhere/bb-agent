@@ -265,11 +265,13 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+ "url",
 ]
 
 [[package]]
