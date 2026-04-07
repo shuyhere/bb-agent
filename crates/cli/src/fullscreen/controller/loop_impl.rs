@@ -227,13 +227,23 @@ impl FullscreenController {
             return Ok(());
         }
 
+        let expanded =
+            crate::input_files::expand_at_file_references(&text, &self.session_setup.tool_ctx.cwd);
+        for warning in expanded.warnings {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Warning,
+                text: warning,
+            });
+        }
+        let prompt_text = expanded.text;
+
         if self.streaming {
-            self.queued_prompts.push_back(text);
+            self.queued_prompts.push_back(prompt_text);
             self.publish_status();
             return Ok(());
         }
 
-        if let Err(err) = self.dispatch_prompt(text, submission_rx).await {
+        if let Err(err) = self.dispatch_prompt(prompt_text, submission_rx).await {
             self.report_error("prompt dispatch", &err);
             self.streaming = false;
             self.publish_status();
