@@ -42,6 +42,7 @@ pub(super) struct ToolCallState {
     pub(super) tool_result_id: Option<BlockId>,
     pub(super) execution_started: bool,
     pub(super) started_tick: Option<u64>,
+    pub(super) started_at: Option<std::time::Instant>,
     pub(super) finished_duration_ms: Option<u64>,
     pub(super) result_content: Option<Vec<ContentBlock>>,
     pub(super) result_details: Option<serde_json::Value>,
@@ -160,6 +161,9 @@ impl FullscreenState {
             .and_then(|value| value.as_u64())
         {
             return Some(ms);
+        }
+        if let Some(started_at) = tool.started_at {
+            return Some(started_at.elapsed().as_millis() as u64);
         }
         tool.started_tick
             .map(|started| self.tick_count.saturating_sub(started) * TOOL_TIMER_TICK_MS)

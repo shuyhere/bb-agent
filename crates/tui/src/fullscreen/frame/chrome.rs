@@ -35,7 +35,7 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
     let t = theme();
     let text = match state.mode {
         FullscreenMode::Normal => {
-            if state.has_active_turn() {
+            if state.has_active_turn() || state.has_running_tool() {
                 let msg = if state.status_line.trim().is_empty() {
                     ""
                 } else {

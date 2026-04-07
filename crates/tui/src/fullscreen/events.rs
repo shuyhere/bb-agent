@@ -22,7 +22,7 @@ use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
 impl FullscreenState {
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
-        if self.has_active_turn() {
+        if self.has_active_turn() || self.has_running_tool() {
             self.spinner.tick();
             self.refresh_running_tool_visuals();
             self.dirty = true;

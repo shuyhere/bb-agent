@@ -147,8 +147,16 @@ impl FullscreenState {
         self.active_turn.as_ref().is_some_and(|turn| !turn.finished)
     }
 
+    pub(crate) fn has_running_tool(&self) -> bool {
+        self.active_turn.as_ref().is_some_and(|turn| {
+            turn.tools
+                .values()
+                .any(|tool| tool.execution_started && tool.result_content.is_none())
+        })
+    }
+
     pub(crate) fn has_cancellable_action(&self) -> bool {
-        self.has_active_turn() || self.local_action_active
+        self.has_active_turn() || self.has_running_tool() || self.local_action_active
     }
 
     pub fn prepare_for_render(&mut self) {

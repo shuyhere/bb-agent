@@ -93,7 +93,9 @@ impl FullscreenState {
 
     pub(super) fn should_animate_status(&self) -> bool {
         matches!(self.mode, FullscreenMode::Normal)
-            && (self.has_active_turn() || !self.pending_submissions.is_empty())
+            && (self.has_active_turn()
+                || self.has_running_tool()
+                || !self.pending_submissions.is_empty())
     }
 
     pub(super) fn transcript_scroll_status_line(&self) -> String {

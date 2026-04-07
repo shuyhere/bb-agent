@@ -46,6 +46,7 @@ impl FullscreenState {
                                 tool_result_id: tool.tool_result_id,
                                 execution_started: false,
                                 started_tick: None,
+                                started_at: None,
                                 finished_duration_ms: None,
                                 result_content: tool.result_content,
                                 result_details: tool.result_details,
@@ -217,6 +218,7 @@ impl FullscreenState {
                             tool_result_id: None,
                             execution_started: false,
                             started_tick: None,
+                            started_at: None,
                             finished_duration_ms: None,
                             result_content: None,
                             result_details: None,
@@ -250,6 +252,9 @@ impl FullscreenState {
                 if tool.started_tick.is_none() {
                     tool.started_tick = Some(tick_count);
                 }
+                if tool.started_at.is_none() {
+                    tool.started_at = Some(std::time::Instant::now());
+                }
                 self.refresh_tool_rendering(&id);
                 if let Some(message) = self.running_tool_status_message() {
                     self.status_line = message;
@@ -279,10 +284,15 @@ impl FullscreenState {
                         .as_ref()
                         .and_then(|details| details.get("durationMs"))
                         .and_then(|value| value.as_u64());
+                    let duration_from_instant = tool
+                        .started_at
+                        .map(|started_at| started_at.elapsed().as_millis() as u64);
                     let duration_from_ticks = tool
                         .started_tick
                         .map(|started| tick_count.saturating_sub(started) * 80);
-                    tool.finished_duration_ms = duration_from_details.or(duration_from_ticks);
+                    tool.finished_duration_ms = duration_from_details
+                        .or(duration_from_instant)
+                        .or(duration_from_ticks);
                 }
                 self.refresh_tool_rendering(&id);
                 if let Some(message) = self.running_tool_status_message() {
