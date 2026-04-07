@@ -1,6 +1,6 @@
 {
   "name": "@shuyhere/bb-agent",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "BB-Agent — a Rust-native AI coding agent for the terminal",
   "license": "MIT",
   "repository": {
