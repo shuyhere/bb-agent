@@ -9,12 +9,10 @@ use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-// Set these once BB-Agent is published.
-const DEFAULT_NPM_PACKAGE: Option<&str> = None;
-const DEFAULT_CHANGELOG_URL: Option<&str> = None;
+const DEFAULT_NPM_PACKAGE: Option<&str> = Some("@shuyhere/bb-agent");
+const DEFAULT_CHANGELOG_URL: Option<&str> = Some("https://github.com/shuyhere/bb-agent/releases");
 const DEFAULT_INSTALL_COMMAND: Option<&str> = None;
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
-const NOTE_SEPARATOR_WIDTH: usize = 157;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UpdateCheckConfig {
@@ -90,6 +88,30 @@ pub(crate) async fn check_for_updates(
     })
 }
 
+fn detect_install_command(package_name: &str) -> String {
+    if let Ok(cmd) = std::env::var("BB_UPDATE_CHECK_INSTALL")
+        && !cmd.trim().is_empty()
+    {
+        return cmd;
+    }
+    if std::env::var("BB_NPM_WRAPPER_ACTIVE").ok().as_deref() == Some("1") {
+        return format!("npm install -g {package_name}@latest");
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.display().to_string().to_ascii_lowercase();
+        if exe.contains("node_modules") || exe.contains("homebrew") || exe.contains("npm") {
+            return format!("npm install -g {package_name}@latest");
+        }
+        if exe.contains(".cargo") || exe.contains("cargo") {
+            return "cargo install --git https://github.com/shuyhere/bb-agent.git bb-cli --force"
+                .to_string();
+        }
+    }
+    DEFAULT_INSTALL_COMMAND
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("npm install -g {package_name}@latest"))
+}
+
 fn load_config(cwd: &Path) -> Option<UpdateCheckConfig> {
     let settings = Settings::load_merged(cwd);
     if !settings.update_check.enabled {
@@ -99,10 +121,7 @@ fn load_config(cwd: &Path) -> Option<UpdateCheckConfig> {
     let package_name = std::env::var("BB_UPDATE_CHECK_PACKAGE")
         .ok()
         .or_else(|| DEFAULT_NPM_PACKAGE.map(ToString::to_string))?;
-    let install_command = std::env::var("BB_UPDATE_CHECK_INSTALL")
-        .ok()
-        .or_else(|| DEFAULT_INSTALL_COMMAND.map(ToString::to_string))
-        .unwrap_or_else(|| format!("npm install -g {package_name}"));
+    let install_command = detect_install_command(&package_name);
     let changelog_url = std::env::var("BB_UPDATE_CHECK_CHANGELOG")
         .ok()
         .or_else(|| DEFAULT_CHANGELOG_URL.map(ToString::to_string));
@@ -250,19 +269,13 @@ fn is_newer_version(candidate: &str, current: &str) -> bool {
 }
 
 pub(crate) fn build_update_available_note(notice: &UpdateNotice) -> String {
-    let line = "─".repeat(NOTE_SEPARATOR_WIDTH);
-    let mut lines = vec![
-        line.clone(),
-        " Update Available".to_string(),
-        format!(
-            " New version {} is available. Run: {}",
-            notice.latest_version, notice.install_command
-        ),
-    ];
+    let mut lines = vec![format!(
+        "bb update available: {} • use {}",
+        notice.latest_version, notice.install_command
+    )];
     if let Some(changelog_url) = &notice.changelog_url {
-        lines.push(format!(" Changelog: {changelog_url}"));
+        lines.push(format!("release notes: {changelog_url}"));
     }
-    lines.push(line);
     lines.join("\n")
 }
 
@@ -292,11 +305,9 @@ mod tests {
             changelog_url: Some("https://example.com/bb-agent/changelog".to_string()),
         });
 
-        assert!(text.contains("Update Available"));
-        assert!(text.contains("New version 0.65.0 is available."));
+        assert!(text.contains("bb update available: 0.65.0"));
         assert!(text.contains("npm install -g bb-agent"));
-        assert!(text.contains("Changelog: https://example.com/bb-agent/changelog"));
-        assert!(text.lines().next().unwrap_or_default().starts_with('─'));
+        assert!(text.contains("release notes: https://example.com/bb-agent/changelog"));
     }
 
     #[test]
