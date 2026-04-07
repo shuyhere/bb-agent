@@ -385,6 +385,91 @@ pub(crate) fn auth_source_label(provider: &str) -> &'static str {
     }
 }
 
+fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
+    let store = load_auth();
+    let mut has_oauth = false;
+    let mut has_api_key = false;
+
+    let mut inspect_store_entry = |key: &str| {
+        if let Some(entry) = store.providers.get(key) {
+            match entry {
+                AuthEntry::ApiKey { key } if !key.trim().is_empty() => has_api_key = true,
+                AuthEntry::OAuth { access, .. } if !access.trim().is_empty() => has_oauth = true,
+                _ => {}
+            }
+        }
+    };
+
+    match provider {
+        "openai" => {
+            inspect_store_entry("openai");
+            inspect_store_entry("openai-codex");
+            if std::env::var("OPENAI_API_KEY")
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            {
+                has_api_key = true;
+            }
+        }
+        "anthropic" => {
+            inspect_store_entry("anthropic");
+            if std::env::var("ANTHROPIC_API_KEY")
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            {
+                has_api_key = true;
+            }
+        }
+        "github-copilot" => {
+            inspect_store_entry("github-copilot");
+            for key in ["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"] {
+                if std::env::var(key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    has_oauth = true;
+                }
+            }
+        }
+        "openai-codex" => {
+            inspect_store_entry("openai-codex");
+        }
+        other => {
+            inspect_store_entry(other);
+            let env_keys: &[&str] = match other {
+                "google" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+                "groq" => &["GROQ_API_KEY"],
+                "xai" => &["XAI_API_KEY"],
+                "openrouter" => &["OPENROUTER_API_KEY"],
+                _ => &[],
+            };
+            for key in env_keys {
+                if std::env::var(key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    has_api_key = true;
+                }
+            }
+        }
+    }
+
+    (has_oauth, has_api_key)
+}
+
+pub(crate) fn provider_auth_status_summary(provider: &str) -> String {
+    let (has_oauth, has_api_key) = auth_methods_for_provider(provider);
+    if has_oauth && has_api_key {
+        "[OAuth + API key configured]".to_string()
+    } else if has_oauth {
+        "[OAuth configured]".to_string()
+    } else if has_api_key {
+        "[API key configured]".to_string()
+    } else {
+        "[not authenticated]".to_string()
+    }
+}
+
 pub(crate) fn add_cached_github_copilot_models(
     registry: &mut bb_provider::registry::ModelRegistry,
 ) {

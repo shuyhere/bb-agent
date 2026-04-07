@@ -24,22 +24,12 @@ use super::{
     copy_text_to_clipboard,
 };
 
-fn fullscreen_auth_method_label(provider: &str) -> &'static str {
-    crate::login::provider_auth_method(provider)
-}
-
 fn fullscreen_auth_display_name(provider: &str) -> String {
     crate::login::provider_display_name(provider)
 }
 
 fn fullscreen_auth_status_detail(provider: &str) -> String {
-    let base = match crate::login::auth_source(provider) {
-        Some(_) => format!("({}) [configured]", fullscreen_auth_method_label(provider)),
-        None => format!(
-            "({}) [not authenticated]",
-            fullscreen_auth_method_label(provider)
-        ),
-    };
+    let base = crate::login::provider_auth_status_summary(provider);
     if provider == "github-copilot"
         && let Some(domain) = crate::login::github_copilot_domain()
     {

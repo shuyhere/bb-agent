@@ -8,38 +8,30 @@ A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, m
 
 ## Install
 
-### Terminal & Font Compatibility
-
-BB-Agent uses Unicode glyphs and ANSI color in the fullscreen TUI. For the best visual experience, use a modern terminal and a Unicode-capable monospace font such as:
-
-- JetBrains Mono
-- SF Mono / Menlo
-- Fira Code
-- Cascadia Mono
-- Nerd Font variants of the above
-
-If some symbols look broken, missing, or too narrow in your terminal:
-
-1. switch to a Unicode-capable monospace font
-2. make sure your terminal uses UTF-8
-3. enable BB-Agent compatibility mode
-
-Compatibility mode uses safer ASCII-style fallback glyphs for spinner/status/tool markers:
-
 ```bash
-BB_TUI_COMPAT=1 bb
+npm install -g @shuyhere/bb-agent
 ```
 
-Or set this in `~/.bb-agent/settings.json`:
+### 1. Install with npm
 
-```json
-{
-  "compatibility_mode": true
-}
-```
+npm install downloads a small wrapper package first, then fetches the matching native BB-Agent binary from the GitHub release for your platform.
 
+What to expect:
+- first install can take a bit because npm downloads and verifies the native binary
+- the installer now prints progress and retry information while downloading
+- after install, run `bb`
 
-### From source (all platforms — macOS, Linux, Windows)
+Current GitHub release binaries are published for:
+- Linux x86_64
+- macOS x86_64
+- macOS arm64 (Apple Silicon)
+- Windows x86_64
+
+If no matching prebuilt binary is available, or the download fails, npm install will print source-build instructions instead.
+
+### 2. Build from source for development
+
+Use this if you want to develop BB-Agent itself, work on the Rust codebase, or install directly without the npm downloader.
 
 Requires [Rust](https://rustup.rs). Install Rust first if you don't have it:
 
@@ -48,7 +40,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 ```
 
-Then build and install BB-Agent:
+Then build and install BB-Agent from source:
 
 ```bash
 git clone https://github.com/shuyhere/bb-agent.git
@@ -57,16 +49,6 @@ cargo install --path crates/cli
 ```
 
 This compiles the `bb` binary and installs it to `~/.cargo/bin/bb` (which Rust adds to your PATH).
-
-### npm (Linux/macOS/Windows — downloads matching prebuilt binary when available)
-
-```bash
-npm install -g @shuyhere/bb-agent
-```
-
-> If no matching prebuilt binary is available for your platform, npm install will print source-build instructions instead. After install, run `bb` to start.
->
-> Current GitHub release binaries are published for Linux x86_64, macOS x86_64/arm64, and Windows x86_64.
 
 ## Getting Started
 
@@ -204,6 +186,38 @@ BB-Agent uses layered configuration:
 | `bb-plugin-host` | Plugin discovery and host runtime |
 | `bb-tui` | Terminal UI components and fullscreen experience |
 | `bb-cli` | The `bb` command-line application |
+
+## Troubleshooting
+
+### Terminal & Font Compatibility
+
+BB-Agent uses Unicode glyphs and ANSI color in the fullscreen TUI. For the best visual experience, use a modern terminal and a Unicode-capable monospace font such as:
+
+- JetBrains Mono
+- SF Mono / Menlo
+- Fira Code
+- Cascadia Mono
+- Nerd Font variants of the above
+
+If some symbols look broken, missing, or too narrow in your terminal:
+
+1. switch to a Unicode-capable monospace font
+2. make sure your terminal uses UTF-8
+3. enable BB-Agent compatibility mode
+
+Compatibility mode uses safer ASCII-style fallback glyphs for spinner/status/tool markers:
+
+```bash
+BB_TUI_COMPAT=1 bb
+```
+
+Or set this in `~/.bb-agent/settings.json`:
+
+```json
+{
+  "compatibility_mode": true
+}
+```
 
 ## Documentation
 

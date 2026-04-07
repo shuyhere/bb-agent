@@ -5,6 +5,18 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-04-07
+
+### Fixed
+
+- npm install now uses a longer timeout, retries release-binary downloads, and reports real download errors instead of incorrectly saying no matching prebuilt binary exists
+- npm install now shows progress logs during native binary download and verification so first-time installs on macOS/Linux are less confusing
+- fullscreen `/login` provider-family status now correctly shows OpenAI OAuth state after ChatGPT login instead of incorrectly showing the API key path as not authenticated
+
+### Changed
+
+- README install docs now lead with `npm install -g @shuyhere/bb-agent`, move terminal/font guidance into Troubleshooting, and clearly separate npm install from building from source for development
+
 ## [0.0.9] - 2026-04-07
 
 ### Added
@@ -46,5 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.10]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.10
 [0.0.9]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.9
 [0.0.8]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.8
