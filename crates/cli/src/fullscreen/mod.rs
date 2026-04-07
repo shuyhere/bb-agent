@@ -114,10 +114,10 @@ fn build_fullscreen_config(
     let transcript = Transcript::new();
 
     let title = if prompt_label.is_empty() || prompt_label == "default" {
-        format!("BB-Agent v{}", env!("CARGO_PKG_VERSION"))
+        format!("♡ BB-Agent v{}", env!("CARGO_PKG_VERSION"))
     } else {
         format!(
-            "BB-Agent v{} • prompt: {}",
+            "♡ BB-Agent v{} • prompt: {}",
             env!("CARGO_PKG_VERSION"),
             prompt_label
         )

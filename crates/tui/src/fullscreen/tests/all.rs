@@ -100,7 +100,7 @@ fn screen_row_for_first_content(state: &FullscreenState, block_id: BlockId) -> u
 fn frame_renders_header_title_when_space_allows() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig {
-            title: "BB-Agent v0.1.0".to_string(),
+            title: "♡ BB-Agent v0.1.0".to_string(),
             ..FullscreenAppConfig::default()
         },
         Size {
@@ -111,7 +111,7 @@ fn frame_renders_header_title_when_space_allows() {
     state.prepare_for_render();
     let frame = build_frame(&state);
 
-    assert!(frame.lines[0].contains("BB-Agent v0.1.0"));
+    assert!(frame.lines[0].contains("♡ BB-Agent v0.1.0"));
     assert!(frame.lines[1].contains("Ctrl-C exit"));
 }
 
@@ -119,7 +119,7 @@ fn frame_renders_header_title_when_space_allows() {
 fn header_and_input_borders_follow_fullscreen_color_theme() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig {
-            title: "BB-Agent v0.1.0".to_string(),
+            title: "♡ BB-Agent v0.1.0".to_string(),
             ..FullscreenAppConfig::default()
         },
         Size {
