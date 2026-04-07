@@ -156,37 +156,50 @@ fn base64_encode_simple(data: &[u8]) -> String {
     out
 }
 
+fn is_ssh_session() -> bool {
+    std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_CLIENT").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
+}
+
+fn linux_gui_clipboard_available() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
+}
+
+fn copy_via_spawned_stdin(cmd: &str, args: &[&str], text: &str) -> bool {
+    let spawned = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return false;
+    };
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    child.wait().map(|status| status.success()).unwrap_or(false)
+}
+
 fn copy_text_to_system_clipboard(text: &str) {
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(stdin) = child.stdin.as_mut() {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                child.wait().map(|_| ())
-            });
+        let _ = copy_via_spawned_stdin("pbcopy", &[], text);
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        if is_ssh_session() || !linux_gui_clipboard_available() {
+            return;
+        }
+
         for cmd in [
             ("wl-copy", Vec::<&str>::new()),
             ("xclip", vec!["-selection", "clipboard"]),
         ] {
-            let spawned = std::process::Command::new(cmd.0)
-                .args(&cmd.1)
-                .stdin(std::process::Stdio::piped())
-                .spawn();
-            if let Ok(mut child) = spawned {
-                use std::io::Write;
-                if let Some(stdin) = child.stdin.as_mut() {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                let _ = child.wait();
+            if copy_via_spawned_stdin(cmd.0, &cmd.1, text) {
                 break;
             }
         }

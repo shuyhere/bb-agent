@@ -24,6 +24,7 @@ impl FullscreenController {
 
         if text == "/reload" {
             self.reload_runtime_resources().await?;
+            self.show_startup_resources();
             return Ok(true);
         }
 
@@ -125,7 +126,6 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Installed {source} and reloaded resources"
         )));
-        self.show_startup_resources();
         Ok(())
     }
 
@@ -147,7 +147,6 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::SetStatusLine(
             "Detected package/settings change and reloaded resources".to_string(),
         ));
-        self.show_startup_resources();
         Ok(())
     }
 

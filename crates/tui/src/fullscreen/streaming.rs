@@ -53,7 +53,9 @@ pub(super) struct ToolCallState {
 const TOOL_TIMER_TICK_MS: u64 = 80;
 
 fn format_elapsed_ms(ms: u64) -> String {
-    if ms >= 60_000 {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms >= 60_000 {
         format!("{:.1}m", ms as f64 / 60_000.0)
     } else {
         format!("{:.1}s", ms as f64 / 1000.0)
