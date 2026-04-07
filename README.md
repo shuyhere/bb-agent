@@ -2,7 +2,7 @@
 
 ![BB-Agent title figure](assets/title-figure.png)
 
-**BB** stands for **Bridge Baby**, inspired by *Death Stranding*.
+**BB** means **Bridge Baby** in *Death Stranding*. I named this project that way because while building it, I was also enjoying *Death Stranding* and loved the idea of connecting everyone together.
 
 A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, multi-provider support, tool use, session persistence, branching, extensions, and skills.
 
