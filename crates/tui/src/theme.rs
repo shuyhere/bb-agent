@@ -4,6 +4,21 @@
 //! Respects `NO_COLOR` (disable all colors) and `FORCE_COLOR` (always emit colors).
 
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static COMPAT_MODE_OVERRIDE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_compatibility_mode(enabled: bool) {
+    COMPAT_MODE_OVERRIDE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn compatibility_mode_enabled() -> bool {
+    COMPAT_MODE_OVERRIDE.load(Ordering::Relaxed)
+        || std::env::var("BB_TUI_COMPAT")
+            .ok()
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+            .unwrap_or(false)
+}
 
 /// Returns the global theme instance.
 pub fn theme() -> &'static Theme {

@@ -260,6 +260,7 @@ fn is_summary_note(block: &TranscriptBlock) -> bool {
 }
 
 fn render_header_lines(block: &TranscriptBlock, width: usize, _depth: usize) -> Vec<String> {
+    let compat = crate::theme::compatibility_mode_enabled();
     if block.kind == BlockKind::ToolUse {
         let header_text = if let Some((base, _status)) = block.title.rsplit_once(" • ") {
             base.trim().to_string()
@@ -268,13 +269,25 @@ fn render_header_lines(block: &TranscriptBlock, width: usize, _depth: usize) -> 
         } else {
             block.title.trim().to_string()
         };
-        return wrap_with_prefix(&header_text, width, "● ", "  ");
+        return wrap_with_prefix(&header_text, width, if compat { "* " } else { "● " }, "  ");
     }
 
     if is_summary_note(block) {
         let header_text = match block.title.as_str() {
-            "branch summary" => "◆ Branch Summary",
-            "compaction" => "◆ Compaction Summary",
+            "branch summary" => {
+                if compat {
+                    "Branch Summary"
+                } else {
+                    "◆ Branch Summary"
+                }
+            }
+            "compaction" => {
+                if compat {
+                    "Compaction Summary"
+                } else {
+                    "◆ Compaction Summary"
+                }
+            }
             other => other,
         };
         return wrap_with_prefix(header_text, width, "", "");
@@ -290,7 +303,11 @@ fn should_insert_spacer(current: &OrderedBlock, next: Option<&OrderedBlock>) -> 
 fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> Vec<String> {
     if block.content.trim().is_empty() {
         return if is_summary_note(block) {
-            vec!["╰─ ".to_string()]
+            vec![if crate::theme::compatibility_mode_enabled() {
+                "`- ".to_string()
+            } else {
+                "╰─ ".to_string()
+            }]
         } else {
             Vec::new()
         };
@@ -317,7 +334,11 @@ fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> 
 
 fn render_summary_block_content(text: &str, width: usize) -> Vec<String> {
     let mut lines = wrap_with_prefix(text, width, "│  ", "│  ");
-    lines.push("╰─ ".to_string());
+    lines.push(if crate::theme::compatibility_mode_enabled() {
+        "`- ".to_string()
+    } else {
+        "╰─ ".to_string()
+    });
     lines
 }
 

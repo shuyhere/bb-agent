@@ -74,6 +74,7 @@ Project root is detected by walking up from `cwd` looking for `.git`, `Cargo.tom
   ],
 
   "color_theme": "lavender",
+  "compatibility_mode": false,
 
   "update_check": {
     "enabled": true,
@@ -141,6 +142,17 @@ Custom provider overrides. Fields:
 #### `color_theme`
 TUI color theme. Currently supported: `lavender` (default), or custom.
 
+#### `compatibility_mode`
+Enable ASCII-safe fallback rendering for terminals/fonts that do not display BB-Agent's richer Unicode glyphs correctly.
+
+When enabled, BB-Agent uses safer fallback symbols for spinner frames, live tool markers, and some transcript decorations.
+
+Equivalent environment variable:
+
+```bash
+BB_TUI_COMPAT=1
+```
+
 ## AGENTS.md
 
 `AGENTS.md` (or `CLAUDE.md` as fallback) files are appended to the system prompt. BB-Agent loads them from multiple levels and merges them:
@@ -189,3 +201,4 @@ Templates fully replace the default system prompt when used.
 | `XAI_API_KEY` | xAI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `BB_BROWSER` | Path to Chrome/Chromium binary for `browser_fetch` |
+| `BB_TUI_COMPAT` | Enable ASCII-safe TUI compatibility mode |

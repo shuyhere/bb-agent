@@ -221,7 +221,17 @@ fn tool_status_color<'a>(block: &TranscriptBlock, t: &'a crate::theme::Theme) ->
 const RUNNING_DOT_BLINK_MS: u64 = 500;
 
 fn tool_status_dot(state: &FullscreenState, block: &TranscriptBlock) -> &'static str {
-    if block.title.contains("running") {
+    if crate::theme::compatibility_mode_enabled() {
+        if block.title.contains("running") {
+            if ((state.tick_count * 80) / RUNNING_DOT_BLINK_MS).is_multiple_of(2) {
+                "*"
+            } else {
+                "."
+            }
+        } else {
+            "*"
+        }
+    } else if block.title.contains("running") {
         if ((state.tick_count * 80) / RUNNING_DOT_BLINK_MS).is_multiple_of(2) {
             "●"
         } else {
@@ -249,14 +259,23 @@ fn render_focused_tool_header_line(content: &str, block: &TranscriptBlock) -> St
         .trim_start_matches('▌')
         .trim_start_matches('▎')
         .trim_start();
+    let pointer = if crate::theme::compatibility_mode_enabled() {
+        ">"
+    } else {
+        "▶"
+    };
     let marked = if let Some(rest) = plain.strip_prefix("● ") {
-        format!("▶ {rest}")
+        format!("{pointer} {rest}")
     } else if let Some(rest) = plain.strip_prefix("· ") {
-        format!("▶ {rest}")
-    } else if plain.starts_with('▶') {
+        format!("{pointer} {rest}")
+    } else if let Some(rest) = plain.strip_prefix("* ") {
+        format!("{pointer} {rest}")
+    } else if let Some(rest) = plain.strip_prefix(". ") {
+        format!("{pointer} {rest}")
+    } else if plain.starts_with('▶') || plain.starts_with('>') {
         plain.to_string()
     } else {
-        format!("▶ {plain}")
+        format!("{pointer} {plain}")
     };
 
     if !t.colors_enabled() {
@@ -277,7 +296,7 @@ fn style_tool_header(
     let line = truncate_to_width(text, width);
     let status = tool_status_color(block, t);
 
-    if let Some(rest) = line.strip_prefix("● ") {
+    if let Some(rest) = line.strip_prefix("● ").or_else(|| line.strip_prefix("* ")) {
         if let Some((name, args)) = rest.split_once('(') {
             let args = format!("({args}");
             let display_name = display_tool_header_name(name.trim());

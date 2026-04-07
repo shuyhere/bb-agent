@@ -47,6 +47,8 @@ pub struct Settings {
     pub providers: Option<Vec<ProviderOverride>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_theme: Option<String>,
+    #[serde(default, alias = "compatibilityMode")]
+    pub compatibility_mode: bool,
     #[serde(default, alias = "updateCheck")]
     pub update_check: UpdateCheckSettings,
 }
@@ -159,6 +161,7 @@ impl Default for Settings {
             models: None,
             providers: None,
             color_theme: None,
+            compatibility_mode: false,
             update_check: UpdateCheckSettings::default(),
         }
     }

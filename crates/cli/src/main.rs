@@ -207,6 +207,13 @@ async fn main() -> Result<()> {
         std::env::set_current_dir(cwd)?;
     }
 
+    if let Ok(cwd) = std::env::current_dir() {
+        let settings = bb_core::settings::Settings::load_merged(&cwd);
+        if settings.compatibility_mode {
+            bb_tui::theme::set_compatibility_mode(true);
+        }
+    }
+
     // In interactive mode, suppress tracing to avoid leaking into TUI.
     // In print mode or verbose, show warnings.
     let log_level = if cli.verbose {

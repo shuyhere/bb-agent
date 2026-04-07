@@ -4,6 +4,37 @@ A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, m
 
 ## Install
 
+### Terminal & Font Compatibility
+
+BB-Agent uses Unicode glyphs and ANSI color in the fullscreen TUI. For the best visual experience, use a modern terminal and a Unicode-capable monospace font such as:
+
+- JetBrains Mono
+- SF Mono / Menlo
+- Fira Code
+- Cascadia Mono
+- Nerd Font variants of the above
+
+If some symbols look broken, missing, or too narrow in your terminal:
+
+1. switch to a Unicode-capable monospace font
+2. make sure your terminal uses UTF-8
+3. enable BB-Agent compatibility mode
+
+Compatibility mode uses safer ASCII-style fallback glyphs for spinner/status/tool markers:
+
+```bash
+BB_TUI_COMPAT=1 bb
+```
+
+Or set this in `~/.bb-agent/settings.json`:
+
+```json
+{
+  "compatibility_mode": true
+}
+```
+
+
 ### From source (all platforms — macOS, Linux, Windows)
 
 Requires [Rust](https://rustup.rs). Install Rust first if you don't have it:

@@ -163,6 +163,12 @@ enum Season {
 
 impl Season {
     fn chars(self) -> &'static [&'static str] {
+        if crate::theme::compatibility_mode_enabled() {
+            return match self {
+                Season::Spring => &[".", "o", "O", "o", "."],
+                Season::Winter => &[".", "*", "+", "*", "."],
+            };
+        }
         match self {
             Season::Spring => &["·", "❀", "❁", "✿", "❁", "❀"],
             Season::Winter => &["·", "❅", "❆", "❄", "❆", "❅"],

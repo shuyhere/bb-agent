@@ -37,6 +37,11 @@ pub(super) fn merge_settings(global: &Settings, project: &Settings) -> Settings 
             .color_theme
             .clone()
             .or_else(|| global.color_theme.clone()),
+        compatibility_mode: merge_bool_with_default(
+            global.compatibility_mode,
+            project.compatibility_mode,
+            false,
+        ),
         update_check: merge_update_check(&global.update_check, &project.update_check),
     }
 }
