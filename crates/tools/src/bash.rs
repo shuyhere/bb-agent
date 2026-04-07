@@ -32,7 +32,7 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "Bash command to execute" },
-                "timeout": { "type": "number", "description": "Timeout in seconds (optional)" }
+                "timeout": { "type": "number", "description": "Timeout in seconds (optional, no default timeout)" }
             },
             "required": ["command"]
         })
