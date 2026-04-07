@@ -186,13 +186,13 @@ impl FullscreenController {
             self.send_command(FullscreenCommand::CloseAuthDialog);
             if let Some(display) = self.maybe_switch_to_preferred_post_login_model(&provider) {
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
-                    "Logged in to {} • switched to {}",
+                    "Logged in to {} • switched to {} • use /model to change",
                     crate::login::provider_display_name(&provider),
                     display,
                 )));
             } else {
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
-                    "Logged in to {}",
+                    "Logged in to {} • use /model to change",
                     crate::login::provider_display_name(&provider)
                 )));
             }

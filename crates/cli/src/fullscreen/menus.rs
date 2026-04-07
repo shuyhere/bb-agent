@@ -564,25 +564,35 @@ impl FullscreenController {
         Ok(())
     }
 
-    fn preferred_post_login_model(provider: &str) -> Option<(&'static str, &'static str)> {
-        match provider {
-            "anthropic" => Some(("anthropic", "claude-opus-4-6")),
-            "openai" | "openai-codex" => Some(("openai", "gpt-5.4")),
-            _ => None,
-        }
-    }
-
-    pub(super) fn maybe_switch_to_preferred_post_login_model(&mut self, provider: &str) -> Option<String> {
-        let (preferred_provider, preferred_model_id) = Self::preferred_post_login_model(provider)?;
+    pub(super) fn maybe_switch_to_preferred_post_login_model(
+        &mut self,
+        provider: &str,
+    ) -> Option<String> {
+        let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+        let preferred_provider = match provider {
+            "openai-codex" => "openai",
+            other => other,
+        };
+        let preferred_model_id = if settings.default_provider.as_deref() == Some(preferred_provider)
+            || (provider == "openai-codex"
+                && settings.default_provider.as_deref() == Some("openai-codex"))
+        {
+            settings
+                .default_model
+                .clone()
+                .or_else(|| crate::login::preferred_model_for_provider(preferred_provider))?
+        } else {
+            crate::login::preferred_model_for_provider(preferred_provider)?
+        };
         let mut registry = ModelRegistry::new();
-        registry.load_custom_models(&Settings::load_merged(&self.session_setup.tool_ctx.cwd));
+        registry.load_custom_models(&settings);
         crate::login::add_cached_github_copilot_models(&mut registry);
         let model = registry
-            .find(preferred_provider, preferred_model_id)
+            .find(preferred_provider, &preferred_model_id)
             .cloned()
             .or_else(|| {
                 registry
-                    .find_fuzzy(preferred_model_id, Some(preferred_provider))
+                    .find_fuzzy(&preferred_model_id, Some(preferred_provider))
                     .cloned()
             })?;
         let display = format!("{}/{}", model.provider, model.id);
@@ -1140,22 +1150,32 @@ impl FullscreenController {
                     ));
                 } else if provider == "github-copilot" {
                     let model_count = crate::login::github_copilot_cached_models().len();
-                    self.send_command(FullscreenCommand::SetStatusLine(format!(
-                        "Logged in to {} • refreshed {} models",
-                        crate::login::provider_display_name(provider),
-                        model_count
-                    )));
+                    if let Some(display) = self.maybe_switch_to_preferred_post_login_model(provider)
+                    {
+                        self.send_command(FullscreenCommand::SetStatusLine(format!(
+                            "Logged in to {} • refreshed {} models • switched to {} • use /model to change",
+                            crate::login::provider_display_name(provider),
+                            model_count,
+                            display,
+                        )));
+                    } else {
+                        self.send_command(FullscreenCommand::SetStatusLine(format!(
+                            "Logged in to {} • refreshed {} models • use /model to change",
+                            crate::login::provider_display_name(provider),
+                            model_count
+                        )));
+                    }
                 } else if let Some(display) =
                     self.maybe_switch_to_preferred_post_login_model(provider)
                 {
                     self.send_command(FullscreenCommand::SetStatusLine(format!(
-                        "Logged in to {} • switched to {}",
+                        "Logged in to {} • switched to {} • use /model to change",
                         crate::login::provider_display_name(provider),
                         display,
                     )));
                 } else {
                     self.send_command(FullscreenCommand::SetStatusLine(format!(
-                        "Logged in to {}",
+                        "Logged in to {} • use /model to change",
                         crate::login::provider_display_name(provider)
                     )));
                 }

@@ -4,6 +4,15 @@ use crate::registry::{ApiType, Model};
 pub(super) fn builtin_models() -> Vec<Model> {
     vec![
         model(
+            "gemini-3.1-pro",
+            "Gemini 3.1 Pro",
+            "google",
+            ApiType::GoogleGenerative,
+            (1_048_576, 65_536),
+            runtime(true, "https://generativelanguage.googleapis.com"),
+            simple_cost(1.25, 10.0),
+        ),
+        model(
             "gemini-2.5-flash",
             "Gemini 2.5 Flash",
             "google",

@@ -121,11 +121,19 @@ pub(crate) async fn prepare_session_runtime(
     let (session_id, session_created) = resolve_startup_session_id(&conn, &cwd, &entry)?;
 
     let settings = Settings::load_merged(&cwd);
-    let model_input = entry.model.as_deref().or(settings.default_model.as_deref());
+    let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
+    let model_input = entry
+        .model
+        .as_deref()
+        .or(settings.default_model.as_deref())
+        .or(startup_fallback.as_ref().map(|(_, model)| model.as_str()));
     let provider_input = entry
         .provider
         .as_deref()
-        .or(settings.default_provider.as_deref());
+        .or(settings.default_provider.as_deref())
+        .or(startup_fallback
+            .as_ref()
+            .map(|(provider, _)| provider.as_str()));
     let (provider_name, model_id, thinking_override) = parse_model_arg(provider_input, model_input);
 
     let requested_thinking = thinking_override

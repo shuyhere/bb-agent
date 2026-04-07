@@ -40,6 +40,8 @@ pub(crate) fn try_open_browser(url: &str) -> bool {
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct AuthStore {
+    #[serde(default)]
+    last_provider: Option<String>,
     #[serde(flatten)]
     providers: HashMap<String, AuthEntry>,
 }
@@ -90,6 +92,13 @@ const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
 
 /// Providers that use OAuth instead of API key paste.
 const OAUTH_PROVIDERS: &[&str] = &["anthropic", "openai-codex", "github-copilot"];
+
+fn normalize_provider_for_model_selection(provider: &str) -> String {
+    match provider {
+        "openai-codex" => "openai".to_string(),
+        other => other.to_string(),
+    }
+}
 
 pub fn provider_meta(provider: &str) -> (&str, &str) {
     KNOWN_PROVIDERS
@@ -173,6 +182,12 @@ pub fn remove_auth(provider: &str) -> Result<bool> {
     let mut store = load_auth();
     let removed = store.providers.remove(provider).is_some();
     if removed {
+        if store.last_provider.as_deref() == Some(provider)
+            || store.last_provider.as_deref()
+                == Some(normalize_provider_for_model_selection(provider).as_str())
+        {
+            store.last_provider = None;
+        }
         save_auth(&store)?;
     }
     Ok(removed)
@@ -218,6 +233,7 @@ pub(crate) fn save_api_key(provider: &str, key: String) -> Result<()> {
     store
         .providers
         .insert(provider.to_string(), AuthEntry::ApiKey { key });
+    store.last_provider = Some(normalize_provider_for_model_selection(provider));
     save_auth(&store)
 }
 
@@ -709,6 +725,55 @@ pub fn authenticated_providers() -> Vec<String> {
     out
 }
 
+pub(crate) fn preferred_model_for_provider(provider: &str) -> Option<String> {
+    match provider {
+        "anthropic" => Some("claude-opus-4-6".to_string()),
+        "openai" | "openai-codex" => Some("gpt-5.4".to_string()),
+        "google" => Some("gemini-3.1-pro".to_string()),
+        "github-copilot" => {
+            let cached = github_copilot_cached_models();
+            cached
+                .iter()
+                .find(|id| id.contains("opus-4-6"))
+                .cloned()
+                .or_else(|| cached.iter().find(|id| id.contains("opus")).cloned())
+                .or_else(|| Some("claude-opus-4-6".to_string()))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn preferred_startup_provider_and_model(
+    settings: &bb_core::settings::Settings,
+) -> Option<(String, String)> {
+    if let Some(provider) = settings.default_provider.as_deref()
+        && provider_has_auth(provider)
+    {
+        let provider = normalize_provider_for_model_selection(provider);
+        let model = settings
+            .default_model
+            .clone()
+            .or_else(|| preferred_model_for_provider(&provider))?;
+        return Some((provider, model));
+    }
+
+    if let Some(provider) = load_auth().last_provider
+        && provider_has_auth(&provider)
+    {
+        let model = preferred_model_for_provider(&provider)?;
+        return Some((normalize_provider_for_model_selection(&provider), model));
+    }
+
+    let authenticated = authenticated_providers();
+    if authenticated.len() == 1 {
+        let provider = normalize_provider_for_model_selection(&authenticated[0]);
+        let model = preferred_model_for_provider(&provider)?;
+        return Some((provider, model));
+    }
+
+    None
+}
+
 /// Save OAuth credentials for a provider into auth.json.
 pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Result<()> {
     let mut store = load_auth();
@@ -721,6 +786,7 @@ pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Resul
             extra: creds.extra.clone(),
         },
     );
+    store.last_provider = Some(normalize_provider_for_model_selection(provider));
     save_auth(&store)
 }
 

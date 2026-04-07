@@ -4,6 +4,15 @@ use crate::registry::{ApiType, Model};
 pub(super) fn builtin_models() -> Vec<Model> {
     vec![
         model(
+            "claude-opus-4-6",
+            "Claude Opus 4.6 (Copilot)",
+            "github-copilot",
+            ApiType::OpenaiCompletions,
+            (200_000, 16_384),
+            runtime(true, "https://api.githubcopilot.com"),
+            simple_cost(0.0, 0.0),
+        ),
+        model(
             "gpt-4o",
             "GPT-4o (Copilot)",
             "github-copilot",

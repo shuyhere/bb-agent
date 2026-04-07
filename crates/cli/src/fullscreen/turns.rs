@@ -33,7 +33,7 @@ impl FullscreenController {
             self.send_command(FullscreenCommand::PushNote {
                 level: FullscreenNoteLevel::Error,
                 text: format!(
-                    "No credentials configured for provider '{}'. Use /login to sign in, then bb will switch to your authenticated default model automatically.",
+                    "No credentials configured for provider '{}'. Use /login to sign in. After login, bb will switch to your authenticated default model automatically, and you can use /model to choose another configured model.",
                     self.session_setup.model.provider
                 ),
             });
