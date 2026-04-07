@@ -9,7 +9,31 @@ permissions:
   contents: write
 
 jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo and npm versions
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          NPM_VERSION=$(node -p "require('./package.json').version")
+          echo "tag=$TAG cargo=$CARGO_VERSION npm=$NPM_VERSION"
+          test "$TAG" = "$CARGO_VERSION"
+          test "$TAG" = "$NPM_VERSION"
+
+      - name: Create release if missing
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
+    needs: create_release
     strategy:
       matrix:
         include:
@@ -35,16 +59,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify tag matches Cargo and npm versions
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          NPM_VERSION=$(node -p "require('./package.json').version")
-          echo "tag=$TAG cargo=$CARGO_VERSION npm=$NPM_VERSION"
-          test "$TAG" = "$CARGO_VERSION"
-          test "$TAG" = "$NPM_VERSION"
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -59,6 +73,7 @@ jobs:
         run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.asset }}
+        shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
