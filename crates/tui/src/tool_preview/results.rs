@@ -7,6 +7,14 @@ use super::helpers::{
     collapse_preview_line, preview_text_lines, replace_tabs, shorten_path, text_output,
 };
 
+fn format_duration_ms(ms: u64) -> String {
+    if ms >= 60_000 {
+        format!("{:.1}m", ms as f64 / 60_000.0)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
 pub fn format_tool_result_content(
     name: &str,
     content: &[ContentBlock],
@@ -15,6 +23,12 @@ pub fn format_tool_result_content(
     is_error: bool,
     expanded: bool,
 ) -> String {
+    let duration_line = details
+        .as_ref()
+        .and_then(|details| details.get("durationMs"))
+        .and_then(|value| value.as_u64())
+        .map(|ms| format!("duration: {}", format_duration_ms(ms)));
+
     let mut lines = match name {
         "read" => render_read_result(content, details.as_ref(), expanded),
         "write" => render_write_result(details.as_ref()),
@@ -29,6 +43,10 @@ pub fn format_tool_result_content(
         }
         _ => render_default_result(content, expanded),
     };
+
+    if let Some(duration_line) = duration_line {
+        lines.insert(0, duration_line);
+    }
 
     if let Some(details) = details {
         let rendered =

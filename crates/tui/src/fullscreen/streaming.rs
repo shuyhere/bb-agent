@@ -41,10 +41,22 @@ pub(super) struct ToolCallState {
     pub(super) tool_use_id: BlockId,
     pub(super) tool_result_id: Option<BlockId>,
     pub(super) execution_started: bool,
+    pub(super) started_tick: Option<u64>,
+    pub(super) finished_duration_ms: Option<u64>,
     pub(super) result_content: Option<Vec<ContentBlock>>,
     pub(super) result_details: Option<serde_json::Value>,
     pub(super) artifact_path: Option<String>,
     pub(super) is_error: bool,
+}
+
+const TOOL_TIMER_TICK_MS: u64 = 80;
+
+fn format_elapsed_ms(ms: u64) -> String {
+    if ms >= 60_000 {
+        format!("{:.1}m", ms as f64 / 60_000.0)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
 }
 
 impl FullscreenState {
@@ -137,15 +149,77 @@ impl FullscreenState {
         self.active_turn.as_mut()?.tools.get_mut(id)
     }
 
+    fn tool_elapsed_ms(&self, tool: &ToolCallState) -> Option<u64> {
+        if let Some(ms) = tool.finished_duration_ms {
+            return Some(ms);
+        }
+        if let Some(ms) = tool
+            .result_details
+            .as_ref()
+            .and_then(|details| details.get("durationMs"))
+            .and_then(|value| value.as_u64())
+        {
+            return Some(ms);
+        }
+        tool.started_tick
+            .map(|started| self.tick_count.saturating_sub(started) * TOOL_TIMER_TICK_MS)
+    }
+
+    pub(super) fn running_tool_status_message(&self) -> Option<String> {
+        let active_turn = self.active_turn.as_ref()?;
+        let tool = active_turn
+            .tools
+            .values()
+            .find(|tool| tool.execution_started && tool.result_content.is_none())?;
+        let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
+        let elapsed = self
+            .tool_elapsed_ms(tool)
+            .map(format_elapsed_ms)
+            .unwrap_or_else(|| "0.0s".to_string());
+        Some(format!("running {display_name} • {elapsed}"))
+    }
+
+    pub(super) fn refresh_running_tool_visuals(&mut self) {
+        let running_ids = self
+            .active_turn
+            .as_ref()
+            .map(|turn| {
+                turn.tools
+                    .iter()
+                    .filter(|(_, tool)| tool.execution_started && tool.result_content.is_none())
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for id in running_ids {
+            self.refresh_tool_rendering(&id);
+        }
+        if let Some(message) = self.running_tool_status_message() {
+            self.status_line = message;
+            self.dirty = true;
+        }
+    }
+
     pub(super) fn refresh_tool_rendering(&mut self, id: &str) {
         let Some(tool) = self.tool_call_state(id).cloned() else {
             return;
         };
 
         let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
+        let elapsed = self.tool_elapsed_ms(&tool).map(format_elapsed_ms);
         let title = if tool.result_content.is_some() {
             let status = if tool.is_error { "error" } else { "done" };
-            format!("{display_name} • {status}")
+            if let Some(elapsed) = elapsed {
+                format!("{display_name} • {status} in {elapsed}")
+            } else {
+                format!("{display_name} • {status}")
+            }
+        } else if tool.execution_started {
+            if let Some(elapsed) = elapsed {
+                format!("{display_name} • running {elapsed}")
+            } else {
+                format!("{display_name} • running")
+            }
         } else {
             display_name
         };

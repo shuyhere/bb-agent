@@ -53,6 +53,7 @@ pub(super) async fn execute_tool_calls(
             args = updated_args;
         }
 
+        let started_at = std::time::Instant::now();
         let result = if hook_result.as_ref().and_then(|result| result.block) == Some(true) {
             Err(bb_core::error::BbError::Tool(
                 hook_result
@@ -62,6 +63,7 @@ pub(super) async fn execute_tool_calls(
         } else {
             execute_tool(tool_call, args.clone(), &env).await
         };
+        let duration_ms = started_at.elapsed().as_millis() as u64;
 
         let (mut content, mut details, artifact_path, mut is_error) = match result {
             Ok(result) => (
@@ -79,6 +81,19 @@ pub(super) async fn execute_tool_calls(
                 true,
             ),
         };
+        let mut details_json = details
+            .take()
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !details_json.is_object() {
+            details_json = serde_json::json!({ "value": details_json });
+        }
+        if let Some(map) = details_json.as_object_mut() {
+            map.insert(
+                "durationMs".to_string(),
+                serde_json::Value::from(duration_ms),
+            );
+        }
+        details = Some(details_json);
 
         if let Some(result) = send_extension_event_safe(
             env.extensions,

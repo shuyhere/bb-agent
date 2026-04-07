@@ -45,6 +45,8 @@ impl FullscreenState {
                                 tool_use_id: tool.tool_use_id,
                                 tool_result_id: tool.tool_result_id,
                                 execution_started: false,
+                                started_tick: None,
+                                finished_duration_ms: None,
                                 result_content: tool.result_content,
                                 result_details: tool.result_details,
                                 artifact_path: tool.artifact_path,
@@ -214,6 +216,8 @@ impl FullscreenState {
                             tool_use_id,
                             tool_result_id: None,
                             execution_started: false,
+                            started_tick: None,
+                            finished_duration_ms: None,
                             result_content: None,
                             result_details: None,
                             artifact_path: None,
@@ -233,15 +237,24 @@ impl FullscreenState {
                     Some(tool) => tool.raw_args.push_str(&args),
                     None => return RenderIntent::None,
                 };
-                RenderIntent::None
+                self.refresh_tool_rendering(&id);
+                RenderIntent::Render
             }
             FullscreenCommand::ToolExecuting { id } => {
                 self.spinner.notify_activity();
+                let tick_count = self.tick_count;
                 let Some(tool) = self.tool_call_state_mut(&id) else {
                     return RenderIntent::None;
                 };
                 tool.execution_started = true;
-                RenderIntent::None
+                if tool.started_tick.is_none() {
+                    tool.started_tick = Some(tick_count);
+                }
+                self.refresh_tool_rendering(&id);
+                if let Some(message) = self.running_tool_status_message() {
+                    self.status_line = message;
+                }
+                RenderIntent::Render
             }
             FullscreenCommand::ToolResult {
                 id,
@@ -252,6 +265,7 @@ impl FullscreenState {
                 is_error,
             } => {
                 self.spinner.notify_activity();
+                let tick_count = self.tick_count;
                 let Some(tool) = self.tool_call_state_mut(&id) else {
                     return RenderIntent::None;
                 };
@@ -259,7 +273,21 @@ impl FullscreenState {
                 tool.result_details = details;
                 tool.artifact_path = artifact_path;
                 tool.is_error = is_error;
+                if tool.finished_duration_ms.is_none() {
+                    let duration_from_details = tool
+                        .result_details
+                        .as_ref()
+                        .and_then(|details| details.get("durationMs"))
+                        .and_then(|value| value.as_u64());
+                    let duration_from_ticks = tool
+                        .started_tick
+                        .map(|started| tick_count.saturating_sub(started) * 80);
+                    tool.finished_duration_ms = duration_from_details.or(duration_from_ticks);
+                }
                 self.refresh_tool_rendering(&id);
+                if let Some(message) = self.running_tool_status_message() {
+                    self.status_line = message;
+                }
                 if let Some(tool) = self.tool_call_state(&id).cloned() {
                     self.all_tool_states.insert(id.clone(), tool);
                 }
