@@ -300,8 +300,9 @@ fn style_tool_header(
         if let Some((name, args)) = rest.split_once('(') {
             let args = format!("({args}");
             let display_name = display_tool_header_name(name.trim());
+            let styled_args = style_tool_header_args(&display_name, &args, t);
             format!(
-                "{}{}{} {}{}{}{}{}{args}{}",
+                "{}{}{} {}{}{}{}{}",
                 status,
                 tool_status_dot(state, block),
                 t.reset,
@@ -309,8 +310,7 @@ fn style_tool_header(
                 status,
                 display_name,
                 t.reset,
-                t.muted,
-                t.reset,
+                styled_args,
             )
         } else {
             let display_name = display_tool_header_name(rest.trim());
@@ -327,6 +327,46 @@ fn style_tool_header(
     } else {
         format!("{}{}{}", t.bold, line, t.reset)
     }
+}
+
+fn style_tool_header_args(display_name: &str, args: &str, t: &crate::theme::Theme) -> String {
+    if display_name == "Read"
+        && let Some(styled) = highlight_read_header_args(args, t)
+    {
+        return styled;
+    }
+    format!("{}{}{}", t.muted, args, t.reset)
+}
+
+fn highlight_read_header_args(args: &str, t: &crate::theme::Theme) -> Option<String> {
+    let close_idx = args.find(')')?;
+    let (group, suffix) = args.split_at(close_idx + 1);
+    let inner = group.strip_prefix('(')?.strip_suffix(')')?;
+    let (path, range) = split_read_line_range(inner)?;
+
+    let mut out = format!(
+        "{}({}{}{}{}:{}{}{})",
+        t.muted, path, t.reset, t.bold, t.accent, range, t.reset, t.muted
+    );
+    out.push_str(suffix);
+    out.push_str(&t.reset);
+    Some(out)
+}
+
+fn split_read_line_range(inner: &str) -> Option<(&str, &str)> {
+    let idx = inner.rfind(':')?;
+    let (path, rest) = inner.split_at(idx);
+    let range = rest.strip_prefix(':')?;
+    if path.is_empty() || range.is_empty() {
+        return None;
+    }
+    if !range
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '/' | ' '))
+    {
+        return None;
+    }
+    Some((path, range))
 }
 
 fn display_tool_header_name(name: &str) -> String {
@@ -407,6 +447,10 @@ fn style_response_line(text: &str, width: usize, is_error: bool) -> String {
         return pad_diff_line_bg(&line, width);
     }
 
+    if !is_error && let Some(styled) = highlight_read_result_summary(&line, &trimmed, t) {
+        return styled;
+    }
+
     if let Some(rest) = line.strip_prefix("  ⎿  ") {
         let body_color = if is_error { &t.error } else { &t.text };
         return format!("{}  ⎿  {}{}{}", t.dim, t.reset, body_color, rest) + &t.reset;
@@ -436,6 +480,30 @@ fn style_response_line(text: &str, width: usize, is_error: bool) -> String {
     }
 }
 
+fn highlight_read_result_summary(
+    line: &str,
+    trimmed: &str,
+    t: &crate::theme::Theme,
+) -> Option<String> {
+    if !trimmed.starts_with("read ") {
+        return None;
+    }
+    let (prefix, range) = trimmed.rsplit_once(" lines ")?;
+    if !range
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '/' | ' '))
+    {
+        return None;
+    }
+    let prefix = line.get(..prefix.len())?;
+    Some(
+        format!(
+            "{}{} lines {}{}{}{}",
+            t.dim, prefix, t.reset, t.bold, t.accent, range
+        ) + &t.reset,
+    )
+}
+
 fn render_note_line(block: &TranscriptBlock, text: &str, width: usize) -> String {
     let t = theme();
     let body = pad_to_width(&truncate_to_width(text, width), width);
@@ -458,6 +526,7 @@ fn render_note_line(block: &TranscriptBlock, text: &str, width: usize) -> String
         }
         "error" => format!("{}{}{}", t.error, body, t.reset),
         "warning" => format!("{}{}{}", t.warning, body, t.reset),
+        "highlight" => format!("{}{}{}{}", t.bold, t.warning, body, t.reset),
         "status" => {
             if text.starts_with("[Skills]") {
                 format!("{}{}{}{}", t.bold, t.custom_msg_label, body, t.reset)

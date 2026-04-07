@@ -92,6 +92,7 @@ pub enum FullscreenSubmission {
 #[derive(Clone, Debug)]
 pub enum FullscreenNoteLevel {
     Status,
+    Highlight,
     Warning,
     Error,
 }

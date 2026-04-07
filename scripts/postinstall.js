@@ -2,7 +2,7 @@
 
 "use strict";
 
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -14,6 +14,7 @@ const BINARY_RELEASE_TAG = `v${packageJson.version}`;
 const REPO = "shuyhere/bb-agent";
 const NATIVE_DIR = path.join(__dirname, "..", "native");
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+const DOWNLOAD_PROGRESS_INTERVAL_MS = 1_000;
 const MAX_REDIRECTS = 8;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 
@@ -50,15 +51,10 @@ function assetNameForTarget(target) {
   return isWindows() ? `bb-${target}.exe` : `bb-${target}`;
 }
 
-function hasBundledNativeBinary() {
-  const dest = nativeBinaryPath();
-  if (!fs.existsSync(dest)) return false;
+function logLine(message = "") {
   try {
-    execSync(`"${dest}" --version`, { stdio: "pipe", timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+    process.stderr.write(`${message}\n`);
+  } catch (_) {}
 }
 
 function makeDownloadError(kind, message, statusCode) {
@@ -78,6 +74,172 @@ function formatBytes(bytes) {
     unit += 1;
   }
   return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatRate(bytesPerSecond) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "0 B/s";
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+function ensureParentDir(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function removeIfExists(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (_) {}
+}
+
+function binaryVersion(binaryPath) {
+  try {
+    const out = execFileSync(binaryPath, ["--version"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 2500,
+      encoding: "utf8",
+    });
+    return (out || "").trim();
+  } catch (err) {
+    return null;
+  }
+}
+
+function binaryMatchesCurrentVersion(binaryPath) {
+  const version = binaryVersion(binaryPath);
+  if (!version) return false;
+  return version.includes(packageJson.version);
+}
+
+function hasBundledNativeBinary() {
+  const dest = nativeBinaryPath();
+  if (!fs.existsSync(dest)) return false;
+  if (!binaryMatchesCurrentVersion(dest)) return false;
+  try {
+    fs.accessSync(dest, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cacheRootDir() {
+  if (process.env.BB_INSTALL_CACHE_DIR && process.env.BB_INSTALL_CACHE_DIR.trim()) {
+    return process.env.BB_INSTALL_CACHE_DIR;
+  }
+
+  const home = os.homedir();
+  if (isWindows()) {
+    return path.join(
+      process.env.LOCALAPPDATA || process.env.APPDATA || path.join(home, "AppData", "Local"),
+      "bb-agent"
+    );
+  }
+  if (os.platform() === "darwin") {
+    return path.join(home, "Library", "Caches", "bb-agent");
+  }
+  return path.join(process.env.XDG_CACHE_HOME || path.join(home, ".cache"), "bb-agent");
+}
+
+function cacheBinaryPath(target) {
+  return path.join(cacheRootDir(), "prebuilt", packageJson.version, assetNameForTarget(target));
+}
+
+function cacheMetadataPath(target) {
+  return `${cacheBinaryPath(target)}.json`;
+}
+
+function loadCacheMetadata(target) {
+  try {
+    return JSON.parse(fs.readFileSync(cacheMetadataPath(target), "utf8"));
+  } catch (_) {
+    return null;
+  }
+}
+
+function storeCacheMetadata(target, binaryPath) {
+  try {
+    const stat = fs.statSync(binaryPath);
+    ensureParentDir(cacheMetadataPath(target));
+    fs.writeFileSync(
+      cacheMetadataPath(target),
+      JSON.stringify(
+        {
+          version: packageJson.version,
+          target,
+          assetName: assetNameForTarget(target),
+          binaryName: nativeBinaryName(),
+          size: stat.size,
+          verifiedAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+  } catch (_) {}
+}
+
+function copyBinary(src, dest) {
+  ensureParentDir(dest);
+  fs.copyFileSync(src, dest);
+  if (!isWindows()) {
+    fs.chmodSync(dest, 0o755);
+  }
+}
+
+function installFromVerifiedCache(target) {
+  const cached = cacheBinaryPath(target);
+  const meta = loadCacheMetadata(target);
+  if (!fs.existsSync(cached) || !meta) return false;
+  if (meta.version !== packageJson.version || meta.target !== target) return false;
+
+  let stat;
+  try {
+    stat = fs.statSync(cached);
+  } catch (_) {
+    return false;
+  }
+  if (!stat.isFile() || stat.size <= 0) return false;
+  if (meta.size && stat.size !== meta.size) return false;
+
+  logLine(`Using cached BB-Agent binary for ${target} (${formatBytes(stat.size)}).`);
+  copyBinary(cached, nativeBinaryPath());
+  return true;
+}
+
+function refreshCacheFromExistingBinary(target, sourcePath) {
+  if (!binaryMatchesCurrentVersion(sourcePath)) return false;
+  const cached = cacheBinaryPath(target);
+  copyBinary(sourcePath, cached);
+  storeCacheMetadata(target, cached);
+  return true;
+}
+
+function maybeRepairCache(target) {
+  const cached = cacheBinaryPath(target);
+  if (!fs.existsSync(cached)) return false;
+
+  const meta = loadCacheMetadata(target);
+  if (meta && meta.version === packageJson.version && meta.target === target && meta.size) {
+    try {
+      const stat = fs.statSync(cached);
+      if (stat.isFile() && stat.size === meta.size) {
+        return false;
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  logLine(`Checking cached BB-Agent binary for ${target}...`);
+  if (!binaryMatchesCurrentVersion(cached)) {
+    removeIfExists(cached);
+    removeIfExists(cacheMetadataPath(target));
+    return false;
+  }
+
+  storeCacheMetadata(target, cached);
+  logLine("Verified cached BB-Agent binary for reuse.");
+  return true;
 }
 
 function requestBinary(url, dest, redirects = 0) {
@@ -120,14 +282,17 @@ function requestBinary(url, dest, redirects = 0) {
         }
 
         const totalBytes = Number(res.headers["content-length"] || 0);
+        const startedAt = Date.now();
         let downloadedBytes = 0;
-        let lastLoggedAt = Date.now();
+        let lastLoggedAt = 0;
+
         if (totalBytes > 0) {
-          console.log(`Release asset size: ${formatBytes(totalBytes)}.`);
+          logLine(`Release asset size: ${formatBytes(totalBytes)}.`);
         } else {
-          console.log("Release asset size: unknown (streaming download).");
+          logLine("Release asset size: unknown (streaming download).");
         }
 
+        ensureParentDir(dest);
         const file = fs.createWriteStream(dest);
         let settled = false;
 
@@ -141,15 +306,17 @@ function requestBinary(url, dest, redirects = 0) {
         res.on("data", (chunk) => {
           downloadedBytes += chunk.length;
           const now = Date.now();
-          if (now - lastLoggedAt >= 5000) {
+          if (now - lastLoggedAt >= DOWNLOAD_PROGRESS_INTERVAL_MS) {
             lastLoggedAt = now;
+            const elapsedSeconds = Math.max((now - startedAt) / 1000, 0.001);
+            const rate = downloadedBytes / elapsedSeconds;
             if (totalBytes > 0) {
               const percent = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
-              console.log(
-                `Download progress: ${percent}% (${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)})`
+              logLine(
+                `Download progress: ${percent}% (${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}, ${formatRate(rate)})`
               );
             } else {
-              console.log(`Downloaded ${formatBytes(downloadedBytes)} so far...`);
+              logLine(`Downloaded ${formatBytes(downloadedBytes)} so far (${formatRate(rate)})...`);
             }
           }
         });
@@ -159,12 +326,16 @@ function requestBinary(url, dest, redirects = 0) {
             if (closeErr) {
               finish(reject, makeDownloadError("write", closeErr.message));
             } else {
+              const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
+              const rate = downloadedBytes / elapsedSeconds;
               if (totalBytes > 0) {
-                console.log(
-                  `Download complete: ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}.`
+                logLine(
+                  `Download complete: ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)} in ${elapsedSeconds.toFixed(1)}s (${formatRate(rate)}).`
                 );
               } else {
-                console.log(`Download complete: ${formatBytes(downloadedBytes)}.`);
+                logLine(
+                  `Download complete: ${formatBytes(downloadedBytes)} in ${elapsedSeconds.toFixed(1)}s (${formatRate(rate)}).`
+                );
               }
               finish(resolve);
             }
@@ -172,14 +343,14 @@ function requestBinary(url, dest, redirects = 0) {
         });
 
         file.on("error", (err) => {
-          try { file.close(() => {}); } catch {}
-          try { fs.unlinkSync(dest); } catch {}
+          try { file.close(() => {}); } catch (_) {}
+          removeIfExists(dest);
           finish(reject, makeDownloadError("write", err.message));
         });
 
         res.on("error", (err) => {
-          try { file.close(() => {}); } catch {}
-          try { fs.unlinkSync(dest); } catch {}
+          try { file.close(() => {}); } catch (_) {}
+          removeIfExists(dest);
           finish(reject, makeDownloadError("network", err.message));
         });
 
@@ -198,16 +369,22 @@ function requestBinary(url, dest, redirects = 0) {
   });
 }
 
-function verifyBinary(dest) {
-  try {
-    execSync(`"${dest}" --version`, { stdio: "pipe", timeout: 5000 });
-    return { ok: true };
-  } catch (err) {
+function verifyBinary(binaryPath) {
+  logLine("Verifying downloaded binary...");
+  const version = binaryVersion(binaryPath);
+  if (!version) {
     return {
       ok: false,
-      message: err && err.message ? err.message : "binary verification failed",
+      message: "binary verification failed",
     };
   }
+  if (!version.includes(packageJson.version)) {
+    return {
+      ok: false,
+      message: `expected version ${packageJson.version}, got '${version}'`,
+    };
+  }
+  return { ok: true, version };
 }
 
 async function tryDownloadPrebuilt(target) {
@@ -216,21 +393,34 @@ async function tryDownloadPrebuilt(target) {
 
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
   const dest = nativeBinaryPath();
+  const tmpDest = `${dest}.tmp`;
+
+  if (installFromVerifiedCache(target)) {
+    logLine("✓ BB-Agent binary installed successfully from cache.");
+    return { ok: true, source: "cache" };
+  }
+
+  if (maybeRepairCache(target) && installFromVerifiedCache(target)) {
+    logLine("✓ BB-Agent binary installed successfully from cache.");
+    return { ok: true, source: "cache" };
+  }
 
   let lastError = null;
   for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
     try {
-      console.log(
+      logLine(
         `Downloading BB-Agent ${BINARY_RELEASE_TAG} for ${target} (attempt ${attempt}/${MAX_DOWNLOAD_ATTEMPTS})...`
       );
-      console.log("This may take a little while on first install because npm downloads and verifies the native binary from the GitHub release.");
-      try { fs.unlinkSync(dest); } catch {}
-      await requestBinary(url, dest, 0);
-      fs.chmodSync(dest, 0o755);
+      logLine("This may take a little while on first install because npm downloads the native binary from the GitHub release.");
+      removeIfExists(tmpDest);
+      await requestBinary(url, tmpDest, 0);
+      if (!isWindows()) {
+        fs.chmodSync(tmpDest, 0o755);
+      }
 
-      const verified = verifyBinary(dest);
+      const verified = verifyBinary(tmpDest);
       if (!verified.ok) {
-        try { fs.unlinkSync(dest); } catch {}
+        removeIfExists(tmpDest);
         return {
           ok: false,
           kind: "verify",
@@ -238,12 +428,14 @@ async function tryDownloadPrebuilt(target) {
         };
       }
 
-      console.log("Verifying downloaded binary...");
-      console.log("✓ BB-Agent binary installed successfully.");
-      return { ok: true };
+      fs.renameSync(tmpDest, dest);
+      refreshCacheFromExistingBinary(target, dest);
+      logLine("Cached verified BB-Agent binary for future installs.");
+      logLine("✓ BB-Agent binary installed successfully.");
+      return { ok: true, source: "download" };
     } catch (err) {
       lastError = err;
-      try { fs.unlinkSync(dest); } catch {}
+      removeIfExists(tmpDest);
       if (err.kind === "not-found") {
         return {
           ok: false,
@@ -252,6 +444,7 @@ async function tryDownloadPrebuilt(target) {
         };
       }
       if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
+        logLine(`Download failed (${err.message}). Retrying...`);
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
       }
     }
@@ -265,40 +458,34 @@ async function tryDownloadPrebuilt(target) {
 }
 
 function printFallbackHelp(platform, reason) {
-  console.log("");
+  logLine("");
   if (reason && reason.kind === "not-found") {
-    console.log(
-      `BB-Agent ${packageJson.version}: matching prebuilt binary is not published for ${platform}.`
-    );
+    logLine(`BB-Agent ${packageJson.version}: matching prebuilt binary is not published for ${platform}.`);
   } else if (reason) {
-    console.log(
-      `BB-Agent ${packageJson.version}: failed to download the prebuilt binary for ${platform}.`
-    );
-    console.log(`Reason: ${reason.message}`);
+    logLine(`BB-Agent ${packageJson.version}: failed to download the prebuilt binary for ${platform}.`);
+    logLine(`Reason: ${reason.message}`);
   } else {
-    console.log(
-      `BB-Agent ${packageJson.version}: matching prebuilt binary not available yet for ${platform}.`
-    );
+    logLine(`BB-Agent ${packageJson.version}: matching prebuilt binary not available yet for ${platform}.`);
   }
-  console.log("");
-  console.log("╔══════════════════════════════════════════════════════════════╗");
-  console.log(
+  logLine("");
+  logLine("╔══════════════════════════════════════════════════════════════╗");
+  logLine(
     "║  BB-Agent: npm could not install native binary for " +
       platform.padEnd(16) +
       "   ║"
   );
-  console.log("║                                                              ║");
-  console.log("║  Install Rust (if needed):                                   ║");
-  console.log("║    https://rustup.rs                                         ║");
-  console.log("║    Then install with rustup for your platform                ║");
-  console.log("║                                                              ║");
-  console.log("║  Then build BB-Agent:                                        ║");
-  console.log("║    git clone https://github.com/shuyhere/bb-agent.git        ║");
-  console.log("║    cd bb-agent && cargo install --path crates/cli            ║");
-  console.log("║                                                              ║");
-  console.log("║  Then run:  bb                                               ║");
-  console.log("╚══════════════════════════════════════════════════════════════╝");
-  console.log("");
+  logLine("║                                                              ║");
+  logLine("║  Install Rust (if needed):                                   ║");
+  logLine("║    https://rustup.rs                                         ║");
+  logLine("║    Then install with rustup for your platform                ║");
+  logLine("║                                                              ║");
+  logLine("║  Then build BB-Agent:                                        ║");
+  logLine("║    git clone https://github.com/shuyhere/bb-agent.git        ║");
+  logLine("║    cd bb-agent && cargo install --path crates/cli            ║");
+  logLine("║                                                              ║");
+  logLine("║  Then run:  bb                                               ║");
+  logLine("╚══════════════════════════════════════════════════════════════╝");
+  logLine("");
 }
 
 async function main() {
@@ -307,6 +494,7 @@ async function main() {
   }
 
   if (hasBundledNativeBinary()) {
+    logLine(`BB-Agent ${packageJson.version} native binary already present; skipping download.`);
     return;
   }
 
@@ -330,8 +518,8 @@ async function main() {
 
 main()
   .catch((err) => {
-    console.error("BB-Agent postinstall notice:", err && err.message ? err.message : String(err));
-    console.log(
+    logLine(`BB-Agent postinstall notice: ${err && err.message ? err.message : String(err)}`);
+    logLine(
       "Install manually: git clone https://github.com/shuyhere/bb-agent.git && cd bb-agent && cargo install --path crates/cli"
     );
   })

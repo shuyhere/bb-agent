@@ -87,7 +87,7 @@ impl FullscreenController {
             }
             UpdateCheckOutcome::UpdateAvailable(notice) => {
                 self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
+                    level: FullscreenNoteLevel::Highlight,
                     text: update_check::build_update_available_note(&notice),
                 });
                 self.send_command(FullscreenCommand::SetStatusLine(format!(

@@ -5,6 +5,19 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11] - 2026-04-07
+
+### Added
+
+- startup update notices in the fullscreen transcript are now highlighted so available updates stand out clearly during startup
+- read-tool line ranges in fullscreen tool activity now highlight the requested span, so values like `2148-2267/5006` stand out while the model is using tools
+
+### Improved
+
+- npm install now caches verified native binaries by version/platform and reuses them on reinstall instead of re-downloading every time
+- npm install now shows more frequent download progress with transfer rate information to make slow installs easier to understand
+- npm install now avoids unnecessary re-verification on cache hits, making repeat installs faster
+
 ## [0.0.10] - 2026-04-07
 
 ### Fixed
@@ -58,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.11]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.11
 [0.0.10]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.10
 [0.0.9]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.9
 [0.0.8]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.8

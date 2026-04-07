@@ -58,7 +58,7 @@ pub(crate) fn spawn_update_check_notice_task(
         match check_for_updates(false, &cwd).await {
             Ok(UpdateCheckOutcome::UpdateAvailable(notice)) => {
                 let _ = command_tx.send(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
+                    level: FullscreenNoteLevel::Highlight,
                     text: build_update_available_note(&notice),
                 });
             }

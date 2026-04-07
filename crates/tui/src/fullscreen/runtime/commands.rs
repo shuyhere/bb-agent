@@ -143,6 +143,7 @@ impl FullscreenState {
             FullscreenCommand::PushNote { level, text } => {
                 let title = match level {
                     FullscreenNoteLevel::Status => "status",
+                    FullscreenNoteLevel::Highlight => "highlight",
                     FullscreenNoteLevel::Warning => "warning",
                     FullscreenNoteLevel::Error => "error",
                 };
