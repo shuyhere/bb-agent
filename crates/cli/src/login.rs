@@ -1,5 +1,7 @@
 use anyhow::Result;
 use bb_core::config;
+use bb_core::settings::Settings;
+use bb_provider::registry::{Model, ModelRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
@@ -710,19 +712,86 @@ pub fn provider_has_auth(provider: &str) -> bool {
 }
 
 pub fn authenticated_providers() -> Vec<String> {
-    let mut out: Vec<String> = KNOWN_PROVIDERS
-        .iter()
-        .map(|(name, _, _)| *name)
-        .filter(|provider| provider_has_auth(provider))
-        .map(str::to_string)
-        .collect();
-
-    // When openai-codex is authenticated, also expose "openai" so that
-    // models registered under the "openai" provider are selectable.
-    if out.iter().any(|p| p == "openai-codex") && !out.iter().any(|p| p == "openai") {
-        out.push("openai".to_string());
+    let mut out = Vec::new();
+    for provider in KNOWN_PROVIDERS.iter().map(|(name, _, _)| *name) {
+        if !provider_has_auth(provider) {
+            continue;
+        }
+        let normalized = normalize_provider_for_model_selection(provider);
+        if !out.iter().any(|existing| existing == &normalized) {
+            out.push(normalized);
+        }
     }
     out
+}
+
+pub(crate) fn authenticated_model_candidates(settings: &Settings) -> Vec<Model> {
+    let available = authenticated_providers();
+    if available.is_empty() {
+        return Vec::new();
+    }
+
+    let mut registry = ModelRegistry::new();
+    registry.load_custom_models(settings);
+    add_cached_github_copilot_models(&mut registry);
+    registry
+        .list()
+        .iter()
+        .filter(|model| available.iter().any(|provider| provider == &model.provider))
+        .cloned()
+        .collect()
+}
+
+fn resolve_available_model_for_provider(
+    settings: &Settings,
+    provider: &str,
+    requested_model: Option<&str>,
+) -> Option<String> {
+    let provider = normalize_provider_for_model_selection(provider);
+    let candidates = authenticated_model_candidates(settings);
+    if !candidates.iter().any(|model| model.provider == provider) {
+        return None;
+    }
+
+    if let Some(requested_model) = requested_model
+        && let Some(model) = candidates.iter().find(|model| {
+            model.provider == provider
+                && (model.id.eq_ignore_ascii_case(requested_model)
+                    || model.name.eq_ignore_ascii_case(requested_model))
+        })
+    {
+        return Some(model.id.clone());
+    }
+
+    if let Some(preferred) = preferred_model_for_provider(&provider)
+        && let Some(model) = candidates.iter().find(|model| {
+            model.provider == provider
+                && (model.id.eq_ignore_ascii_case(&preferred)
+                    || model.name.eq_ignore_ascii_case(&preferred))
+        })
+    {
+        return Some(model.id.clone());
+    }
+
+    candidates
+        .into_iter()
+        .find(|model| model.provider == provider)
+        .map(|model| model.id)
+}
+
+pub(crate) fn available_model_for_provider(
+    settings: &Settings,
+    provider: &str,
+    requested_model: Option<&str>,
+) -> Option<String> {
+    resolve_available_model_for_provider(settings, provider, requested_model)
+}
+
+pub(crate) fn preferred_available_model_for_provider(
+    settings: &Settings,
+    provider: &str,
+) -> Option<String> {
+    available_model_for_provider(settings, provider, None)
 }
 
 pub(crate) fn preferred_model_for_provider(provider: &str) -> Option<String> {
@@ -748,37 +817,35 @@ pub(crate) fn preferred_startup_provider_and_model(
 ) -> Option<(String, String)> {
     if let Some(provider) = load_auth().last_provider {
         let normalized = normalize_provider_for_model_selection(&provider);
-        if provider_has_auth(&provider) || provider_has_auth(&normalized) {
-            let model = if settings.default_provider.as_deref() == Some(provider.as_str())
-                || settings.default_provider.as_deref() == Some(normalized.as_str())
-            {
-                settings
-                    .default_model
-                    .clone()
-                    .or_else(|| preferred_model_for_provider(&normalized))?
-            } else {
-                preferred_model_for_provider(&normalized)?
-            };
+        let requested_model = if settings.default_provider.as_deref() == Some(provider.as_str())
+            || settings.default_provider.as_deref() == Some(normalized.as_str())
+        {
+            settings.default_model.as_deref()
+        } else {
+            None
+        };
+        if let Some(model) =
+            resolve_available_model_for_provider(settings, &normalized, requested_model)
+        {
             return Some((normalized, model));
         }
     }
 
-    if let Some(provider) = settings.default_provider.as_deref()
-        && provider_has_auth(provider)
-    {
-        let provider = normalize_provider_for_model_selection(provider);
-        let model = settings
-            .default_model
-            .clone()
-            .or_else(|| preferred_model_for_provider(&provider))?;
-        return Some((provider, model));
+    if let Some(provider) = settings.default_provider.as_deref() {
+        let normalized = normalize_provider_for_model_selection(provider);
+        if let Some(model) = resolve_available_model_for_provider(
+            settings,
+            &normalized,
+            settings.default_model.as_deref(),
+        ) {
+            return Some((normalized, model));
+        }
     }
 
-    let authenticated = authenticated_providers();
-    if authenticated.len() == 1 {
-        let provider = normalize_provider_for_model_selection(&authenticated[0]);
-        let model = preferred_model_for_provider(&provider)?;
-        return Some((provider, model));
+    for provider in authenticated_providers() {
+        if let Some(model) = preferred_available_model_for_provider(settings, &provider) {
+            return Some((provider, model));
+        }
     }
 
     None

@@ -577,12 +577,13 @@ impl FullscreenController {
             || (provider == "openai-codex"
                 && settings.default_provider.as_deref() == Some("openai-codex"))
         {
-            settings
-                .default_model
-                .clone()
-                .or_else(|| crate::login::preferred_model_for_provider(preferred_provider))?
+            crate::login::available_model_for_provider(
+                &settings,
+                preferred_provider,
+                settings.default_model.as_deref(),
+            )?
         } else {
-            crate::login::preferred_model_for_provider(preferred_provider)?
+            crate::login::preferred_available_model_for_provider(&settings, preferred_provider)?
         };
         let mut registry = ModelRegistry::new();
         registry.load_custom_models(&settings);
@@ -663,34 +664,8 @@ impl FullscreenController {
     }
 
     fn get_model_candidates(&self) -> Vec<Model> {
-        let current_provider = self.session_setup.model.provider.clone();
-        let available = crate::login::authenticated_providers();
-        let mut registry = ModelRegistry::new();
-        registry.load_custom_models(&Settings::load_merged(&self.session_setup.tool_ctx.cwd));
-        for model_id in crate::login::github_copilot_cached_models() {
-            if registry.find("github-copilot", &model_id).is_none() {
-                registry.add(Model {
-                    id: model_id.clone(),
-                    name: model_id.clone(),
-                    provider: "github-copilot".to_string(),
-                    api: ApiType::OpenaiCompletions,
-                    context_window: 128_000,
-                    max_tokens: 16_384,
-                    reasoning: true,
-                    base_url: Some(crate::login::github_copilot_api_base_url()),
-                    cost: Default::default(),
-                });
-            }
-        }
-        registry
-            .list()
-            .iter()
-            .filter(|model| {
-                available.iter().any(|provider| provider == &model.provider)
-                    || model.provider == current_provider
-            })
-            .cloned()
-            .collect()
+        let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+        crate::login::authenticated_model_candidates(&settings)
     }
 
     fn find_exact_model_match(&self, search_term: &str) -> Option<(Model, Option<ThinkingLevel>)> {

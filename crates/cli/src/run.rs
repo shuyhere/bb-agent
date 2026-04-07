@@ -45,15 +45,15 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let model_input = cli
         .model
         .as_deref()
-        .or(settings.default_model.as_deref())
-        .or(startup_fallback.as_ref().map(|(_, model)| model.as_str()));
+        .or(startup_fallback.as_ref().map(|(_, model)| model.as_str()))
+        .or(settings.default_model.as_deref());
     let provider_input = cli
         .provider
         .as_deref()
-        .or(settings.default_provider.as_deref())
         .or(startup_fallback
             .as_ref()
-            .map(|(provider, _)| provider.as_str()));
+            .map(|(provider, _)| provider.as_str()))
+        .or(settings.default_provider.as_deref());
     let (provider_name, model_id, _thinking_override) =
         parse_model_arg(provider_input, model_input);
 
