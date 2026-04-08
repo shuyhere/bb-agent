@@ -31,8 +31,7 @@ fn typing_slash_in_normal_mode_shows_fullscreen_command_menu() {
     assert!(joined.contains("/settings"));
 }
 
-#[test]
-fn typing_at_in_normal_mode_shows_attach_menu_immediately() {
+fn make_at_menu_test_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "bb-tui-at-menu-{}-{}",
         std::process::id(),
@@ -42,6 +41,12 @@ fn typing_at_in_normal_mode_shows_attach_menu_immediately() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).expect("create temp test dir");
+    dir
+}
+
+#[test]
+fn typing_at_in_normal_mode_shows_attach_menu_immediately() {
+    let dir = make_at_menu_test_dir();
     std::fs::write(dir.join("notes.txt"), "hello").expect("write test file");
 
     let config = FullscreenAppConfig {
@@ -65,6 +70,78 @@ fn typing_at_in_normal_mode_shows_attach_menu_immediately() {
     assert!(joined.contains("notes.txt"), "menu should list cwd entries");
 
     let _ = std::fs::remove_file(dir.join("notes.txt"));
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
+fn selecting_directory_keeps_at_menu_open_for_next_level() {
+    let dir = make_at_menu_test_dir();
+    std::fs::create_dir_all(dir.join("src/nested")).expect("create nested dir");
+    std::fs::write(dir.join("src/lib.rs"), "pub fn hi() {}\n").expect("write file");
+
+    let config = FullscreenAppConfig {
+        cwd: dir.clone(),
+        ..FullscreenAppConfig::default()
+    };
+    let mut state = FullscreenState::new(
+        config,
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+
+    state.on_key(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+    state.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    state.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    assert_eq!(state.input, "@src/");
+    let joined = state
+        .render_at_file_menu_lines(80)
+        .expect("attach menu should stay open after selecting a directory")
+        .join("\n");
+    assert!(joined.contains("lib.rs"));
+    assert!(joined.contains("nested/"));
+
+    let _ = std::fs::remove_file(dir.join("src/lib.rs"));
+    let _ = std::fs::remove_dir_all(dir.join("src/nested"));
+    let _ = std::fs::remove_dir(dir.join("src"));
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
+fn selecting_directory_with_spaces_keeps_at_menu_open_for_next_level() {
+    let dir = make_at_menu_test_dir();
+    std::fs::create_dir_all(dir.join("my folder/nested")).expect("create nested dir");
+    std::fs::write(dir.join("my folder/file.txt"), "hello\n").expect("write file");
+
+    let config = FullscreenAppConfig {
+        cwd: dir.clone(),
+        ..FullscreenAppConfig::default()
+    };
+    let mut state = FullscreenState::new(
+        config,
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+
+    state.on_key(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+    state.on_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    state.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    assert_eq!(state.input, "@\"my folder/");
+    let joined = state
+        .render_at_file_menu_lines(80)
+        .expect("attach menu should stay open for quoted directory paths")
+        .join("\n");
+    assert!(joined.contains("file.txt"));
+    assert!(joined.contains("nested/"));
+
+    let _ = std::fs::remove_file(dir.join("my folder/file.txt"));
+    let _ = std::fs::remove_dir_all(dir.join("my folder/nested"));
+    let _ = std::fs::remove_dir(dir.join("my folder"));
     let _ = std::fs::remove_dir(&dir);
 }
 

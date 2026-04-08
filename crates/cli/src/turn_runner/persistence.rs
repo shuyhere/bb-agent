@@ -57,18 +57,29 @@ fn calculate_cost(model: &Model, collected: &CollectedResponse) -> Cost {
     }
 }
 
-pub(crate) async fn append_user_message(
+pub(crate) async fn append_user_message_with_images(
     conn: &Arc<Mutex<rusqlite::Connection>>,
     session_id: &str,
     prompt: &str,
+    images: &[bb_core::agent_session::ImageContent],
 ) -> Result<()> {
     let conn = conn.lock().await;
+    let mut content = vec![ContentBlock::Text {
+        text: prompt.to_string(),
+    }];
+    content.extend(images.iter().map(|image| {
+        ContentBlock::Image {
+            data: image.source.clone(),
+            mime_type: image
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| "image/png".to_string()),
+        }
+    }));
     let user_entry = SessionEntry::Message {
         base: next_entry_base(&conn, session_id),
         message: AgentMessage::User(UserMessage {
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
+            content,
             timestamp: Utc::now().timestamp_millis(),
         }),
     };

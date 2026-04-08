@@ -190,10 +190,17 @@ pub(crate) struct AtFileMenuState {
     pub(super) at_prefix: String,
 }
 
+#[derive(Clone, Debug)]
+struct AtQueryState {
+    at_pos: usize,
+    query: String,
+    quoted: bool,
+}
+
 impl AtFileMenuState {
     /// Build file suggestions for the given `@` query.
     pub(crate) fn new(query: &str, cwd: &Path) -> Self {
-        let items = list_file_suggestions(query, cwd, 12);
+        let items = list_file_suggestions(query, cwd, 64);
         let mut list = SelectList::new(items, 8);
         list.set_show_search(false);
         Self {
@@ -203,7 +210,7 @@ impl AtFileMenuState {
     }
 
     pub(crate) fn update(&mut self, query: &str, cwd: &Path) {
-        let items = list_file_suggestions(query, cwd, 12);
+        let items = list_file_suggestions(query, cwd, 64);
         let mut list = SelectList::new(items, 8);
         list.set_show_search(false);
         self.list = list;
@@ -230,6 +237,10 @@ impl AtFileMenuState {
 
 /// List files in `cwd` matching `query` prefix.
 fn list_file_suggestions(query: &str, cwd: &Path, max: usize) -> Vec<SelectItem> {
+    if query.is_empty() || query.contains('/') {
+        return list_files_via_readdir(query, cwd, max);
+    }
+
     // Try using `fd` for fast fuzzy search (respects .gitignore)
     if let Some(items) = list_files_via_fd(query, cwd, max)
         && !items.is_empty()
@@ -296,7 +307,7 @@ fn list_files_via_fd(query: &str, cwd: &Path, max: usize) -> Option<Vec<SelectIt
             SelectItem {
                 label: label.clone(),
                 detail: None,
-                value: format_at_file_value(line),
+                value: line.to_string(),
             }
         })
         .collect();
@@ -352,11 +363,10 @@ fn list_files_via_readdir(query: &str, cwd: &Path, max: usize) -> Vec<SelectItem
             } else {
                 rel.clone()
             };
-            let value = format_at_file_value(&raw_value);
             SelectItem {
                 label: display,
                 detail: None,
-                value,
+                value: raw_value,
             }
         })
         .collect();
@@ -430,10 +440,8 @@ impl FullscreenState {
         self.dirty = true;
     }
 
-    /// Extract the `@query` prefix at the cursor position.
-    pub(super) fn at_query(&self) -> Option<String> {
+    fn at_query_state(&self) -> Option<AtQueryState> {
         let before = self.input.get(..self.cursor)?;
-        // Find the last `@` that's at a token boundary (start or after whitespace)
         let at_pos = before.rfind('@')?;
         if at_pos > 0 {
             let prev = before.as_bytes().get(at_pos - 1)?;
@@ -441,40 +449,86 @@ impl FullscreenState {
                 return None;
             }
         }
+
         let query = &before[at_pos + 1..];
-        // Don't show menu if query contains spaces (means @ is done)
+        if let Some(rest) = query.strip_prefix('"') {
+            if rest.contains('"') {
+                return None;
+            }
+            return Some(AtQueryState {
+                at_pos,
+                query: rest.to_string(),
+                quoted: true,
+            });
+        }
+
+        if let Some(rest) = query.strip_prefix('\'') {
+            if rest.contains('\'') {
+                return None;
+            }
+            return Some(AtQueryState {
+                at_pos,
+                query: rest.to_string(),
+                quoted: true,
+            });
+        }
+
         if query.contains(' ') {
             return None;
         }
-        Some(query.to_string())
+
+        Some(AtQueryState {
+            at_pos,
+            query: query.to_string(),
+            quoted: false,
+        })
     }
 
     pub(super) fn update_at_file_menu(&mut self) {
-        let Some(query) = self.at_query() else {
+        let Some(state) = self.at_query_state() else {
             self.at_file_menu = None;
             return;
         };
         let cwd = self.cwd.clone();
         if let Some(ref mut menu) = self.at_file_menu {
-            menu.update(&query, &cwd);
+            menu.update(&state.query, &cwd);
         } else {
-            self.at_file_menu = Some(AtFileMenuState::new(&query, &cwd));
+            self.at_file_menu = Some(AtFileMenuState::new(&state.query, &cwd));
         }
     }
 
     /// Accept the selected `@file` completion.
     pub(super) fn accept_at_file_selection(&mut self, value: String) {
-        // Replace `@query` with the selected value
-        let before = self.input.get(..self.cursor).unwrap_or("");
-        if let Some(at_pos) = before.rfind('@') {
-            let prefix = &self.input[..at_pos];
-            let suffix = &self.input[self.cursor..];
-            // If value ends with `/` (directory), don't add space
-            let space = if value.ends_with('/') { "" } else { " " };
-            self.input = format!("{prefix}{value}{space}{suffix}");
-            self.cursor = at_pos + value.len() + space.len();
+        let Some(state) = self.at_query_state() else {
+            self.at_file_menu = None;
+            self.dirty = true;
+            return;
+        };
+
+        let prefix = self.input[..state.at_pos].to_string();
+        let suffix = self.input[self.cursor..].to_string();
+        let is_dir = value.ends_with('/');
+        let needs_quotes = state.quoted || value.chars().any(char::is_whitespace);
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        let inserted = if needs_quotes {
+            if is_dir {
+                format!("@\"{escaped}")
+            } else {
+                format!("@\"{escaped}\"")
+            }
+        } else {
+            format_at_file_value(&value)
+        };
+        let trailing = if is_dir { "" } else { " " };
+
+        self.input = format!("{prefix}{inserted}{trailing}{suffix}");
+        self.cursor = prefix.len() + inserted.len() + trailing.len();
+
+        if is_dir {
+            self.update_at_file_menu();
+        } else {
+            self.at_file_menu = None;
         }
-        self.at_file_menu = None;
         self.dirty = true;
     }
 }

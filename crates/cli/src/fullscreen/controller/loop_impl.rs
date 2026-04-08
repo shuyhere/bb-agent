@@ -249,6 +249,14 @@ impl FullscreenController {
                 text: warning,
             });
         }
+        let image_paths = expanded
+            .image_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        if !image_paths.is_empty() {
+            self.attach_images_from_paths(&image_paths);
+        }
         let prompt_text = expanded.text;
 
         if self.streaming {
