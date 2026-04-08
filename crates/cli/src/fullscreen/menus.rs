@@ -9,8 +9,8 @@ use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::{context, store};
 use bb_tui::fullscreen::{
-    FullscreenAuthDialog, FullscreenAuthStep, FullscreenAuthStepState, FullscreenCommand,
-    FullscreenNoteLevel,
+    try_read_clipboard_image, FullscreenAuthDialog, FullscreenAuthStep, FullscreenAuthStepState,
+    FullscreenCommand, FullscreenNoteLevel,
 };
 use bb_tui::select_list::SelectItem;
 
@@ -323,6 +323,38 @@ impl LocalSlashCommandHost for FullscreenController {
         self.send_command(FullscreenCommand::SetStatusLine(format!(
                 "📎 {display_path} ({size_kb}KB, {mime_type}) attached — {count} image(s) pending. Type your prompt and press Enter."
             )));
+        Ok(())
+    }
+
+    fn slash_paste_image(&mut self) -> Result<()> {
+        let Some((path, size_bytes)) = try_read_clipboard_image() else {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Error,
+                text: "No image found in clipboard. Try Ctrl+V in fullscreen input, or use /image <path>.".to_string(),
+            });
+            return Ok(());
+        };
+
+        let before = self.pending_images.len();
+        self.attach_images_from_paths(std::slice::from_ref(&path));
+        let after = self.pending_images.len();
+        if after == before {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Error,
+                text: format!("Clipboard image could not be attached from {path}"),
+            });
+            return Ok(());
+        }
+
+        let display = std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let size_kb = size_bytes / 1024;
+        let count = self.pending_images.len();
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "📎 {display} ({size_kb}KB) attached from clipboard — {count} image(s) pending. Type your prompt and press Enter."
+        )));
         Ok(())
     }
 }

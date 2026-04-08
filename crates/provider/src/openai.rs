@@ -1,4 +1,5 @@
 mod codex;
+mod responses;
 mod sse;
 
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use reqwest::Client;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::registry::ApiType;
 use crate::retry::with_retry;
 use crate::transforms::{convert_messages_for_openai, strip_thinking_blocks};
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent};
@@ -111,6 +113,10 @@ impl Provider for OpenAiProvider {
             return self
                 .stream_codex_oauth(request, options, account_id, tx)
                 .await;
+        }
+
+        if matches!(request.api, ApiType::OpenaiResponses) {
+            return self.stream_responses_api(request, options, tx).await;
         }
 
         let url = format!(

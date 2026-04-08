@@ -14,6 +14,10 @@ publish = false
 name = "bb"
 path = "src/main.rs"
 
+[[bin]]
+name = "bb-dev"
+path = "src/main.rs"
+
 [dependencies]
 bb-core.workspace = true
 bb-session.workspace = true

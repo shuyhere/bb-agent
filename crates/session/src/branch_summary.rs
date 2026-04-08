@@ -190,6 +190,7 @@ pub async fn generate_branch_summary(
         model: model.to_string(),
         max_tokens: Some(2048),
         stream: false,
+        api: bb_provider::registry::ApiType::OpenaiCompletions,
         thinking: None,
     };
 

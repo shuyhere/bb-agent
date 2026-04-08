@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+
+source "$HOME/.cargo/env" 2>/dev/null || true
+
+cd "$REPO_ROOT"
+
+if [ ! -x "$REPO_ROOT/target/release/bb-dev" ]; then
+  cargo build --release --bin bb-dev
+fi
+
+exec "$REPO_ROOT/target/release/bb-dev" "$@"

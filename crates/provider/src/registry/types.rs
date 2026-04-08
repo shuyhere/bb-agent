@@ -14,9 +14,10 @@ pub struct Model {
     pub cost: CostConfig,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApiType {
+    #[default]
     OpenaiCompletions,
     OpenaiResponses,
     AnthropicMessages,

@@ -165,6 +165,7 @@ async fn build_request(
         model: config.model.id.clone(),
         max_tokens: Some(config.model.max_tokens as u32),
         stream: true,
+        api: config.model.api.clone(),
         thinking: config.thinking.clone(),
     };
 

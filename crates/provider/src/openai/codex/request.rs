@@ -45,11 +45,49 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
         let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
         match role {
             "user" => {
-                let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                out.push(json!({
-                    "role": "user",
-                    "content": [{ "type": "input_text", "text": text }]
-                }));
+                if let Some(arr) = msg.get("content").and_then(|v| v.as_array()) {
+                    let mut content = Vec::new();
+                    for block in arr {
+                        match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                    content.push(json!({
+                                        "type": "input_text",
+                                        "text": text,
+                                    }));
+                                }
+                            }
+                            "image" => {
+                                let media_type = block
+                                    .get("source")
+                                    .and_then(|s| s.get("media_type"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("image/png");
+                                let data = block
+                                    .get("source")
+                                    .and_then(|s| s.get("data"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                content.push(json!({
+                                    "type": "input_image",
+                                    "image_url": format!("data:{media_type};base64,{data}"),
+                                    "detail": "high",
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    out.push(json!({
+                        "role": "user",
+                        "content": content,
+                    }));
+                } else {
+                    let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    out.push(json!({
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": text }]
+                    }));
+                }
             }
             "assistant" => {
                 if let Some(text) = msg.get("content").and_then(|v| v.as_str())

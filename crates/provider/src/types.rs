@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::registry::ApiType;
+
 /// A completion request to send to a provider.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
@@ -13,6 +15,8 @@ pub struct CompletionRequest {
     pub model: String,
     pub max_tokens: Option<u32>,
     pub stream: bool,
+    #[serde(default)]
+    pub api: ApiType,
     /// Thinking level: "low", "medium", "high", or None for disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
