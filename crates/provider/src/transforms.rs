@@ -126,7 +126,7 @@ pub fn convert_messages_for_openai(messages: &[Value]) -> Vec<Value> {
                                 result.push(json!({
                                     "role": "tool",
                                     "tool_call_id": block["tool_use_id"],
-                                    "content": flatten_content(&block["content"]),
+                                    "content": flatten_tool_content_for_openai(&block["content"]),
                                 }));
                             }
                         }
@@ -352,30 +352,37 @@ fn normalize_tool_call_id(id: &str) -> String {
 
 /// Flatten a content Value — if it's a string return it, if it's an array of
 /// blocks join text blocks.
-fn flatten_content(content: &Value) -> Value {
+fn flatten_tool_content_for_openai(content: &Value) -> Value {
     if content.is_string() {
         return content.clone();
     }
     if let Some(arr) = content.as_array() {
-        let text: String = arr
-            .iter()
-            .filter_map(|b| {
-                if b["type"].as_str() == Some("text") {
-                    b["text"].as_str().map(|s| s.to_string())
-                } else {
-                    b.as_str().map(|s| s.to_string())
+        let mut parts = Vec::new();
+        for block in arr {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(text) = block["text"].as_str()
+                        && !text.is_empty()
+                    {
+                        parts.push(text.to_string());
+                    }
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        if text.is_empty() {
-            content.clone()
-        } else {
-            json!(text)
+                Some("image") => {
+                    let mime = block["source"]["media_type"]
+                        .as_str()
+                        .unwrap_or("image/unknown");
+                    parts.push(format!("[tool returned image result: {mime}]"));
+                }
+                _ => {
+                    if let Some(text) = block.as_str() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
         }
-    } else {
-        content.clone()
+        return json!(parts.join("\n"));
     }
+    content.clone()
 }
 
 /// Flatten an array of content blocks. If there's only a single text block,

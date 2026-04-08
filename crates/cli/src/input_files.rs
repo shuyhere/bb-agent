@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferenceExpansion {
+    replacement_text: String,
+    attach_image: bool,
+}
+
 const FULL_FILE_MAX_BYTES: usize = 12_000;
 const FULL_FILE_MAX_LINES: usize = 200;
 const DIRECTORY_TREE_MAX_DEPTH: usize = 4;
@@ -10,6 +16,7 @@ const LARGE_FILE_OUTLINE_MAX_ITEMS: usize = 60;
 pub(crate) struct ExpandedInputFiles {
     pub text: String,
     pub expanded_paths: Vec<String>,
+    pub image_paths: Vec<PathBuf>,
     pub warnings: Vec<String>,
 }
 
@@ -17,6 +24,7 @@ pub(crate) fn expand_at_file_references(text: &str, cwd: &Path) -> ExpandedInput
     let mut out = String::new();
     let mut warnings = Vec::new();
     let mut expanded_paths = Vec::new();
+    let mut image_paths = Vec::new();
     let mut cursor = 0usize;
 
     while cursor < text.len() {
@@ -26,15 +34,18 @@ pub(crate) fn expand_at_file_references(text: &str, cwd: &Path) -> ExpandedInput
 
         if ch == '@'
             && is_at_reference_boundary(text, cursor)
-            && let Some((end, raw_path)) = parse_at_reference(text, cursor)
+            && let Some((end, raw_path)) = parse_at_reference(text, cursor, cwd)
         {
             let resolved = resolve_reference_path(&raw_path, cwd);
             let display_path = display_path_for_prompt(&resolved, cwd);
 
             match build_reference_expansion(&resolved, &display_path) {
                 Ok(Some(expanded)) => {
-                    out.push_str(&expanded);
+                    out.push_str(&expanded.replacement_text);
                     expanded_paths.push(display_path);
+                    if expanded.attach_image {
+                        image_paths.push(resolved);
+                    }
                     cursor = end;
                     continue;
                 }
@@ -50,45 +61,78 @@ pub(crate) fn expand_at_file_references(text: &str, cwd: &Path) -> ExpandedInput
     ExpandedInputFiles {
         text: out,
         expanded_paths,
+        image_paths,
         warnings,
     }
 }
 
-fn build_reference_expansion(path: &Path, display_path: &str) -> Result<Option<String>, String> {
+fn build_reference_expansion(
+    path: &Path,
+    display_path: &str,
+) -> Result<Option<ReferenceExpansion>, String> {
     if !path.exists() {
         return Ok(None);
     }
 
     if path.is_dir() {
-        return Ok(Some(render_directory_tree(path, display_path)));
+        return Ok(Some(ReferenceExpansion {
+            replacement_text: render_directory_tree(path, display_path),
+            attach_image: false,
+        }));
+    }
+
+    if is_supported_image_file(path) {
+        let bytes = std::fs::metadata(path)
+            .map(|metadata| metadata.len() as usize)
+            .unwrap_or_default();
+        return Ok(Some(ReferenceExpansion {
+            replacement_text: render_image_attachment_note(display_path, path, bytes),
+            attach_image: true,
+        }));
     }
 
     let bytes = std::fs::read(path).map_err(|_| format!("Could not read file {display_path}"))?;
     let text = match String::from_utf8(bytes.clone()) {
         Ok(text) => text,
-        Err(_) => return Ok(Some(render_non_utf8_file_note(display_path, bytes.len()))),
+        Err(_) => {
+            return Ok(Some(ReferenceExpansion {
+                replacement_text: render_non_utf8_file_note(display_path, path, bytes.len()),
+                attach_image: false,
+            }));
+        }
     };
     let line_count = text.lines().count();
 
     if bytes.len() <= FULL_FILE_MAX_BYTES && line_count <= FULL_FILE_MAX_LINES {
-        return Ok(Some(format!(
-            "Contents of {display_path}:\n```\n{text}\n```"
-        )));
+        return Ok(Some(ReferenceExpansion {
+            replacement_text: format!("Contents of {display_path}:\n```\n{text}\n```"),
+            attach_image: false,
+        }));
     }
 
-    Ok(Some(render_large_file_outline(
-        path,
-        display_path,
-        &text,
-        bytes.len(),
-        line_count,
-    )))
+    Ok(Some(ReferenceExpansion {
+        replacement_text: render_large_file_outline(
+            path,
+            display_path,
+            &text,
+            bytes.len(),
+            line_count,
+        ),
+        attach_image: false,
+    }))
 }
 
-fn render_non_utf8_file_note(display_path: &str, byte_len: usize) -> String {
+fn render_image_attachment_note(display_path: &str, path: &Path, byte_len: usize) -> String {
+    let mime_type = image_mime_type(path).unwrap_or("application/octet-stream");
     format!(
-        "File metadata for {display_path}:\n- non-UTF-8 or binary file\n- size: {} bytes\n- contents were not inlined automatically",
-        byte_len
+        "Attached image from {display_path}:\n- mime: {mime_type}\n- size: {byte_len} bytes\n- BB sent this file as an image attachment instead of inlining binary bytes"
+    )
+}
+
+fn render_non_utf8_file_note(display_path: &str, path: &Path, byte_len: usize) -> String {
+    let format_label = format_label(path);
+    format!(
+        "File metadata for {display_path}:\n- format: {format_label}\n- size: {byte_len} bytes\n- contents were not inlined automatically\n- if you need exact text from this file, export or convert it to a text-friendly format first"
     )
 }
 
@@ -174,6 +218,48 @@ fn should_skip_tree_entry(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn is_supported_image_file(path: &Path) -> bool {
+    image_mime_type(path).is_some()
+}
+
+fn image_mime_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn format_label(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("pdf") => "PDF document",
+        Some("doc") => "Word document",
+        Some("docx") => "Word document (OOXML)",
+        Some("ppt") => "PowerPoint presentation",
+        Some("pptx") => "PowerPoint presentation (OOXML)",
+        Some("xls") => "Excel spreadsheet",
+        Some("xlsx") => "Excel spreadsheet (OOXML)",
+        Some("zip") => "ZIP archive",
+        Some("json") => "JSON file",
+        Some("csv") => "CSV file",
+        Some("svg") => "SVG image",
+        Some(_) => "non-UTF-8 or binary file",
+        None => "non-UTF-8 or binary file",
+    }
 }
 
 fn render_large_file_outline(
@@ -303,10 +389,14 @@ fn is_at_reference_boundary(text: &str, at_pos: usize) -> bool {
         .unwrap_or(true)
 }
 
-fn parse_at_reference(text: &str, at_pos: usize) -> Option<(usize, String)> {
+fn parse_at_reference(text: &str, at_pos: usize, cwd: &Path) -> Option<(usize, String)> {
     let rest = text.get(at_pos + 1..)?;
     let mut chars = rest.char_indices();
     let (_, first) = chars.next()?;
+
+    if let Some((prefix_end, existing_path)) = longest_existing_reference_prefix(rest, cwd) {
+        return Some((at_pos + 1 + prefix_end, existing_path));
+    }
 
     if first == '"' || first == '\'' {
         let quote = first;
@@ -344,6 +434,29 @@ fn parse_at_reference(text: &str, at_pos: usize) -> Option<(usize, String)> {
     } else {
         Some((end, text[at_pos + 1..end].to_string()))
     }
+}
+
+fn longest_existing_reference_prefix(rest: &str, cwd: &Path) -> Option<(usize, String)> {
+    let mut candidate_ends = vec![rest.len()];
+    candidate_ends.extend(
+        rest.char_indices()
+            .filter_map(|(idx, ch)| ch.is_whitespace().then_some(idx)),
+    );
+    candidate_ends.sort_unstable();
+    candidate_ends.dedup();
+
+    for end in candidate_ends.into_iter().rev() {
+        let candidate = rest[..end].trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        let resolved = resolve_reference_path(candidate, cwd);
+        if resolved.exists() {
+            return Some((end, candidate.to_string()));
+        }
+    }
+
+    None
 }
 
 fn resolve_reference_path(raw_path: &str, cwd: &Path) -> PathBuf {
@@ -411,6 +524,31 @@ mod tests {
     }
 
     #[test]
+    fn expands_whole_message_at_file_reference_with_spaces() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let file = temp.path().join("my note.txt");
+        std::fs::write(&file, "whole message path content").expect("write test file");
+
+        let expanded = expand_at_file_references("@my note.txt", temp.path());
+
+        assert!(expanded.text.contains("Contents of my note.txt:"));
+        assert!(expanded.text.contains("whole message path content"));
+    }
+
+    #[test]
+    fn expands_path_with_spaces_and_trailing_prompt_text() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let file = temp.path().join("my note.txt");
+        std::fs::write(&file, "trailing prompt content").expect("write test file");
+
+        let expanded = expand_at_file_references("@my note.txt explain this", temp.path());
+
+        assert!(expanded.text.contains("Contents of my note.txt:"));
+        assert!(expanded.text.contains("trailing prompt content"));
+        assert!(expanded.text.ends_with(" explain this"));
+    }
+
+    #[test]
     fn expands_directory_as_tree() {
         let temp = tempfile::tempdir().expect("temp dir");
         std::fs::create_dir_all(temp.path().join("dir/src")).expect("mkdirs");
@@ -444,6 +582,33 @@ mod tests {
         assert!(expanded.text.contains("struct SessionStore"));
         assert!(expanded.text.contains("fn item_0"));
         assert!(!expanded.text.contains("Contents of big.rs:"));
+    }
+
+    #[test]
+    fn attaches_supported_images_instead_of_inlining_binary_bytes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let file = temp.path().join("photo.png");
+        std::fs::write(&file, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+            .expect("write png header");
+
+        let expanded = expand_at_file_references("Describe @photo.png", temp.path());
+
+        assert!(expanded.text.contains("Attached image from photo.png:"));
+        assert_eq!(expanded.image_paths, vec![file]);
+        assert!(expanded.warnings.is_empty());
+    }
+
+    #[test]
+    fn renders_format_aware_metadata_for_binary_documents() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let file = temp.path().join("paper.pdf");
+        std::fs::write(&file, [0xff, 0x00, 0x12, 0x34]).expect("write binary file");
+
+        let expanded = expand_at_file_references("Summarize @paper.pdf", temp.path());
+
+        assert!(expanded.text.contains("File metadata for paper.pdf:"));
+        assert!(expanded.text.contains("format: PDF document"));
+        assert!(expanded.image_paths.is_empty());
     }
 
     #[test]

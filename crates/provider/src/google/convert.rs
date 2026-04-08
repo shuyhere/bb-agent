@@ -91,7 +91,7 @@ pub fn convert_messages_google(messages: &[Value]) -> Vec<Value> {
                         .as_str()
                         .or_else(|| msg["tool_call_id"].as_str())
                         .unwrap_or("unknown");
-                    let content = msg["content"].as_str().unwrap_or("");
+                    let content = flatten_tool_content_for_google(&msg["content"]);
                     Some(json!({
                         "role": "user",
                         "parts": [{
@@ -107,6 +107,35 @@ pub fn convert_messages_google(messages: &[Value]) -> Vec<Value> {
             }
         })
         .collect()
+}
+
+fn flatten_tool_content_for_google(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(arr) = content.as_array() {
+        let mut parts = Vec::new();
+        for block in arr {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(text) = block["text"].as_str()
+                        && !text.is_empty()
+                    {
+                        parts.push(text.to_string());
+                    }
+                }
+                Some("image") => {
+                    let mime = block["source"]["media_type"]
+                        .as_str()
+                        .unwrap_or("image/unknown");
+                    parts.push(format!("[tool returned image result: {mime}]"));
+                }
+                _ => {}
+            }
+        }
+        return parts.join("\n");
+    }
+    String::new()
 }
 
 /// Convert OpenAI-style tool definitions to Google functionDeclarations format.

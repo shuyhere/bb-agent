@@ -103,6 +103,34 @@ fn test_convert_messages_for_openai_tool_result() {
 }
 
 #[test]
+fn test_convert_messages_for_openai_tool_result_image_falls_back_to_text_note() {
+    let messages = vec![json!({
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": "toolu_abc",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo="
+                    }
+                }
+            ]
+        }]
+    })];
+    let result = convert_messages_for_openai(&messages);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0]["role"], "tool");
+    assert_eq!(
+        result[0]["content"],
+        "[tool returned image result: image/png]"
+    );
+}
+
+#[test]
 fn test_strip_thinking_blocks() {
     let messages = vec![json!({
         "role": "assistant",

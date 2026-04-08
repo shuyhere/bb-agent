@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{
-    ModelRef, PrintTurnResult, PrintTurnStopReason, ThinPrintSession, parse_model_arg,
+    ImageContent, ModelRef, PrintTurnResult, PrintTurnStopReason, parse_model_arg,
 };
 
 use crate::agents_md::load_agents_md;
@@ -28,6 +28,12 @@ use crate::extensions::{
 };
 use crate::login;
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
+
+#[derive(Debug, Clone)]
+struct PreparedPrintPrompt {
+    text: String,
+    images: Vec<ImageContent>,
+}
 
 pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let cwd = std::fs::canonicalize(cli.cwd.as_deref().unwrap_or("."))?;
@@ -168,7 +174,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         CreateAgentSessionRuntimeOptions::new(cwd.clone()),
     );
 
-    let mut expanded_messages = Vec::new();
+    let mut prepared_messages = Vec::new();
     for raw in cli.messages {
         if commands.is_registered(&raw) {
             if let Some(output) = commands.execute_text(&raw).await? {
@@ -186,16 +192,24 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         }
 
         if let Some(text) = input.text {
-            expanded_messages.push(runtime_handle.session.expand_input_text(text));
+            let expanded_text = runtime_handle.session.expand_input_text(text);
+            let expanded = crate::input_files::expand_at_file_references(&expanded_text, &cwd);
+            for warning in expanded.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            prepared_messages.push(PreparedPrintPrompt {
+                text: expanded.text,
+                images: load_images_from_paths(&expanded.image_paths)?,
+            });
         }
     }
 
-    let initial_message = if expanded_messages.is_empty() {
+    let initial_message = if prepared_messages.is_empty() {
         None
     } else {
-        Some(expanded_messages.remove(0))
+        Some(prepared_messages.remove(0))
     };
-    let follow_up_messages = expanded_messages;
+    let follow_up_messages = prepared_messages;
 
     let turn_config = TurnConfig {
         conn: wrap_conn(conn),
@@ -218,9 +232,14 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         extensions: commands.clone(),
     };
 
-    let mut session = ThinPrintSession::new(|prompt: String| run_print_turn(&turn_config, prompt));
+    let mut last_result = None;
+    if let Some(initial_message) = initial_message {
+        last_result = Some(run_print_turn(&turn_config, initial_message).await?);
+    }
+    for message in follow_up_messages {
+        last_result = Some(run_print_turn(&turn_config, message).await?);
+    }
 
-    let last_result = session.run(initial_message, follow_up_messages).await?;
     let _ = commands.send_event(&bb_hooks::Event::SessionShutdown).await;
     if let Some(last_result) = last_result {
         if last_result.is_error() {
@@ -295,13 +314,55 @@ fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-async fn run_print_turn(config: &TurnConfig, prompt: String) -> Result<PrintTurnResult> {
-    turn_runner::append_user_message(&config.conn, &config.session_id, &prompt).await?;
+fn load_images_from_paths(paths: &[std::path::PathBuf]) -> Result<Vec<ImageContent>> {
+    use base64::Engine;
+
+    let mut images = Vec::new();
+    for path in paths {
+        let data = std::fs::read(path)
+            .map_err(|error| anyhow!("Could not read image {}: {error}", path.display()))?;
+        let Some(mime_type) = image_mime_type(path) else {
+            continue;
+        };
+        images.push(ImageContent {
+            source: base64::engine::general_purpose::STANDARD.encode(data),
+            mime_type: Some(mime_type.to_string()),
+        });
+    }
+    Ok(images)
+}
+
+fn image_mime_type(path: &std::path::Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+async fn run_print_turn(
+    config: &TurnConfig,
+    prompt: PreparedPrintPrompt,
+) -> Result<PrintTurnResult> {
+    turn_runner::append_user_message_with_images(
+        &config.conn,
+        &config.session_id,
+        &prompt.text,
+        &prompt.images,
+    )
+    .await?;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
     // Run the turn loop directly (print mode is single-threaded, no need to spawn).
-    turn_runner::run_turn_inner(config, &event_tx, &prompt).await?;
+    turn_runner::run_turn_inner(config, &event_tx, &prompt.text).await?;
     drop(event_tx);
 
     // Drain remaining events

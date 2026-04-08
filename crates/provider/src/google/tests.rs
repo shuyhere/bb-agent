@@ -63,6 +63,31 @@ fn test_convert_tool_result() {
 }
 
 #[test]
+fn test_convert_tool_result_image_falls_back_to_text_note() {
+    let messages = vec![json!({
+        "role": "tool",
+        "name": "read",
+        "tool_call_id": "call_1",
+        "content": [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            }
+        ]
+    })];
+    let result = convert_messages_google(&messages);
+    let fr = &result[0]["parts"][0]["functionResponse"];
+    assert_eq!(
+        fr["response"]["content"],
+        "[tool returned image result: image/png]"
+    );
+}
+
+#[test]
 fn test_system_message_filtered() {
     let messages = vec![json!({
         "role": "system",
