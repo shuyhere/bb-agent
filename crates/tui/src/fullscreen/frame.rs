@@ -7,10 +7,10 @@ mod tests;
 
 use super::{renderer::FrameBuffer, runtime::FullscreenState};
 use chrome::{render_footer, render_header, render_status};
+pub(crate) use input::{attachment_line_count, measure_approval_input, measure_input};
 use input::{
     blank_line, render_approval_dialog, render_approval_input, render_auth_dialog, render_input,
 };
-pub(crate) use input::{measure_approval_input, measure_input};
 use transcript::render_transcript;
 
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {

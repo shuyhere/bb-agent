@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use unicode_width::UnicodeWidthChar;
 
 use crate::theme::theme;
@@ -87,6 +89,88 @@ pub(crate) fn measure_input(text: &str, cursor: usize, width: usize) -> InputWra
     }
 }
 
+fn attachment_chip_line(path: &Path, width: usize) -> Option<String> {
+    let t = theme();
+    let name = path.file_name()?.to_str()?;
+    let size_kb = std::fs::metadata(path).ok()?.len().div_ceil(1024);
+    Some(truncate_to_width(
+        &format!("{}[{}, {}KB]{}", t.accent, name, size_kb, t.reset),
+        width,
+    ))
+}
+
+fn collect_input_attachment_paths(input: &str, cwd: &Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'@' {
+            index += 1;
+            continue;
+        }
+
+        let Some(rest) = input.get(index + 1..) else {
+            break;
+        };
+
+        let (raw_path, consumed) = if let Some(quoted) = rest.strip_prefix('"') {
+            if let Some(end) = quoted.find('"') {
+                (&quoted[..end], end + 2)
+            } else {
+                ("", 1)
+            }
+        } else {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            (&rest[..end], end + 1)
+        };
+
+        if !raw_path.is_empty() {
+            let trimmed = raw_path.trim_end_matches([',', '.', ';', ':', ')', ']', '}']);
+            let path = if Path::new(trimmed).is_absolute() {
+                std::path::PathBuf::from(trimmed)
+            } else {
+                cwd.join(trimmed)
+            };
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+
+        index += consumed.max(1);
+    }
+
+    paths
+}
+
+pub(crate) fn attachment_line_count(state: &FullscreenState, width: usize) -> usize {
+    render_attachment_lines(state, width).len()
+}
+
+fn render_attachment_lines(state: &FullscreenState, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for path in &state.pending_image_paths {
+        let path = Path::new(path);
+        if seen.insert(path.to_path_buf())
+            && let Some(line) = attachment_chip_line(path, width)
+        {
+            lines.push(line);
+        }
+    }
+
+    for path in collect_input_attachment_paths(&state.input, &state.cwd) {
+        if seen.insert(path.clone())
+            && let Some(line) = attachment_chip_line(&path, width)
+        {
+            lines.push(line);
+        }
+    }
+
+    lines
+}
+
 pub(crate) fn render_input(
     state: &FullscreenState,
     input_y: u16,
@@ -111,19 +195,22 @@ pub(crate) fn render_input(
     let inner_width = width.max(1);
     let inner_height = height.saturating_sub(2);
 
-    let display_lines = if state.input.is_empty() {
-        vec![format!(
+    let mut display_lines = render_attachment_lines(state, inner_width);
+    let attachment_rows = display_lines.len();
+    if state.input.is_empty() {
+        display_lines.push(format!(
             "{}{}{}",
             theme().dim,
             state.input_placeholder,
             theme().reset
-        )]
+        ));
     } else {
-        wrapped_lines
-    };
+        display_lines.extend(wrapped_lines);
+    }
 
+    let absolute_cursor_row = attachment_rows + cursor_row;
     let max_start = display_lines.len().saturating_sub(inner_height);
-    let visible_start = cursor_row
+    let visible_start = absolute_cursor_row
         .saturating_sub(inner_height.saturating_sub(1))
         .min(max_start);
     let visible_end = (visible_start + inner_height).min(display_lines.len());
@@ -145,9 +232,14 @@ pub(crate) fn render_input(
     let cursor = if state.mode != super::super::types::FullscreenMode::Normal {
         None
     } else if state.input.is_empty() {
-        Some((0, input_y + 1))
+        let visible_cursor_row = absolute_cursor_row.saturating_sub(visible_start);
+        if visible_cursor_row < inner_height {
+            Some((0, input_y + 1 + visible_cursor_row as u16))
+        } else {
+            None
+        }
     } else {
-        let visible_cursor_row = cursor_row.saturating_sub(visible_start);
+        let visible_cursor_row = absolute_cursor_row.saturating_sub(visible_start);
         if visible_cursor_row < inner_height {
             Some((
                 cursor_col.min(inner_width) as u16,
