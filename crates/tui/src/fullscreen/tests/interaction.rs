@@ -81,6 +81,41 @@ fn cursor_is_only_visible_in_normal_mode() {
 }
 
 #[test]
+fn empty_input_cursor_appears_after_attachment_chips() {
+    let dir = std::env::temp_dir().join(format!(
+        "bb-tui-cursor-attachments-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp test dir");
+    let image = dir.join("preview image.png");
+    std::fs::write(&image, b"png-bytes").expect("write image file");
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig {
+            cwd: dir.clone(),
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    state.pending_image_paths.push(image.display().to_string());
+    state.prepare_for_render();
+
+    let frame = build_frame(&state);
+    let layout = state.current_layout();
+    assert_eq!(frame.cursor, Some((0, layout.input.y + 2)));
+
+    let _ = std::fs::remove_file(image);
+    let _ = std::fs::remove_dir(dir);
+}
+
+#[test]
 fn turn_end_returns_to_normal_mode_when_auto_following() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),

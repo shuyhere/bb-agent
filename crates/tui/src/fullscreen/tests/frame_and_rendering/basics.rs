@@ -1,6 +1,19 @@
 use super::super::common::*;
 use super::super::*;
 
+fn make_attachment_test_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "bb-tui-attachment-chips-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp test dir");
+    dir
+}
+
 #[test]
 fn frame_renders_header_title_when_space_allows() {
     let mut state = FullscreenState::new(
@@ -18,6 +31,45 @@ fn frame_renders_header_title_when_space_allows() {
 
     assert!(frame.lines[0].contains("♡ BB-Agent v0.1.0"));
     assert!(frame.lines[1].contains("Ctrl-C exit"));
+}
+
+#[test]
+fn frame_renders_attachment_chips_for_pending_and_at_files() {
+    let dir = make_attachment_test_dir();
+    let image = dir.join("preview image.png");
+    let doc = dir.join("notes.pdf");
+    std::fs::write(&image, b"png-bytes").expect("write image file");
+    std::fs::write(&doc, b"pdf-bytes").expect("write doc file");
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig {
+            cwd: dir.clone(),
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    state.pending_image_paths.push(image.display().to_string());
+    state.input = "@\"notes.pdf\" summarize this".to_string();
+    state.cursor = state.input.len();
+    state.prepare_for_render();
+
+    let frame = build_frame(&state);
+    let joined = frame.lines.join("\n");
+    assert!(
+        joined.contains("[preview image.png, 1KB]"),
+        "frame did not contain pending image chip:\n{joined}"
+    );
+    assert!(
+        joined.contains("[notes.pdf, 1KB]"),
+        "frame did not contain @file chip:\n{joined}"
+    );
+
+    let _ = std::fs::remove_file(image);
+    let _ = std::fs::remove_file(doc);
+    let _ = std::fs::remove_dir(dir);
 }
 
 #[test]
