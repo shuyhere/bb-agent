@@ -7,6 +7,7 @@ use super::{
 
 pub(super) fn merge_settings(global: &Settings, project: &Settings) -> Settings {
     Settings {
+        execution_mode: project.execution_mode.or(global.execution_mode),
         compaction: merge_compaction(&global.compaction, &project.compaction),
         retry: merge_retry(&global.retry, &project.retry),
         default_provider: project
@@ -130,6 +131,13 @@ fn merge_string_lists(global: &[String], project: &[String]) -> Vec<String> {
 }
 
 fn merge_bool_with_default(global: bool, project: bool, default: bool) -> bool {
+    merge_value_with_default(global, project, default)
+}
+
+fn merge_value_with_default<T>(global: T, project: T, default: T) -> T
+where
+    T: Copy + PartialEq,
+{
     if project != default { project } else { global }
 }
 

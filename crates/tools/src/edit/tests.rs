@@ -2,12 +2,15 @@ use super::*;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-fn make_ctx(dir: &Path) -> ToolContext {
+fn make_ctx(dir: &Path, execution_policy: crate::ExecutionPolicy) -> ToolContext {
     ToolContext {
         cwd: dir.to_path_buf(),
         artifacts_dir: dir.to_path_buf(),
+        execution_policy,
         on_output: None,
         web_search: None,
+        execution_mode: crate::ToolExecutionMode::Interactive,
+        request_approval: None,
     }
 }
 
@@ -22,7 +25,7 @@ async fn edit_single_replacement() {
     std::fs::write(&file, "hello world\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -49,7 +52,7 @@ async fn edit_multiple_replacements() {
     std::fs::write(&file, "aaa\nbbb\nccc\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -78,7 +81,7 @@ async fn edit_old_text_not_found() {
     std::fs::write(&file, "hello\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -106,7 +109,7 @@ async fn edit_duplicate_match_rejected() {
     std::fs::write(&file, "foo bar foo\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -134,7 +137,7 @@ async fn edit_empty_old_text() {
     std::fs::write(&file, "content\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -160,7 +163,7 @@ async fn edit_empty_edits_array() {
     std::fs::write(&file, "hi\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let err = tool
         .execute(
             json!({ "path": "e.txt", "edits": [] }),
@@ -175,7 +178,7 @@ async fn edit_empty_edits_array() {
 async fn edit_file_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let err = tool
         .execute(
             json!({
@@ -196,7 +199,7 @@ async fn edit_partial_success() {
     std::fs::write(&file, "alpha beta gamma\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -226,7 +229,7 @@ async fn edit_matches_against_original_file_not_mutated_content() {
     std::fs::write(&file, "abcde\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -262,7 +265,7 @@ async fn edit_rejects_overlapping_ranges_in_original_file() {
     std::fs::write(&file, "abcde\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -298,7 +301,7 @@ async fn edit_multiline_replacement() {
     std::fs::write(&file, "fn main() {\n    println!(\"old\");\n}\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -328,7 +331,7 @@ async fn edit_generates_diff() {
     std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -354,7 +357,7 @@ async fn edit_utf8_content() {
     std::fs::write(&file, "你好世界\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -378,7 +381,7 @@ async fn edit_strips_at_prefix() {
     std::fs::write(&file, "old text\n").unwrap();
 
     let tool = EditTool;
-    let ctx = make_ctx(dir.path());
+    let ctx = make_ctx(dir.path(), crate::ExecutionPolicy::Safety);
     let result = tool
         .execute(
             json!({
@@ -393,4 +396,52 @@ async fn edit_strips_at_prefix() {
 
     assert!(!result.is_error);
     assert_eq!(read_file(dir.path(), "at.txt"), "new text\n");
+}
+
+#[tokio::test]
+async fn edit_rejects_paths_outside_workspace_in_safety_mode() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("outside.txt");
+    std::fs::write(&outside_file, "old\n").unwrap();
+
+    let tool = EditTool;
+    let error = tool
+        .execute(
+            json!({
+                "path": outside_file.to_string_lossy(),
+                "edits": [{ "oldText": "old", "newText": "new" }]
+            }),
+            &make_ctx(workspace.path(), crate::ExecutionPolicy::Safety),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("restricted to the workspace"));
+    assert_eq!(std::fs::read_to_string(outside_file).unwrap(), "old\n");
+}
+
+#[tokio::test]
+async fn edit_allows_paths_outside_workspace_in_yolo_mode() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("outside.txt");
+    std::fs::write(&outside_file, "old\n").unwrap();
+
+    let tool = EditTool;
+    let result = tool
+        .execute(
+            json!({
+                "path": outside_file.to_string_lossy(),
+                "edits": [{ "oldText": "old", "newText": "new" }]
+            }),
+            &make_ctx(workspace.path(), crate::ExecutionPolicy::Yolo),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(std::fs::read_to_string(outside_file).unwrap(), "new\n");
 }

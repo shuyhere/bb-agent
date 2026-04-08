@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult, diff, path::resolve_path};
+use crate::{
+    Tool, ToolContext, ToolResult, diff,
+    path::{ensure_write_allowed, resolve_path},
+};
 
 #[cfg(test)]
 mod tests;
@@ -64,6 +67,7 @@ impl Tool for EditTool {
             .ok_or_else(|| BbError::Tool("Missing 'path' parameter".into()))?;
 
         let path = resolve_path(&ctx.cwd, path_str);
+        ensure_write_allowed(ctx, &path, "edit")?;
 
         let edits = params
             .get("edits")

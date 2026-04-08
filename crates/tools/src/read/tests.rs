@@ -7,8 +7,11 @@ fn make_ctx(dir: &Path) -> ToolContext {
     ToolContext {
         cwd: dir.to_path_buf(),
         artifacts_dir: dir.to_path_buf(),
+        execution_policy: crate::ExecutionPolicy::Safety,
         on_output: None,
         web_search: None,
+        execution_mode: crate::ToolExecutionMode::Interactive,
+        request_approval: None,
     }
 }
 

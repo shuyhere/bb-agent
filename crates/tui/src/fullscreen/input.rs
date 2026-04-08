@@ -7,6 +7,66 @@ use super::{
 };
 
 impl FullscreenState {
+    pub(super) fn approval_insert_char(&mut self, ch: char) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_input.insert(dialog.deny_cursor, ch);
+        dialog.deny_cursor += ch.len_utf8();
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_backspace(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor == 0 {
+            return;
+        }
+        let prev = previous_boundary(&dialog.deny_input, dialog.deny_cursor);
+        dialog.deny_input.drain(prev..dialog.deny_cursor);
+        dialog.deny_cursor = prev;
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_left(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor == 0 {
+            return;
+        }
+        dialog.deny_cursor = previous_boundary(&dialog.deny_input, dialog.deny_cursor);
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_right(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor >= dialog.deny_input.len() {
+            return;
+        }
+        dialog.deny_cursor = next_boundary(&dialog.deny_input, dialog.deny_cursor);
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_home(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_cursor = 0;
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_end(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_cursor = dialog.deny_input.len();
+        self.dirty = true;
+    }
+
     pub(super) fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
         if submitted.trim().is_empty() {

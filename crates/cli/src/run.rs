@@ -16,7 +16,7 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
-use bb_tools::{Tool, ToolContext, builtin_tools};
+use bb_tools::{ExecutionPolicy, Tool, ToolContext, builtin_tools};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -41,6 +41,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let session_id = resolve_session_id(&conn, &cwd, &cli)?;
 
     let settings = Settings::load_merged(&cwd);
+    let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
     let model_input = cli
         .model
@@ -138,6 +139,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir,
+        execution_policy,
         on_output: None,
         web_search: Some(bb_tools::WebSearchRuntime {
             provider: provider.clone(),
@@ -147,6 +149,8 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             headers: headers.clone(),
             enabled: true,
         }),
+        execution_mode: bb_tools::ToolExecutionMode::NonInteractive,
+        request_approval: None,
     };
 
     let bootstrap = bb_core::agent_session_runtime::AgentSessionRuntimeBootstrap {

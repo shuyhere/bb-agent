@@ -539,7 +539,8 @@ impl FullscreenController {
                             }
                             Some(bb_tui::fullscreen::FullscreenSubmission::Input(_))
                             | Some(bb_tui::fullscreen::FullscreenSubmission::InputWithImages { .. })
-                            | Some(bb_tui::fullscreen::FullscreenSubmission::MenuSelection { .. }) => {}
+                            | Some(bb_tui::fullscreen::FullscreenSubmission::MenuSelection { .. })
+                            | Some(bb_tui::fullscreen::FullscreenSubmission::ApprovalDecision { .. }) => {}
                             None => {
                                 cancel.cancel();
                                 break TreeSummaryAction::Closed;

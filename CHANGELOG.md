@@ -11,12 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - startup update notices in the fullscreen transcript are now highlighted so available updates stand out clearly during startup
 - read-tool line ranges in fullscreen tool activity now highlight the requested span, so values like `2148-2267/5006` stand out while the model is using tools
+- fullscreen footer and `/session` info now show the active execution posture so safety vs yolo is visible during a run
 
 ### Improved
 
 - npm install now caches verified native binaries by version/platform and reuses them on reinstall instead of re-downloading every time
 - npm install now shows more frequent download progress with transfer rate information to make slow installs easier to understand
 - npm install now avoids unnecessary re-verification on cache hits, making repeat installs faster
+- safety mode now restricts built-in `write` and `edit` to the active workspace, while `yolo` keeps unrestricted file mutation behavior
+
+### Migration
+
+- `execution_mode` now defaults to `safety`; set `"execution_mode": "yolo"` if your workflow intentionally edits files outside the current workspace
 
 ## [0.0.10] - 2026-04-07
 

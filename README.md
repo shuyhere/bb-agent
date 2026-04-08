@@ -101,6 +101,7 @@ bb --list-models                      # List all available models
 - **Fullscreen TUI** — rich terminal interface with streaming output, markdown rendering, syntax highlighting
 - **Multi-provider** — Anthropic (Claude), OpenAI, Google (Gemini), Groq, xAI, OpenRouter, and custom OpenAI-compatible endpoints
 - **Built-in tools** — `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`, `web_search`, `web_fetch`, `browser_fetch`
+- **Safety and yolo execution modes** — default safety posture restricts built-in `write` and `edit` to the active workspace; yolo removes that guard
 - **Session persistence** — SQLite-backed sessions with branching, forking, and tree navigation
 - **Extensions** — JS/TS plugin system for custom tools, commands, and hooks
 - **Skills** — markdown-based instruction files that auto-load contextual knowledge
@@ -144,9 +145,11 @@ BB-Agent uses layered configuration:
 
 ```json
 {
+  "execution_mode": "safety",
   "default_model": "claude-sonnet-4-20250514",
   "default_provider": "anthropic",
   "default_thinking": "medium",
+  "execution_mode": "safety",
   "models": [
     {
       "id": "my-local-model",
@@ -157,6 +160,21 @@ BB-Agent uses layered configuration:
       "max_tokens": 4096
     }
   ]
+}
+```
+
+### Execution Modes
+
+BB-Agent exposes the active permission posture in fullscreen and `/session`.
+
+- `safety` is the default. Built-in `write` and `edit` stay inside the current workspace, and bash commands use the safer approval/sandboxed posture.
+- `yolo` is the opt-in less-restrictive mode.
+
+Example:
+
+```json
+{
+  "execution_mode": "yolo"
 }
 ```
 

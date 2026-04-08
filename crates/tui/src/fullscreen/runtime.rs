@@ -14,8 +14,8 @@ use super::{
     streaming::ActiveTurnState,
     transcript::{BlockId, Transcript},
     types::{
-        FullscreenAppConfig, FullscreenAuthDialog, FullscreenFooterData, FullscreenMode,
-        FullscreenOutcome, FullscreenSearchState, FullscreenSubmission,
+        FullscreenAppConfig, FullscreenApprovalDialog, FullscreenAuthDialog, FullscreenFooterData,
+        FullscreenMode, FullscreenOutcome, FullscreenSearchState, FullscreenSubmission,
     },
     viewport::ViewportState,
 };
@@ -60,6 +60,7 @@ pub struct FullscreenState {
     pub(super) color_theme: super::spinner::ColorTheme,
     pub(super) selection_mode: bool,
     pub(super) auth_dialog: Option<FullscreenAuthDialog>,
+    pub(super) approval_dialog: Option<FullscreenApprovalDialog>,
     pub(super) selection_anchor_row: Option<usize>,
     pub(super) selection_anchor_col: Option<usize>,
     pub(super) selection_focus_row: Option<usize>,
@@ -110,6 +111,7 @@ impl FullscreenState {
             color_theme: super::spinner::ColorTheme::default(),
             selection_mode: false,
             auth_dialog: None,
+            approval_dialog: None,
             selection_anchor_row: None,
             selection_anchor_col: None,
             selection_focus_row: None,

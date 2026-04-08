@@ -40,6 +40,28 @@ pub struct FullscreenAuthDialog {
     pub input_placeholder: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FullscreenApprovalChoice {
+    ApproveOnce,
+    ApproveForSession,
+    #[default]
+    Deny,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FullscreenApprovalDialog {
+    pub title: String,
+    pub command: String,
+    pub reason: String,
+    pub lines: Vec<String>,
+    pub allow_session: bool,
+    pub session_scope_label: Option<String>,
+    pub deny_input: String,
+    pub deny_cursor: usize,
+    pub deny_input_placeholder: Option<String>,
+    pub selected: FullscreenApprovalChoice,
+}
+
 #[derive(Clone, Debug)]
 pub struct FullscreenAppConfig {
     pub title: String,
@@ -86,6 +108,10 @@ pub enum FullscreenSubmission {
         menu_id: String,
         value: String,
     },
+    ApprovalDecision {
+        choice: FullscreenApprovalChoice,
+        steer_message: Option<String>,
+    },
     CancelLocalAction,
 }
 
@@ -123,6 +149,8 @@ pub enum FullscreenCommand {
     OpenAuthDialog(FullscreenAuthDialog),
     UpdateAuthDialog(FullscreenAuthDialog),
     CloseAuthDialog,
+    OpenApprovalDialog(FullscreenApprovalDialog),
+    CloseApprovalDialog,
     SetExtraSlashItems(Vec<SelectItem>),
     OpenSelectMenu {
         menu_id: String,

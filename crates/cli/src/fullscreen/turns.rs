@@ -87,8 +87,11 @@ impl FullscreenController {
             tool_ctx: bb_tools::ToolContext {
                 cwd: self.session_setup.tool_ctx.cwd.clone(),
                 artifacts_dir: self.session_setup.tool_ctx.artifacts_dir.clone(),
+                execution_policy: self.session_setup.tool_ctx.execution_policy,
                 on_output: None,
                 web_search: self.session_setup.tool_ctx.web_search.clone(),
+                execution_mode: self.session_setup.tool_ctx.execution_mode,
+                request_approval: self.session_setup.tool_ctx.request_approval.clone(),
             },
             thinking: if self.session_setup.thinking_level == "off" {
                 None
@@ -102,6 +105,25 @@ impl FullscreenController {
             cancel: self.abort_token.clone(),
             extensions: self.session_setup.extension_commands.clone(),
         })
+    }
+
+    fn approval_follow_up_prompt(
+        choice: bb_tui::fullscreen::FullscreenApprovalChoice,
+        steer_message: Option<&str>,
+    ) -> Option<String> {
+        if choice == bb_tui::fullscreen::FullscreenApprovalChoice::Deny {
+            steer_message
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(|message| message.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn interrupt_turn_with_prompt(&mut self, prompt: String) {
+        self.queued_prompts.push_back(prompt);
+        self.abort_token.cancel();
     }
 
     async fn run_streaming_turn_loop(
@@ -142,8 +164,31 @@ impl FullscreenController {
                         break;
                     }
                 }
+                maybe_approval = self.approval_rx.recv() => {
+                    if let Some(approval) = maybe_approval {
+                        self.present_approval_request(approval);
+                    }
+                }
                 maybe_prompt = submission_rx.recv() => {
                     match maybe_prompt {
+                        Some(FullscreenSubmission::ApprovalDecision {
+                            choice,
+                            steer_message,
+                        }) => {
+                            let follow_up_prompt = Self::approval_follow_up_prompt(
+                                choice,
+                                steer_message.as_deref(),
+                            );
+                            self.handle_approval_submission(FullscreenSubmission::ApprovalDecision {
+                                choice,
+                                steer_message,
+                            })?;
+                            if let Some(prompt) = follow_up_prompt {
+                                self.interrupt_turn_with_prompt(prompt);
+                                aborted = true;
+                                break;
+                            }
+                        }
                         Some(FullscreenSubmission::InputWithImages { text, image_paths }) => {
                             self.attach_images_from_paths(&image_paths);
                             let text = text.trim().to_string();
@@ -196,10 +241,14 @@ impl FullscreenController {
                             }
                         }
                         Some(FullscreenSubmission::CancelLocalAction) => {
-                            // During streaming, cancel aborts the current turn.
-                            self.abort_token.cancel();
-                            aborted = true;
-                            break;
+                            if self.pending_approval.is_some() {
+                                self.handle_approval_submission(FullscreenSubmission::CancelLocalAction)?;
+                            } else {
+                                // During streaming, cancel aborts the current turn.
+                                self.abort_token.cancel();
+                                aborted = true;
+                                break;
+                            }
                         }
                         None => {
                             self.abort_token.cancel();

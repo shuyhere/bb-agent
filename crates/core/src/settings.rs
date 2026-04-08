@@ -16,6 +16,12 @@ mod tests;
 /// project (`.bb-agent/settings.json`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(
+        default,
+        alias = "executionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execution_mode: Option<ExecutionMode>,
     #[serde(default)]
     pub compaction: CompactionConfig,
     #[serde(default)]
@@ -51,6 +57,34 @@ pub struct Settings {
     pub compatibility_mode: bool,
     #[serde(default, alias = "updateCheck")]
     pub update_check: UpdateCheckSettings,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Safety,
+    #[default]
+    Yolo,
+}
+
+impl ExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Safety => "safety",
+            Self::Yolo => "yolo",
+        }
+    }
+
+    pub fn restricts_workspace_writes(self) -> bool {
+        matches!(self, Self::Safety)
+    }
+
+    pub fn write_scope_label(self) -> &'static str {
+        match self {
+            Self::Safety => "current project only",
+            Self::Yolo => "full access",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,6 +181,7 @@ pub struct ProviderOverride {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            execution_mode: None,
             compaction: CompactionConfig::default(),
             retry: RetryConfig::default(),
             default_provider: None,
@@ -188,6 +223,11 @@ impl Settings {
     /// Project values override global when present (non-None / non-default).
     pub fn merge(global: &Self, project: &Self) -> Self {
         merge::merge_settings(global, project)
+    }
+
+    /// Resolve the effective execution mode, defaulting to safety.
+    pub fn resolved_execution_mode(&self) -> ExecutionMode {
+        self.execution_mode.unwrap_or_default()
     }
 
     /// Convert compaction config to the core CompactionSettings type.

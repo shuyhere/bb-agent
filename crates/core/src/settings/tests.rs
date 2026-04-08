@@ -12,11 +12,14 @@ fn make_temp_dir() -> std::path::PathBuf {
 #[test]
 fn test_settings_default() {
     let s = Settings::default();
+    assert_eq!(s.resolved_execution_mode(), ExecutionMode::Yolo);
     assert!(s.compaction.enabled);
     assert_eq!(s.compaction.reserve_tokens, 16384);
     assert_eq!(s.compaction.keep_recent_tokens, 20000);
     assert!(s.default_provider.is_none());
     assert!(s.default_model.is_none());
+    assert_eq!(s.execution_mode, None);
+    assert_eq!(s.resolved_execution_mode(), ExecutionMode::Yolo);
     assert!(s.extensions.is_empty());
     assert!(s.skills.is_empty());
     assert!(s.prompts.is_empty());
@@ -30,6 +33,7 @@ fn test_settings_deserialize() {
     let json = r#"{
             "default_provider": "anthropic",
             "default_model": "sonnet",
+            "executionMode": "yolo",
             "compaction": {
                 "enabled": false,
                 "reserve_tokens": 8000
@@ -50,6 +54,8 @@ fn test_settings_deserialize() {
         }"#;
     let s: Settings = serde_json::from_str(json).unwrap();
     assert_eq!(s.default_provider.as_deref(), Some("anthropic"));
+    assert_eq!(s.execution_mode, Some(ExecutionMode::Yolo));
+    assert_eq!(s.resolved_execution_mode(), ExecutionMode::Yolo);
     assert!(!s.compaction.enabled);
     assert_eq!(s.compaction.reserve_tokens, 8000);
     assert_eq!(s.compaction.keep_recent_tokens, 20000);
@@ -64,6 +70,7 @@ fn test_settings_deserialize() {
 #[test]
 fn test_settings_merge() {
     let global = Settings {
+        execution_mode: Some(ExecutionMode::Safety),
         default_provider: Some("openai".into()),
         default_model: Some("gpt-4o".into()),
         compaction: CompactionConfig {
@@ -92,6 +99,7 @@ fn test_settings_merge() {
     };
 
     let project = Settings {
+        execution_mode: Some(ExecutionMode::Yolo),
         default_provider: Some("anthropic".into()),
         extensions: vec![
             "./project-extension.ts".into(),
@@ -118,8 +126,10 @@ fn test_settings_merge() {
 
     let merged = Settings::merge(&global, &project);
 
+    assert_eq!(merged.resolved_execution_mode(), ExecutionMode::Yolo);
     assert_eq!(merged.default_provider.as_deref(), Some("anthropic"));
     assert_eq!(merged.default_model.as_deref(), Some("gpt-4o"));
+    assert_eq!(merged.execution_mode, Some(ExecutionMode::Yolo));
     assert_eq!(merged.compaction.reserve_tokens, 8192);
     assert_eq!(
         merged.extensions,
@@ -171,6 +181,42 @@ fn test_settings_merge_model_override() {
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].name.as_deref(), Some("New Name"));
     assert_eq!(models[0].context_window, Some(64000));
+}
+
+#[test]
+fn test_settings_merge_execution_mode_uses_global_when_project_unset() {
+    let global = Settings {
+        execution_mode: Some(ExecutionMode::Yolo),
+        ..Default::default()
+    };
+
+    let project = Settings::default();
+
+    let merged = Settings::merge(&global, &project);
+    assert_eq!(merged.resolved_execution_mode(), ExecutionMode::Yolo);
+}
+
+#[test]
+fn test_settings_merge_execution_mode_can_override_back_to_safety() {
+    let global = Settings {
+        execution_mode: Some(ExecutionMode::Yolo),
+        ..Default::default()
+    };
+
+    let project = Settings {
+        execution_mode: Some(ExecutionMode::Safety),
+        ..Default::default()
+    };
+
+    let merged = Settings::merge(&global, &project);
+    assert_eq!(merged.execution_mode, Some(ExecutionMode::Safety));
+    assert_eq!(merged.resolved_execution_mode(), ExecutionMode::Safety);
+}
+
+#[test]
+fn test_settings_parse_execution_mode_defaults_to_yolo() {
+    let s = Settings::parse("{}");
+    assert_eq!(s.resolved_execution_mode(), ExecutionMode::Yolo);
 }
 
 #[test]

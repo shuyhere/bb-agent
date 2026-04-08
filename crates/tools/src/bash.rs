@@ -1,14 +1,18 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::{future, process::Stdio};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
 use crate::artifacts;
+use crate::bash_policy::{BashSafetyAssessment, BashSafetyDisposition, classify_bash_command};
+use crate::sandbox::{self, PreparedSandboxCommand, SandboxBackend, SandboxFailureDetails};
 use crate::support::text_result_with;
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{
+    ExecutionPolicy, Tool, ToolApprovalRequest, ToolContext, ToolExecutionMode, ToolResult,
+};
 
 const MAX_OUTPUT_LINES: usize = 2000;
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
@@ -24,7 +28,9 @@ impl Tool for BashTool {
     fn description(&self) -> &str {
         "Execute a bash command in the current working directory. Returns stdout and stderr. \
          Output is truncated to 2000 lines or 50KB (whichever is hit first). \
-         Optionally provide a timeout in seconds."
+         Optionally provide a timeout in seconds. \
+         In safety mode, read-only commands run inside the sandbox immediately; anything else \
+         requires approval in interactive mode and is denied in non-interactive mode."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -54,15 +60,64 @@ impl Tool for BashTool {
             .and_then(|v| v.as_f64())
             .map(std::time::Duration::from_secs_f64);
 
-        let mut child = Command::new("bash")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&ctx.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| BbError::Tool(format!("Failed to spawn bash: {e}")))?;
+        let safety = classify_bash_command(command);
+        let approval_required = ctx.execution_policy == ExecutionPolicy::Safety
+            && matches!(safety.disposition, BashSafetyDisposition::ApprovalRequired);
+        let approved = if approval_required {
+            match ctx.execution_mode {
+                ToolExecutionMode::NonInteractive => {
+                    return Ok(approval_denied_result(
+                        command,
+                        &safety,
+                        "Command requires approval in interactive mode and cannot run in non-interactive mode",
+                        ctx.execution_policy,
+                    ));
+                }
+                ToolExecutionMode::Interactive => {
+                    let Some(request_approval) = ctx.request_approval.as_ref() else {
+                        return Ok(approval_denied_result(
+                            command,
+                            &safety,
+                            "Interactive approval UI is unavailable for this command",
+                            ctx.execution_policy,
+                        ));
+                    };
+                    let outcome = request_approval(ToolApprovalRequest {
+                        tool_name: self.name().to_string(),
+                        title: safety.title.clone(),
+                        command: command.to_string(),
+                        reason: safety.reason.clone(),
+                    })
+                    .await;
+                    if !outcome.approved() {
+                        return Ok(approval_denied_result(
+                            command,
+                            &safety,
+                            "Command was denied by the interactive approval flow",
+                            ctx.execution_policy,
+                        ));
+                    }
+                    true
+                }
+            }
+        } else {
+            false
+        };
+
+        let safety_context = BashSafetyContext {
+            safety: &safety,
+            approval_required,
+            approved,
+            execution_policy: ctx.execution_policy,
+        };
+
+        let SpawnedProcess {
+            mut child,
+            sandbox_backend,
+        } = match spawn_bash_process(command, ctx, safety_context) {
+            Ok(process) => process,
+            Err(result) => return Ok(result),
+        };
 
         let mut stdout = child.stdout.take();
         let mut stderr = child.stderr.take();
@@ -161,28 +216,41 @@ impl Tool for BashTool {
             output.push_str(&stderr_str);
         }
 
-        // Truncate
+        let sandbox_failure = sandbox_backend.and_then(|_| {
+            if cancelled || timed_out || exit_code.unwrap_or_default() == 0 {
+                None
+            } else {
+                sandbox::classify_sandbox_failure(&stderr_str)
+            }
+        });
+
+        if let Some(failure) = sandbox_failure.as_ref() {
+            output = render_sandbox_failure_output(failure, &output);
+        }
+
         let mut truncated = false;
         let (output, artifact_path) =
             artifacts::maybe_offload(&output, &ctx.artifacts_dir, Some(MAX_OUTPUT_BYTES));
         if artifact_path.is_some() {
             truncated = true;
         } else {
-            // Line-based truncation
             let lines: Vec<&str> = output.lines().collect();
             if lines.len() > MAX_OUTPUT_LINES {
                 let joined = lines[..MAX_OUTPUT_LINES].join("\n");
                 let remaining = lines.len() - MAX_OUTPUT_LINES;
                 return Ok(text_result_with(
                     format!("{joined}\n\n[{remaining} more lines truncated]"),
-                    Some(json!({
-                        "command": command,
-                        "exitCode": exit_code,
-                        "cancelled": cancelled,
-                        "timedOut": timed_out,
-                        "truncated": true,
+                    Some(build_details(BashResultDetails {
+                        command,
+                        exit_code,
+                        cancelled,
+                        timed_out,
+                        truncated: true,
+                        safety: safety_context,
+                        sandbox_backend,
+                        sandbox_failure: sandbox_failure.as_ref(),
                     })),
-                    exit_code.map(|c| c != 0).unwrap_or(true),
+                    cancelled || exit_code.map(|c| c != 0).unwrap_or(true),
                     None,
                 ));
             }
@@ -190,12 +258,15 @@ impl Tool for BashTool {
 
         Ok(text_result_with(
             output,
-            Some(json!({
-                "command": command,
-                "exitCode": exit_code,
-                "cancelled": cancelled,
-                "timedOut": timed_out,
-                "truncated": truncated,
+            Some(build_details(BashResultDetails {
+                command,
+                exit_code,
+                cancelled,
+                timed_out,
+                truncated,
+                safety: safety_context,
+                sandbox_backend,
+                sandbox_failure: sandbox_failure.as_ref(),
             })),
             cancelled || exit_code.map(|c| c != 0).unwrap_or(true),
             artifact_path,
@@ -203,18 +274,239 @@ impl Tool for BashTool {
     }
 }
 
+struct SpawnedProcess {
+    child: Child,
+    sandbox_backend: Option<SandboxBackend>,
+}
+
+fn spawn_bash_process(
+    command: &str,
+    ctx: &ToolContext,
+    safety: BashSafetyContext<'_>,
+) -> Result<SpawnedProcess, ToolResult> {
+    match ctx.execution_policy {
+        ExecutionPolicy::Yolo => {
+            let child = spawn_process(direct_bash_command(command, ctx)).map_err(|error| {
+                structured_error_result(
+                    format!("Failed to spawn bash: {error}"),
+                    BashResultDetails::error(command, safety, None, None),
+                )
+            })?;
+            Ok(SpawnedProcess {
+                child,
+                sandbox_backend: None,
+            })
+        }
+        ExecutionPolicy::Safety => {
+            let PreparedSandboxCommand {
+                command: sandboxed,
+                backend,
+            } = match sandbox::prepare_bash_command(&ctx.cwd, command) {
+                Ok(sandboxed) => sandboxed,
+                Err(error) => {
+                    let details = error.details().clone();
+                    return Err(structured_error_result(
+                        details.message.clone(),
+                        BashResultDetails::error(
+                            command,
+                            safety,
+                            Some(details.backend),
+                            Some(&details),
+                        ),
+                    ));
+                }
+            };
+
+            let child = spawn_process(configure_process_stdio(sandboxed)).map_err(|error| {
+                let details = sandbox::backend_launch_failed_error(
+                    backend,
+                    format!("Failed to launch Linux sandbox backend: {error}"),
+                );
+                structured_error_result(
+                    details.message.clone(),
+                    BashResultDetails::error(command, safety, Some(backend), Some(&details)),
+                )
+            })?;
+
+            Ok(SpawnedProcess {
+                child,
+                sandbox_backend: Some(backend),
+            })
+        }
+    }
+}
+
+fn direct_bash_command(command: &str, ctx: &ToolContext) -> Command {
+    let mut process = Command::new("bash");
+    process.arg("-c").arg(command).current_dir(&ctx.cwd);
+    configure_process_stdio(process)
+}
+
+fn configure_process_stdio(mut process: Command) -> Command {
+    process
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process
+}
+
+fn spawn_process(mut process: Command) -> std::io::Result<Child> {
+    process.spawn()
+}
+
+#[derive(Clone, Copy)]
+struct BashSafetyContext<'a> {
+    safety: &'a BashSafetyAssessment,
+    approval_required: bool,
+    approved: bool,
+    execution_policy: ExecutionPolicy,
+}
+
+impl BashSafetyContext<'_> {
+    fn to_value(self) -> Value {
+        json!({
+            "executionPolicy": self.execution_policy.as_str(),
+            "approvalRequired": self.approval_required,
+            "approved": self.approved,
+            "title": self.safety.title,
+            "reason": self.safety.reason,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BashResultDetails<'a> {
+    command: &'a str,
+    exit_code: Option<i32>,
+    cancelled: bool,
+    timed_out: bool,
+    truncated: bool,
+    safety: BashSafetyContext<'a>,
+    sandbox_backend: Option<SandboxBackend>,
+    sandbox_failure: Option<&'a SandboxFailureDetails>,
+}
+
+impl<'a> BashResultDetails<'a> {
+    fn error(
+        command: &'a str,
+        safety: BashSafetyContext<'a>,
+        sandbox_backend: Option<SandboxBackend>,
+        sandbox_failure: Option<&'a SandboxFailureDetails>,
+    ) -> Self {
+        Self {
+            command,
+            exit_code: None,
+            cancelled: false,
+            timed_out: false,
+            truncated: false,
+            safety,
+            sandbox_backend,
+            sandbox_failure,
+        }
+    }
+}
+
+fn build_details(details: BashResultDetails<'_>) -> Value {
+    let mut value = Map::from_iter([
+        ("command".to_string(), Value::from(details.command)),
+        (
+            "exitCode".to_string(),
+            details.exit_code.map(Value::from).unwrap_or(Value::Null),
+        ),
+        ("cancelled".to_string(), Value::from(details.cancelled)),
+        ("timedOut".to_string(), Value::from(details.timed_out)),
+        ("truncated".to_string(), Value::from(details.truncated)),
+        ("safety".to_string(), details.safety.to_value()),
+    ]);
+
+    if let Some(backend) = details.sandbox_backend {
+        let mut sandbox = Map::from_iter([
+            ("mode".to_string(), Value::from("safety")),
+            ("backend".to_string(), backend_detail(backend)),
+        ]);
+        if let Some(failure) = details.sandbox_failure {
+            sandbox.insert("failure".to_string(), failure.to_value());
+        }
+        value.insert("sandbox".to_string(), Value::Object(sandbox));
+    }
+
+    Value::Object(value)
+}
+
+fn structured_error_result(message: String, details: BashResultDetails<'_>) -> ToolResult {
+    text_result_with(message, Some(build_details(details)), true, None)
+}
+
+fn approval_denied_result(
+    command: &str,
+    safety: &BashSafetyAssessment,
+    message: &str,
+    execution_policy: ExecutionPolicy,
+) -> ToolResult {
+    text_result_with(
+        format!(
+            "Bash command blocked: {message}\n\nReason: {}",
+            safety.reason
+        ),
+        Some(json!({
+            "command": command,
+            "blockedBySafetyPolicy": true,
+            "safety": {
+                "executionPolicy": execution_policy.as_str(),
+                "approvalRequired": true,
+                "approved": false,
+                "title": safety.title,
+                "reason": safety.reason,
+            },
+        })),
+        true,
+        None,
+    )
+}
+
+fn render_sandbox_failure_output(failure: &SandboxFailureDetails, original_output: &str) -> String {
+    let mut rendered = failure.message.clone();
+    rendered.push_str("\n\n");
+    rendered.push_str(&failure.escalation.message);
+
+    let trimmed = original_output.trim();
+    if !trimmed.is_empty() && trimmed != failure.message {
+        rendered.push_str("\n\nOriginal sandbox output:\n");
+        rendered.push_str(trimmed);
+    }
+
+    rendered
+}
+
+fn backend_detail(backend: SandboxBackend) -> Value {
+    serde_json::to_value(backend).unwrap_or_else(|_| Value::from("bwrap"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bb_core::types::ContentBlock;
     use std::path::Path;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     fn make_ctx(dir: &Path) -> ToolContext {
         ToolContext {
             cwd: dir.to_path_buf(),
             artifacts_dir: dir.to_path_buf(),
+            execution_policy: crate::ExecutionPolicy::Yolo,
             on_output: None,
             web_search: None,
+            execution_mode: ToolExecutionMode::Interactive,
+            request_approval: Some(Arc::new(|_| {
+                Box::pin(async {
+                    crate::ToolApprovalOutcome {
+                        decision: crate::ToolApprovalDecision::ApprovedOnce,
+                    }
+                })
+            })),
         }
     }
 
@@ -290,5 +582,114 @@ mod tests {
         let details = result.details.unwrap();
         assert_eq!(details["cancelled"], true);
         assert_eq!(details["timedOut"], false);
+    }
+
+    #[tokio::test]
+    async fn bash_denies_approval_needed_commands_in_noninteractive_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let result = tool
+            .execute(
+                json!({
+                    "command": "cargo check --workspace"
+                }),
+                &ToolContext {
+                    execution_policy: crate::ExecutionPolicy::Safety,
+                    execution_mode: ToolExecutionMode::NonInteractive,
+                    ..make_ctx(dir.path())
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            other => panic!("unexpected content block: {other:?}"),
+        };
+        assert!(result.is_error);
+        assert!(text.contains("blocked"));
+        assert_eq!(
+            result
+                .details
+                .as_ref()
+                .and_then(|details| details.get("blockedBySafetyPolicy"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_requests_approval_for_non_read_only_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let approval_calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = approval_calls.clone();
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "echo hi > /tmp/out.txt"
+                }),
+                &ToolContext {
+                    execution_policy: crate::ExecutionPolicy::Safety,
+                    request_approval: Some(Arc::new(move |request| {
+                        let callback_calls = callback_calls.clone();
+                        Box::pin(async move {
+                            callback_calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(request.tool_name, "bash");
+                            assert!(request.reason.contains("shell control operators"));
+                            crate::ToolApprovalOutcome {
+                                decision: crate::ToolApprovalDecision::Denied,
+                            }
+                        })
+                    })),
+                    ..make_ctx(dir.path())
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(approval_calls.load(Ordering::SeqCst), 1);
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn safety_mode_requires_sandbox_backend_without_falling_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "echo should-not-run > sandbox-sentinel"
+                }),
+                &ToolContext {
+                    execution_policy: crate::ExecutionPolicy::Safety,
+                    ..make_ctx(dir.path())
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        match original_path {
+            Some(path) => unsafe { std::env::set_var("PATH", path) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert!(result.is_error);
+        assert!(!dir.path().join("sandbox-sentinel").exists());
+        let details = result.details.unwrap();
+        assert_eq!(details["sandbox"]["failure"]["kind"], "backendUnavailable");
+        assert_eq!(
+            details["sandbox"]["failure"]["escalation"]["action"],
+            "rerunWithBroaderPermissions"
+        );
     }
 }

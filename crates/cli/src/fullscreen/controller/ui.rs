@@ -2,7 +2,7 @@ use bb_session::store;
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{FullscreenCommand, FullscreenFooterData};
 
-use crate::session_info::collect_session_info_summary;
+use crate::session_info::{collect_session_info_summary, permission_posture_badge};
 
 use super::{FullscreenController, PendingImage};
 use crate::fullscreen::{format_tokens, shorten_home_path};
@@ -138,15 +138,18 @@ impl FullscreenController {
 
         let right = if self.session_setup.thinking_level == "off" {
             format!(
-                "({}) {} • thinking off",
-                self.session_setup.model.provider, self.session_setup.model.id
+                "({}) {} • thinking off • {}",
+                self.session_setup.model.provider,
+                self.session_setup.model.id,
+                permission_posture_badge(self.session_setup.tool_ctx.execution_policy)
             )
         } else {
             format!(
-                "({}) {} • {}",
+                "({}) {} • {} • {}",
                 self.session_setup.model.provider,
                 self.session_setup.model.id,
-                self.session_setup.thinking_level
+                self.session_setup.thinking_level,
+                permission_posture_badge(self.session_setup.tool_ctx.execution_policy)
             )
         };
 
@@ -200,6 +203,7 @@ impl FullscreenController {
             &self.session_setup.model.provider,
             &self.session_setup.model.id,
             &self.session_setup.thinking_level,
+            self.session_setup.tool_ctx.execution_policy,
         )
         .map(|summary| {
             (
@@ -264,5 +268,23 @@ fn footer_line1(cwd: &str, conn: &rusqlite::Connection, session_id: &str) -> Str
 fn push_usage_part(parts: &mut Vec<String>, tokens: u64, prefix: &str) {
     if tokens > 0 {
         parts.push(format!("{prefix}{}", format_tokens(tokens)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::permission_posture_badge;
+    use bb_tools::ExecutionPolicy;
+
+    #[test]
+    fn permission_badge_is_compact_for_footer_use() {
+        assert_eq!(
+            permission_posture_badge(ExecutionPolicy::Safety),
+            "mode safety/project-only"
+        );
+        assert_eq!(
+            permission_posture_badge(ExecutionPolicy::Yolo),
+            "mode yolo/full-access"
+        );
     }
 }

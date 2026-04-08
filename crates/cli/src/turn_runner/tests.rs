@@ -120,8 +120,11 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         tool_ctx: bb_tools::ToolContext {
             cwd: "/tmp".into(),
             artifacts_dir: "/tmp".into(),
+            execution_policy: bb_tools::ExecutionPolicy::Safety,
             on_output: None,
             web_search: None,
+            execution_mode: bb_tools::ToolExecutionMode::Interactive,
+            request_approval: None,
         },
         thinking: None,
         retry_enabled: false,

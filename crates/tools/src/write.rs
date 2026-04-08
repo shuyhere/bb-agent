@@ -3,7 +3,14 @@ use bb_core::error::{BbError, BbResult};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolResult, path::resolve_path, support::text_result};
+use crate::{
+    Tool, ToolContext, ToolResult,
+    path::{ensure_write_allowed, resolve_path},
+    support::text_result,
+};
+
+#[cfg(test)]
+mod tests;
 
 pub struct WriteTool;
 
@@ -45,6 +52,7 @@ impl Tool for WriteTool {
             .ok_or_else(|| BbError::Tool("Missing 'content' parameter".into()))?;
 
         let path = resolve_path(&ctx.cwd, path_str);
+        ensure_write_allowed(ctx, &path, "write")?;
 
         // Create parent directories
         if let Some(parent) = path.parent() {

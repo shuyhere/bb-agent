@@ -23,9 +23,11 @@ Project root is detected by walking up from `cwd` looking for `.git`, `Cargo.tom
 
 ```json
 {
+  "execution_mode": "safety",
   "default_provider": "anthropic",
   "default_model": "claude-sonnet-4-20250514",
   "default_thinking": "medium",
+  "execution_mode": "safety",
 
   "compaction": {
     "enabled": true,
@@ -84,6 +86,18 @@ Project root is detected by walking up from `cwd` looking for `.git`, `Cargo.tom
 ```
 
 ### Fields
+
+#### `execution_mode`
+Execution posture for built-in tools.
+
+- `safety` (default)
+  - restricts built-in `write` and `edit` to files inside the active workspace
+  - runs `bash` in the safer approval/sandboxed posture
+- `yolo`
+  - allows broader built-in file mutation behavior
+  - skips the safer bash posture
+
+BB-Agent shows the active posture in `/session` and the fullscreen footer/settings UI so it stays visible during a run.
 
 #### `default_provider`
 Default LLM provider. Values: `anthropic`, `openai`, `google`, `groq`, `xai`, `openrouter`, or a custom provider name.
@@ -152,6 +166,12 @@ Equivalent environment variable:
 ```bash
 BB_TUI_COMPAT=1
 ```
+
+## Migration Notes
+
+- `execution_mode` now defaults to `yolo`.
+- Use `"execution_mode": "safety"` if you want built-in `write` or `edit` restricted to the current project directory.
+- In `safety` mode, non-read-only bash commands now go through the safer approval/sandboxed path instead of running freely.
 
 ## AGENTS.md
 
