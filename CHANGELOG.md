@@ -5,6 +5,20 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.12] - 2026-04-06
+
+### Fixed
+
+- direct `@image` references in print mode and fullscreen now attach real image inputs instead of falling back to UTF-8 read warnings
+- `@path with spaces` parsing now correctly keeps the full file path before trailing prompt text, including whole-message forms
+- image tool results are now preserved through provider conversion so models can actually see images returned by tools instead of responding as if no image was provided
+- fullscreen `@` folder navigation now keeps the completion menu open when you select a directory and immediately shows the next level, including directories with spaces
+- the fullscreen input block now shows attached files as `[name, sizeKB]`, keeps those chips visible, and places the cursor below them so typing starts after the attachments
+
+### Changed
+
+- binary office/document inputs (`pdf`, `docx`, `pptx`, `xlsx`) now degrade to format-aware metadata notes instead of misleading invalid-UTF-8 errors
+
 ## [0.0.11] - 2026-04-07
 
 ### Added
@@ -77,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.12]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.12
 [0.0.11]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.11
 [0.0.10]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.10
 [0.0.9]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.9
