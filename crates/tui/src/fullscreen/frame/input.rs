@@ -190,6 +190,31 @@ pub(crate) fn blank_line(width: usize) -> String {
 }
 
 type AuthDialogRender = (Vec<(usize, String)>, Option<(u16, u16)>);
+type OverlayLines = Vec<(usize, String)>;
+
+fn approval_options(
+    dialog: &super::super::types::FullscreenApprovalDialog,
+) -> Vec<(super::super::types::FullscreenApprovalChoice, String)> {
+    let mut options = vec![(
+        super::super::types::FullscreenApprovalChoice::ApproveOnce,
+        "Yes, proceed [y]".to_string(),
+    )];
+    if dialog.allow_session {
+        let scope = dialog
+            .session_scope_label
+            .as_deref()
+            .unwrap_or("this command");
+        options.push((
+            super::super::types::FullscreenApprovalChoice::ApproveForSession,
+            format!("Yes, and don't ask again for {scope} in this session [a]"),
+        ));
+    }
+    options.push((
+        super::super::types::FullscreenApprovalChoice::Deny,
+        "No, and tell BB what to do differently [n]".to_string(),
+    ));
+    options
+}
 
 fn push_wrapped_line(lines: &mut Vec<String>, line: &str, width: usize) {
     if line.is_empty() {
@@ -409,4 +434,126 @@ pub(crate) fn render_auth_dialog(
     });
 
     Some((rendered, cursor))
+}
+
+pub(crate) fn measure_approval_input(
+    dialog: &super::super::types::FullscreenApprovalDialog,
+    width: usize,
+) -> usize {
+    approval_input_content(dialog, width.max(1)).0.len()
+}
+
+fn approval_input_content(
+    dialog: &super::super::types::FullscreenApprovalDialog,
+    width: usize,
+) -> (Vec<String>, Option<(usize, String, String)>) {
+    let t = theme();
+    let mut content = Vec::new();
+    let mut cursor = None;
+
+    content.push(truncate_to_width(
+        &format!("{}{}{}{}", t.bold, t.accent, dialog.title, t.reset),
+        width,
+    ));
+    content.push(truncate_to_width(
+        &format!("{}$ {}{}", t.accent, dialog.command, t.reset),
+        width,
+    ));
+    content.push(truncate_to_width(
+        &format!("{}Reason:{} {}", t.dim, t.reset, dialog.reason),
+        width,
+    ));
+    for line in &dialog.lines {
+        content.push(truncate_to_width(line, width));
+    }
+    for (choice, label) in approval_options(dialog) {
+        let rendered = if dialog.selected == choice {
+            format!("{}→ {}{}", t.accent, label, t.reset)
+        } else {
+            format!("  {}", label)
+        };
+        content.push(truncate_to_width(&rendered, width));
+    }
+
+    if dialog.selected == super::super::types::FullscreenApprovalChoice::Deny {
+        let prefix = "    steer: ".to_string();
+        let placeholder = dialog
+            .deny_input_placeholder
+            .as_deref()
+            .unwrap_or("Tell BB what to do differently");
+        let input_value = if dialog.deny_input.is_empty() {
+            format!("{}{}{}", t.muted, placeholder, t.reset)
+        } else {
+            dialog.deny_input.clone()
+        };
+        cursor = Some((content.len(), prefix.clone(), dialog.deny_input.clone()));
+        content.push(truncate_to_width(&format!("{prefix}{input_value}"), width));
+    }
+
+    let footer = if dialog.selected == super::super::types::FullscreenApprovalChoice::Deny {
+        format!(
+            "{}Type feedback • Enter deny • Tab/↑/↓ move • Esc deny now{}",
+            t.dim, t.reset
+        )
+    } else {
+        format!(
+            "{}y once • a session • n deny • Tab/↑/↓ move • Enter confirm{}",
+            t.dim, t.reset
+        )
+    };
+    content.push(truncate_to_width(&footer, width));
+    (content, cursor)
+}
+
+pub(crate) fn render_approval_input(
+    state: &FullscreenState,
+    input_y: u16,
+    width: usize,
+    height: usize,
+) -> (Vec<String>, Option<(u16, u16)>) {
+    let Some(dialog) = state.approval_dialog.as_ref() else {
+        return (Vec::new(), None);
+    };
+    if width == 0 || height == 0 {
+        return (Vec::new(), None);
+    }
+
+    let inner_height = height.saturating_sub(2);
+    let (content, approval_cursor) = approval_input_content(dialog, width.max(1));
+    let visible_start = 0;
+    let visible_end = (visible_start + inner_height).min(content.len());
+    let visible_slice = &content[visible_start..visible_end];
+    let lines_above = visible_start;
+    let lines_below = content.len().saturating_sub(visible_end);
+    let border_color = state.color_theme.border_escape();
+
+    let mut lines = Vec::with_capacity(height);
+    lines.push(format_border_top(width, lines_above, &border_color));
+    for row in 0..inner_height {
+        let content = visible_slice.get(row).map(String::as_str).unwrap_or("");
+        lines.push(pad_to_width(&truncate_to_width(content, width), width));
+    }
+    lines.push(format_border_bottom(width, lines_below, &border_color));
+
+    let cursor = approval_cursor.and_then(|(row, prefix, input_text)| {
+        if row < visible_start || row >= visible_end {
+            return None;
+        }
+        let visible_row = row - visible_start;
+        let display = truncate_to_width(&format!("{prefix}{input_text}"), width);
+        Some((
+            visible_width(&display).min(width.saturating_sub(1)) as u16,
+            input_y + 1 + visible_row as u16,
+        ))
+    });
+
+    (lines, cursor)
+}
+
+pub(crate) fn render_approval_dialog(
+    _state: &FullscreenState,
+    _width: usize,
+    _height: usize,
+) -> Option<OverlayLines> {
+    None
 }

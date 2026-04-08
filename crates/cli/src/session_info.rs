@@ -3,6 +3,7 @@ use bb_core::settings::Settings;
 use bb_core::types::{AgentMessage, AssistantContent, AssistantMessage, SessionEntry, Usage};
 use bb_provider::registry::{CostConfig, ModelRegistry};
 use bb_session::store;
+use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -12,6 +13,7 @@ pub(crate) struct SessionInfoSummary {
     pub id: String,
     pub model: String,
     pub thinking: String,
+    pub execution_mode: ExecutionPolicy,
     pub auth_source: String,
     pub copilot_authority: Option<String>,
     pub copilot_login: Option<String>,
@@ -62,6 +64,7 @@ pub(crate) fn collect_session_info_summary(
     model_provider: &str,
     model_id: &str,
     thinking: &str,
+    execution_policy: ExecutionPolicy,
 ) -> Result<SessionInfoSummary> {
     let file = conn
         .path()
@@ -73,6 +76,7 @@ pub(crate) fn collect_session_info_summary(
         id: session_id.to_string(),
         model: format!("{model_provider}/{model_id}"),
         thinking: thinking.to_string(),
+        execution_mode: execution_policy,
         auth_source: crate::login::auth_source_label(model_provider).to_string(),
         ..SessionInfoSummary::default()
     };
@@ -130,6 +134,10 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     out.push_str(&format!("ID: {}\n", summary.id));
     out.push_str(&format!("Model: {}\n", summary.model));
     out.push_str(&format!("Thinking: {}\n", summary.thinking));
+    out.push_str(&format!(
+        "Permissions: {}\n",
+        permission_posture_detail(summary.execution_mode)
+    ));
     out.push_str(&format!("Auth: {}\n", summary.auth_source));
     if let Some(authority) = &summary.copilot_authority {
         out.push_str(&format!("Copilot Authority: {}\n", authority));
@@ -198,6 +206,21 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     out
 }
 
+pub(crate) fn permission_posture_badge(execution_mode: ExecutionPolicy) -> &'static str {
+    match execution_mode {
+        ExecutionPolicy::Safety => "mode safety/project-only",
+        ExecutionPolicy::Yolo => "mode yolo/full-access",
+    }
+}
+
+pub(crate) fn permission_posture_detail(execution_mode: ExecutionPolicy) -> String {
+    format!(
+        "{} ({})",
+        execution_mode.as_str(),
+        execution_mode.write_scope_label()
+    )
+}
+
 fn format_timestamp(timestamp_ms: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
         .map(|dt| dt.to_rfc3339())
@@ -218,11 +241,15 @@ fn format_u64(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_session_info_summary, format_u64};
+    use super::{
+        SessionInfoSummary, collect_session_info_summary, format_u64, permission_posture_badge,
+        render_session_info_text,
+    };
     use bb_core::types::{
         AgentMessage, AssistantMessage, Cost, EntryBase, EntryId, SessionEntry, StopReason, Usage,
     };
     use bb_session::store;
+    use bb_tools::ExecutionPolicy;
     use chrono::Utc;
 
     #[test]
@@ -274,9 +301,26 @@ mod tests {
             "anthropic",
             "claude-opus-4-6",
             "medium",
+            ExecutionPolicy::Safety,
         )
         .expect("summary");
 
         assert!((summary.total_cost - 36.75).abs() < 1e-9);
+        assert_eq!(summary.execution_mode, ExecutionPolicy::Safety);
+    }
+
+    #[test]
+    fn session_summary_renders_permission_posture() {
+        let summary = SessionInfoSummary {
+            execution_mode: ExecutionPolicy::Yolo,
+            ..SessionInfoSummary::default()
+        };
+
+        let rendered = render_session_info_text(&summary);
+        assert!(rendered.contains("Permissions: yolo (full access)"));
+        assert_eq!(
+            permission_posture_badge(ExecutionPolicy::Safety),
+            "mode safety/project-only"
+        );
     }
 }

@@ -15,7 +15,7 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
-use bb_tools::{Tool, ToolContext, builtin_tools};
+use bb_tools::{ExecutionPolicy, Tool, ToolContext, builtin_tools};
 use std::sync::Arc;
 
 use crate::extensions::{
@@ -121,6 +121,7 @@ pub(crate) async fn prepare_session_runtime(
     let (session_id, session_created) = resolve_startup_session_id(&conn, &cwd, &entry)?;
 
     let settings = Settings::load_merged(&cwd);
+    let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
     let model_input = entry
         .model
@@ -221,6 +222,7 @@ pub(crate) async fn prepare_session_runtime(
     let tool_ctx = ToolContext {
         cwd: cwd.clone(),
         artifacts_dir,
+        execution_policy,
         on_output: None,
         web_search: Some(bb_tools::WebSearchRuntime {
             provider: provider.clone(),
@@ -230,6 +232,8 @@ pub(crate) async fn prepare_session_runtime(
             headers: headers.clone(),
             enabled: true,
         }),
+        execution_mode: bb_tools::ToolExecutionMode::Interactive,
+        request_approval: None,
     };
 
     let model_ref = ModelRef {

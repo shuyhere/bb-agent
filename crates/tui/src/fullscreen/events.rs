@@ -62,7 +62,9 @@ impl FullscreenState {
             _ => {}
         }
 
-        if self.auth_dialog.is_some() && matches!(self.mode, FullscreenMode::Normal) {
+        if (self.auth_dialog.is_some() || self.approval_dialog.is_some())
+            && matches!(self.mode, FullscreenMode::Normal)
+        {
             self.on_normal_key(key);
             return;
         }

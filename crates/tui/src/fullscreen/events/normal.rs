@@ -2,6 +2,11 @@ use super::*;
 
 impl FullscreenState {
     pub(super) fn on_normal_key(&mut self, key: KeyEvent) {
+        if self.approval_dialog.is_some() {
+            self.on_approval_dialog_key(key);
+            return;
+        }
+
         if self.auth_dialog.is_some() {
             self.on_auth_dialog_key(key);
             return;
@@ -318,6 +323,167 @@ impl FullscreenState {
         self.paste_storage.clear();
         self.paste_counter = 0;
         self.status_line = "Submitting authentication input...".to_string();
+        self.dirty = true;
+    }
+
+    fn on_approval_dialog_key(&mut self, key: KeyEvent) {
+        use super::super::types::FullscreenApprovalChoice;
+
+        let deny_selected = self
+            .approval_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.selected == FullscreenApprovalChoice::Deny);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.submit_approval_decision(FullscreenApprovalChoice::Deny, None);
+            }
+            KeyCode::Enter => {
+                self.submit_current_approval_decision();
+            }
+            KeyCode::Char('j' | 'm') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_current_approval_decision();
+            }
+            KeyCode::Up => {
+                self.step_approval_selection(-1);
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.step_approval_selection(1);
+            }
+            KeyCode::BackTab => {
+                self.step_approval_selection(-1);
+            }
+            KeyCode::Left if deny_selected => {
+                self.approval_move_left();
+            }
+            KeyCode::Right if deny_selected => {
+                self.approval_move_right();
+            }
+            KeyCode::Home if deny_selected => {
+                self.approval_move_home();
+            }
+            KeyCode::End if deny_selected => {
+                self.approval_move_end();
+            }
+            KeyCode::Backspace if deny_selected => {
+                self.approval_backspace();
+            }
+            KeyCode::Char('y' | 'Y') if !deny_selected => {
+                self.submit_approval_decision(FullscreenApprovalChoice::ApproveOnce, None);
+            }
+            KeyCode::Char('a' | 'A') if !deny_selected => {
+                if self
+                    .approval_dialog
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.allow_session)
+                {
+                    self.submit_approval_decision(
+                        FullscreenApprovalChoice::ApproveForSession,
+                        None,
+                    );
+                }
+            }
+            KeyCode::Char('d' | 'D' | 'n' | 'N') if !deny_selected => {
+                self.set_approval_selection(FullscreenApprovalChoice::Deny);
+            }
+            KeyCode::Char(ch)
+                if deny_selected && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.approval_insert_char(ch);
+            }
+            _ => {
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn set_approval_selection(&mut self, selected: super::super::types::FullscreenApprovalChoice) {
+        if let Some(dialog) = self.approval_dialog.as_mut() {
+            dialog.selected = selected;
+        }
+        self.dirty = true;
+    }
+
+    fn step_approval_selection(&mut self, delta: isize) {
+        use super::super::types::FullscreenApprovalChoice;
+
+        let Some(dialog) = self.approval_dialog.as_ref() else {
+            return;
+        };
+        let mut options = vec![
+            FullscreenApprovalChoice::ApproveOnce,
+            FullscreenApprovalChoice::Deny,
+        ];
+        if dialog.allow_session {
+            options.insert(1, FullscreenApprovalChoice::ApproveForSession);
+        }
+        let current_index = options
+            .iter()
+            .position(|choice| *choice == dialog.selected)
+            .unwrap_or(0);
+        let next_index = if delta < 0 {
+            current_index.saturating_sub(1)
+        } else {
+            (current_index + 1).min(options.len().saturating_sub(1))
+        };
+        self.set_approval_selection(options[next_index]);
+    }
+
+    fn current_approval_choice(&self) -> super::super::types::FullscreenApprovalChoice {
+        self.approval_dialog
+            .as_ref()
+            .map(|dialog| dialog.selected)
+            .unwrap_or(super::super::types::FullscreenApprovalChoice::Deny)
+    }
+
+    fn current_approval_steer_message(&self) -> Option<String> {
+        self.approval_dialog.as_ref().and_then(|dialog| {
+            let trimmed = dialog.deny_input.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
+
+    fn submit_current_approval_decision(&mut self) {
+        let choice = self.current_approval_choice();
+        let steer_message = (choice == super::super::types::FullscreenApprovalChoice::Deny)
+            .then(|| self.current_approval_steer_message())
+            .flatten();
+        self.submit_approval_decision(choice, steer_message);
+    }
+
+    fn submit_approval_decision(
+        &mut self,
+        choice: super::super::types::FullscreenApprovalChoice,
+        steer_message: Option<String>,
+    ) {
+        self.pending_submissions
+            .push_back(FullscreenSubmission::ApprovalDecision {
+                choice,
+                steer_message,
+            });
+        self.status_line = match choice {
+            super::super::types::FullscreenApprovalChoice::ApproveOnce => {
+                "Approval submitted".to_string()
+            }
+            super::super::types::FullscreenApprovalChoice::ApproveForSession => {
+                "Approved for this session".to_string()
+            }
+            super::super::types::FullscreenApprovalChoice::Deny => {
+                if self
+                    .approval_dialog
+                    .as_ref()
+                    .is_some_and(|dialog| !dialog.deny_input.trim().is_empty())
+                {
+                    "Denied with guidance for BB".to_string()
+                } else {
+                    "Approval denied".to_string()
+                }
+            }
+        };
         self.dirty = true;
     }
 }

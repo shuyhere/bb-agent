@@ -7,6 +7,7 @@ mod turns;
 use std::io::Write;
 
 use anyhow::Result;
+use bb_tools::{ToolApprovalOutcome, ToolApprovalRequest};
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{
     FullscreenAppConfig, FullscreenCommand, FullscreenFooterData, FullscreenNoteLevel, Transcript,
@@ -16,8 +17,9 @@ use tokio::sync::mpsc;
 use crate::session_bootstrap::{
     SessionBootstrapOptions, SessionRuntimeSetup, prepare_session_runtime,
 };
+use crate::session_info::permission_posture_badge;
 
-use controller::FullscreenController;
+use controller::{FullscreenController, PendingApprovalRequest};
 
 const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGIN_METHOD_MENU_ID: &str = "login-method";
@@ -37,14 +39,43 @@ const LOGIN_PROVIDERS: &[&str] = &[
 ];
 
 pub async fn run_fullscreen_entry(entry: SessionBootstrapOptions) -> Result<()> {
-    let (runtime_host, options, session_setup) = prepare_session_runtime(entry).await?;
+    let (runtime_host, options, mut session_setup) = prepare_session_runtime(entry).await?;
     let extra_slash_items = build_dynamic_slash_items(&runtime_host);
     let config = build_fullscreen_config(&session_setup, &options.prompt_label, extra_slash_items);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (submission_tx, submission_rx) = mpsc::unbounded_channel();
+    let (approval_tx, approval_rx) = mpsc::unbounded_channel();
     let controller_command_tx = command_tx.clone();
 
-    let controller = FullscreenController::new(runtime_host, options, session_setup, command_tx);
+    session_setup.tool_ctx.request_approval =
+        Some(std::sync::Arc::new(move |request: ToolApprovalRequest| {
+            let approval_tx = approval_tx.clone();
+            Box::pin(async move {
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                if approval_tx
+                    .send(PendingApprovalRequest {
+                        request,
+                        response_tx,
+                    })
+                    .is_err()
+                {
+                    return ToolApprovalOutcome {
+                        decision: bb_tools::ToolApprovalDecision::Denied,
+                    };
+                }
+                response_rx.await.unwrap_or(ToolApprovalOutcome {
+                    decision: bb_tools::ToolApprovalDecision::Denied,
+                })
+            })
+        }));
+
+    let controller = FullscreenController::new(
+        runtime_host,
+        options,
+        session_setup,
+        command_tx,
+        approval_rx,
+    );
     let controller_task = async move {
         let result = controller.run(submission_rx).await;
         if let Err(err) = &result {
@@ -75,7 +106,7 @@ pub(super) fn build_dynamic_slash_items(
     for skill in &runtime_host.bootstrap().resource_bootstrap.skills {
         items.push(bb_tui::select_list::SelectItem {
             label: format!("/skill:{}", skill.info.name),
-            detail: Some(skill.info.description.clone()),
+            detail: None,
             value: format!("/skill:{}", skill.info.name),
         });
     }
@@ -149,14 +180,15 @@ fn build_footer_data(session_setup: &SessionRuntimeSetup) -> FullscreenFooterDat
         ctx = format_tokens(session_setup.model.context_window)
     );
     let line2_right = format!(
-        "({}) {}{}",
+        "({}) {}{} • {}",
         session_setup.model.provider,
         session_setup.model.id,
         if session_setup.thinking_level == "off" {
             " • thinking off".to_string()
         } else {
             format!(" • {}", session_setup.thinking_level)
-        }
+        },
+        permission_posture_badge(session_setup.tool_ctx.execution_policy)
     );
 
     FullscreenFooterData {

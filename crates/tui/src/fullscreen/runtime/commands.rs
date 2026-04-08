@@ -76,12 +76,24 @@ impl FullscreenState {
             }
             FullscreenCommand::OpenAuthDialog(dialog)
             | FullscreenCommand::UpdateAuthDialog(dialog) => {
+                self.approval_dialog = None;
                 self.auth_dialog = Some(dialog);
                 self.dirty = true;
                 RenderIntent::Render
             }
             FullscreenCommand::CloseAuthDialog => {
                 self.auth_dialog = None;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::OpenApprovalDialog(dialog) => {
+                self.auth_dialog = None;
+                self.approval_dialog = Some(dialog);
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            FullscreenCommand::CloseApprovalDialog => {
+                self.approval_dialog = None;
                 self.dirty = true;
                 RenderIntent::Render
             }
@@ -354,10 +366,16 @@ impl FullscreenState {
 
     pub(crate) fn current_layout(&self) -> FullscreenLayout {
         let input_inner_width = self.size.width.max(1) as usize;
-        let input_wrap = measure_input(&self.input, self.cursor, input_inner_width);
+        let requested_input_lines = if let Some(dialog) = self.approval_dialog.as_ref() {
+            crate::fullscreen::frame::measure_approval_input(dialog, input_inner_width)
+        } else {
+            measure_input(&self.input, self.cursor, input_inner_width)
+                .lines
+                .len()
+        };
         compute_layout_with_footer(
             self.size,
-            input_wrap.lines.len(),
+            requested_input_lines,
             self.requested_footer_height(),
         )
     }

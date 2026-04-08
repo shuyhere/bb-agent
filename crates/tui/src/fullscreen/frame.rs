@@ -7,8 +7,10 @@ mod tests;
 
 use super::{renderer::FrameBuffer, runtime::FullscreenState};
 use chrome::{render_footer, render_header, render_status};
-pub(crate) use input::measure_input;
-use input::{blank_line, render_auth_dialog, render_input};
+use input::{
+    blank_line, render_approval_dialog, render_approval_input, render_auth_dialog, render_input,
+};
+pub(crate) use input::{measure_approval_input, measure_input};
 use transcript::render_transcript;
 
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
@@ -50,6 +52,13 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
             vec![blank_line(layout.input.width as usize); layout.input.height as usize],
             None,
         )
+    } else if state.approval_dialog.is_some() {
+        render_approval_input(
+            state,
+            layout.input.y,
+            layout.input.width as usize,
+            layout.input.height as usize,
+        )
     } else {
         render_input(
             state,
@@ -89,6 +98,16 @@ pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
             }
         }
         cursor = dialog_cursor.or(cursor);
+    }
+
+    if let Some(dialog_lines) =
+        render_approval_dialog(state, state.size.width as usize, state.size.height as usize)
+    {
+        for (y, line) in dialog_lines {
+            if let Some(slot) = lines.get_mut(y) {
+                *slot = line;
+            }
+        }
     }
 
     FrameBuffer { lines, cursor }

@@ -1,9 +1,12 @@
 use anyhow::Result;
 use bb_session::store;
-use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel, FullscreenSubmission};
+use bb_tui::fullscreen::{
+    FullscreenApprovalChoice, FullscreenApprovalDialog, FullscreenCommand, FullscreenNoteLevel,
+    FullscreenSubmission,
+};
 use tokio::sync::mpsc;
 
-use super::FullscreenController;
+use super::{FullscreenController, SessionApprovalRule, derive_session_approval_rule};
 
 impl FullscreenController {
     pub(crate) async fn run(
@@ -55,6 +58,12 @@ impl FullscreenController {
                         self.report_error("submission", &err);
                     }
                 }
+                maybe_approval = self.approval_rx.recv() => {
+                    let Some(approval) = maybe_approval else {
+                        continue;
+                    };
+                    self.present_approval_request(approval);
+                }
                 _ = resource_watch_tick.tick() => {
                     if let Err(err) = self.maybe_auto_reload_resources().await {
                         self.report_error("auto reload", &err);
@@ -89,6 +98,10 @@ impl FullscreenController {
         submission: FullscreenSubmission,
         submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
+        if self.pending_approval.is_some() {
+            return self.handle_approval_submission(submission);
+        }
+
         match submission {
             FullscreenSubmission::Input(text) => {
                 self.handle_submitted_text(text, submission_rx).await
@@ -106,6 +119,7 @@ impl FullscreenController {
                 }
                 Ok(())
             }
+            FullscreenSubmission::ApprovalDecision { .. } => Ok(()),
             FullscreenSubmission::CancelLocalAction => {
                 if let Some(target_entry_id) = self.pending_tree_custom_prompt_target.take() {
                     self.send_command(FullscreenCommand::SetInput(String::new()));
@@ -254,6 +268,113 @@ impl FullscreenController {
             self.streaming = false;
             self.publish_status();
         }
+        Ok(())
+    }
+
+    pub(crate) fn present_approval_request(&mut self, approval: super::PendingApprovalRequest) {
+        let request = approval.request.clone();
+        if self
+            .session_approval_rules
+            .iter()
+            .any(|rule| rule.matches(&request.command))
+        {
+            let _ = approval.response_tx.send(bb_tools::ToolApprovalOutcome {
+                decision: bb_tools::ToolApprovalDecision::ApprovedForSession,
+            });
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "Approved bash command from session permission".to_string(),
+            ));
+            return;
+        }
+
+        if let Some(pending) = self.pending_approval.replace(approval) {
+            let _ = pending.response_tx.send(bb_tools::ToolApprovalOutcome {
+                decision: bb_tools::ToolApprovalDecision::Denied,
+            });
+        }
+
+        let request = self
+            .pending_approval
+            .as_ref()
+            .expect("approval request should exist")
+            .request
+            .clone();
+        let session_rule = derive_session_approval_rule(&request.command);
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        self.send_command(FullscreenCommand::OpenApprovalDialog(
+            FullscreenApprovalDialog {
+                title: request.title,
+                command: request.command,
+                reason: request.reason,
+                lines: vec![],
+                allow_session: true,
+                session_scope_label: Some(session_rule.display_scope()),
+                deny_input: String::new(),
+                deny_cursor: 0,
+                deny_input_placeholder: Some("Tell BB what to do differently".to_string()),
+                selected: FullscreenApprovalChoice::ApproveOnce,
+            },
+        ));
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Approval required for bash command".to_string(),
+        ));
+    }
+
+    pub(crate) fn handle_approval_submission(
+        &mut self,
+        submission: FullscreenSubmission,
+    ) -> Result<()> {
+        let (choice, steer_message) = match submission {
+            FullscreenSubmission::ApprovalDecision {
+                choice,
+                steer_message,
+            } => (choice, steer_message),
+            FullscreenSubmission::CancelLocalAction => (FullscreenApprovalChoice::Deny, None),
+            _ => return Ok(()),
+        };
+
+        let outcome = match choice {
+            FullscreenApprovalChoice::ApproveOnce => bb_tools::ToolApprovalOutcome {
+                decision: bb_tools::ToolApprovalDecision::ApprovedOnce,
+            },
+            FullscreenApprovalChoice::ApproveForSession => {
+                if let Some(pending) = self.pending_approval.as_ref() {
+                    let rule: SessionApprovalRule =
+                        derive_session_approval_rule(&pending.request.command);
+                    self.session_approval_rules.insert(rule);
+                }
+                bb_tools::ToolApprovalOutcome {
+                    decision: bb_tools::ToolApprovalDecision::ApprovedForSession,
+                }
+            }
+            FullscreenApprovalChoice::Deny => bb_tools::ToolApprovalOutcome {
+                decision: bb_tools::ToolApprovalDecision::Denied,
+            },
+        };
+
+        if let Some(pending) = self.pending_approval.take() {
+            let _ = pending.response_tx.send(outcome);
+        }
+
+        self.send_command(FullscreenCommand::CloseApprovalDialog);
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+        self.send_command(FullscreenCommand::SetStatusLine(match choice {
+            FullscreenApprovalChoice::ApproveOnce => "Approved bash command".to_string(),
+            FullscreenApprovalChoice::ApproveForSession => {
+                "Approved bash command for this session".to_string()
+            }
+            FullscreenApprovalChoice::Deny => {
+                if steer_message
+                    .as_ref()
+                    .is_some_and(|message| !message.trim().is_empty())
+                {
+                    "Denied bash command with guidance for BB".to_string()
+                } else {
+                    "Denied bash command".to_string()
+                }
+            }
+        }));
         Ok(())
     }
 }

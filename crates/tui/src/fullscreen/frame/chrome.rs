@@ -190,5 +190,19 @@ fn style_footer_left(text: &str) -> String {
 
 fn style_footer_right(text: &str) -> String {
     let t = theme();
-    format!("{}{}{}", t.dim, text, t.reset)
+    if let Some(idx) = text.rfind("mode ") {
+        let prefix = &text[..idx];
+        let badge = &text[idx..];
+        let badge_color = if badge.contains("yolo/") {
+            t.accent.as_str()
+        } else {
+            t.warning.as_str()
+        };
+        format!(
+            "{}{}{}{}{}{}",
+            t.dim, prefix, badge_color, t.bold, badge, t.reset
+        )
+    } else {
+        format!("{}{}{}", t.dim, text, t.reset)
+    }
 }
