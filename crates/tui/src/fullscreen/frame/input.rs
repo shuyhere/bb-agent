@@ -103,6 +103,34 @@ fn attachment_chip_line(path: &Path, width: usize) -> Option<String> {
     ))
 }
 
+fn parse_input_attachment_at(
+    input: &str,
+    index: usize,
+    cwd: &Path,
+) -> Option<(std::path::PathBuf, usize)> {
+    let rest = input.get(index + 1..)?;
+
+    let (raw_path, token_len) = if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        (&quoted[..end], end + 3)
+    } else {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        (&rest[..end], end + 1)
+    };
+
+    if raw_path.is_empty() {
+        return None;
+    }
+
+    let trimmed = raw_path.trim_end_matches([',', '.', ';', ':', ')', ']', '}']);
+    let path = if Path::new(trimmed).is_absolute() {
+        std::path::PathBuf::from(trimmed)
+    } else {
+        cwd.join(trimmed)
+    };
+    path.is_file().then_some((path, token_len))
+}
+
 fn collect_input_attachment_paths(input: &str, cwd: &Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     let bytes = input.as_bytes();
@@ -114,37 +142,67 @@ fn collect_input_attachment_paths(input: &str, cwd: &Path) -> Vec<std::path::Pat
             continue;
         }
 
-        let Some(rest) = input.get(index + 1..) else {
-            break;
-        };
-
-        let (raw_path, consumed) = if let Some(quoted) = rest.strip_prefix('"') {
-            if let Some(end) = quoted.find('"') {
-                (&quoted[..end], end + 2)
-            } else {
-                ("", 1)
-            }
+        if let Some((path, consumed)) = parse_input_attachment_at(input, index, cwd) {
+            paths.push(path);
+            index += consumed;
         } else {
-            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            (&rest[..end], end + 1)
-        };
-
-        if !raw_path.is_empty() {
-            let trimmed = raw_path.trim_end_matches([',', '.', ';', ':', ')', ']', '}']);
-            let path = if Path::new(trimmed).is_absolute() {
-                std::path::PathBuf::from(trimmed)
-            } else {
-                cwd.join(trimmed)
-            };
-            if path.is_file() {
-                paths.push(path);
-            }
+            index += 1;
         }
-
-        index += consumed.max(1);
     }
 
     paths
+}
+
+pub(crate) fn visible_input_text(input: &str, cursor: usize, cwd: &Path) -> (String, usize) {
+    let bytes = input.as_bytes();
+    let mut out = String::new();
+    let mut index = 0usize;
+    let mut visible_cursor = None;
+
+    while index < bytes.len() {
+        if visible_cursor.is_none() && cursor == index {
+            visible_cursor = Some(out.len());
+        }
+
+        if bytes[index] == b'@'
+            && let Some((_path, consumed)) = parse_input_attachment_at(input, index, cwd)
+        {
+            let token_end = index + consumed;
+            if visible_cursor.is_none() && cursor > index && cursor <= token_end {
+                visible_cursor = Some(out.len());
+            }
+            index = token_end;
+            while index < bytes.len() {
+                let Some(ch) = input[index..].chars().next() else {
+                    break;
+                };
+                if ch != ' ' && ch != '\t' {
+                    break;
+                }
+                if visible_cursor.is_none() && cursor > index && cursor <= index + ch.len_utf8() {
+                    visible_cursor = Some(out.len());
+                }
+                index += ch.len_utf8();
+                if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+            }
+            continue;
+        }
+
+        let Some(ch) = input[index..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+
+    let out_len = out.len();
+    if visible_cursor.is_none() {
+        visible_cursor = Some(out_len);
+    }
+
+    (out, visible_cursor.unwrap_or(out_len))
 }
 
 pub(crate) fn attachment_line_count(state: &FullscreenState, width: usize) -> usize {

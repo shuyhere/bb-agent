@@ -369,8 +369,10 @@ impl FullscreenState {
         let requested_input_lines = if let Some(dialog) = self.approval_dialog.as_ref() {
             crate::fullscreen::frame::measure_approval_input(dialog, input_inner_width)
         } else {
+            let (visible_input, visible_cursor) =
+                crate::fullscreen::frame::visible_input_text(&self.input, self.cursor, &self.cwd);
             crate::fullscreen::frame::attachment_line_count(self, input_inner_width)
-                + measure_input(&self.input, self.cursor, input_inner_width)
+                + measure_input(&visible_input, visible_cursor, input_inner_width)
                     .lines
                     .len()
         };

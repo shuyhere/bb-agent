@@ -9,6 +9,7 @@ use super::{renderer::FrameBuffer, runtime::FullscreenState};
 use chrome::{render_footer, render_header, render_status};
 pub(crate) use input::{
     attachment_chip_label, attachment_line_count, measure_approval_input, measure_input,
+    visible_input_text,
 };
 use input::{
     blank_line, render_approval_dialog, render_approval_input, render_auth_dialog, render_input,
@@ -17,7 +18,9 @@ use transcript::render_transcript;
 
 pub(crate) fn build_frame(state: &FullscreenState) -> FrameBuffer {
     let input_inner_width = state.size.width.max(1) as usize;
-    let input_wrap = measure_input(&state.input, state.cursor, input_inner_width);
+    let (visible_input, visible_cursor) =
+        visible_input_text(&state.input, state.cursor, &state.cwd);
+    let input_wrap = measure_input(&visible_input, visible_cursor, input_inner_width);
     let layout = state.current_layout();
 
     let mut lines = vec![blank_line(state.size.width as usize); state.size.height as usize];

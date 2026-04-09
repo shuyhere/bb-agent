@@ -66,6 +66,14 @@ fn frame_renders_attachment_chips_for_pending_and_at_files() {
         joined.contains("[notes.pdf, 1KB]"),
         "frame did not contain @file chip:\n{joined}"
     );
+    assert!(
+        joined.contains("summarize this"),
+        "frame did not contain remaining prompt text:\n{joined}"
+    );
+    assert!(
+        !joined.contains("@\"notes.pdf\""),
+        "frame still showed raw @file token alongside chip:\n{joined}"
+    );
 
     let _ = std::fs::remove_file(image);
     let _ = std::fs::remove_file(doc);
