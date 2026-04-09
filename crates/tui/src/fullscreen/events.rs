@@ -94,6 +94,7 @@ impl FullscreenState {
                 if matches!(self.mode, FullscreenMode::Normal) {
                     if let Some((path, size)) = try_read_clipboard_image() {
                         self.on_image_attached(path, size);
+                        self.suppress_next_paste_payload = true;
                     } else if let Some(text) = try_read_clipboard_text() {
                         self.on_paste(&text);
                     } else {

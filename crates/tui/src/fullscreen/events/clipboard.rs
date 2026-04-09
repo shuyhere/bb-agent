@@ -1,18 +1,10 @@
 use super::*;
 
 impl FullscreenState {
-    /// Called when an image file is attached (via Ctrl+V clipboard read or drag-and-drop).
-    /// Stores the path and updates the status line to show the attachment.
-    pub fn on_image_attached(&mut self, path: String, size_bytes: u64) {
-        let display = if let Some(name) = std::path::Path::new(&path).file_name() {
-            name.to_string_lossy().to_string()
-        } else {
-            path.clone()
-        };
-        let size_kb = size_bytes.div_ceil(1024);
+    /// Called when an image file is attached (via clipboard read or drag-and-drop).
+    /// Stores the path and relies on the input block chips for visual feedback.
+    pub fn on_image_attached(&mut self, path: String, _size_bytes: u64) {
         self.pending_image_paths.push(path);
-        let count = self.pending_image_paths.len();
-        self.status_line = format!("[{display}, {size_kb}KB] attached — {count} image(s) pending");
         self.dirty = true;
     }
 
@@ -22,8 +14,12 @@ impl FullscreenState {
     }
 
     pub fn on_paste(&mut self, text: &str) {
+        if self.mode == FullscreenMode::Normal && self.suppress_next_paste_payload {
+            self.suppress_next_paste_payload = false;
+            return;
+        }
+
         if self.mode == FullscreenMode::Normal
-            && text.trim().is_empty()
             && let Some((path, size_bytes)) = try_read_clipboard_image()
         {
             self.on_image_attached(path, size_bytes);

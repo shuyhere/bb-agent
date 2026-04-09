@@ -47,6 +47,18 @@ fn super_v_without_clipboard_data_sets_status() {
 }
 
 #[test]
+fn clipboard_image_attach_suppresses_follow_up_paste_text() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_image_attached("/tmp/demo.png".to_string(), 1024);
+    state.suppress_next_paste_payload = true;
+
+    state.on_paste("true");
+
+    assert_eq!(state.input, "");
+    assert_eq!(state.pending_image_paths.len(), 1);
+}
+
+#[test]
 fn keyboard_navigation_turns_follow_off_and_resize_preserves_focus_anchor_when_possible() {
     let mut transcript = Transcript::new();
     let assistant = transcript.append_root_block(
