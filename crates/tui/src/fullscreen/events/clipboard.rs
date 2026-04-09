@@ -23,6 +23,14 @@ impl FullscreenState {
 
     pub fn on_paste(&mut self, text: &str) {
         if self.mode == FullscreenMode::Normal
+            && text.trim().is_empty()
+            && let Some((path, size_bytes)) = try_read_clipboard_image()
+        {
+            self.on_image_attached(path, size_bytes);
+            return;
+        }
+
+        if self.mode == FullscreenMode::Normal
             && let Some(handled) = self.handle_pasted_paths(text)
         {
             self.status_line = handled;

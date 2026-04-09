@@ -144,13 +144,6 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         accepts_arguments: true,
     },
     SlashCommandSpec {
-        command: "/paste-image",
-        menu_detail: "Attach image from clipboard",
-        help_usage: "/paste-image",
-        help_detail: "Read an image from the system clipboard and attach it to the next prompt",
-        accepts_arguments: false,
-    },
-    SlashCommandSpec {
         command: "/help",
         menu_detail: "Show help",
         help_usage: "/help",
@@ -252,8 +245,6 @@ pub fn shared_slash_command_help_lines() -> Vec<String> {
     lines.push("  Shortcuts:".into());
     lines.push("    Ctrl+C         Abort / clear".into());
     lines.push("    Ctrl+D         Exit (empty editor)".into());
-    lines.push("    Ctrl+V         Paste clipboard text or attach clipboard image".into());
-    lines.push("    /paste-image   Read clipboard image and attach it to the next prompt".into());
     lines.push("    !command       Run bash directly".into());
     lines
 }
@@ -279,7 +270,6 @@ mod tests {
         assert!(help.contains("/install [-l|--local] <source>"));
         assert!(help.contains("npm:bb-example-skill"));
         assert!(help.contains("/update"));
-        assert!(help.contains("/paste-image"));
     }
 
     #[test]

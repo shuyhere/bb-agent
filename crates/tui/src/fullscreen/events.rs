@@ -3,8 +3,6 @@ mod mouse;
 mod normal;
 mod transcript;
 
-pub use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
-
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -19,6 +17,7 @@ use super::{
     transcript::{BlockId, BlockKind},
     types::{FullscreenMode, FullscreenSubmission},
 };
+use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
 
 fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {
     match key.code {
