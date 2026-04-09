@@ -24,6 +24,8 @@ mod types;
 pub mod vibewords;
 mod viewport;
 
+pub use events::try_read_clipboard_image;
+
 #[cfg(test)]
 mod tests;
 

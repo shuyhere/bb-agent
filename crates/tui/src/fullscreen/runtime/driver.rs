@@ -156,12 +156,14 @@ fn base64_encode_simple(data: &[u8]) -> String {
     out
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 fn is_ssh_session() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some()
         || std::env::var_os("SSH_CLIENT").is_some()
         || std::env::var_os("SSH_TTY").is_some()
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 fn linux_gui_clipboard_available() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
 }
