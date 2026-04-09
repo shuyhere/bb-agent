@@ -3,6 +3,8 @@ mod mouse;
 mod normal;
 mod transcript;
 
+pub use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
+
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -17,7 +19,17 @@ use super::{
     transcript::{BlockId, BlockKind},
     types::{FullscreenMode, FullscreenSubmission},
 };
-use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
+
+fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('v' | 'V') => {
+            key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::SUPER)
+        }
+        KeyCode::Insert => key.modifiers.contains(KeyModifiers::SHIFT),
+        _ => false,
+    }
+}
 
 impl FullscreenState {
     pub fn on_tick(&mut self) {
@@ -79,7 +91,7 @@ impl FullscreenState {
                 }
                 return;
             }
-            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_clipboard_paste_shortcut(&key) => {
                 if matches!(self.mode, FullscreenMode::Normal) {
                     if let Some((path, size)) = try_read_clipboard_image() {
                         self.on_image_attached(path, size);

@@ -1,5 +1,81 @@
 use super::common::*;
 use super::*;
+use tempfile::tempdir;
+
+#[test]
+fn ctrl_v_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn shift_insert_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn super_v_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn paste_of_image_path_attaches_pending_image() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("demo.png");
+    std::fs::write(&path, [137, 80, 78, 71]).expect("write png sig");
+
+    let (mut state, _, _, _) = sample_state();
+    state.on_paste(&path.display().to_string());
+    assert_eq!(state.pending_image_paths.len(), 1);
+    assert!(state.status_line.contains("Attached 1 image"));
+}
+
+#[test]
+fn enter_submits_when_only_images_are_pending() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("demo.png");
+    std::fs::write(&path, [137, 80, 78, 71]).expect("write png sig");
+
+    let (mut state, _, _, _) = sample_state();
+    state.on_paste(&path.display().to_string());
+    state.submit_input();
+
+    assert!(state.status_line.contains("Working"));
+    assert!(state.pending_image_paths.is_empty());
+    assert!(matches!(
+        state.pending_submissions.front(),
+        Some(FullscreenSubmission::InputWithImages { image_paths, .. }) if image_paths.len() == 1
+    ));
+}
 
 #[test]
 fn keyboard_navigation_turns_follow_off_and_resize_preserves_focus_anchor_when_possible() {
