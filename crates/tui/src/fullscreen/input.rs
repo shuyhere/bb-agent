@@ -165,6 +165,14 @@ impl FullscreenState {
     }
 
     pub(super) fn backspace(&mut self) {
+        if self.input.is_empty() {
+            if self.pending_image_paths.pop().is_some() {
+                self.suppress_next_paste_payload = false;
+                self.status_line.clear();
+                self.dirty = true;
+            }
+            return;
+        }
         if self.cursor == 0 {
             return;
         }

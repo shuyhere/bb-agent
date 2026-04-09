@@ -71,6 +71,19 @@ fn paste_event_image_attach_arms_follow_up_paste_suppression() {
 }
 
 #[test]
+fn backspace_removes_last_attached_image_when_input_is_empty() {
+    let (mut state, _, _, _) = sample_state();
+    state.pending_image_paths.push("/tmp/one.png".to_string());
+    state.pending_image_paths.push("/tmp/two.png".to_string());
+
+    state.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(state.pending_image_paths, vec!["/tmp/one.png".to_string()]);
+
+    state.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert!(state.pending_image_paths.is_empty());
+}
+
+#[test]
 fn keyboard_navigation_turns_follow_off_and_resize_preserves_focus_anchor_when_possible() {
     let mut transcript = Transcript::new();
     let assistant = transcript.append_root_block(
