@@ -163,6 +163,8 @@ pub struct ModelOverride {
     pub max_tokens: Option<u64>,
     #[serde(default)]
     pub reasoning: Option<bool>,
+    #[serde(default)]
+    pub input: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

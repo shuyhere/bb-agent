@@ -1,19 +1,14 @@
+use std::path::Path;
+
 use super::*;
 
+const CLIPBOARD_IMAGE_PREFIX: &str = "bb-clipboard-";
+
 impl FullscreenState {
-    /// Called when an image file is attached (via Ctrl+V clipboard read or drag-and-drop).
-    /// Stores the path and updates the status line to show the attachment.
-    pub fn on_image_attached(&mut self, path: String, size_bytes: u64) {
-        let display = if let Some(name) = std::path::Path::new(&path).file_name() {
-            name.to_string_lossy().to_string()
-        } else {
-            path.clone()
-        };
-        let size_kb = size_bytes / 1024;
+    /// Called when an image file is attached (via clipboard read or drag-and-drop).
+    /// Stores the path and relies on the input block chips for visual feedback.
+    pub fn on_image_attached(&mut self, path: String, _size_bytes: u64) {
         self.pending_image_paths.push(path);
-        let count = self.pending_image_paths.len();
-        self.status_line =
-            format!("📎 {display} ({size_kb}KB) attached — {count} image(s) pending");
         self.dirty = true;
     }
 
@@ -23,6 +18,19 @@ impl FullscreenState {
     }
 
     pub fn on_paste(&mut self, text: &str) {
+        if self.mode == FullscreenMode::Normal && self.suppress_next_paste_payload {
+            self.suppress_next_paste_payload = false;
+            return;
+        }
+
+        if self.mode == FullscreenMode::Normal
+            && let Some((path, size_bytes)) = try_read_clipboard_image()
+        {
+            self.on_image_attached(path, size_bytes);
+            self.suppress_next_paste_payload = true;
+            return;
+        }
+
         if self.mode == FullscreenMode::Normal
             && let Some(handled) = self.handle_pasted_paths(text)
         {
@@ -126,12 +134,15 @@ fn sanitize_pasted_text(text: &str) -> String {
 
 /// Try to read an image from the system clipboard using available tools.
 /// Returns `(temp_file_path, file_size)` on success.
-pub(super) fn try_read_clipboard_image() -> Option<(String, u64)> {
+pub fn try_read_clipboard_image() -> Option<(String, u64)> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let tmp_path = std::env::temp_dir().join(format!("bb-clipboard-{timestamp}.png"));
+    let tmp_path = std::env::temp_dir().join(format!(
+        "{CLIPBOARD_IMAGE_PREFIX}{}-{timestamp}.png",
+        std::process::id()
+    ));
     let tmp_path_str = tmp_path.to_string_lossy().to_string();
 
     if try_clipboard_command(
@@ -154,11 +165,21 @@ pub(super) fn try_read_clipboard_image() -> Option<(String, u64)> {
         return Some((tmp_path_str, meta.len()));
     }
 
-    if std::process::Command::new("pngpaste")
-        .arg(&tmp_path)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    if command_status_quiet(std::process::Command::new("pngpaste").arg(&tmp_path))
+        && let Ok(meta) = std::fs::metadata(&tmp_path)
+        && meta.len() > 0
+    {
+        return Some((tmp_path_str, meta.len()));
+    }
+
+    if try_macos_applescript_save_clipboard_image(&tmp_path_str)
+        && let Ok(meta) = std::fs::metadata(&tmp_path)
+        && meta.len() > 0
+    {
+        return Some((tmp_path_str, meta.len()));
+    }
+
+    if try_macos_save_clipboard_image(&tmp_path_str)
         && let Ok(meta) = std::fs::metadata(&tmp_path)
         && meta.len() > 0
     {
@@ -172,10 +193,7 @@ pub(super) fn try_read_clipboard_image() -> Option<(String, u64)> {
         return Some((tmp_path_str, meta.len()));
     }
 
-    if let Ok(output) = std::process::Command::new("grab-screenshot")
-        .arg(&tmp_path)
-        .output()
-        && output.status.success()
+    if command_status_quiet(std::process::Command::new("grab-screenshot").arg(&tmp_path))
         && let Ok(meta) = std::fs::metadata(&tmp_path)
         && meta.len() > 0
     {
@@ -186,7 +204,22 @@ pub(super) fn try_read_clipboard_image() -> Option<(String, u64)> {
     None
 }
 
-pub(super) fn try_read_clipboard_text() -> Option<String> {
+pub(crate) fn is_managed_clipboard_temp_image(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.parent() == Some(std::env::temp_dir().as_path())
+        && file_name.starts_with(CLIPBOARD_IMAGE_PREFIX)
+        && file_name.ends_with(".png")
+}
+
+pub(crate) fn cleanup_managed_clipboard_temp_image(path: &Path) {
+    if is_managed_clipboard_temp_image(path) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn try_read_clipboard_text() -> Option<String> {
     read_clipboard_text_command("pbpaste", &[])
         .or_else(|| read_clipboard_text_command("wl-paste", &["--no-newline"]))
         .or_else(|| read_clipboard_text_command("xclip", &["-selection", "clipboard", "-o"]))
@@ -222,6 +255,38 @@ fn read_clipboard_text_command(cmd: &str, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+fn command_status_quiet(command: &mut std::process::Command) -> bool {
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn try_macos_applescript_save_clipboard_image(output_path: &str) -> bool {
+    let escaped = output_path.replace('"', "\\\"");
+    let script = format!(
+        "set outPath to POSIX file \"{escaped}\"\ntry\n    set pngData to the clipboard as «class PNGf»\non error\n    return false\nend try\nset fileRef to open for access outPath with write permission\ntry\n    set eof fileRef to 0\n    write pngData to fileRef\n    close access fileRef\n    return true\non error\n    try\n        close access fileRef\n    end try\n    return false\nend try"
+    );
+
+    command_status_quiet(std::process::Command::new("osascript").args(["-e", &script]))
+}
+
+fn try_macos_save_clipboard_image(output_path: &str) -> bool {
+    let escaped = output_path.replace('"', "\\\"");
+    let script = format!(
+        "ObjC.import('AppKit');\nObjC.import('Foundation');\nconst path = \"{escaped}\";\nconst fm = $.NSFileManager.defaultManager;\nconst pb = $.NSPasteboard.generalPasteboard;\nfunction cleanup() {{ fm.removeItemAtPathError($(path), null); }}\nfunction writePngData(data) {{ return data && data.writeToFileAtomically($(path), true); }}\nfunction pngFromTiffData(tiff) {{\n  if (!tiff) return null;\n  const rep = $.NSBitmapImageRep.imageRepWithData(tiff);\n  if (!rep) return null;\n  return rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $.NSDictionary.dictionary);\n}}\nlet data = pb.dataForType('public.png');\nif (!data) data = pb.dataForType('PNGf');\nif (data && writePngData(data)) {{ $.exit(0); }}\nlet tiff = pb.dataForType('public.tiff');\nif (!tiff) tiff = pb.dataForType('NSTIFFPboardType');\nlet png = pngFromTiffData(tiff);\nif (png && writePngData(png)) {{ $.exit(0); }}\nconst classes = $.NSArray.arrayWithObject($.NSImage);\nconst images = pb.readObjectsForClassesOptions(classes, $.NSDictionary.dictionary);\nif (images && images.count > 0) {{\n  const image = images.objectAtIndex(0);\n  const png2 = pngFromTiffData(image.TIFFRepresentation);\n  if (png2 && writePngData(png2)) {{ $.exit(0); }}\n}}\ncleanup();\n$.exit(1);"
+    );
+
+    command_status_quiet(std::process::Command::new("osascript").args([
+        "-l",
+        "JavaScript",
+        "-e",
+        &script,
+    ]))
+}
+
 fn try_powershell_save_clipboard_image(output_path: &str) -> bool {
     let escaped = output_path.replace('\'', "''");
     let script = format!(
@@ -229,12 +294,11 @@ fn try_powershell_save_clipboard_image(output_path: &str) -> bool {
     );
 
     for shell in ["powershell", "pwsh"] {
-        if std::process::Command::new(shell)
-            .args(["-NoProfile", "-Command", &script])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
+        if command_status_quiet(std::process::Command::new(shell).args([
+            "-NoProfile",
+            "-Command",
+            &script,
+        ])) {
             return true;
         }
     }
@@ -392,5 +456,31 @@ mod tests {
     fn sanitizes_carriage_returns_and_control_chars() {
         let sanitized = sanitize_pasted_text("hello\r\nworld\u{1b}[31m");
         assert_eq!(sanitized, "hello\nworld[31m");
+    }
+
+    #[test]
+    fn recognizes_managed_clipboard_temp_images() {
+        let path = std::env::temp_dir().join("bb-clipboard-123-456.png");
+        assert!(is_managed_clipboard_temp_image(&path));
+
+        let other = std::env::temp_dir().join("not-bb-clipboard.png");
+        assert!(!is_managed_clipboard_temp_image(&other));
+    }
+
+    #[test]
+    fn cleanup_removes_managed_clipboard_temp_images() {
+        let path = std::env::temp_dir().join(format!(
+            "bb-clipboard-test-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"png-bytes").expect("write temp image");
+
+        cleanup_managed_clipboard_temp_image(&path);
+
+        assert!(!path.exists());
     }
 }

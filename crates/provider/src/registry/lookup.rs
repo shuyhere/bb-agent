@@ -3,7 +3,7 @@ use std::path::Path;
 use bb_core::settings::Settings;
 
 use super::models::builtin_models;
-use super::types::{ApiType, CostConfig, Model};
+use super::types::{ApiType, CostConfig, Model, ModelInput};
 
 /// Model registry holding all available models.
 pub struct ModelRegistry {
@@ -52,6 +52,21 @@ impl ModelRegistry {
                     })
                     .unwrap_or(ApiType::OpenaiCompletions);
 
+                let input = mo
+                    .input
+                    .clone()
+                    .map(|values| {
+                        let mut parsed = vec![ModelInput::Text];
+                        if values
+                            .iter()
+                            .any(|value| value.eq_ignore_ascii_case("image"))
+                        {
+                            parsed.push(ModelInput::Image);
+                        }
+                        parsed
+                    })
+                    .unwrap_or_else(|| vec![ModelInput::Text]);
+
                 let model = Model {
                     id: mo.id.clone(),
                     name: mo.name.clone().unwrap_or_else(|| mo.id.clone()),
@@ -60,6 +75,7 @@ impl ModelRegistry {
                     context_window: mo.context_window.unwrap_or(128_000),
                     max_tokens: mo.max_tokens.unwrap_or(16_384),
                     reasoning: mo.reasoning.unwrap_or(false),
+                    input,
                     base_url: mo.base_url.clone(),
                     cost: CostConfig::default(),
                 };

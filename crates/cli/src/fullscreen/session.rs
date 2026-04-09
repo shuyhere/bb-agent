@@ -11,7 +11,7 @@ use bb_tui::select_list::SelectItem;
 use chrono::Utc;
 
 use super::controller::FullscreenController;
-use super::formatting::{format_assistant_text, text_from_blocks};
+use super::formatting::{format_assistant_text, format_user_text, text_from_blocks};
 use super::{FORK_ENTRY_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID};
 
 #[cfg(test)]
@@ -46,7 +46,7 @@ pub(super) fn build_fullscreen_transcript(
                         bb_tui::fullscreen::BlockKind::UserMessage,
                         "prompt",
                     )
-                    .with_content(text_from_blocks(&user.content, "\n")),
+                    .with_content(format_user_text(&user.content)),
                 );
                 last_assistant_root = None;
             }

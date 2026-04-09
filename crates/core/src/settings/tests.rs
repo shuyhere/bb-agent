@@ -94,6 +94,7 @@ fn test_settings_merge() {
             context_window: Some(32000),
             max_tokens: None,
             reasoning: None,
+            input: None,
         }]),
         ..Default::default()
     };
@@ -120,6 +121,7 @@ fn test_settings_merge() {
             context_window: Some(16000),
             max_tokens: None,
             reasoning: None,
+            input: None,
         }]),
         ..Default::default()
     };
@@ -158,6 +160,7 @@ fn test_settings_merge_model_override() {
             context_window: Some(32000),
             max_tokens: None,
             reasoning: None,
+            input: None,
         }]),
         ..Default::default()
     };
@@ -172,6 +175,7 @@ fn test_settings_merge_model_override() {
             context_window: Some(64000),
             max_tokens: None,
             reasoning: None,
+            input: None,
         }]),
         ..Default::default()
     };

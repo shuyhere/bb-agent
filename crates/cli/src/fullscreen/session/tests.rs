@@ -14,6 +14,39 @@ fn truncate_preview_text_handles_utf8_safely() {
 }
 
 #[test]
+fn rebuild_transcript_preserves_user_image_attachment_markers() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+
+    let user_entry = SessionEntry::Message {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: None,
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![
+                ContentBlock::Image {
+                    data: "abcd".to_string(),
+                    mime_type: "image/png".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "check this".to_string(),
+                },
+            ],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &session_id, &user_entry).expect("append user");
+
+    let (transcript, _) = build_fullscreen_transcript(&conn, &session_id).expect("transcript");
+    let root = transcript.root_blocks()[0];
+    let block = transcript.block(root).expect("user block");
+    assert!(block.content.contains("[image/png attachment]"));
+    assert!(block.content.contains("check this"));
+}
+
+#[test]
 fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     let conn = store::open_memory().expect("memory db");
     let session_id = store::create_session(&conn, "/tmp").expect("session");

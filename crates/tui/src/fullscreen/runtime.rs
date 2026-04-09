@@ -68,6 +68,8 @@ pub struct FullscreenState {
     pub(super) pending_clipboard_copy: Option<String>,
     /// Image file paths attached via paste or Ctrl+V, pending next submission.
     pub(super) pending_image_paths: Vec<String>,
+    /// Ignore the next terminal paste payload after a successful clipboard-image attach.
+    pub(super) suppress_next_paste_payload: bool,
     /// Counter for paste markers `[paste #N ...]`.
     pub(super) paste_counter: usize,
     /// Stored content for collapsed large pastes, keyed by paste ID.
@@ -118,6 +120,7 @@ impl FullscreenState {
             selection_focus_col: None,
             pending_clipboard_copy: None,
             pending_image_paths: Vec::new(),
+            suppress_next_paste_payload: false,
             paste_counter: 0,
             paste_storage: std::collections::HashMap::new(),
         };

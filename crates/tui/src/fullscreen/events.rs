@@ -17,7 +17,19 @@ use super::{
     transcript::{BlockId, BlockKind},
     types::{FullscreenMode, FullscreenSubmission},
 };
+pub(super) use clipboard::cleanup_managed_clipboard_temp_image;
 use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
+
+fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('v' | 'V') => {
+            key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::SUPER)
+        }
+        KeyCode::Insert => key.modifiers.contains(KeyModifiers::SHIFT),
+        _ => false,
+    }
+}
 
 impl FullscreenState {
     pub fn on_tick(&mut self) {
@@ -79,10 +91,11 @@ impl FullscreenState {
                 }
                 return;
             }
-            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            _ if is_clipboard_paste_shortcut(&key) => {
                 if matches!(self.mode, FullscreenMode::Normal) {
                     if let Some((path, size)) = try_read_clipboard_image() {
                         self.on_image_attached(path, size);
+                        self.suppress_next_paste_payload = true;
                     } else if let Some(text) = try_read_clipboard_text() {
                         self.on_paste(&text);
                     } else {

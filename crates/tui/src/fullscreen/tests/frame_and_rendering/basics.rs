@@ -380,6 +380,73 @@ fn scroll_events_toggle_follow_but_stay_in_normal_mode() {
 }
 
 #[test]
+fn submitted_user_message_keeps_attachment_chip_preview() {
+    let dir = make_attachment_test_dir();
+    let image = dir.join("bb-clipboard-demo.png");
+    std::fs::write(&image, b"png-bytes").expect("write image file");
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    state.pending_image_paths.push(image.display().to_string());
+    state.input = "check this image".to_string();
+    state.cursor = state.input.len();
+
+    state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let block_id = *state.transcript.root_blocks().last().expect("user block");
+    let block = state
+        .transcript
+        .block(block_id)
+        .expect("user block content");
+    assert!(block.content.contains("[bb-clipboard-demo.png, 1KB]"));
+    assert!(block.content.contains("check this image"));
+
+    let _ = std::fs::remove_file(image);
+    let _ = std::fs::remove_dir(dir);
+}
+
+#[test]
+fn image_only_submit_creates_user_message_and_submission() {
+    let dir = make_attachment_test_dir();
+    let image = dir.join("bb-clipboard-demo.png");
+    std::fs::write(&image, b"png-bytes").expect("write image file");
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    state.pending_image_paths.push(image.display().to_string());
+
+    state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let block_id = *state.transcript.root_blocks().last().expect("user block");
+    let block = state
+        .transcript
+        .block(block_id)
+        .expect("user block content");
+    assert_eq!(block.content, "[bb-clipboard-demo.png, 1KB]");
+    assert!(state.input.is_empty());
+    assert_eq!(state.status_line, "Working...");
+    assert!(state.submitted_inputs.is_empty());
+    assert!(matches!(
+        state.take_pending_submissions().as_slice(),
+        [FullscreenSubmission::InputWithImages { text, image_paths }]
+            if text.is_empty() && image_paths.len() == 1
+    ));
+
+    let _ = std::fs::remove_file(image);
+    let _ = std::fs::remove_dir(dir);
+}
+
+#[test]
 fn ctrl_j_submits_like_enter_in_normal_mode() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),

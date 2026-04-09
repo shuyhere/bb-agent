@@ -1,6 +1,12 @@
-use crate::slash_commands::matches_shared_local_slash_submission;
+use std::path::Path;
+
+use crate::{
+    fullscreen::events::cleanup_managed_clipboard_temp_image,
+    slash_commands::matches_shared_local_slash_submission,
+};
 
 use super::{
+    frame::attachment_chip_label,
     runtime::FullscreenState,
     transcript::{BlockKind, NewBlock},
     types::FullscreenSubmission,
@@ -69,13 +75,14 @@ impl FullscreenState {
 
     pub(super) fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
-        if submitted.trim().is_empty() {
+        let image_paths = self.take_pending_image_paths();
+        if submitted.trim().is_empty() && image_paths.is_empty() {
             self.status_line = "empty input ignored".to_string();
             self.dirty = true;
             return;
         }
 
-        if matches_shared_local_slash_submission(&submitted) {
+        if image_paths.is_empty() && matches_shared_local_slash_submission(&submitted) {
             self.submit_local_command(submitted);
             return;
         }
@@ -83,14 +90,17 @@ impl FullscreenState {
         // Expand paste markers back to full content before submitting.
         let expanded = self.expand_paste_markers(&submitted);
 
-        // Show the collapsed version in transcript (keeps it readable)
-        self.transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
-        );
-        self.submitted_inputs.push(submitted.clone());
+        if !submitted.is_empty() {
+            self.submitted_inputs.push(submitted.clone());
+        }
 
         // Include any pending image attachments with this submission.
-        let image_paths = self.take_pending_image_paths();
+        let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
+
+        // Show the collapsed version in transcript (keeps it readable)
+        self.transcript.append_root_block(
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(transcript_preview),
+        );
         if image_paths.is_empty() {
             self.pending_submissions
                 .push_back(FullscreenSubmission::Input(expanded));
@@ -165,6 +175,15 @@ impl FullscreenState {
     }
 
     pub(super) fn backspace(&mut self) {
+        if self.input.is_empty() {
+            if let Some(path) = self.pending_image_paths.pop() {
+                cleanup_managed_clipboard_temp_image(Path::new(&path));
+                self.suppress_next_paste_payload = false;
+                self.status_line.clear();
+                self.dirty = true;
+            }
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -195,6 +214,18 @@ impl FullscreenState {
         self.update_at_file_menu();
         self.dirty = true;
     }
+}
+
+fn format_submitted_user_message(text: &str, image_paths: &[String]) -> String {
+    let attachment_lines = image_paths
+        .iter()
+        .filter_map(|path| attachment_chip_label(Path::new(path)));
+
+    let mut lines: Vec<String> = attachment_lines.collect();
+    if !text.is_empty() {
+        lines.push(text.to_string());
+    }
+    lines.join("\n")
 }
 
 fn previous_boundary(text: &str, cursor: usize) -> usize {

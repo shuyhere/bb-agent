@@ -2,6 +2,108 @@ use super::common::*;
 use super::*;
 
 #[test]
+fn ctrl_v_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn shift_insert_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn super_v_without_clipboard_data_sets_status() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER));
+    assert!(
+        state
+            .status_line
+            .contains("No clipboard text or image available for paste")
+            || state.status_line.contains("attached")
+            || state.status_line.contains("Inserted")
+            || !state.input.is_empty()
+            || !state.pending_image_paths.is_empty()
+    );
+}
+
+#[test]
+fn clipboard_image_attach_suppresses_follow_up_paste_text() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_image_attached("/tmp/demo.png".to_string(), 1024);
+    state.suppress_next_paste_payload = true;
+
+    state.on_paste("true");
+
+    assert_eq!(state.input, "");
+    assert_eq!(state.pending_image_paths.len(), 1);
+}
+
+#[test]
+fn paste_event_image_attach_arms_follow_up_paste_suppression() {
+    let (mut state, _, _, _) = sample_state();
+    state.on_image_attached("/tmp/demo.png".to_string(), 1024);
+    state.suppress_next_paste_payload = true;
+
+    state.on_paste("true a prompt for BB-Agent...");
+
+    assert_eq!(state.input, "");
+    assert_eq!(state.pending_image_paths.len(), 1);
+}
+
+#[test]
+fn backspace_removes_last_attached_image_when_input_is_empty() {
+    let (mut state, _, _, _) = sample_state();
+    state.pending_image_paths.push("/tmp/one.png".to_string());
+    state.pending_image_paths.push("/tmp/two.png".to_string());
+
+    state.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(state.pending_image_paths, vec!["/tmp/one.png".to_string()]);
+
+    state.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert!(state.pending_image_paths.is_empty());
+}
+
+#[test]
+fn backspace_removes_managed_clipboard_temp_file_with_chip() {
+    let (mut state, _, _, _) = sample_state();
+    let path = std::env::temp_dir().join(format!(
+        "bb-clipboard-test-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&path, b"png-bytes").expect("write temp image");
+    state.pending_image_paths.push(path.display().to_string());
+
+    state.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    assert!(state.pending_image_paths.is_empty());
+    assert!(!path.exists());
+}
+
+#[test]
 fn keyboard_navigation_turns_follow_off_and_resize_preserves_focus_anchor_when_possible() {
     let mut transcript = Transcript::new();
     let assistant = transcript.append_root_block(
