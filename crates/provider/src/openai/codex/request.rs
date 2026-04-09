@@ -45,49 +45,11 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
         let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
         match role {
             "user" => {
-                if let Some(arr) = msg.get("content").and_then(|v| v.as_array()) {
-                    let mut content = Vec::new();
-                    for block in arr {
-                        match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                            "text" => {
-                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                    content.push(json!({
-                                        "type": "input_text",
-                                        "text": text,
-                                    }));
-                                }
-                            }
-                            "image" => {
-                                let media_type = block
-                                    .get("source")
-                                    .and_then(|s| s.get("media_type"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("image/png");
-                                let data = block
-                                    .get("source")
-                                    .and_then(|s| s.get("data"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                content.push(json!({
-                                    "type": "input_image",
-                                    "image_url": format!("data:{media_type};base64,{data}"),
-                                    "detail": "high",
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-                    out.push(json!({
-                        "role": "user",
-                        "content": content,
-                    }));
-                } else {
-                    let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    out.push(json!({
-                        "role": "user",
-                        "content": [{ "type": "input_text", "text": text }]
-                    }));
-                }
+                let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                out.push(json!({
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": text }]
+                }));
             }
             "assistant" => {
                 if let Some(text) = msg.get("content").and_then(|v| v.as_str())
@@ -141,36 +103,4 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
         }
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::convert_messages_for_codex;
-    use serde_json::json;
-
-    #[test]
-    fn convert_messages_for_codex_preserves_user_image_blocks() {
-        let messages = vec![json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "describe this"},
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": "abcd"
-                    }
-                }
-            ]
-        })];
-
-        let converted = convert_messages_for_codex(&messages);
-        assert_eq!(converted.len(), 1);
-        let content = converted[0]["content"].as_array().expect("content array");
-        assert_eq!(content[0]["type"], "input_text");
-        assert_eq!(content[1]["type"], "input_image");
-        assert_eq!(content[1]["detail"], "high");
-        assert_eq!(content[1]["image_url"], "data:image/png;base64,abcd");
-    }
 }

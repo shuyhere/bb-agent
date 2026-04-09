@@ -64,7 +64,6 @@ pub fn handle_slash_command(text: &str) -> SlashResult {
                 SlashResult::Image(path.to_string())
             }
         }
-        "/paste-image" => SlashResult::PasteImage,
         "/image" => SlashResult::NotCommand, // need a path argument
         _ => SlashResult::NotCommand,
     }
@@ -91,7 +90,6 @@ pub enum SlashResult {
     Export(Option<String>),
     Import(Option<String>),
     Image(String),
-    PasteImage,
     NotCommand,
 }
 
@@ -115,7 +113,6 @@ pub trait LocalSlashCommandHost {
     fn slash_export(&mut self, path: Option<&str>) -> Result<()>;
     fn slash_import(&mut self, path: Option<&str>) -> Result<()>;
     fn slash_image(&mut self, path: &str) -> Result<()>;
-    fn slash_paste_image(&mut self) -> Result<()>;
 }
 
 pub fn dispatch_local_slash_command<H: LocalSlashCommandHost>(
@@ -143,7 +140,6 @@ pub fn dispatch_local_slash_command<H: LocalSlashCommandHost>(
         SlashResult::Export(path) => host.slash_export(path.as_deref())?,
         SlashResult::Import(path) => host.slash_import(path.as_deref())?,
         SlashResult::Image(path) => host.slash_image(&path)?,
-        SlashResult::PasteImage => host.slash_paste_image()?,
     }
     Ok(true)
 }
@@ -283,10 +279,6 @@ mod tests {
             self.calls.push(format!("image:{}", path));
             Ok(())
         }
-        fn slash_paste_image(&mut self) -> anyhow::Result<()> {
-            self.calls.push("paste-image".into());
-            Ok(())
-        }
     }
 
     #[test]
@@ -311,18 +303,6 @@ mod tests {
         let mut host = MockHost::default();
         assert!(dispatch_local_slash_command(&mut host, "/model claude").unwrap());
         assert_eq!(host.calls, vec!["model:Some(\"claude\")".to_string()]);
-    }
-
-    #[test]
-    fn parses_and_dispatches_paste_image_command() {
-        assert_eq!(
-            handle_slash_command("/paste-image"),
-            SlashResult::PasteImage
-        );
-
-        let mut host = MockHost::default();
-        assert!(dispatch_local_slash_command(&mut host, "/paste-image").unwrap());
-        assert_eq!(host.calls, vec!["paste-image".to_string()]);
     }
 
     #[test]

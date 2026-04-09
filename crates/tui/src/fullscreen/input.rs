@@ -69,33 +69,25 @@ impl FullscreenState {
 
     pub(super) fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
-        let has_pending_images = !self.pending_image_paths.is_empty();
-        if submitted.trim().is_empty() && !has_pending_images {
+        if submitted.trim().is_empty() {
             self.status_line = "empty input ignored".to_string();
             self.dirty = true;
             return;
         }
 
-        let effective_submitted = if submitted.trim().is_empty() && has_pending_images {
-            "Please analyze the attached image.".to_string()
-        } else {
-            submitted.clone()
-        };
-
-        if matches_shared_local_slash_submission(&effective_submitted) {
-            self.submit_local_command(effective_submitted);
+        if matches_shared_local_slash_submission(&submitted) {
+            self.submit_local_command(submitted);
             return;
         }
 
         // Expand paste markers back to full content before submitting.
-        let expanded = self.expand_paste_markers(&effective_submitted);
+        let expanded = self.expand_paste_markers(&submitted);
 
         // Show the collapsed version in transcript (keeps it readable)
         self.transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt")
-                .with_content(effective_submitted.clone()),
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
         );
-        self.submitted_inputs.push(effective_submitted.clone());
+        self.submitted_inputs.push(submitted.clone());
 
         // Include any pending image attachments with this submission.
         let image_paths = self.take_pending_image_paths();
