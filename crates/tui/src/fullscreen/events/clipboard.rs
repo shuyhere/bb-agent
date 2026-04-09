@@ -158,11 +158,7 @@ pub fn try_read_clipboard_image() -> Option<(String, u64)> {
         return Some((tmp_path_str, meta.len()));
     }
 
-    if std::process::Command::new("pngpaste")
-        .arg(&tmp_path)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    if command_status_quiet(std::process::Command::new("pngpaste").arg(&tmp_path))
         && let Ok(meta) = std::fs::metadata(&tmp_path)
         && meta.len() > 0
     {
@@ -190,10 +186,7 @@ pub fn try_read_clipboard_image() -> Option<(String, u64)> {
         return Some((tmp_path_str, meta.len()));
     }
 
-    if let Ok(output) = std::process::Command::new("grab-screenshot")
-        .arg(&tmp_path)
-        .output()
-        && output.status.success()
+    if command_status_quiet(std::process::Command::new("grab-screenshot").arg(&tmp_path))
         && let Ok(meta) = std::fs::metadata(&tmp_path)
         && meta.len() > 0
     {
@@ -240,17 +233,22 @@ fn read_clipboard_text_command(cmd: &str, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+fn command_status_quiet(command: &mut std::process::Command) -> bool {
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn try_macos_applescript_save_clipboard_image(output_path: &str) -> bool {
     let escaped = output_path.replace('"', "\\\"");
     let script = format!(
         "set outPath to POSIX file \"{escaped}\"\ntry\n    set pngData to the clipboard as «class PNGf»\non error\n    return false\nend try\nset fileRef to open for access outPath with write permission\ntry\n    set eof fileRef to 0\n    write pngData to fileRef\n    close access fileRef\n    return true\non error\n    try\n        close access fileRef\n    end try\n    return false\nend try"
     );
 
-    std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    command_status_quiet(std::process::Command::new("osascript").args(["-e", &script]))
 }
 
 fn try_macos_save_clipboard_image(output_path: &str) -> bool {
@@ -259,11 +257,12 @@ fn try_macos_save_clipboard_image(output_path: &str) -> bool {
         "ObjC.import('AppKit');\nObjC.import('Foundation');\nconst path = \"{escaped}\";\nconst fm = $.NSFileManager.defaultManager;\nconst pb = $.NSPasteboard.generalPasteboard;\nfunction cleanup() {{ fm.removeItemAtPathError($(path), null); }}\nfunction writePngData(data) {{ return data && data.writeToFileAtomically($(path), true); }}\nfunction pngFromTiffData(tiff) {{\n  if (!tiff) return null;\n  const rep = $.NSBitmapImageRep.imageRepWithData(tiff);\n  if (!rep) return null;\n  return rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $.NSDictionary.dictionary);\n}}\nlet data = pb.dataForType('public.png');\nif (!data) data = pb.dataForType('PNGf');\nif (data && writePngData(data)) {{ $.exit(0); }}\nlet tiff = pb.dataForType('public.tiff');\nif (!tiff) tiff = pb.dataForType('NSTIFFPboardType');\nlet png = pngFromTiffData(tiff);\nif (png && writePngData(png)) {{ $.exit(0); }}\nconst classes = $.NSArray.arrayWithObject($.NSImage);\nconst images = pb.readObjectsForClassesOptions(classes, $.NSDictionary.dictionary);\nif (images && images.count > 0) {{\n  const image = images.objectAtIndex(0);\n  const png2 = pngFromTiffData(image.TIFFRepresentation);\n  if (png2 && writePngData(png2)) {{ $.exit(0); }}\n}}\ncleanup();\n$.exit(1);"
     );
 
-    std::process::Command::new("osascript")
-        .args(["-l", "JavaScript", "-e", &script])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    command_status_quiet(std::process::Command::new("osascript").args([
+        "-l",
+        "JavaScript",
+        "-e",
+        &script,
+    ]))
 }
 
 fn try_powershell_save_clipboard_image(output_path: &str) -> bool {
@@ -273,12 +272,11 @@ fn try_powershell_save_clipboard_image(output_path: &str) -> bool {
     );
 
     for shell in ["powershell", "pwsh"] {
-        if std::process::Command::new(shell)
-            .args(["-NoProfile", "-Command", &script])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
+        if command_status_quiet(std::process::Command::new(shell).args([
+            "-NoProfile",
+            "-Command",
+            &script,
+        ])) {
             return true;
         }
     }
