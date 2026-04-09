@@ -74,13 +74,14 @@ impl FullscreenState {
 
     pub(super) fn submit_input(&mut self) {
         let submitted = self.input.trim_end().to_string();
-        if submitted.trim().is_empty() {
+        let image_paths = self.take_pending_image_paths();
+        if submitted.trim().is_empty() && image_paths.is_empty() {
             self.status_line = "empty input ignored".to_string();
             self.dirty = true;
             return;
         }
 
-        if matches_shared_local_slash_submission(&submitted) {
+        if image_paths.is_empty() && matches_shared_local_slash_submission(&submitted) {
             self.submit_local_command(submitted);
             return;
         }
@@ -88,10 +89,11 @@ impl FullscreenState {
         // Expand paste markers back to full content before submitting.
         let expanded = self.expand_paste_markers(&submitted);
 
-        self.submitted_inputs.push(submitted.clone());
+        if !submitted.is_empty() {
+            self.submitted_inputs.push(submitted.clone());
+        }
 
         // Include any pending image attachments with this submission.
-        let image_paths = self.take_pending_image_paths();
         let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
 
         // Show the collapsed version in transcript (keeps it readable)

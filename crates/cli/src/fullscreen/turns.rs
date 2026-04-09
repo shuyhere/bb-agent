@@ -199,9 +199,10 @@ impl FullscreenController {
                             }
                         }
                         Some(FullscreenSubmission::InputWithImages { text, image_paths }) => {
+                            let has_images = !image_paths.is_empty();
                             self.attach_images_from_paths(&image_paths);
                             let text = text.trim().to_string();
-                            if text.is_empty() || text == "/" {
+                            if (text.is_empty() && !has_images) || text == "/" {
                                 continue;
                             }
                             if self.handle_local_submission(&text).await? {

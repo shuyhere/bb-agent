@@ -233,7 +233,7 @@ impl FullscreenController {
         }
 
         let text = text.trim().to_string();
-        if text.is_empty() || text == "/" {
+        if (text.is_empty() && self.pending_images.is_empty()) || text == "/" {
             return Ok(());
         }
 
