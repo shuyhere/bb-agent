@@ -5,6 +5,22 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.13] - 2026-04-09
+
+### Added
+
+- fullscreen screenshot and image clipboard paste now works on the normal paste path, with macOS clipboard fallbacks and Codex image preservation so pasted images reach image-capable models correctly
+- model registry metadata now tracks image input capability, making `/models` truthful about image support and allowing runtime warnings when users attach images to text-only models
+
+### Fixed
+
+- fullscreen clipboard image attach no longer leaks helper `true` / `false` output or stray follow-up paste text into the input block
+- attached image chips can now be removed with `Backspace`, image-only prompts can be submitted, and optimistic user messages keep attachment chip previews in the transcript
+- rebuilt fullscreen session transcripts now preserve user image attachment markers instead of silently dropping image blocks
+- managed `bb-clipboard-*.png` temp files are now cleaned up after removal or ingestion instead of lingering in `/tmp`
+- the fullscreen input block now hides raw `@file` tokens when the corresponding attachment chip is already shown, preventing duplicated `@file` text in the editor
+- fullscreen tool-header regression tests now match the intended live bash-header rendering and running-dot animation behavior
+
 ## [0.0.12] - 2026-04-06
 
 ### Fixed
@@ -91,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.13]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.13
 [0.0.12]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.12
 [0.0.11]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.11
 [0.0.10]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.10
