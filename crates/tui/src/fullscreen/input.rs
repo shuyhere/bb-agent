@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::slash_commands::matches_shared_local_slash_submission;
 
 use super::{
@@ -83,14 +85,16 @@ impl FullscreenState {
         // Expand paste markers back to full content before submitting.
         let expanded = self.expand_paste_markers(&submitted);
 
-        // Show the collapsed version in transcript (keeps it readable)
-        self.transcript.append_root_block(
-            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(submitted.clone()),
-        );
         self.submitted_inputs.push(submitted.clone());
 
         // Include any pending image attachments with this submission.
         let image_paths = self.take_pending_image_paths();
+        let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
+
+        // Show the collapsed version in transcript (keeps it readable)
+        self.transcript.append_root_block(
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(transcript_preview),
+        );
         if image_paths.is_empty() {
             self.pending_submissions
                 .push_back(FullscreenSubmission::Input(expanded));
@@ -203,6 +207,24 @@ impl FullscreenState {
         self.update_at_file_menu();
         self.dirty = true;
     }
+}
+
+fn format_submitted_user_message(text: &str, image_paths: &[String]) -> String {
+    let attachment_lines = image_paths.iter().filter_map(|path| {
+        let path = Path::new(path);
+        let name = path.file_name()?.to_str()?;
+        let size = std::fs::metadata(path)
+            .ok()
+            .map(|meta| format!(", {}KB", meta.len().div_ceil(1024)))
+            .unwrap_or_default();
+        Some(format!("[{name}{size}]"))
+    });
+
+    let mut lines: Vec<String> = attachment_lines.collect();
+    if !text.is_empty() {
+        lines.push(text.to_string());
+    }
+    lines.join("\n")
 }
 
 fn previous_boundary(text: &str, cursor: usize) -> usize {
