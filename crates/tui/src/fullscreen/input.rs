@@ -6,6 +6,7 @@ use crate::{
 };
 
 use super::{
+    frame::attachment_chip_label,
     runtime::FullscreenState,
     transcript::{BlockKind, NewBlock},
     types::FullscreenSubmission,
@@ -216,15 +217,9 @@ impl FullscreenState {
 }
 
 fn format_submitted_user_message(text: &str, image_paths: &[String]) -> String {
-    let attachment_lines = image_paths.iter().filter_map(|path| {
-        let path = Path::new(path);
-        let name = path.file_name()?.to_str()?;
-        let size = std::fs::metadata(path)
-            .ok()
-            .map(|meta| format!(", {}KB", meta.len().div_ceil(1024)))
-            .unwrap_or_default();
-        Some(format!("[{name}{size}]"))
-    });
+    let attachment_lines = image_paths
+        .iter()
+        .filter_map(|path| attachment_chip_label(Path::new(path)));
 
     let mut lines: Vec<String> = attachment_lines.collect();
     if !text.is_empty() {

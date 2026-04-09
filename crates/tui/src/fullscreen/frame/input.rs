@@ -89,12 +89,16 @@ pub(crate) fn measure_input(text: &str, cursor: usize, width: usize) -> InputWra
     }
 }
 
-fn attachment_chip_line(path: &Path, width: usize) -> Option<String> {
-    let t = theme();
+pub(crate) fn attachment_chip_label(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let size_kb = std::fs::metadata(path).ok()?.len().div_ceil(1024);
+    Some(format!("[{name}, {size_kb}KB]"))
+}
+
+fn attachment_chip_line(path: &Path, width: usize) -> Option<String> {
+    let t = theme();
     Some(truncate_to_width(
-        &format!("{}[{}, {}KB]{}", t.accent, name, size_kb, t.reset),
+        &format!("{}{}{}", t.accent, attachment_chip_label(path)?, t.reset),
         width,
     ))
 }
