@@ -5,7 +5,7 @@ mod groq;
 mod openai;
 mod openrouter;
 
-use super::types::{ApiType, CostConfig, Model};
+use super::types::{ApiType, CostConfig, Model, ModelInput};
 
 pub(crate) fn builtin_models() -> Vec<Model> {
     let mut models = Vec::new();
@@ -47,6 +47,30 @@ pub(super) fn model(
         context_window: limits.0,
         max_tokens: limits.1,
         reasoning: runtime.reasoning,
+        input: vec![ModelInput::Text, ModelInput::Image],
+        base_url: Some(runtime.base_url.into()),
+        cost,
+    }
+}
+
+pub(super) fn text_model(
+    id: &str,
+    name: &str,
+    provider: &str,
+    api: ApiType,
+    limits: (u64, u64),
+    runtime: RuntimeInfo,
+    cost: CostConfig,
+) -> Model {
+    Model {
+        id: id.into(),
+        name: name.into(),
+        provider: provider.into(),
+        api,
+        context_window: limits.0,
+        max_tokens: limits.1,
+        reasoning: runtime.reasoning,
+        input: vec![ModelInput::Text],
         base_url: Some(runtime.base_url.into()),
         cost,
     }

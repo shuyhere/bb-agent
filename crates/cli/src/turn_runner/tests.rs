@@ -99,6 +99,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
             context_window: 128_000,
             max_tokens: 4_096,
             reasoning: false,
+            input: vec![bb_provider::registry::ModelInput::Text],
             base_url: None,
             cost: Default::default(),
         },

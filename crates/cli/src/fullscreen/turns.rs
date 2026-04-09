@@ -17,6 +17,15 @@ impl FullscreenController {
         // Drain any pending images into PromptOptions
         let mut opts = PromptOptions::default();
         let pending = std::mem::take(&mut self.pending_images);
+        if !pending.is_empty() && !self.session_setup.model.supports_images() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Warning,
+                text: format!(
+                    "Model '{}' does not advertise image input support. Attached images may be ignored. Use /model to switch to an image-capable model.",
+                    self.session_setup.model.id
+                ),
+            });
+        }
         for img in &pending {
             opts.images.push(bb_core::agent_session::ImageContent {
                 source: img.data.clone(),

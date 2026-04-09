@@ -23,10 +23,11 @@ pub fn list_models(search: Option<&str>) {
         let context = format_tokens(model.context_window);
         let max_out = format_tokens(model.max_tokens);
         let thinking = if model.reasoning { "yes" } else { "no" };
+        let images = if model.supports_images() { "yes" } else { "no" };
 
         println!(
             "{:<14} {:<36} {:>8} {:>8} {:>9} {:>6}",
-            model.provider, model.id, context, max_out, thinking, "yes"
+            model.provider, model.id, context, max_out, thinking, images
         );
     }
 }

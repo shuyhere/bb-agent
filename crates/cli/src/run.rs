@@ -94,6 +94,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             context_window: 128_000,
             max_tokens: 16_384,
             reasoning: false,
+            input: vec![bb_provider::registry::ModelInput::Text],
             base_url: None,
             cost: Default::default(),
         });
@@ -351,6 +352,12 @@ async fn run_print_turn(
     config: &TurnConfig,
     prompt: PreparedPrintPrompt,
 ) -> Result<PrintTurnResult> {
+    if !prompt.images.is_empty() && !config.model.supports_images() {
+        eprintln!(
+            "Warning: model '{}' does not advertise image input support. Attached images may be ignored.",
+            config.model.id
+        );
+    }
     turn_runner::append_user_message_with_images(
         &config.conn,
         &config.session_id,

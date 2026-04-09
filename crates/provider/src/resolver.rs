@@ -266,6 +266,7 @@ mod tests {
                 context_window: Some(32000),
                 max_tokens: Some(4096),
                 reasoning: Some(false),
+                input: Some(vec!["text".into(), "image".into()]),
             }]),
             ..Default::default()
         };
@@ -281,6 +282,7 @@ mod tests {
         assert_eq!(m.name, "My Custom LLM");
         assert_eq!(m.context_window, 32000);
         assert_eq!(m.base_url.as_deref(), Some("http://localhost:8080"));
+        assert!(m.supports_images());
     }
 
     #[test]

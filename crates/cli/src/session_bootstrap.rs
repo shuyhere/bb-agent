@@ -175,6 +175,7 @@ pub(crate) async fn prepare_session_runtime(
             context_window: 128_000,
             max_tokens: 16_384,
             reasoning: false,
+            input: vec![bb_provider::registry::ModelInput::Text],
             base_url: None,
             cost: Default::default(),
         });

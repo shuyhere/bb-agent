@@ -104,6 +104,10 @@ pub(crate) fn add_cached_github_copilot_models(registry: &mut ModelRegistry) {
                 context_window: 128_000,
                 max_tokens: 16_384,
                 reasoning: true,
+                input: vec![
+                    bb_provider::registry::ModelInput::Text,
+                    bb_provider::registry::ModelInput::Image,
+                ],
                 base_url: Some(github_copilot_api_base_url()),
                 cost: Default::default(),
             });

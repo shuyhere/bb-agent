@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_model_inputs() -> Vec<ModelInput> {
+    vec![ModelInput::Text]
+}
+
 /// Model definition.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {
@@ -10,8 +14,23 @@ pub struct Model {
     pub context_window: u64,
     pub max_tokens: u64,
     pub reasoning: bool,
+    #[serde(default = "default_model_inputs")]
+    pub input: Vec<ModelInput>,
     pub base_url: Option<String>,
     pub cost: CostConfig,
+}
+
+impl Model {
+    pub fn supports_images(&self) -> bool {
+        self.input.contains(&ModelInput::Image)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelInput {
+    Text,
+    Image,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
