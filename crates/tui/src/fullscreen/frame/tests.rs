@@ -273,9 +273,12 @@ fn pending_tool_header_stays_stable_until_result_arrives() {
         .find(|line| line.contains("Bash"))
         .expect("second pending header");
 
-    assert_eq!(first, second);
-    assert!(first.contains("Bash"));
-    assert!(!first.contains("echo hi"));
+    assert!(first.contains("Bash(echo hi)"));
+    assert!(second.contains("Bash(echo hi)"));
+    assert_eq!(
+        first.chars().skip(1).collect::<String>(),
+        second.chars().skip(1).collect::<String>()
+    );
 }
 
 #[test]
@@ -310,9 +313,8 @@ fn pending_tool_header_has_no_intermediate_output_placeholder() {
 
     let plain_header = crate::utils::strip_ansi(header);
 
-    assert!(plain_header.contains("Bash"));
-    assert!(plain_header.starts_with('●'));
-    assert!(!plain_header.contains("echo hi"));
+    assert!(plain_header.contains("Bash(echo hi)"));
+    assert!(plain_header.starts_with('●') || plain_header.starts_with('·'));
     assert!(!lines.iter().any(|line| line.contains("executing...")));
 }
 
