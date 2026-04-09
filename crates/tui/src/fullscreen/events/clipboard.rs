@@ -9,11 +9,10 @@ impl FullscreenState {
         } else {
             path.clone()
         };
-        let size_kb = size_bytes / 1024;
+        let size_kb = size_bytes.div_ceil(1024);
         self.pending_image_paths.push(path);
         let count = self.pending_image_paths.len();
-        self.status_line =
-            format!("📎 {display} ({size_kb}KB) attached — {count} image(s) pending");
+        self.status_line = format!("[{display}, {size_kb}KB] attached — {count} image(s) pending");
         self.dirty = true;
     }
 
