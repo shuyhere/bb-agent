@@ -23,6 +23,7 @@ impl FullscreenState {
             && let Some((path, size_bytes)) = try_read_clipboard_image()
         {
             self.on_image_attached(path, size_bytes);
+            self.suppress_next_paste_payload = true;
             return;
         }
 
