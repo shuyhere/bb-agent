@@ -17,6 +17,7 @@ use super::{
     transcript::{BlockId, BlockKind},
     types::{FullscreenMode, FullscreenSubmission},
 };
+pub(super) use clipboard::cleanup_managed_clipboard_temp_image;
 use clipboard::{try_read_clipboard_image, try_read_clipboard_text};
 
 fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {

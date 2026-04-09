@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use crate::slash_commands::matches_shared_local_slash_submission;
+use crate::{
+    fullscreen::events::cleanup_managed_clipboard_temp_image,
+    slash_commands::matches_shared_local_slash_submission,
+};
 
 use super::{
     runtime::FullscreenState,
@@ -170,7 +173,8 @@ impl FullscreenState {
 
     pub(super) fn backspace(&mut self) {
         if self.input.is_empty() {
-            if self.pending_image_paths.pop().is_some() {
+            if let Some(path) = self.pending_image_paths.pop() {
+                cleanup_managed_clipboard_temp_image(Path::new(&path));
                 self.suppress_next_paste_payload = false;
                 self.status_line.clear();
                 self.dirty = true;

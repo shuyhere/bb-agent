@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use bb_session::store;
 use bb_tui::footer::detect_git_branch;
 use bb_tui::fullscreen::{FullscreenCommand, FullscreenFooterData};
@@ -6,6 +8,18 @@ use crate::session_info::{collect_session_info_summary, permission_posture_badge
 
 use super::{FullscreenController, PendingImage};
 use crate::fullscreen::{format_tokens, shorten_home_path};
+
+fn cleanup_managed_clipboard_temp_image(path: &Path) {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    if path.parent() == Some(std::env::temp_dir().as_path())
+        && file_name.starts_with("bb-clipboard-")
+        && file_name.ends_with(".png")
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 impl FullscreenController {
     /// Read image files from disk and queue them as pending images for the next prompt.
@@ -22,10 +36,12 @@ impl FullscreenController {
                 Ok(data) => data,
                 Err(error) => {
                     tracing::warn!("Cannot read image {path}: {error}");
+                    cleanup_managed_clipboard_temp_image(&resolved);
                     continue;
                 }
             };
             let Some(mime_type) = image_mime_type(&resolved) else {
+                cleanup_managed_clipboard_temp_image(&resolved);
                 continue;
             };
             let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -33,6 +49,7 @@ impl FullscreenController {
                 data: encoded,
                 mime_type: mime_type.to_string(),
             });
+            cleanup_managed_clipboard_temp_image(&resolved);
         }
     }
 

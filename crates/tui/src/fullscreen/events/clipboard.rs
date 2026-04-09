@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use super::*;
+
+const CLIPBOARD_IMAGE_PREFIX: &str = "bb-clipboard-";
 
 impl FullscreenState {
     /// Called when an image file is attached (via clipboard read or drag-and-drop).
@@ -133,9 +137,12 @@ fn sanitize_pasted_text(text: &str) -> String {
 pub fn try_read_clipboard_image() -> Option<(String, u64)> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let tmp_path = std::env::temp_dir().join(format!("bb-clipboard-{timestamp}.png"));
+    let tmp_path = std::env::temp_dir().join(format!(
+        "{CLIPBOARD_IMAGE_PREFIX}{}-{timestamp}.png",
+        std::process::id()
+    ));
     let tmp_path_str = tmp_path.to_string_lossy().to_string();
 
     if try_clipboard_command(
@@ -195,6 +202,21 @@ pub fn try_read_clipboard_image() -> Option<(String, u64)> {
 
     let _ = std::fs::remove_file(&tmp_path);
     None
+}
+
+pub(crate) fn is_managed_clipboard_temp_image(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.parent() == Some(std::env::temp_dir().as_path())
+        && file_name.starts_with(CLIPBOARD_IMAGE_PREFIX)
+        && file_name.ends_with(".png")
+}
+
+pub(crate) fn cleanup_managed_clipboard_temp_image(path: &Path) {
+    if is_managed_clipboard_temp_image(path) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub fn try_read_clipboard_text() -> Option<String> {
@@ -434,5 +456,31 @@ mod tests {
     fn sanitizes_carriage_returns_and_control_chars() {
         let sanitized = sanitize_pasted_text("hello\r\nworld\u{1b}[31m");
         assert_eq!(sanitized, "hello\nworld[31m");
+    }
+
+    #[test]
+    fn recognizes_managed_clipboard_temp_images() {
+        let path = std::env::temp_dir().join("bb-clipboard-123-456.png");
+        assert!(is_managed_clipboard_temp_image(&path));
+
+        let other = std::env::temp_dir().join("not-bb-clipboard.png");
+        assert!(!is_managed_clipboard_temp_image(&other));
+    }
+
+    #[test]
+    fn cleanup_removes_managed_clipboard_temp_images() {
+        let path = std::env::temp_dir().join(format!(
+            "bb-clipboard-test-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"png-bytes").expect("write temp image");
+
+        cleanup_managed_clipboard_temp_image(&path);
+
+        assert!(!path.exists());
     }
 }
