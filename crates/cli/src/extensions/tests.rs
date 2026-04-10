@@ -140,6 +140,77 @@ async fn loads_package_skills_and_prompts_from_settings() {
     );
 }
 
+#[tokio::test]
+async fn disabled_skills_are_excluded_from_runtime_resources() {
+    let cwd = tempdir().unwrap();
+    let package_dir = cwd.path().join("skills-package");
+    fs::create_dir_all(package_dir.join("skills/alpha")).unwrap();
+    fs::create_dir_all(package_dir.join("skills/beta")).unwrap();
+    fs::write(
+        package_dir.join("package.json"),
+        r#"{
+                "name": "skills-package",
+                "bb": { "skills": ["./skills"] }
+            }"#,
+    )
+    .unwrap();
+    fs::write(
+        package_dir.join("skills/alpha/SKILL.md"),
+        "---\nname: alpha\ndescription: alpha skill\n---\nBody.",
+    )
+    .unwrap();
+    fs::write(
+        package_dir.join("skills/beta/SKILL.md"),
+        "---\nname: beta\ndescription: beta skill\n---\nBody.",
+    )
+    .unwrap();
+
+    // Load with no disabled list first — both should be visible.
+    let settings_all = Settings {
+        packages: vec![PackageEntry::Simple(package_dir.display().to_string())],
+        ..Settings::default()
+    };
+    let support_all =
+        load_runtime_extension_support(cwd.path(), &settings_all, &ExtensionBootstrap::default())
+            .await
+            .unwrap();
+    let names_all: Vec<String> = support_all
+        .session_resources
+        .skills
+        .iter()
+        .map(|s| s.info.name.clone())
+        .collect();
+    assert!(names_all.iter().any(|n| n == "alpha"));
+    assert!(names_all.iter().any(|n| n == "beta"));
+
+    // Now disable `alpha` — source file is still on disk, but it must not
+    // show up in the session resources.
+    let settings_disabled = Settings {
+        packages: vec![PackageEntry::Simple(package_dir.display().to_string())],
+        disabled_skills: vec!["alpha".to_string()],
+        ..Settings::default()
+    };
+    let support_disabled = load_runtime_extension_support(
+        cwd.path(),
+        &settings_disabled,
+        &ExtensionBootstrap::default(),
+    )
+    .await
+    .unwrap();
+    let names_disabled: Vec<String> = support_disabled
+        .session_resources
+        .skills
+        .iter()
+        .map(|s| s.info.name.clone())
+        .collect();
+    assert!(!names_disabled.iter().any(|n| n == "alpha"));
+    assert!(names_disabled.iter().any(|n| n == "beta"));
+    assert!(
+        package_dir.join("skills/alpha/SKILL.md").exists(),
+        "disable must not delete the source file"
+    );
+}
+
 #[test]
 fn project_scoped_package_settings_round_trip() {
     let cwd = tempdir().unwrap();

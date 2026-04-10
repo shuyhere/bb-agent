@@ -38,6 +38,8 @@ pub struct Settings {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    #[serde(default, alias = "disabledSkills")]
+    pub disabled_skills: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
     #[serde(default)]
@@ -192,6 +194,7 @@ impl Default for Settings {
             tools: None,
             extensions: Vec::new(),
             skills: Vec::new(),
+            disabled_skills: Vec::new(),
             prompts: Vec::new(),
             packages: Vec::new(),
             enable_skill_commands: default_enable_skill_commands(),

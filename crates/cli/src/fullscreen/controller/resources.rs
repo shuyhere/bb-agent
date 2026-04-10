@@ -11,7 +11,8 @@ use crate::extensions::{
 use crate::fullscreen::build_dynamic_slash_items;
 use crate::session_bootstrap::build_tool_defs;
 use crate::slash::{
-    InstallSlashAction, dispatch_local_slash_command, install_help_text, parse_install_command,
+    InstallSlashAction, SkillAdminAction, dispatch_local_slash_command, install_help_text,
+    parse_install_command, skill_help_text,
 };
 use crate::turn_runner;
 use crate::update_check::{self, UpdateCheckOutcome};
@@ -46,6 +47,11 @@ impl FullscreenController {
                         .await?;
                 }
             }
+            return Ok(true);
+        }
+
+        if let Some(action) = crate::slash::parse_skill_command(text) {
+            self.handle_skill_admin_command(action).await?;
             return Ok(true);
         }
 
@@ -126,6 +132,149 @@ impl FullscreenController {
         self.send_command(FullscreenCommand::SetStatusLine(format!(
             "Installed {source} and reloaded resources"
         )));
+        Ok(())
+    }
+
+    pub(crate) async fn handle_skill_admin_command(
+        &mut self,
+        action: SkillAdminAction,
+    ) -> Result<()> {
+        match action {
+            SkillAdminAction::Help => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: skill_help_text(),
+                });
+            }
+            SkillAdminAction::List => {
+                let loaded: Vec<String> = self
+                    .runtime_host
+                    .bootstrap()
+                    .resource_bootstrap
+                    .skills
+                    .iter()
+                    .map(|skill| skill.info.name.clone())
+                    .collect();
+
+                let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+                let disabled: Vec<String> = settings
+                    .disabled_skills
+                    .iter()
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+
+                let mut lines = Vec::new();
+                lines.push("Loaded skills:".to_string());
+                if loaded.is_empty() {
+                    lines.push("  (none)".to_string());
+                } else {
+                    for name in &loaded {
+                        lines.push(format!("  • {name}"));
+                    }
+                }
+                lines.push(String::new());
+                lines.push("Disabled skills (source kept on disk):".to_string());
+                if disabled.is_empty() {
+                    lines.push("  (none)".to_string());
+                } else {
+                    for name in &disabled {
+                        lines.push(format!("  • {name}"));
+                    }
+                }
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: lines.join(
+                        "
+",
+                    ),
+                });
+            }
+            SkillAdminAction::Disable(name) => {
+                self.apply_skill_disable(&name, true).await?;
+            }
+            SkillAdminAction::Enable(name) => {
+                self.apply_skill_disable(&name, false).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_skill_disable(&mut self, name: &str, disable: bool) -> Result<()> {
+        if self.streaming {
+            self.send_command(FullscreenCommand::SetStatusLine(
+                "Cannot modify skills while a turn is running".to_string(),
+            ));
+            return Ok(());
+        }
+
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Warning,
+                text: "Missing skill name. See /skill for usage.".to_string(),
+            });
+            return Ok(());
+        }
+
+        let mut settings = Settings::load_global();
+        let normalized = trimmed.to_string();
+        let already = settings
+            .disabled_skills
+            .iter()
+            .any(|entry| entry.trim().eq_ignore_ascii_case(&normalized));
+
+        if disable {
+            if already {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: format!("Skill '{normalized}' is already disabled."),
+                });
+                return Ok(());
+            }
+            let known = self
+                .runtime_host
+                .bootstrap()
+                .resource_bootstrap
+                .skills
+                .iter()
+                .any(|skill| skill.info.name.eq_ignore_ascii_case(&normalized));
+            if !known {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Warning,
+                    text: format!(
+                        "Skill '{normalized}' is not currently loaded; saving disable anyway."
+                    ),
+                });
+            }
+            settings.disabled_skills.push(normalized.clone());
+        } else if !already {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Status,
+                text: format!("Skill '{normalized}' is not disabled."),
+            });
+            return Ok(());
+        } else {
+            settings
+                .disabled_skills
+                .retain(|entry| !entry.trim().eq_ignore_ascii_case(&normalized));
+        }
+
+        if let Err(err) = settings.save_global() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Error,
+                text: format!("Failed to save settings: {err}"),
+            });
+            return Ok(());
+        }
+
+        self.reload_runtime_resources().await?;
+        self.show_startup_resources();
+        self.send_command(FullscreenCommand::SetStatusLine(if disable {
+            format!("Disabled skill: {normalized}")
+        } else {
+            format!("Enabled skill: {normalized}")
+        }));
         Ok(())
     }
 
