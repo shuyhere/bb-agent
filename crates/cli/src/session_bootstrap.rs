@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bb_core::agent::{self, DEFAULT_SYSTEM_PROMPT};
 use bb_core::agent_session::{ModelRef, ThinkingLevel, parse_model_arg};
+use bb_core::types::SessionContext;
 
 use crate::agents_md::load_agents_md;
 use bb_core::agent_session_runtime::{
@@ -105,6 +106,17 @@ pub struct SessionRuntimeSetup {
     pub extension_bootstrap: ExtensionBootstrap,
 }
 
+fn load_resumed_session_context(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    session_created: bool,
+) -> Option<SessionContext> {
+    if !session_created {
+        return None;
+    }
+    bb_session::context::build_context(conn, session_id).ok()
+}
+
 pub(crate) async fn prepare_session_runtime(
     entry: SessionBootstrapOptions,
 ) -> Result<(
@@ -123,14 +135,20 @@ pub(crate) async fn prepare_session_runtime(
     let settings = Settings::load_merged(&cwd);
     let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
+    let resumed_session_context = load_resumed_session_context(&conn, &session_id, session_created);
+    let resumed_model = resumed_session_context
+        .as_ref()
+        .and_then(|ctx| ctx.model.as_ref());
     let model_input = entry
         .model
         .as_deref()
+        .or(resumed_model.map(|model| model.model_id.as_str()))
         .or(startup_fallback.as_ref().map(|(_, model)| model.as_str()))
         .or(settings.default_model.as_deref());
     let provider_input = entry
         .provider
         .as_deref()
+        .or(resumed_model.map(|model| model.provider.as_str()))
         .or(startup_fallback
             .as_ref()
             .map(|(provider, _)| provider.as_str()))
@@ -140,6 +158,9 @@ pub(crate) async fn prepare_session_runtime(
     let requested_thinking = thinking_override
         .as_deref()
         .or(entry.thinking.as_deref())
+        .or(resumed_session_context
+            .as_ref()
+            .map(|ctx| ctx.thinking_level.as_str()))
         .unwrap_or("medium");
     let thinking_level = ThinkingLevel::parse(requested_thinking).unwrap_or(ThinkingLevel::Medium);
     let thinking_str = thinking_level.as_str();
