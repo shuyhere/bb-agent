@@ -90,6 +90,31 @@ fn preferred_model_for_provider(provider: &str) -> Option<String> {
 pub(crate) fn preferred_startup_provider_and_model(
     settings: &bb_core::settings::Settings,
 ) -> Option<(String, String)> {
+    // If the user explicitly configured a default provider/model, honor that
+    // before any heuristic startup preference.
+    if let Some(provider) = settings.default_provider.as_deref() {
+        let normalized = normalize_provider_for_model_selection(provider);
+        if let Some(model) = resolve_available_model_for_provider(
+            settings,
+            &normalized,
+            settings.default_model.as_deref(),
+        ) {
+            return Some((normalized, model));
+        }
+    }
+
+    // Otherwise prefer OpenAI first when it is authenticated, so the app's
+    // startup default matches the global fallback default model (gpt-5.4).
+    if let Some(model) = resolve_available_model_for_provider(settings, "openai", Some("gpt-5.4")) {
+        return Some(("openai".to_string(), model));
+    }
+    if let Some(model) =
+        resolve_available_model_for_provider(settings, "openai-codex", Some("gpt-5.4"))
+    {
+        return Some(("openai-codex".to_string(), model));
+    }
+
+    // Next prefer the most recently-used provider, if still authenticated.
     if let Some(provider) = load_auth().last_provider {
         let normalized = normalize_provider_for_model_selection(&provider);
         let requested_model = if settings.default_provider.as_deref() == Some(provider.as_str())
@@ -102,17 +127,6 @@ pub(crate) fn preferred_startup_provider_and_model(
         if let Some(model) =
             resolve_available_model_for_provider(settings, &normalized, requested_model)
         {
-            return Some((normalized, model));
-        }
-    }
-
-    if let Some(provider) = settings.default_provider.as_deref() {
-        let normalized = normalize_provider_for_model_selection(provider);
-        if let Some(model) = resolve_available_model_for_provider(
-            settings,
-            &normalized,
-            settings.default_model.as_deref(),
-        ) {
             return Some((normalized, model));
         }
     }
