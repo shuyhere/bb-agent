@@ -68,6 +68,50 @@ pub fn strip_ansi(s: &str) -> String {
     result
 }
 
+/// Sanitize text for terminal display while preserving BB's own ANSI styling.
+///
+/// - normalizes CRLF/CR to LF
+/// - preserves valid ANSI escape sequences already embedded in the string
+/// - drops all other control characters except `\n` and `\t`
+/// - strips DEL and C1 control characters that can corrupt terminal state
+pub fn sanitize_terminal_text(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+
+    let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
+    let bytes = normalized.as_bytes();
+    let mut out = String::with_capacity(normalized.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == 0x1b
+            && let Some(skip) = ansi_sequence_len(bytes, i)
+        {
+            out.push_str(&normalized[i..i + skip]);
+            i += skip;
+            continue;
+        }
+        let Some((ch, len)) = next_char_at(&normalized, i) else {
+            break;
+        };
+        let keep = match ch {
+            '\n' | '\t' => true,
+            _ if ch.is_control() => false,
+            _ => {
+                let code = ch as u32;
+                !(code == 0x7F || (0x80..=0x9F).contains(&code))
+            }
+        };
+        if keep {
+            out.push(ch);
+        }
+        i += len;
+    }
+
+    out
+}
+
 /// Determine the length of an ANSI escape sequence starting at `pos`.
 pub(crate) fn ansi_sequence_len(bytes: &[u8], pos: usize) -> Option<usize> {
     if pos >= bytes.len() || bytes[pos] != 0x1b {
@@ -322,6 +366,14 @@ mod tests {
     fn test_strip_ansi() {
         assert_eq!(strip_ansi("\x1b[31mhello\x1b[0m"), "hello");
         assert_eq!(strip_ansi("no codes"), "no codes");
+    }
+
+    #[test]
+    fn test_sanitize_terminal_text_drops_controls_but_keeps_newlines_and_ansi() {
+        let input = "a\r\nb\u{0000}\u{0008}\x1b[31mred\x1b[0m\u{007f}\u{0085}";
+        let sanitized = sanitize_terminal_text(input);
+        assert_eq!(sanitized, "a\nb\x1b[31mred\x1b[0m");
+        assert_eq!(visible_width(&sanitized), 5);
     }
 
     #[test]

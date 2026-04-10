@@ -91,6 +91,29 @@ fn collapsed_preview_truncates_very_long_single_line() {
 }
 
 #[test]
+fn read_results_do_not_embed_ansi_escape_sequences() {
+    let rendered = format_tool_result_content(
+        "read",
+        &[ContentBlock::Text {
+            text: "fn main() {\n    println!(\"hi\");\n}".to_string(),
+        }],
+        Some(serde_json::json!({
+            "path": "/tmp/demo.rs",
+            "startLine": 1,
+            "endLine": 3,
+            "totalLines": 3
+        })),
+        None,
+        false,
+        true,
+    );
+    assert!(
+        !rendered.contains("\x1b["),
+        "read result should stay plain text, got: {rendered:?}"
+    );
+}
+
+#[test]
 fn web_search_results_render_with_structured_summary_and_links() {
     let rendered = format_tool_result_content(
         "web_search",

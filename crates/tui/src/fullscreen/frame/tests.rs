@@ -1,8 +1,10 @@
 use super::*;
 use crate::fullscreen::FullscreenAppConfig;
+use crate::fullscreen::format_tool_result_content;
 use crate::fullscreen::layout::Size;
 use crate::fullscreen::runtime::FullscreenState;
 use crate::fullscreen::types::FullscreenCommand;
+use bb_core::types::ContentBlock;
 
 #[test]
 fn working_status_uses_animated_spinner() {
@@ -234,6 +236,74 @@ fn transcript_uses_prompt_tool_and_response_layout_markers() {
 }
 
 #[test]
+fn syntax_highlighted_read_result_does_not_leak_raw_ansi_parameters() {
+    let rendered = format_tool_result_content(
+        "read",
+        &[ContentBlock::Text {
+            text: "        let _ = event_tx.send(turn_event);\n        });".to_string(),
+        }],
+        Some(serde_json::json!({
+            "path": "/tmp/demo.rs",
+            "startLine": 380,
+            "endLine": 381,
+            "totalLines": 434
+        })),
+        None,
+        false,
+        true,
+    );
+
+    let mut transcript = crate::fullscreen::transcript::Transcript::new();
+    let assistant = transcript.append_root_block(
+        crate::fullscreen::transcript::NewBlock::new(
+            crate::fullscreen::transcript::BlockKind::AssistantMessage,
+            "assistant",
+        )
+        .with_content("done"),
+    );
+    let tool = transcript
+        .append_child_block(
+            assistant,
+            crate::fullscreen::transcript::NewBlock::new(
+                crate::fullscreen::transcript::BlockKind::ToolUse,
+                "Read(/tmp/demo.rs:380-381) • done",
+            )
+            .with_expandable(true),
+        )
+        .expect("tool block");
+    let _ = transcript
+        .append_child_block(
+            tool,
+            crate::fullscreen::transcript::NewBlock::new(
+                crate::fullscreen::transcript::BlockKind::ToolResult,
+                "output",
+            )
+            .with_content(rendered),
+        )
+        .expect("tool result");
+
+    let state = FullscreenState::new(
+        FullscreenAppConfig {
+            transcript,
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 28,
+            height: 16,
+        },
+    );
+
+    let lines = render_transcript(&state, &state.projection, 28, 16);
+    for line in &lines {
+        let plain = crate::utils::strip_ansi(line);
+        assert!(
+            !plain.contains("38;2;") && !plain.contains("[38;2;"),
+            "raw ANSI parameters leaked into transcript row: {plain:?}"
+        );
+    }
+}
+
+#[test]
 fn pending_tool_header_stays_stable_until_result_arrives() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),
@@ -350,6 +420,55 @@ fn summary_notes_render_with_header_block() {
             .iter()
             .any(|line| line.contains("summarized work here"))
     );
+}
+
+#[test]
+fn expanded_compaction_block_keeps_highlight_background_on_blank_lines() {
+    let t = crate::theme::theme();
+    let mut transcript = crate::fullscreen::transcript::Transcript::new();
+    transcript.append_root_block(
+        crate::fullscreen::transcript::NewBlock::new(
+            crate::fullscreen::transcript::BlockKind::SystemNote,
+            "compaction",
+        )
+        .with_content("[compaction: 123 tokens summarized]\n\nfirst line\n\nthird line")
+        .with_expandable(true),
+    );
+
+    let state = FullscreenState::new(
+        FullscreenAppConfig {
+            transcript,
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 50,
+            height: 16,
+        },
+    );
+    let lines = render_transcript(&state, &state.projection, 50, 16);
+
+    let header = lines
+        .iter()
+        .find(|line| crate::utils::strip_ansi(line).contains("[Compact Context]"))
+        .expect("compaction header");
+    let first = lines
+        .iter()
+        .find(|line| crate::utils::strip_ansi(line).contains("first line"))
+        .expect("first compaction line");
+    let third = lines
+        .iter()
+        .find(|line| crate::utils::strip_ansi(line).contains("third line"))
+        .expect("third compaction line");
+    let blank_compaction = lines
+        .iter()
+        .find(|line| line.contains(&t.info_bg) && crate::utils::strip_ansi(line).trim().is_empty())
+        .expect("blank compaction line with background");
+
+    assert!(header.contains(&t.info_bg));
+    assert!(first.contains(&t.info_bg));
+    assert!(third.contains(&t.info_bg));
+    assert!(blank_compaction.contains(&t.info_bg));
+    assert_eq!(crate::utils::visible_width(blank_compaction), 50);
 }
 
 #[test]

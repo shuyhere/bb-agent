@@ -1,5 +1,5 @@
 use crate::theme::theme;
-use crate::utils::{pad_to_width, truncate_to_width, visible_width};
+use crate::utils::{pad_to_width, sanitize_terminal_text, truncate_to_width, visible_width};
 
 use super::super::{runtime::FullscreenState, types::FullscreenMode};
 use super::input::blank_line;
@@ -11,14 +11,15 @@ pub(crate) fn render_header(state: &FullscreenState, width: usize) -> Vec<String
 
     let t = theme();
     let title_color = state.color_theme.title_escape();
+    let safe_title = sanitize_terminal_text(&state.title);
 
     let mut lines = Vec::new();
-    if !state.title.is_empty() {
+    if !safe_title.is_empty() {
         lines.push(format!(
             "{}{}{}{}",
             t.bold,
             title_color,
-            pad_to_width(&truncate_to_width(&state.title, width), width),
+            pad_to_width(&truncate_to_width(&safe_title, width), width),
             t.reset,
         ));
         let hints = format!(
@@ -35,11 +36,40 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
     let t = theme();
     let text = match state.mode {
         FullscreenMode::Normal => {
+            if state.local_action_active && !state.queued_submission_previews.is_empty() {
+                let preview = sanitize_terminal_text(
+                    state
+                        .queued_submission_previews
+                        .back()
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                )
+                .replace('\n', " ⏎ ");
+                let prefix = if state.editing_queued_messages {
+                    "Editing queued"
+                } else {
+                    "Steering"
+                };
+                return format!(
+                    "{}{}{}",
+                    t.dim,
+                    pad_to_width(
+                        &truncate_to_width(
+                            &format!("{prefix}: {preview} • Alt+↑ edit queued"),
+                            width
+                        ),
+                        width
+                    ),
+                    t.reset
+                );
+            }
             if state.has_active_turn() || state.has_running_tool() {
+                let msg_owned;
                 let msg = if state.status_line.trim().is_empty() {
                     ""
                 } else {
-                    &state.status_line
+                    msg_owned = sanitize_terminal_text(&state.status_line);
+                    &msg_owned
                 };
                 let rendered = state.spinner.render(msg, width);
                 return pad_to_width(&rendered, width);
@@ -51,7 +81,7 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
             let base = if state.status_line.trim().is_empty() {
                 "Transcript mode".to_string()
             } else {
-                state.status_line.clone()
+                sanitize_terminal_text(&state.status_line)
             };
             let follow = if state.viewport.auto_follow {
                 "follow on"
@@ -98,20 +128,23 @@ pub(crate) fn render_footer(state: &FullscreenState, width: usize, height: usize
     let line1 = if state.footer.line1.is_empty() {
         String::new()
     } else {
+        let safe_line1 = sanitize_terminal_text(&state.footer.line1);
         format!(
             "{}{}{}",
             t.dim,
-            truncate_to_width(&state.footer.line1, width),
+            truncate_to_width(&safe_line1, width),
             t.reset
         )
     };
     lines.push(pad_to_width(&line1, width));
 
     let second = if state.footer.line2_right.is_empty() {
-        style_footer_left(&state.footer.line2_left)
+        style_footer_left(&sanitize_terminal_text(&state.footer.line2_left))
     } else {
-        let left_plain = truncate_to_width(&state.footer.line2_left, width);
-        let right_plain = truncate_to_width(&state.footer.line2_right, width);
+        let left_plain =
+            truncate_to_width(&sanitize_terminal_text(&state.footer.line2_left), width);
+        let right_plain =
+            truncate_to_width(&sanitize_terminal_text(&state.footer.line2_right), width);
         let used = visible_width(&left_plain) + visible_width(&right_plain);
         if used + 2 <= width {
             let gap = " ".repeat(width - used);
