@@ -11,11 +11,16 @@ pub struct FrameBuffer {
 #[derive(Default)]
 pub struct FullscreenRenderer {
     previous_lines: Vec<String>,
+    force_full_repaint: bool,
 }
 
 impl FullscreenRenderer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn invalidate(&mut self) {
+        self.force_full_repaint = true;
     }
 
     pub fn render(
@@ -27,7 +32,8 @@ impl FullscreenRenderer {
         terminal.begin_sync(&mut buf);
         buf.push_str("\x1b[?25l");
 
-        let full_repaint = self.previous_lines.len() != frame.lines.len();
+        let full_repaint =
+            self.force_full_repaint || self.previous_lines.len() != frame.lines.len();
         for (row, line) in frame.lines.iter().enumerate() {
             let changed = full_repaint
                 || self
@@ -65,6 +71,7 @@ impl FullscreenRenderer {
         terminal.write_raw(&buf)?;
 
         self.previous_lines = frame.lines.clone();
+        self.force_full_repaint = false;
         Ok(())
     }
 }

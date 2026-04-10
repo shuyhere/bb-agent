@@ -113,6 +113,7 @@ pub enum FullscreenSubmission {
         steer_message: Option<String>,
     },
     CancelLocalAction,
+    EditQueuedMessages,
 }
 
 #[derive(Clone, Debug)]

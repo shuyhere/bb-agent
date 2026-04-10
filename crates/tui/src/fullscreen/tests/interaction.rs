@@ -378,6 +378,158 @@ fn selection_highlight_is_character_precise_not_full_row() {
 }
 
 #[test]
+fn mouse_click_on_compaction_content_row_toggles_compaction_block() {
+    let mut transcript = Transcript::new();
+    let compaction = transcript.append_root_block(
+        NewBlock::new(BlockKind::SystemNote, "compaction")
+            .with_content("[compaction: 123 tokens summarized]\n\nfirst line\nsecond line")
+            .with_expandable(true)
+            .with_collapsed(true),
+    );
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig {
+            transcript,
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 80,
+            height: 16,
+        },
+    );
+
+    let screen_row = screen_row_for_first_content(&state, compaction);
+    state.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: screen_row,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert!(
+        !state
+            .transcript
+            .block(compaction)
+            .expect("compaction block after expand")
+            .collapsed
+    );
+
+    let expanded_content_row = screen_row_for_first_content(&state, compaction);
+    state.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: expanded_content_row,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert!(
+        state
+            .transcript
+            .block(compaction)
+            .expect("compaction block after collapse")
+            .collapsed
+    );
+}
+
+#[test]
+fn enter_toggles_focused_compaction_block_in_transcript_mode() {
+    let mut transcript = Transcript::new();
+    let compaction = transcript.append_root_block(
+        NewBlock::new(BlockKind::SystemNote, "compaction")
+            .with_content("[compaction: 123 tokens summarized]\n\nfirst line\nsecond line")
+            .with_expandable(true)
+            .with_collapsed(true),
+    );
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig {
+            transcript,
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 80,
+            height: 16,
+        },
+    );
+
+    state.on_key(KeyEvent::new(
+        KeyCode::Char('O'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    state.focused_block = Some(compaction);
+    state.sync_focus_tracking();
+
+    assert!(
+        state
+            .transcript
+            .block(compaction)
+            .expect("compaction block")
+            .collapsed
+    );
+
+    state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        !state
+            .transcript
+            .block(compaction)
+            .expect("compaction block after expand")
+            .collapsed
+    );
+
+    state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        state
+            .transcript
+            .block(compaction)
+            .expect("compaction block after collapse")
+            .collapsed
+    );
+}
+
+#[test]
+fn compaction_block_is_focusable_in_transcript_mode_and_ctrl_shift_a_copies_it() {
+    let mut transcript = Transcript::new();
+    let compaction = transcript.append_root_block(
+        NewBlock::new(BlockKind::SystemNote, "compaction")
+            .with_content("[compaction: 123 tokens summarized]\n\nfirst line\nsecond line")
+            .with_expandable(true),
+    );
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig {
+            transcript,
+            ..FullscreenAppConfig::default()
+        },
+        Size {
+            width: 80,
+            height: 16,
+        },
+    );
+
+    state.on_key(KeyEvent::new(
+        KeyCode::Char('O'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    state.focused_block = Some(compaction);
+    state.sync_focus_tracking();
+
+    state.on_key(KeyEvent::new(
+        KeyCode::Char('A'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+
+    let copied = state
+        .take_pending_clipboard_copy()
+        .expect("focused compaction block should copy");
+    assert_eq!(state.mode, FullscreenMode::Transcript);
+    assert_eq!(state.focused_block, Some(compaction));
+    assert!(copied.contains("[Compact Context]"));
+    assert!(copied.contains("first line"));
+    assert!(copied.contains("second line"));
+    assert!(!copied.contains("[compaction:"));
+}
+
+#[test]
 fn mouse_scroll_does_not_enter_transcript_mode() {
     let (mut state, _) = scrolling_state();
     assert_eq!(state.mode, FullscreenMode::Normal);

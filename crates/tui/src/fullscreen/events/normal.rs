@@ -188,6 +188,14 @@ impl FullscreenState {
             KeyCode::Enter => {
                 self.submit_input();
             }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.pending_submissions
+                    .push_back(FullscreenSubmission::EditQueuedMessages);
+                self.queued_submission_previews.clear();
+                self.editing_queued_messages = true;
+                self.status_line = "editing queued messages".to_string();
+                self.dirty = true;
+            }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.submit_input();
             }

@@ -63,6 +63,7 @@ pub async fn compact(
     model: &str,
     api_key: &str,
     base_url: &str,
+    headers: &std::collections::HashMap<String, String>,
     custom_instructions: Option<&str>,
     cancel: CancellationToken,
 ) -> anyhow::Result<CompactionResult> {
@@ -117,7 +118,7 @@ pub async fn compact(
     let options = RequestOptions {
         api_key: api_key.to_string(),
         base_url: base_url.to_string(),
-        headers: std::collections::HashMap::new(),
+        headers: headers.clone(),
         cancel,
         retry_callback: None,
         max_retries: 1,

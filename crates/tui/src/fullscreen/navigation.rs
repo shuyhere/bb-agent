@@ -1,5 +1,11 @@
 use super::runtime::FullscreenState;
-use super::transcript::{BlockId, BlockKind};
+use super::transcript::{BlockId, BlockKind, TranscriptBlock};
+
+fn is_transcript_focusable_block(block: &TranscriptBlock) -> bool {
+    block.kind == BlockKind::ToolUse
+        || (block.kind == BlockKind::SystemNote
+            && matches!(block.title.as_str(), "branch summary" | "compaction"))
+}
 
 impl FullscreenState {
     pub(crate) fn sync_focus_tracking(&mut self) {
@@ -78,7 +84,7 @@ impl FullscreenState {
                 if matches!(self.mode, super::types::FullscreenMode::Transcript) {
                     self.transcript
                         .block(row.block_id)
-                        .is_some_and(|block| block.kind == BlockKind::ToolUse)
+                        .is_some_and(is_transcript_focusable_block)
                 } else {
                     true
                 }

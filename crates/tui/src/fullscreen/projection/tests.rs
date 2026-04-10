@@ -135,6 +135,47 @@ fn projection_uses_uniform_spacers_instead_of_inner_padding() {
 }
 
 #[test]
+fn collapsed_compaction_shows_compact_context_preview_and_expand_hint() {
+    let mut transcript = Transcript::new();
+    let compaction = transcript.append_root_block(
+        NewBlock::new(BlockKind::SystemNote, "compaction")
+            .with_content(
+                "[compaction: 12345 tokens summarized]\n\n## Goal\nFinish the cleanup\n\n## Constraints\nKeep it native\n\n## Next Steps\n1. Build\n2. Verify"
+            )
+            .with_expandable(true)
+            .with_collapsed(true),
+    );
+
+    let mut projector = TranscriptProjector::new();
+    let projection = projector.project(&mut transcript, 80, &std::collections::HashSet::new());
+    let span = projection
+        .rows_for_block(compaction)
+        .expect("compaction span");
+
+    let header_rows = &projection.rows[span.header_rows.clone()];
+    assert!(
+        header_rows
+            .iter()
+            .any(|row| row.text.contains("[Compact Context]"))
+    );
+
+    let content_rows = &projection.rows[span.content_rows.clone()];
+    let content_text = content_rows
+        .iter()
+        .map(|row| row.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(content_text.contains("## Goal"));
+    assert!(content_text.contains("Finish the cleanup"));
+    assert!(content_text.contains("## Constraints"));
+    assert!(content_text.contains("Keep it native"));
+    assert!(!content_text.contains("## Next Steps"));
+    assert!(!content_text.contains("1. Build"));
+    assert!(content_text.contains("Click or Ctrl+Shift+O to expand"));
+}
+
+#[test]
 fn projection_inserts_spacer_after_nested_group_when_returning_to_parent_level() {
     let mut transcript = Transcript::new();
     let assistant = transcript.append_root_block(
@@ -287,4 +328,61 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
         row.text
             .contains("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)")
     }));
+}
+
+#[test]
+fn wrap_visual_line_preserves_ansi_escape_sequences() {
+    // Long ANSI-colored tokens simulating a syntax-highlighted source line.
+    // Without ANSI awareness, the wrapper counted every byte of
+    // `\x1b[38;2;192;197;206m` as a visible column and split the escape
+    // sequence across wrapped lines, leaking `192;197;206m` and `0m` into
+    // the rendered output as literal text.
+    let line = format!(
+        "{red}use{reset} {blue}bb_core::agent_session{reset}::{green}ModelRef{reset};",
+        red = "\x1b[38;2;192;197;206m",
+        blue = "\x1b[38;2;102;153;204m",
+        green = "\x1b[38;2;181;189;104m",
+        reset = "\x1b[0m",
+    );
+
+    let wrapped = super::wrap_visual_line(&line, 20, "", "  ");
+    assert!(!wrapped.is_empty(), "should produce at least one segment");
+
+    for segment in &wrapped {
+        // No visible leak of SGR parameter bytes — bare `192;197;206m` etc.
+        // should never appear without a leading ESC.
+        let stripped = crate::utils::strip_ansi(segment);
+        assert!(
+            !stripped.contains("192;197;206m"),
+            "stripped segment still shows raw SGR params: {stripped:?}",
+        );
+        assert!(
+            !stripped.contains("38;2;"),
+            "stripped segment still shows truecolor params: {stripped:?}",
+        );
+        assert!(
+            !stripped.ends_with('m') || !stripped.contains(';'),
+            "segment tail looks like an SGR parameter list: {stripped:?}",
+        );
+    }
+
+    // Concatenating the stripped-ANSI segments should reconstruct the
+    // visible text (order-preserving, modulo trailing whitespace trimming).
+    let joined_visible: String = wrapped
+        .iter()
+        .map(|s| crate::utils::strip_ansi(s))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(joined_visible.contains("use"));
+    assert!(joined_visible.contains("bb_core"));
+    assert!(joined_visible.contains("ModelRef"));
+
+    // Every segment must respect the 20-column width budget.
+    for segment in &wrapped {
+        let vw = crate::utils::visible_width(segment);
+        assert!(
+            vw <= 20,
+            "segment exceeds visible width budget ({vw} > 20): {segment:?}",
+        );
+    }
 }

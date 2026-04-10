@@ -182,6 +182,7 @@ impl FullscreenController {
                         }
                         Some(FullscreenSubmission::MenuSelection { .. }) => {}
                         Some(FullscreenSubmission::ApprovalDecision { .. }) => {}
+                        Some(FullscreenSubmission::EditQueuedMessages) => {}
                         None => {
                             cancelled = true;
                             if let Some(tx) = manual_tx.take() {

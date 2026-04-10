@@ -90,8 +90,35 @@ impl FullscreenState {
         // Expand paste markers back to full content before submitting.
         let expanded = self.expand_paste_markers(&submitted);
 
-        if !submitted.is_empty() {
+        if !submitted.is_empty() && !self.local_action_active {
             self.submitted_inputs.push(submitted.clone());
+        }
+
+        if self.local_action_active {
+            let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
+            self.queued_submission_previews
+                .push_back(transcript_preview);
+            if image_paths.is_empty() {
+                self.pending_submissions
+                    .push_back(FullscreenSubmission::Input(expanded));
+            } else {
+                self.pending_submissions
+                    .push_back(FullscreenSubmission::InputWithImages {
+                        text: expanded,
+                        image_paths,
+                    });
+            }
+            self.input.clear();
+            self.cursor = 0;
+            self.slash_menu = None;
+            self.select_menu = None;
+            self.at_file_menu = None;
+            self.editing_queued_messages = false;
+            self.status_line = self.mode_help_text();
+            self.paste_storage.clear();
+            self.paste_counter = 0;
+            self.dirty = true;
+            return;
         }
 
         // Include any pending image attachments with this submission.

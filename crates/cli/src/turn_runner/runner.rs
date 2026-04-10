@@ -9,6 +9,9 @@ use bb_provider::{
 };
 use bb_session::context;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use crate::compaction_exec::execute_session_compaction;
 
 use super::TurnConfig;
 use super::TurnEvent;
@@ -20,6 +23,67 @@ use super::tools::{ToolExecutionEnv, execute_tool_calls};
 struct StreamCollection {
     events: Vec<StreamEvent>,
     context_overflow_error: Option<String>,
+}
+
+async fn maybe_execute_auto_compaction(
+    config: &TurnConfig,
+    event_tx: &mpsc::UnboundedSender<TurnEvent>,
+    force: bool,
+) -> Result<bool> {
+    let conn = config.conn.lock().await;
+    let active_path = bb_session::tree::active_path(&conn, &config.session_id)?;
+    let context_tokens = context::build_context_from_path(&active_path)
+        .ok()
+        .map(|ctx| bb_session::compaction::serialize_conversation(&ctx.messages))
+        .map(|text| bb_session::compaction::estimate_tokens_text(&text))
+        .unwrap_or(0);
+    let should_run = force
+        || bb_session::compaction::should_compact(
+            context_tokens,
+            config.model.context_window,
+            &config.compaction_settings,
+        );
+    if !should_run {
+        return Ok(false);
+    }
+    let parent_id = crate::turn_runner::get_leaf_raw(&conn, &config.session_id);
+    let db_path = match conn.path().map(std::path::PathBuf::from) {
+        Some(path) => path,
+        None => return Ok(false),
+    };
+    drop(conn);
+
+    let _ = event_tx.send(TurnEvent::AutoCompactionStart);
+
+    match execute_session_compaction(
+        active_path,
+        parent_id,
+        db_path,
+        &config.session_id,
+        config.provider.clone(),
+        &config.model.id,
+        &config.api_key,
+        &config.base_url,
+        &config.headers,
+        &config.compaction_settings,
+        None,
+        CancellationToken::new(),
+    )
+    .await
+    {
+        Ok(result) => {
+            let _ = event_tx.send(TurnEvent::Status(format!(
+                "Auto-compacted session: {} summarized, {} kept, {} tokens before",
+                result.summarized_count, result.kept_count, result.tokens_before
+            )));
+            Ok(true)
+        }
+        Err(err) if err.to_string() == "Nothing to compact" => Ok(false),
+        Err(err) => {
+            let _ = event_tx.send(TurnEvent::Status(format!("Auto-compaction failed: {err}")));
+            Ok(false)
+        }
+    }
 }
 
 pub(crate) async fn run_turn(
@@ -49,6 +113,7 @@ pub(crate) async fn run_turn_inner(
 ) -> Result<()> {
     let mut turn_index: u32 = 0;
     let mut system_prompt = config.system_prompt.clone();
+    let mut overflow_recovery_attempted = false;
 
     if let Some(result) = send_extension_event_safe(
         &config.extensions,
@@ -97,6 +162,14 @@ pub(crate) async fn run_turn_inner(
         }
 
         if let Some(message) = stream.context_overflow_error {
+            if overflow_recovery_attempted {
+                let _ = event_tx.send(TurnEvent::ContextOverflow { message });
+                break;
+            }
+            if maybe_execute_auto_compaction(config, event_tx, true).await? {
+                overflow_recovery_attempted = true;
+                continue;
+            }
             let _ = event_tx.send(TurnEvent::ContextOverflow { message });
             break;
         }
@@ -105,6 +178,11 @@ pub(crate) async fn run_turn_inner(
         {
             let conn = config.conn.lock().await;
             append_assistant_message(&conn, &config.session_id, &config.model, &collected)?;
+        }
+        overflow_recovery_attempted = false;
+
+        if collected.tool_calls.is_empty() {
+            let _ = maybe_execute_auto_compaction(config, event_tx, false).await?;
         }
 
         let _ = event_tx.send(TurnEvent::TurnEnd);
