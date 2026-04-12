@@ -18,7 +18,7 @@ use super::TurnEvent;
 use super::hooks::send_extension_event_safe;
 use super::panic::catch_contained_panics;
 use super::persistence::{append_assistant_message, append_custom_message};
-use super::tools::{ToolExecutionEnv, execute_tool_calls};
+use super::tools::{ToolExecutionEnv, append_cancelled_tool_results, execute_tool_calls};
 
 struct StreamCollection {
     events: Vec<StreamEvent>,
@@ -153,13 +153,6 @@ pub(crate) async fn run_turn_inner(
         let request = build_request(config, event_tx, &system_prompt).await?;
         let stream = collect_stream_events(config, event_tx, request).await?;
 
-        if config.cancel.is_cancelled() {
-            let _ = event_tx.send(TurnEvent::Done {
-                text: String::new(),
-            });
-            break;
-        }
-
         if let Some(message) = stream.context_overflow_error {
             if overflow_recovery_attempted {
                 let _ = event_tx.send(TurnEvent::ContextOverflow { message });
@@ -182,6 +175,22 @@ pub(crate) async fn run_turn_inner(
 
         if collected.tool_calls.is_empty() {
             let _ = maybe_execute_auto_compaction(config, event_tx, false).await?;
+        }
+
+        if config.cancel.is_cancelled() && !collected.tool_calls.is_empty() {
+            append_cancelled_tool_results(
+                &collected,
+                ToolExecutionEnv {
+                    conn: &config.conn,
+                    session_id: &config.session_id,
+                    tools: &config.tools,
+                    tool_ctx: &config.tool_ctx,
+                    cancel: &config.cancel,
+                    extensions: &config.extensions,
+                    event_tx,
+                },
+            )
+            .await?;
         }
 
         let _ = event_tx.send(TurnEvent::TurnEnd);
