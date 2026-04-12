@@ -94,6 +94,9 @@ pub struct SessionRuntimeSetup {
     pub system_prompt: String,
     pub base_system_prompt: String,
     pub thinking_level: String,
+    pub compaction_enabled: bool,
+    pub compaction_reserve_tokens: u64,
+    pub compaction_keep_recent_tokens: u64,
     pub retry_enabled: bool,
     pub retry_max_retries: u32,
     pub retry_base_delay_ms: u64,
@@ -136,9 +139,7 @@ pub(crate) async fn prepare_session_runtime(
     let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
     let resumed_session_context = load_resumed_session_context(&conn, &session_id, session_created);
-    let resumed_model = resumed_session_context
-        .as_ref()
-        .and_then(|ctx| ctx.model.as_ref());
+    let resumed_model = resumed_session_context.as_ref().and_then(|ctx| ctx.model.as_ref());
     let model_input = entry
         .model
         .as_deref()
@@ -294,6 +295,9 @@ pub(crate) async fn prepare_session_runtime(
         system_prompt,
         base_system_prompt,
         thinking_level: thinking_str.to_string(),
+        compaction_enabled: settings.compaction.enabled,
+        compaction_reserve_tokens: settings.compaction.reserve_tokens,
+        compaction_keep_recent_tokens: settings.compaction.keep_recent_tokens,
         retry_enabled: settings.retry.enabled,
         retry_max_retries: settings.retry.max_retries,
         retry_base_delay_ms: settings.retry.base_delay_ms,

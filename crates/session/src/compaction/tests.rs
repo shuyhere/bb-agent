@@ -1,6 +1,7 @@
 use super::{
-    SUMMARIZATION_PROMPT, estimate_tokens_text, extract_file_operations, prepare_compaction,
-    serialize_conversation, should_compact,
+    SUMMARIZATION_PROMPT, calculate_context_tokens, estimate_context_tokens, estimate_tokens_message,
+    estimate_tokens_text, extract_file_operations, prepare_compaction, serialize_conversation,
+    should_compact,
 };
 use bb_core::types::{
     AgentMessage, AssistantContent, AssistantMessage, CompactionSettings, ContentBlock, EntryBase,
@@ -153,9 +154,76 @@ fn test_should_compact_triggers() {
 }
 
 #[test]
-fn test_estimate_tokens() {
-    assert_eq!(estimate_tokens_text("hello world"), 2); // 11 chars / 4
+fn test_estimate_tokens_text() {
+    assert_eq!(estimate_tokens_text("hello world"), 3); // ceil(11 / 4)
+    assert_eq!(estimate_tokens_text("1234"), 1);
     assert_eq!(estimate_tokens_text(""), 0);
+}
+
+#[test]
+fn test_calculate_context_tokens_prefers_total_tokens() {
+    let usage = Usage {
+        input: 10,
+        output: 20,
+        cache_read: 30,
+        cache_write: 40,
+        total_tokens: 999,
+        cost: Default::default(),
+    };
+    assert_eq!(calculate_context_tokens(&usage), 999);
+}
+
+#[test]
+fn test_estimate_context_tokens_uses_last_assistant_usage_plus_trailing() {
+    let assistant = AgentMessage::Assistant(AssistantMessage {
+        content: vec![AssistantContent::Text {
+            text: "done".to_string(),
+        }],
+        provider: "test".to_string(),
+        model: "test".to_string(),
+        usage: Usage {
+            input: 100,
+            output: 20,
+            cache_read: 10,
+            cache_write: 5,
+            total_tokens: 0,
+            cost: Default::default(),
+        },
+        stop_reason: StopReason::Stop,
+        error_message: None,
+        timestamp: 0,
+    });
+    let trailing = make_user_msg("12345678"); // 2 tokens
+    let estimate = estimate_context_tokens(&[assistant, trailing]);
+    assert_eq!(estimate.usage_tokens, 135);
+    assert_eq!(estimate.trailing_tokens, 2);
+    assert_eq!(estimate.tokens, 137);
+    assert_eq!(estimate.last_usage_index, Some(0));
+}
+
+#[test]
+fn test_estimate_context_tokens_ignores_aborted_and_error_assistant_usage() {
+    let aborted = AgentMessage::Assistant(AssistantMessage {
+        content: vec![AssistantContent::Text {
+            text: "aborted".to_string(),
+        }],
+        provider: "test".to_string(),
+        model: "test".to_string(),
+        usage: Usage {
+            total_tokens: 500,
+            ..Default::default()
+        },
+        stop_reason: StopReason::Aborted,
+        error_message: None,
+        timestamp: 0,
+    });
+    let user = make_user_msg("12345678"); // 2 tokens
+    let estimate = estimate_context_tokens(&[aborted.clone(), user.clone()]);
+    assert_eq!(estimate.last_usage_index, None);
+    assert_eq!(
+        estimate.tokens,
+        estimate_tokens_message(&aborted) + estimate_tokens_message(&user)
+    );
 }
 
 #[test]
