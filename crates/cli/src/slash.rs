@@ -165,6 +165,62 @@ pub fn install_help_text() -> String {
     install_help_lines().join("\n")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillAdminAction {
+    Help,
+    List,
+    Disable(String),
+    Enable(String),
+}
+
+pub fn skill_help_text() -> String {
+    [
+        "/skill — manage which skills are loaded this session",
+        "",
+        "  /skill                  Show this help",
+        "  /skill list             Show loaded skills and any disabled ones",
+        "  /skill disable <name>   Disable a skill (source file is kept; it just won't load)",
+        "  /skill enable  <name>   Re-enable a previously disabled skill",
+        "",
+        "The disabled list is persisted to global settings and applied on /reload.",
+    ]
+    .join("\n")
+}
+
+pub fn parse_skill_command(text: &str) -> Option<SkillAdminAction> {
+    let text = text.trim();
+    let rest = text.strip_prefix("/skill")?;
+    // Make sure "/skillfoo" does NOT match "/skill".
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim();
+    if rest.is_empty() || rest == "--help" || rest == "-h" || rest == "help" {
+        return Some(SkillAdminAction::Help);
+    }
+    if rest == "list" || rest == "ls" {
+        return Some(SkillAdminAction::List);
+    }
+    if let Some(name) = rest.strip_prefix("disable ") {
+        let name = name.trim();
+        if name.is_empty() {
+            return Some(SkillAdminAction::Help);
+        }
+        return Some(SkillAdminAction::Disable(name.to_string()));
+    }
+    if let Some(name) = rest.strip_prefix("enable ") {
+        let name = name.trim();
+        if name.is_empty() {
+            return Some(SkillAdminAction::Help);
+        }
+        return Some(SkillAdminAction::Enable(name.to_string()));
+    }
+    if rest == "disable" || rest == "enable" {
+        return Some(SkillAdminAction::Help);
+    }
+    Some(SkillAdminAction::Help)
+}
+
 pub fn parse_install_command(text: &str) -> Option<InstallSlashAction> {
     let text = text.trim();
     let rest = text.strip_prefix("/install")?.trim();
@@ -299,6 +355,18 @@ mod tests {
     }
 
     #[test]
+    fn does_not_treat_mid_message_slash_text_as_command() {
+        assert!(matches!(
+            handle_slash_command("please do not run /compact in the middle"),
+            SlashResult::NotCommand
+        ));
+        assert!(matches!(
+            handle_slash_command("prefix /model sonnet suffix"),
+            SlashResult::NotCommand
+        ));
+    }
+
+    #[test]
     fn dispatches_shared_local_command_through_host() {
         let mut host = MockHost::default();
         assert!(dispatch_local_slash_command(&mut host, "/model claude").unwrap());
@@ -330,5 +398,41 @@ mod tests {
             Some(super::InstallSlashAction::Help)
         );
         assert!(install_help_text().contains("/install [-l|--local] <source>"));
+    }
+
+    #[test]
+    fn parses_skill_admin_commands() {
+        use super::{SkillAdminAction, parse_skill_command, skill_help_text};
+        assert_eq!(parse_skill_command("/skill"), Some(SkillAdminAction::Help));
+        assert_eq!(
+            parse_skill_command("/skill --help"),
+            Some(SkillAdminAction::Help)
+        );
+        assert_eq!(
+            parse_skill_command("/skill list"),
+            Some(SkillAdminAction::List)
+        );
+        assert_eq!(
+            parse_skill_command("/skill ls"),
+            Some(SkillAdminAction::List)
+        );
+        assert_eq!(
+            parse_skill_command("/skill disable shape"),
+            Some(SkillAdminAction::Disable("shape".to_string()))
+        );
+        assert_eq!(
+            parse_skill_command("/skill enable  my skill  "),
+            Some(SkillAdminAction::Enable("my skill".to_string()))
+        );
+        // Bare disable/enable falls back to help.
+        assert_eq!(
+            parse_skill_command("/skill disable"),
+            Some(SkillAdminAction::Help)
+        );
+        // /skillfoo should NOT match /skill.
+        assert_eq!(parse_skill_command("/skillfoo"), None);
+        // Unrelated slash commands are not touched.
+        assert_eq!(parse_skill_command("/install"), None);
+        assert!(skill_help_text().contains("/skill disable <name>"));
     }
 }

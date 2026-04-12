@@ -102,6 +102,22 @@ pub(super) fn discover_runtime_resources(
         collect_package_resources(&mut discovered, cwd, resolved)?;
     }
 
+    // Apply the user-level skill disable list: keeps source files on disk
+    // but removes the entries from this session's skill list.
+    if !settings.disabled_skills.is_empty() {
+        let disabled: BTreeSet<String> = settings
+            .disabled_skills
+            .iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+        if !disabled.is_empty() {
+            discovered
+                .skills
+                .retain(|skill| !disabled.contains(&skill.info.name.trim().to_ascii_lowercase()));
+        }
+    }
+
     Ok(discovered)
 }
 

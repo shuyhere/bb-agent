@@ -130,6 +130,13 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         accepts_arguments: true,
     },
     SlashCommandSpec {
+        command: "/skill",
+        menu_detail: "Enable/disable skills without deleting files",
+        help_usage: "/skill [list|disable <name>|enable <name>]",
+        help_detail: "Manage which skills are loaded this session. `disable` keeps the source file on disk but stops loading the skill; `enable` puts it back. Persists to global settings.",
+        accepts_arguments: true,
+    },
+    SlashCommandSpec {
         command: "/update",
         menu_detail: "Check for a newer BB-Agent version",
         help_usage: "/update",

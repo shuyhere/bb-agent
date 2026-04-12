@@ -25,6 +25,7 @@ pub(super) fn merge_settings(global: &Settings, project: &Settings) -> Settings 
         tools: project.tools.clone().or_else(|| global.tools.clone()),
         extensions: merge_string_lists(&global.extensions, &project.extensions),
         skills: merge_string_lists(&global.skills, &project.skills),
+        disabled_skills: merge_string_lists(&global.disabled_skills, &project.disabled_skills),
         prompts: merge_string_lists(&global.prompts, &project.prompts),
         packages: merge_package_lists(&global.packages, &project.packages),
         enable_skill_commands: merge_bool_with_default(
