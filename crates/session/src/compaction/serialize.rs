@@ -1,5 +1,13 @@
 use bb_core::types::{AgentMessage, AssistantContent, ContentBlock};
 
+fn truncate_utf8(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let prefix: String = text.chars().take(max_chars).collect();
+    format!("{prefix}...(truncated)")
+}
+
 // =============================================================================
 // Conversation serialization
 // =============================================================================
@@ -55,12 +63,7 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
                 for block in &tr.content {
                     match block {
                         ContentBlock::Text { text } => {
-                            if text.len() > 2000 {
-                                out.push_str(&text[..2000]);
-                                out.push_str("...(truncated)");
-                            } else {
-                                out.push_str(text);
-                            }
+                            out.push_str(&truncate_utf8(text, 2000));
                         }
                         ContentBlock::Image { .. } => out.push_str("[image]"),
                     }
@@ -69,11 +72,7 @@ pub fn serialize_conversation(messages: &[AgentMessage]) -> String {
             }
             AgentMessage::BashExecution(b) => {
                 out.push_str(&format!("[Bash]: {}\n", b.command));
-                let output = if b.output.len() > 2000 {
-                    format!("{}...(truncated)", &b.output[..2000])
-                } else {
-                    b.output.clone()
-                };
+                let output = truncate_utf8(&b.output, 2000);
                 out.push_str(&format!("[Bash output]: {output}\n"));
             }
             AgentMessage::Custom(c) => {
@@ -105,7 +104,11 @@ fn format_tool_args(_name: &str, arguments: &serde_json::Value) -> String {
                 .map(|(k, v)| {
                     let val = match v.as_str() {
                         Some(s) => {
-                            let truncated = if s.len() > 100 { &s[..100] } else { s };
+                            let truncated = if s.chars().count() > 100 {
+                                s.chars().take(100).collect::<String>()
+                            } else {
+                                s.to_string()
+                            };
                             format!("\"{truncated}\"")
                         }
                         None => v.to_string(),
@@ -116,5 +119,58 @@ fn format_tool_args(_name: &str, arguments: &serde_json::Value) -> String {
             pairs.join(", ")
         }
         None => arguments.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bb_core::types::{BashExecutionMessage, ToolResultMessage};
+    use serde_json::json;
+
+    #[test]
+    fn serialize_conversation_truncates_tool_results_on_char_boundaries() {
+        let text = format!("{}—suffix", "a".repeat(1998));
+        let messages = vec![AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "read".to_string(),
+            content: vec![ContentBlock::Text { text }],
+            details: None,
+            is_error: false,
+            timestamp: 0,
+        })];
+
+        let serialized = serialize_conversation(&messages);
+        assert!(serialized.contains("...(truncated)"));
+        assert!(serialized.contains('—'));
+    }
+
+    #[test]
+    fn serialize_conversation_truncates_bash_output_on_char_boundaries() {
+        let output = format!("{}—suffix", "b".repeat(1998));
+        let messages = vec![AgentMessage::BashExecution(BashExecutionMessage {
+            command: "echo hi".to_string(),
+            output,
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: 0,
+        })];
+
+        let serialized = serialize_conversation(&messages);
+        assert!(serialized.contains("...(truncated)"));
+        assert!(serialized.contains('—'));
+    }
+
+    #[test]
+    fn format_tool_args_truncates_strings_on_char_boundaries() {
+        let args = json!({
+            "text": format!("{}—suffix", "c".repeat(98))
+        });
+
+        let formatted = format_tool_args("write", &args);
+        assert!(formatted.contains('—'));
+        assert!(!formatted.contains("suffix"));
     }
 }
