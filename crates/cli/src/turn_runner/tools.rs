@@ -2,7 +2,7 @@ use anyhow::Result;
 use bb_core::types::*;
 use bb_hooks::events::ToolResultEvent;
 use bb_hooks::{Event, ToolCallEvent};
-use bb_provider::CollectedResponse;
+use bb_provider::{CollectedResponse, CollectedToolCall};
 use bb_session::store;
 use bb_tools::{Tool, ToolContext};
 use chrono::Utc;
@@ -124,34 +124,78 @@ pub(super) async fn execute_tool_calls(
             }
         }
 
-        let _ = env.event_tx.send(TurnEvent::ToolResult {
-            id: tool_call.id.clone(),
-            name: tool_call.name.clone(),
-            content: content.clone(),
-            details: details.clone(),
-            artifact_path: artifact_path.clone(),
+        persist_tool_result(
+            &env,
+            tool_call,
+            content,
+            details,
+            artifact_path,
             is_error,
-        });
-
-        let conn = env.conn.lock().await;
-        let tool_result_entry = SessionEntry::Message {
-            base: EntryBase {
-                id: EntryId::generate(),
-                parent_id: get_leaf_raw(&conn, env.session_id),
-                timestamp: Utc::now(),
-            },
-            message: AgentMessage::ToolResult(ToolResultMessage {
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool_call.name.clone(),
-                content,
-                details,
-                is_error,
-                timestamp: Utc::now().timestamp_millis(),
-            }),
-        };
-        store::append_entry(&conn, env.session_id, &tool_result_entry)?;
+        )
+        .await?;
     }
 
+    Ok(())
+}
+
+pub(super) async fn append_cancelled_tool_results(
+    collected: &CollectedResponse,
+    env: ToolExecutionEnv<'_>,
+) -> Result<()> {
+    for tool_call in &collected.tool_calls {
+        persist_tool_result(
+            &env,
+            tool_call,
+            vec![ContentBlock::Text {
+                text: "Error: tool execution cancelled before start".to_string(),
+            }],
+            Some(serde_json::json!({
+                "cancelled": true,
+                "durationMs": 0,
+            })),
+            None,
+            true,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn persist_tool_result(
+    env: &ToolExecutionEnv<'_>,
+    tool_call: &CollectedToolCall,
+    content: Vec<ContentBlock>,
+    details: Option<serde_json::Value>,
+    artifact_path: Option<String>,
+    is_error: bool,
+) -> Result<()> {
+    let _ = env.event_tx.send(TurnEvent::ToolResult {
+        id: tool_call.id.clone(),
+        name: tool_call.name.clone(),
+        content: content.clone(),
+        details: details.clone(),
+        artifact_path: artifact_path.clone(),
+        is_error,
+    });
+
+    let conn = env.conn.lock().await;
+    let tool_result_entry = SessionEntry::Message {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: get_leaf_raw(&conn, env.session_id),
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            content,
+            details,
+            is_error,
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, env.session_id, &tool_result_entry)?;
     Ok(())
 }
 

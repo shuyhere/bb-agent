@@ -2,7 +2,9 @@ use crate::extensions::ExtensionCommandRegistry;
 use crate::turn_runner::{TurnConfig, TurnEvent, run_turn, wrap_conn};
 use async_trait::async_trait;
 use bb_core::error::BbResult;
-use bb_core::types::{AgentMessage, ContentBlock, EntryBase, SessionEntry, UserMessage};
+use bb_core::types::{
+    AgentMessage, ContentBlock, EntryBase, SessionEntry, StopReason, UserMessage,
+};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::store;
 use bb_tools::{Tool, ToolResult};
@@ -52,6 +54,42 @@ impl Provider for DummyProvider {
                 text: "done".to_string(),
             });
         }
+        let _ = tx.send(StreamEvent::Done);
+        Ok(())
+    }
+}
+
+struct CancelAfterToolCallProvider;
+
+#[async_trait]
+impl Provider for CancelAfterToolCallProvider {
+    fn name(&self) -> &str {
+        "cancel-after-tool-call"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let _ = tx.send(StreamEvent::ToolCallStart {
+            id: "tool-cancel-1".to_string(),
+            name: "panic-tool".to_string(),
+        });
+        let _ = tx.send(StreamEvent::ToolCallDelta {
+            id: "tool-cancel-1".to_string(),
+            arguments_delta: "{}".to_string(),
+        });
+        options.cancel.cancel();
         let _ = tx.send(StreamEvent::Done);
         Ok(())
     }
@@ -225,6 +263,108 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         saw_done,
         "turn should still complete after contained tool panic"
     );
+}
+
+#[tokio::test]
+async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let wrapped = wrap_conn(conn);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+
+    let config = TurnConfig {
+        conn: wrapped.clone(),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(CancelAfterToolCallProvider),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![Box::new(PanicTool)],
+        tool_defs: vec![json!({
+            "type": "function",
+            "function": {
+                "name": "panic-tool",
+                "description": "panic test tool",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel,
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("cancelled turn should remain transcript-safe");
+
+    let mut saw_cancelled_tool_result = false;
+    while let Ok(event) = event_rx.try_recv() {
+        if let TurnEvent::ToolResult {
+            is_error,
+            details,
+            content,
+            ..
+        } = event
+        {
+            let text = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if is_error
+                && text.contains("tool execution cancelled before start")
+                && details
+                    .as_ref()
+                    .and_then(|value| value.get("cancelled"))
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+            {
+                saw_cancelled_tool_result = true;
+            }
+        }
+    }
+    assert!(
+        saw_cancelled_tool_result,
+        "should emit a cancelled tool result event"
+    );
+
+    let db = wrapped.lock().await;
+    let session = store::get_session(&db, &session_id)
+        .expect("get session")
+        .expect("session exists");
+    let leaf_id = session.leaf_id.expect("leaf id");
+    let path = bb_session::tree::walk_to_root(&db, &session_id, &leaf_id).expect("path to root");
+    let messages = path
+        .into_iter()
+        .filter_map(|entry| store::parse_entry(&entry).ok())
+        .filter_map(|entry| match entry {
+            SessionEntry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        messages.iter().find(|message| matches!(message, AgentMessage::Assistant(_))),
+        Some(AgentMessage::Assistant(assistant)) if assistant.stop_reason == StopReason::ToolUse
+    ));
+    assert!(matches!(
+        messages.iter().find(|message| matches!(message, AgentMessage::ToolResult(_))),
+        Some(AgentMessage::ToolResult(tool_result))
+            if tool_result.tool_call_id == "tool-cancel-1"
+                && tool_result.is_error
+                && tool_result.details.as_ref().and_then(|value| value.get("cancelled")).and_then(|value| value.as_bool()) == Some(true)
+    ));
 }
 
 #[tokio::test]
