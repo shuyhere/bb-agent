@@ -55,6 +55,12 @@ fn render_transcript_row(
     let t = theme();
     let plain = transcript_row_text(row, block);
     if plain.trim().is_empty() {
+        if row.kind == ProjectedRowKind::Content
+            && matches!(block.kind, BlockKind::SystemNote)
+            && matches!(block.title.as_str(), "branch summary" | "compaction")
+        {
+            return render_note_line(block, &plain, width);
+        }
         return blank_line(width);
     }
 
@@ -552,8 +558,12 @@ fn render_note_line(block: &TranscriptBlock, text: &str, width: usize) -> String
 
 fn render_summary_header_line(block: &TranscriptBlock, text: &str, width: usize) -> String {
     let t = theme();
-    let boxed = format!("╭─ {text}");
-    let body = pad_to_width(&truncate_to_width(&boxed, width), width);
+    let body = if block.title == "compaction" {
+        pad_to_width(&truncate_to_width(text, width), width)
+    } else {
+        let boxed = format!("╭─ {text}");
+        pad_to_width(&truncate_to_width(&boxed, width), width)
+    };
     match block.title.as_str() {
         "branch summary" => format!(
             "{}{}{}{}{}",

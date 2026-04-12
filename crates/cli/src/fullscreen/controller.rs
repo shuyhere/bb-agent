@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::SystemTime,
 };
 
@@ -8,6 +8,7 @@ use bb_tools::{ToolApprovalOutcome, ToolApprovalRequest};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::compaction_exec::ExecutedCompaction;
 use crate::session_bootstrap::{SessionRuntimeSetup, SessionUiOptions};
 
 mod loop_impl;
@@ -122,6 +123,11 @@ fn contains_shell_meta(line: &str) -> bool {
         || line.contains('`')
 }
 
+pub(super) enum QueuedPrompt {
+    Visible(String),
+    Hidden(String),
+}
+
 pub(super) struct FullscreenController {
     pub(super) runtime_host: AgentSessionRuntimeHost,
     pub(super) session_setup: SessionRuntimeSetup,
@@ -130,18 +136,29 @@ pub(super) struct FullscreenController {
     pub(super) abort_token: CancellationToken,
     pub(super) streaming: bool,
     pub(super) retry_status: Option<String>,
-    pub(super) queued_prompts: VecDeque<String>,
+    pub(super) queued_prompts: VecDeque<QueuedPrompt>,
     pub(super) pending_tree_summary_target: Option<String>,
     pub(super) pending_tree_custom_prompt_target: Option<String>,
     pub(super) pending_login_api_key_provider: Option<String>,
     pub(super) pending_login_copilot_enterprise: bool,
     pub(super) pending_images: Vec<PendingImage>,
     pub(super) local_action_cancel: Option<CancellationToken>,
+    pub(super) manual_compaction_in_progress: bool,
+    pub(super) auto_compaction_in_progress: bool,
+    pub(super) manual_compaction_generation: u64,
+    pub(super) manual_compaction_tx: mpsc::UnboundedSender<ManualCompactionEvent>,
+    pub(super) manual_compaction_rx: mpsc::UnboundedReceiver<ManualCompactionEvent>,
     pub(super) color_theme: bb_tui::fullscreen::spinner::ColorTheme,
     pub(super) shutdown_requested: bool,
     pub(super) approval_rx: mpsc::UnboundedReceiver<PendingApprovalRequest>,
     pub(super) pending_approval: Option<PendingApprovalRequest>,
     pub(super) session_approval_rules: HashSet<SessionApprovalRule>,
+    /// Menu IDs for `OpenSelectMenu` requests that came from an extension
+    /// command → originating command name. Used so that when the user picks
+    /// a value we can re-invoke `/<command> <value>`.
+    pub(super) pending_extension_menus: HashMap<String, String>,
+    /// Active auth-style input dialog owned by an extension command.
+    pub(super) pending_extension_prompt: Option<crate::extensions::ExtensionPromptSpec>,
     resource_watch: ResourceWatchState,
     suppress_next_resource_watch_reload: bool,
 }
@@ -149,6 +166,13 @@ pub(super) struct FullscreenController {
 pub(super) struct PendingApprovalRequest {
     pub request: ToolApprovalRequest,
     pub response_tx: oneshot::Sender<ToolApprovalOutcome>,
+}
+
+pub(super) enum ManualCompactionEvent {
+    Finished {
+        generation: u64,
+        result: anyhow::Result<ExecutedCompaction>,
+    },
 }
 
 impl FullscreenController {
@@ -160,6 +184,7 @@ impl FullscreenController {
         approval_rx: mpsc::UnboundedReceiver<PendingApprovalRequest>,
     ) -> Self {
         let resource_watch = ResourceWatchState::capture(&session_setup.tool_ctx.cwd);
+        let (manual_compaction_tx, manual_compaction_rx) = mpsc::unbounded_channel();
         Self {
             runtime_host,
             session_setup,
@@ -175,11 +200,18 @@ impl FullscreenController {
             pending_login_copilot_enterprise: false,
             pending_images: Vec::new(),
             local_action_cancel: None,
+            manual_compaction_in_progress: false,
+            auto_compaction_in_progress: false,
+            manual_compaction_generation: 0,
+            manual_compaction_tx,
+            manual_compaction_rx,
             color_theme: bb_tui::fullscreen::spinner::ColorTheme::default(),
             shutdown_requested: false,
             approval_rx,
             pending_approval: None,
             session_approval_rules: HashSet::new(),
+            pending_extension_menus: HashMap::new(),
+            pending_extension_prompt: None,
             resource_watch,
             suppress_next_resource_watch_reload: false,
         }

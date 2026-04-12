@@ -1,14 +1,16 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use bb_core::agent_session_runtime::RuntimeModelRef;
 use bb_core::settings::Settings;
 use bb_tools::builtin_tools;
 use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel};
 
+use crate::agents_md::load_agents_md;
 use crate::extensions::{
-    RuntimeExtensionSupport, SettingsScope, auto_install_missing_packages,
+    ExtensionCommandOutcome, RuntimeExtensionSupport, SettingsScope, auto_install_missing_packages,
     build_skill_system_prompt_section, install_package, load_runtime_extension_support_with_ui,
 };
 use crate::fullscreen::build_dynamic_slash_items;
+use crate::fullscreen::controller::QueuedPrompt;
 use crate::session_bootstrap::build_tool_defs;
 use crate::slash::{
     InstallSlashAction, SkillAdminAction, dispatch_local_slash_command, install_help_text,
@@ -34,6 +36,28 @@ impl FullscreenController {
             return Ok(true);
         }
 
+        if text == "/compact" || text.starts_with("/compact ") {
+            if self.streaming || self.manual_compaction_in_progress {
+                self.queued_prompts
+                    .push_back(QueuedPrompt::Visible(text.to_string()));
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    if self.manual_compaction_in_progress {
+                        "Queued /compact to run after the current compaction".to_string()
+                    } else {
+                        "Queued /compact to run after the current turn".to_string()
+                    },
+                ));
+                self.publish_status();
+                return Ok(true);
+            }
+            let instructions = text
+                .strip_prefix("/compact")
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            self.handle_compact_command(instructions).await?;
+            return Ok(true);
+        }
+
         if let Some(install) = parse_install_command(text) {
             match install {
                 InstallSlashAction::Help => {
@@ -52,6 +76,13 @@ impl FullscreenController {
 
         if let Some(action) = crate::slash::parse_skill_command(text) {
             self.handle_skill_admin_command(action).await?;
+            return Ok(true);
+        }
+
+        // Extension-registered slash commands take precedence over falling
+        // through to the LLM. Matches the one-shot `bb run` dispatch path.
+        if self.session_setup.extension_commands.is_registered(text) {
+            self.execute_extension_command_text(text).await?;
             return Ok(true);
         }
 
@@ -135,6 +166,225 @@ impl FullscreenController {
         Ok(())
     }
 
+    pub(crate) async fn execute_extension_command_text(&mut self, text: &str) -> Result<()> {
+        let outcome = match self
+            .session_setup
+            .extension_commands
+            .execute_text_structured(text)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                tracing::error!("extension command error: {err}");
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Extension command error: {err}"),
+                });
+                return Ok(());
+            }
+        };
+
+        match outcome {
+            ExtensionCommandOutcome::Nothing => {
+                self.pending_extension_prompt = None;
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+            }
+            ExtensionCommandOutcome::Text(text) => {
+                self.pending_extension_prompt = None;
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text,
+                });
+            }
+            ExtensionCommandOutcome::Dispatch { note, prompt } => {
+                // Close any open local UI (wizard dialog, menu) since the
+                // extension has finished collecting input and we're about
+                // to hand control back to the agent.
+                self.pending_extension_prompt = None;
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::CloseSelectMenu);
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                if let Some(note) = note {
+                    self.send_command(FullscreenCommand::PushNote {
+                        level: FullscreenNoteLevel::Highlight,
+                        text: note,
+                    });
+                }
+                // Queue the dispatch prompt as a hidden internal turn. The
+                // user sees only the short kickoff note above; the long
+                // orchestration prompt stays out of the transcript while the
+                // resulting tool activity still streams normally.
+                self.queued_prompts.push_back(QueuedPrompt::Hidden(prompt));
+                self.publish_status();
+            }
+            ExtensionCommandOutcome::ActivateAgent { agent_id, note } => {
+                self.pending_extension_prompt = None;
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::CloseSelectMenu);
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                self.activate_saved_shape_agent(&agent_id, note.as_deref())?;
+            }
+            ExtensionCommandOutcome::Menu {
+                command,
+                title,
+                items,
+            } => {
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.open_extension_menu(command, title, items);
+            }
+            ExtensionCommandOutcome::Prompt(prompt) => {
+                self.open_extension_prompt(prompt);
+            }
+        }
+        Ok(())
+    }
+
+    fn activate_saved_shape_agent(&mut self, agent_id: &str, note: Option<&str>) -> Result<()> {
+        let home = std::env::var("HOME").context("HOME is not set")?;
+        let agent_dir = std::path::Path::new(&home)
+            .join(".bb-agent")
+            .join("agents")
+            .join(agent_id);
+        let system_prompt_path = agent_dir.join("SYSTEM_PROMPT.md");
+        let agent_json_path = agent_dir.join("agent.json");
+
+        let system_prompt = std::fs::read_to_string(&system_prompt_path).with_context(|| {
+            format!(
+                "failed to read shaped agent prompt: {}",
+                system_prompt_path.display()
+            )
+        })?;
+
+        #[derive(serde::Deserialize)]
+        struct ShapedAgentIdentity {
+            role: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ShapedAgentResource {
+            knowledge_pages: Option<u64>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ShapedAgentSkill {
+            name: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ShapedAgentMeta {
+            name: Option<String>,
+            identity: Option<ShapedAgentIdentity>,
+            resource: Option<ShapedAgentResource>,
+            skills: Option<Vec<ShapedAgentSkill>>,
+        }
+
+        let meta: ShapedAgentMeta = serde_json::from_str(
+            &std::fs::read_to_string(&agent_json_path).with_context(|| {
+                format!(
+                    "failed to read shaped agent metadata: {}",
+                    agent_json_path.display()
+                )
+            })?,
+        )
+        .with_context(|| {
+            format!(
+                "failed to parse shaped agent metadata: {}",
+                agent_json_path.display()
+            )
+        })?;
+
+        let agents_md = load_agents_md(&self.session_setup.tool_ctx.cwd);
+        let base_prompt = bb_core::agent::build_system_prompt(&system_prompt, agents_md.as_deref());
+        self.session_setup.base_system_prompt = base_prompt;
+        self.session_setup.system_prompt = format!(
+            "{}{}",
+            self.session_setup.base_system_prompt,
+            build_skill_system_prompt_section(&self.runtime_host.bootstrap().resource_bootstrap)
+        );
+
+        let agent_name = meta.name.unwrap_or_else(|| agent_id.to_string());
+        let role = meta
+            .identity
+            .and_then(|identity| identity.role)
+            .unwrap_or_else(|| "Shaped Agent".to_string());
+        let knowledge_pages = meta
+            .resource
+            .and_then(|resource| resource.knowledge_pages)
+            .unwrap_or(0);
+        let skills = meta.skills.unwrap_or_default();
+        let skill_count = skills.iter().filter(|skill| skill.name.is_some()).count();
+
+        let summary = format!(
+            "✅ Activated: {agent_name}\nRole: {role}\nKnowledge: {knowledge_pages} pages | Skills: {skill_count}"
+        );
+        self.send_command(FullscreenCommand::PushNote {
+            level: FullscreenNoteLevel::Highlight,
+            text: note.map(str::to_string).unwrap_or(summary),
+        });
+        self.send_command(FullscreenCommand::SetStatusLine(format!(
+            "Active agent: {agent_name}"
+        )));
+        Ok(())
+    }
+
+    fn open_extension_menu(
+        &mut self,
+        command: String,
+        title: String,
+        items: Vec<crate::extensions::ExtensionMenuItem>,
+    ) {
+        self.pending_extension_prompt = None;
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        let menu_id = format!(
+            "ext:{command}:{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let select_items: Vec<bb_tui::select_list::SelectItem> = items
+            .into_iter()
+            .map(|item| bb_tui::select_list::SelectItem {
+                label: item.label,
+                detail: item.detail,
+                value: item.value,
+            })
+            .collect();
+        if select_items.is_empty() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Warning,
+                text: format!("/{command} returned an empty menu"),
+            });
+            return;
+        }
+        self.pending_extension_menus
+            .insert(menu_id.clone(), command);
+        self.send_command(FullscreenCommand::OpenSelectMenu {
+            menu_id,
+            title,
+            items: select_items,
+            selected_value: None,
+        });
+    }
+
+    fn open_extension_prompt(&mut self, prompt: crate::extensions::ExtensionPromptSpec) {
+        self.pending_extension_prompt = Some(prompt.clone());
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        self.send_command(FullscreenCommand::CloseSelectMenu);
+        self.send_command(FullscreenCommand::OpenAuthDialog(
+            bb_tui::fullscreen::FullscreenAuthDialog {
+                title: prompt.title,
+                status: None,
+                steps: Vec::new(),
+                url: None,
+                lines: prompt.lines,
+                input_label: prompt.input_label,
+                input_placeholder: prompt.input_placeholder,
+            },
+        ));
+        self.send_command(FullscreenCommand::SetInput(String::new()));
+    }
+
     pub(crate) async fn handle_skill_admin_command(
         &mut self,
         action: SkillAdminAction,
@@ -184,10 +434,7 @@ impl FullscreenController {
                 }
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Status,
-                    text: lines.join(
-                        "
-",
-                    ),
+                    text: lines.join("\n"),
                 });
             }
             SkillAdminAction::Disable(name) => {
@@ -217,8 +464,12 @@ impl FullscreenController {
             return Ok(());
         }
 
+        // Mutate global settings. The disable list is a global-scoped
+        // preference; users can still override per-project with manual
+        // JSON edits if they need to.
         let mut settings = Settings::load_global();
         let normalized = trimmed.to_string();
+        let normalized_lower = normalized.to_ascii_lowercase();
         let already = settings
             .disabled_skills
             .iter()
@@ -232,6 +483,8 @@ impl FullscreenController {
                 });
                 return Ok(());
             }
+            // Only warn if there is no matching currently-loaded skill; the
+            // user may still want to pre-disable a skill they plan to install.
             let known = self
                 .runtime_host
                 .bootstrap()
@@ -243,7 +496,7 @@ impl FullscreenController {
                 self.send_command(FullscreenCommand::PushNote {
                     level: FullscreenNoteLevel::Warning,
                     text: format!(
-                        "Skill '{normalized}' is not currently loaded; saving disable anyway."
+                        "Note: no loaded skill named '{normalized}'. Recording the disable anyway.",
                     ),
                 });
             }
@@ -257,17 +510,18 @@ impl FullscreenController {
         } else {
             settings
                 .disabled_skills
-                .retain(|entry| !entry.trim().eq_ignore_ascii_case(&normalized));
+                .retain(|entry| !entry.trim().eq_ignore_ascii_case(&normalized_lower));
         }
 
         if let Err(err) = settings.save_global() {
             self.send_command(FullscreenCommand::PushNote {
                 level: FullscreenNoteLevel::Error,
-                text: format!("Failed to save settings: {err}"),
+                text: format!("Failed to persist disabled_skills: {err}"),
             });
             return Ok(());
         }
 
+        // Reload so the change takes effect in this session immediately.
         self.reload_runtime_resources().await?;
         self.show_startup_resources();
         self.send_command(FullscreenCommand::SetStatusLine(if disable {

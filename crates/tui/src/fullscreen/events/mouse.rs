@@ -1,5 +1,11 @@
 use super::*;
 
+fn is_mouse_toggleable_block(block: &super::super::transcript::TranscriptBlock) -> bool {
+    matches!(block.kind, BlockKind::ToolUse | BlockKind::ToolResult)
+        || (block.kind == BlockKind::SystemNote
+            && matches!(block.title.as_str(), "branch summary" | "compaction"))
+}
+
 impl FullscreenState {
     pub fn on_mouse(&mut self, event: MouseEvent) {
         let layout = self.current_layout();
@@ -78,14 +84,14 @@ impl FullscreenState {
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(block_id) = self.transcript_block_at_screen_row(event.row) {
-                    let is_toolish = self.transcript.block(block_id).is_some_and(|block| {
-                        block.kind == BlockKind::ToolUse || block.kind == BlockKind::ToolResult
-                    });
-                    if is_toolish {
-                        self.toggle_block(block_id);
-                        return;
-                    }
+                if let Some(block_id) = self.transcript_block_at_screen_row(event.row)
+                    && self
+                        .transcript
+                        .block(block_id)
+                        .is_some_and(is_mouse_toggleable_block)
+                {
+                    self.toggle_block(block_id);
+                    return;
                 }
                 if let Some(block_id) = self.header_block_at_screen_row(event.row) {
                     self.toggle_block(block_id);

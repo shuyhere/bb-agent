@@ -6,7 +6,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
-use super::controller::FullscreenController;
+use super::controller::{FullscreenController, QueuedPrompt};
+
+fn is_auto_compaction_status(message: &str) -> bool {
+    message.starts_with("Auto-compacted session:")
+}
+
+fn is_auto_compaction_terminal_status(message: &str) -> bool {
+    is_auto_compaction_status(message) || message.starts_with("Auto-compaction failed:")
+}
 
 impl FullscreenController {
     pub(super) async fn dispatch_prompt(
@@ -58,16 +66,68 @@ impl FullscreenController {
         self.run_streaming_turn_loop(submission_rx, prompt).await
     }
 
+    pub(super) async fn dispatch_hidden_prompt(
+        &mut self,
+        prompt: String,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
+    ) -> Result<()> {
+        let mut opts = PromptOptions::default();
+        let pending = std::mem::take(&mut self.pending_images);
+        for img in &pending {
+            opts.images.push(bb_core::agent_session::ImageContent {
+                source: img.data.clone(),
+                mime_type: Some(img.mime_type.clone()),
+            });
+        }
+
+        self.runtime_host
+            .session_mut()
+            .prompt(prompt.clone(), opts)
+            .map_err(anyhow::Error::new)?;
+
+        if self.session_setup.api_key.trim().is_empty() {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Error,
+                text: format!(
+                    "No credentials configured for provider '{}'. Use /login to sign in. After login, bb will switch to your authenticated default model automatically, and you can use /model to choose another configured model.",
+                    self.session_setup.model.provider
+                ),
+            });
+            self.publish_status();
+            return Ok(());
+        }
+
+        self.ensure_session_row_created()?;
+        self.append_hidden_user_entry(&prompt)?;
+        // Hidden prompts should influence the runtime and stream tool usage,
+        // but should not appear as visible user chat messages or rename the
+        // session to internal workflow text.
+        self.publish_footer();
+        self.publish_status();
+        self.run_streaming_turn_loop(submission_rx, prompt).await
+    }
+
     pub(super) async fn drain_queued_prompts(
         &mut self,
         submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
     ) -> Result<()> {
         while !self.shutdown_requested {
-            let Some(prompt) = self.queued_prompts.pop_front() else {
+            let Some(queued) = self.queued_prompts.pop_front() else {
                 break;
             };
+            let (prompt, visible) = match queued {
+                QueuedPrompt::Visible(prompt) => (prompt, true),
+                QueuedPrompt::Hidden(prompt) => (prompt, false),
+            };
             self.publish_status();
-            self.dispatch_prompt(prompt, submission_rx).await?;
+            if self.handle_local_submission(&prompt).await? {
+                continue;
+            }
+            if visible {
+                self.dispatch_prompt(prompt, submission_rx).await?;
+            } else {
+                self.dispatch_hidden_prompt(prompt, submission_rx).await?;
+            }
         }
         Ok(())
     }
@@ -81,6 +141,8 @@ impl FullscreenController {
             conn
         };
         let tools = std::mem::take(&mut self.session_setup.tools);
+        let merged_settings =
+            bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd);
 
         Ok(TurnConfig {
             conn: sibling_conn,
@@ -91,6 +153,11 @@ impl FullscreenController {
             api_key: self.session_setup.api_key.clone(),
             base_url: self.session_setup.base_url.clone(),
             headers: self.session_setup.headers.clone(),
+            compaction_settings: bb_core::types::CompactionSettings {
+                enabled: merged_settings.compaction.enabled,
+                reserve_tokens: merged_settings.compaction.reserve_tokens,
+                keep_recent_tokens: merged_settings.compaction.keep_recent_tokens,
+            },
             tools,
             tool_defs: self.session_setup.tool_defs.clone(),
             tool_ctx: bb_tools::ToolContext {
@@ -131,7 +198,7 @@ impl FullscreenController {
     }
 
     fn interrupt_turn_with_prompt(&mut self, prompt: String) {
-        self.queued_prompts.push_back(prompt);
+        self.queued_prompts.push_back(QueuedPrompt::Visible(prompt));
         self.abort_token.cancel();
     }
 
@@ -213,7 +280,7 @@ impl FullscreenController {
                                 }
                                 continue;
                             }
-                            self.queued_prompts.push_back(text);
+                            self.queued_prompts.push_back(QueuedPrompt::Visible(text));
                             self.publish_status();
                             if self.shutdown_requested {
                                 self.abort_token.cancel();
@@ -234,7 +301,7 @@ impl FullscreenController {
                                 }
                                 continue;
                             }
-                            self.queued_prompts.push_back(text);
+                            self.queued_prompts.push_back(QueuedPrompt::Visible(text));
                             self.publish_status();
                             if self.shutdown_requested {
                                 self.abort_token.cancel();
@@ -258,6 +325,24 @@ impl FullscreenController {
                                 self.abort_token.cancel();
                                 aborted = true;
                                 break;
+                            }
+                        }
+                        Some(FullscreenSubmission::EditQueuedMessages) => {
+                            if self.queued_prompts.is_empty() {
+                                self.send_command(FullscreenCommand::SetStatusLine(
+                                    "No queued messages to edit".to_string(),
+                                ));
+                            } else {
+                                let queued = self
+                                    .queued_prompts
+                                    .drain(..)
+                                    .map(|queued| match queued {
+                                        QueuedPrompt::Visible(text) | QueuedPrompt::Hidden(text) => text,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n");
+                                self.send_command(FullscreenCommand::SetInput(queued));
+                                self.publish_status();
                             }
                         }
                         None => {
@@ -296,7 +381,7 @@ impl FullscreenController {
         if saw_context_overflow {
             self.send_command(FullscreenCommand::PushNote {
                 level: FullscreenNoteLevel::Warning,
-                text: "Context overflow detected. The shared fullscreen path does not auto-compact yet; switch to the legacy interactive mode to recover.".to_string(),
+                text: "Context overflow detected after retry. Auto-compaction could not recover this turn; try reducing context or switching to a larger-context model.".to_string(),
             });
         }
 
@@ -313,6 +398,7 @@ impl FullscreenController {
 
         self.streaming = false;
         self.retry_status = None;
+        self.auto_compaction_in_progress = false;
         self.publish_footer();
         self.publish_status();
         Ok(())
@@ -382,9 +468,39 @@ impl FullscreenController {
                 self.retry_status = None;
                 self.publish_status();
             }
+            TurnEvent::AutoCompactionStart => {
+                self.auto_compaction_in_progress = true;
+                self.publish_footer();
+                self.publish_status();
+            }
             TurnEvent::Done { .. } => {}
+            TurnEvent::Status(message) => {
+                if is_auto_compaction_terminal_status(&message) {
+                    self.auto_compaction_in_progress = false;
+                }
+                if is_auto_compaction_status(&message) {
+                    if let Err(err) = self.rebuild_current_transcript() {
+                        self.send_command(FullscreenCommand::PushNote {
+                            level: FullscreenNoteLevel::Error,
+                            text: format!("Failed to rebuild transcript after compaction: {err}"),
+                        });
+                    } else {
+                        self.publish_footer();
+                    }
+                } else if is_auto_compaction_terminal_status(&message) {
+                    self.publish_footer();
+                }
+                self.publish_status();
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: message,
+                });
+            }
             TurnEvent::Error(message) => {
+                self.auto_compaction_in_progress = false;
                 self.retry_status = None;
+                self.publish_footer();
+                self.publish_status();
                 self.send_command(FullscreenCommand::TurnError {
                     message: message.clone(),
                 });
@@ -394,5 +510,30 @@ impl FullscreenController {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_auto_compaction_status, is_auto_compaction_terminal_status};
+
+    #[test]
+    fn detects_auto_compaction_status_messages() {
+        assert!(is_auto_compaction_status(
+            "Auto-compacted session: 10 summarized, 5 kept, 12345 tokens before"
+        ));
+        assert!(!is_auto_compaction_status("Compacted session manually"));
+        assert!(!is_auto_compaction_status("Nothing to compact"));
+    }
+
+    #[test]
+    fn detects_auto_compaction_terminal_messages() {
+        assert!(is_auto_compaction_terminal_status(
+            "Auto-compacted session: 10 summarized, 5 kept, 12345 tokens before"
+        ));
+        assert!(is_auto_compaction_terminal_status(
+            "Auto-compaction failed: quota exceeded"
+        ));
+        assert!(!is_auto_compaction_terminal_status("Compacting session..."));
     }
 }

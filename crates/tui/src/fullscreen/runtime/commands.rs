@@ -71,6 +71,10 @@ impl FullscreenState {
             }
             FullscreenCommand::SetLocalActionActive(active) => {
                 self.local_action_active = active;
+                if !active {
+                    self.queued_submission_previews.clear();
+                    self.editing_queued_messages = false;
+                }
                 self.dirty = true;
                 RenderIntent::Render
             }
@@ -314,18 +318,22 @@ impl FullscreenState {
                 if let Some(tool) = self.tool_call_state(&id).cloned() {
                     self.all_tool_states.insert(id.clone(), tool);
                 }
+                self.force_full_repaint = true;
                 RenderIntent::Render
             }
             FullscreenCommand::TurnEnd => {
+                self.force_full_repaint = true;
                 self.finish_active_turn("complete");
                 RenderIntent::Render
             }
             FullscreenCommand::TurnAborted => {
+                self.force_full_repaint = true;
                 self.finish_active_turn("aborted");
                 RenderIntent::Render
             }
             FullscreenCommand::TurnError { message } => {
                 self.status_line = message;
+                self.force_full_repaint = true;
                 self.finish_active_turn("error");
                 RenderIntent::Render
             }

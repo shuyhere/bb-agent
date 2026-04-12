@@ -9,6 +9,12 @@ impl FullscreenState {
                 self.status_line = self.mode_help_text();
                 self.dirty = true;
             }
+            (KeyCode::Char('a' | 'A'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.copy_focused_block();
+            }
             (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                 self.move_focus(1);
                 self.set_tool_expand_status();
@@ -36,7 +42,7 @@ impl FullscreenState {
             (KeyCode::Enter, KeyModifiers::NONE)
             | (KeyCode::Char('m'), KeyModifiers::CONTROL)
             | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.toggle_tool_output_expansion();
+                self.toggle_focused_transcript_block();
                 self.set_tool_expand_status();
             }
             _ => {}
@@ -84,10 +90,10 @@ impl FullscreenState {
                     .to_string()
             })
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| "(no tool selected)".to_string());
+            .unwrap_or_else(|| "(no block selected)".to_string());
 
         self.status_line = format!(
-            "tool expand • selected: {selected} • j/k or ↑/↓ move • Enter expand/collapse • Esc returns"
+            "transcript focus • selected: {selected} • j/k or ↑/↓ move • Enter expand/collapse • Ctrl+Shift+A copy block • Esc returns"
         );
     }
 
@@ -164,6 +170,15 @@ impl FullscreenState {
         self.status_line = format!("{} {}", action, self.block_label(block_id));
     }
 
+    fn toggle_focused_transcript_block(&mut self) {
+        let Some(block_id) = self.focused_block else {
+            self.status_line = "no block focused".to_string();
+            self.dirty = true;
+            return;
+        };
+        self.toggle_block(block_id);
+    }
+
     fn block_label(&self, block_id: BlockId) -> String {
         self.transcript
             .block(block_id)
@@ -175,5 +190,38 @@ impl FullscreenState {
                 }
             })
             .unwrap_or_else(|| format!("block {}", block_id.get()))
+    }
+
+    fn copy_focused_block(&mut self) {
+        let Some(block_id) = self.focused_block else {
+            self.status_line = "no block focused".to_string();
+            self.dirty = true;
+            return;
+        };
+        let Some(span) = self.projection.rows_for_block(block_id).cloned() else {
+            self.status_line = "focused block is not visible".to_string();
+            self.dirty = true;
+            return;
+        };
+
+        let lines = span
+            .all_rows
+            .filter_map(|row_index| self.projection.row(row_index))
+            .filter(|row| row.kind != super::super::projection::ProjectedRowKind::Spacer)
+            .map(|row| crate::utils::strip_ansi(&row.text).replace('\t', "   "))
+            .collect::<Vec<_>>();
+
+        let text = lines.join("\n");
+        if text.trim().is_empty() {
+            self.status_line = format!("{} is empty", self.block_label(block_id));
+        } else {
+            self.pending_clipboard_copy = Some(text);
+            self.status_line = format!(
+                "Copied {} ({} line(s))",
+                self.block_label(block_id),
+                lines.len()
+            );
+        }
+        self.dirty = true;
     }
 }

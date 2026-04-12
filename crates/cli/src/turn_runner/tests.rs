@@ -1,12 +1,17 @@
-use super::*;
+use crate::extensions::ExtensionCommandRegistry;
+use crate::turn_runner::{TurnConfig, TurnEvent, run_turn, wrap_conn};
 use async_trait::async_trait;
 use bb_core::error::BbResult;
+use bb_core::types::{AgentMessage, ContentBlock, EntryBase, SessionEntry, UserMessage};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::store;
 use bb_tools::{Tool, ToolResult};
+use chrono::Utc;
 use serde_json::json;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 struct DummyProvider {
     call_count: AtomicUsize,
@@ -52,6 +57,41 @@ impl Provider for DummyProvider {
     }
 }
 
+struct OverflowProvider;
+
+#[async_trait]
+impl Provider for OverflowProvider {
+    fn name(&self) -> &str {
+        "overflow"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(vec![
+            StreamEvent::TextDelta {
+                text: "## Goal\nRecover overflow\n\n## Progress\n### Done\n- [x] summarized\n"
+                    .to_string(),
+            },
+            StreamEvent::Done,
+        ])
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let _ = tx.send(StreamEvent::Error {
+            message: "HTTP 400: context_length_exceeded".to_string(),
+        });
+        Ok(())
+    }
+}
+
 struct PanicTool;
 
 #[async_trait]
@@ -81,6 +121,33 @@ impl Tool for PanicTool {
     }
 }
 
+fn test_model(context_window: u64) -> bb_provider::registry::Model {
+    bb_provider::registry::Model {
+        id: "dummy-model".to_string(),
+        name: "dummy-model".to_string(),
+        provider: "dummy".to_string(),
+        api: bb_provider::registry::ApiType::OpenaiCompletions,
+        context_window,
+        max_tokens: 4_096,
+        reasoning: false,
+        input: vec![bb_provider::registry::ModelInput::Text],
+        base_url: None,
+        cost: Default::default(),
+    }
+}
+
+fn test_tool_context() -> bb_tools::ToolContext {
+    bb_tools::ToolContext {
+        cwd: "/tmp".into(),
+        artifacts_dir: "/tmp".into(),
+        execution_policy: bb_tools::ExecutionPolicy::Safety,
+        on_output: None,
+        web_search: None,
+        execution_mode: bb_tools::ToolExecutionMode::Interactive,
+        request_approval: None,
+    }
+}
+
 #[tokio::test]
 async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
     let conn = store::open_memory().expect("memory db");
@@ -91,24 +158,14 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         conn: wrap_conn(conn),
         session_id,
         system_prompt: "system".to_string(),
-        model: bb_provider::registry::Model {
-            id: "dummy-model".to_string(),
-            name: "dummy-model".to_string(),
-            provider: "dummy".to_string(),
-            api: bb_provider::registry::ApiType::OpenaiCompletions,
-            context_window: 128_000,
-            max_tokens: 4_096,
-            reasoning: false,
-            input: vec![bb_provider::registry::ModelInput::Text],
-            base_url: None,
-            cost: Default::default(),
-        },
+        model: test_model(128_000),
         provider: Arc::new(DummyProvider {
             call_count: AtomicUsize::new(0),
         }),
         api_key: "dummy".to_string(),
         base_url: "http://dummy.invalid".to_string(),
         headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
         tools: vec![Box::new(PanicTool)],
         tool_defs: vec![json!({
             "type": "function",
@@ -118,15 +175,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
                 "parameters": {"type": "object", "properties": {}}
             }
         })],
-        tool_ctx: bb_tools::ToolContext {
-            cwd: "/tmp".into(),
-            artifacts_dir: "/tmp".into(),
-            execution_policy: bb_tools::ExecutionPolicy::Safety,
-            on_output: None,
-            web_search: None,
-            execution_mode: bb_tools::ToolExecutionMode::Interactive,
-            request_approval: None,
-        },
+        tool_ctx: test_tool_context(),
         thinking: None,
         retry_enabled: false,
         retry_max_retries: 1,
@@ -176,4 +225,119 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         saw_done,
         "turn should still complete after contained tool panic"
     );
+}
+
+#[tokio::test]
+async fn overflow_recovery_compacts_only_active_path_context() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("session.db");
+    let conn = store::open_db(&db_path).expect("db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+
+    let root = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("root0001".into()),
+            parent_id: None,
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "old ".repeat(400_000),
+            }],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &session_id, &root).expect("append root");
+
+    let historical = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("hist0002".into()),
+            parent_id: Some(bb_core::types::EntryId("root0001".into())),
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "historical ".repeat(400_000),
+            }],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &session_id, &historical).expect("append historical");
+
+    store::set_leaf(&conn, &session_id, Some("root0001")).expect("set leaf to root branch");
+
+    let active = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("actv0003".into()),
+            parent_id: Some(bb_core::types::EntryId("root0001".into())),
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "active branch prompt".to_string(),
+            }],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &session_id, &active).expect("append active");
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(10_000_000),
+        provider: Arc::new(OverflowProvider),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings {
+            enabled: true,
+            reserve_tokens: 0,
+            keep_recent_tokens: 1,
+        },
+        tools: vec![],
+        tool_defs: vec![],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) =
+        run_turn(config, event_tx, "trigger overflow".to_string()).await;
+    result.expect("overflow recovery should complete without fatal error");
+
+    let statuses = std::iter::from_fn(|| event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            TurnEvent::Status(message) => Some(message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let auto_status = statuses
+        .iter()
+        .find(|message| message.starts_with("Auto-compacted session:"))
+        .expect("auto-compaction status");
+    assert!(
+        !auto_status.contains("200000")
+            && !auto_status.contains("400000")
+            && !auto_status.contains("800000"),
+        "auto-compaction should not report total historical session size: {auto_status}"
+    );
+
+    let append_conn = store::open_db(&db_path).expect("reopen db");
+    let path = bb_session::tree::active_path(&append_conn, &session_id).expect("active path");
+    assert_eq!(
+        path.len(),
+        3,
+        "root + active + compaction on active branch only"
+    );
+    assert_eq!(path[0].entry_id, "root0001");
+    assert_eq!(path[1].entry_id, "actv0003");
+    assert_eq!(path[2].entry_type, "compaction");
 }

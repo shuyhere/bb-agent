@@ -246,6 +246,10 @@ fn render_now(
     if !state.take_dirty() {
         return Ok(());
     }
+    if state.force_full_repaint {
+        renderer.invalidate();
+        state.force_full_repaint = false;
+    }
     state.prepare_for_render();
     let frame = build_frame(state);
     renderer.render(terminal, &frame)

@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod agents_md;
+mod compaction_exec;
 mod extensions;
 
 mod fullscreen;

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 
 use bb_session::store;
@@ -6,7 +7,7 @@ use bb_tui::fullscreen::{FullscreenCommand, FullscreenFooterData};
 
 use crate::session_info::{collect_session_info_summary, permission_posture_badge};
 
-use super::{FullscreenController, PendingImage};
+use super::{FullscreenController, PendingImage, QueuedPrompt};
 use crate::fullscreen::{format_tokens, shorten_home_path};
 
 fn cleanup_managed_clipboard_temp_image(path: &Path) {
@@ -124,22 +125,36 @@ impl FullscreenController {
     }
 
     fn status_line(&self) -> String {
-        if let Some(status) = &self.retry_status {
-            return status.to_string();
-        }
-        if self.queued_prompts.is_empty() {
-            return String::new();
-        }
-        format!("Queued {}", self.queued_prompts.len())
+        build_status_line(
+            self.retry_status.as_deref(),
+            self.manual_compaction_in_progress,
+            self.auto_compaction_in_progress,
+            &self.queued_prompts,
+        )
     }
 
     fn current_footer_data(&self) -> FullscreenFooterData {
         let cwd = self.session_setup.tool_ctx.cwd.display().to_string();
-        let line1 = footer_line1(
+        let mut line1 = footer_line1(
             &cwd,
             &self.session_setup.conn,
             &self.session_setup.session_id,
         );
+        if !self.queued_prompts.is_empty() {
+            let queue_hint = format!(
+                "↳ Alt+Up to edit all queued messages{}",
+                if self.manual_compaction_in_progress || self.auto_compaction_in_progress {
+                    format!(" • queued {}", self.queued_prompts.len())
+                } else {
+                    String::new()
+                }
+            );
+            line1 = if line1.is_empty() {
+                queue_hint
+            } else {
+                format!("{line1} • {queue_hint}")
+            };
+        }
 
         let (input_tokens, output_tokens, cache_read, cache_write, cost) =
             self.footer_usage_totals();
@@ -178,39 +193,69 @@ impl FullscreenController {
     }
 
     fn current_context_footer_text(&self) -> String {
-        let runtime_usage = self.runtime_host.runtime().get_context_usage();
+        let active_path =
+            bb_session::tree::active_path(&self.session_setup.conn, &self.session_setup.session_id)
+                .ok();
+        let latest_entry_is_compaction = active_path
+            .as_ref()
+            .and_then(|rows| rows.last())
+            .is_some_and(|row| row.entry_type == "compaction");
+        let runtime_usage = if self.manual_compaction_in_progress
+            || self.auto_compaction_in_progress
+            || latest_entry_is_compaction
+        {
+            None
+        } else {
+            self.runtime_host.runtime().get_context_usage()
+        };
         let context_window = runtime_usage
             .as_ref()
             .map(|usage| usage.context_window as u64)
             .filter(|window| *window > 0)
             .unwrap_or(self.session_setup.model.context_window);
+        let compaction_enabled =
+            bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd)
+                .compaction
+                .enabled;
+        let auto_suffix = compaction_auto_suffix(compaction_enabled);
 
-        let estimated_tokens =
-            bb_session::tree::active_path(&self.session_setup.conn, &self.session_setup.session_id)
-                .ok()
-                .map(|rows| {
-                    rows.iter()
-                        .map(bb_session::compaction::estimate_tokens_row)
-                        .sum::<u64>()
-                })
-                .filter(|tokens| *tokens > 0);
+        let estimated_tokens = bb_session::context::build_context(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        )
+        .ok()
+        .map(|ctx| bb_session::compaction::serialize_conversation(&ctx.messages))
+        .map(|text| bb_session::compaction::estimate_tokens_text(&text))
+        .filter(|tokens| *tokens > 0);
+
+        if let Some(tokens) = estimated_tokens.filter(|_| context_window > 0) {
+            let percent = (tokens as f64 / context_window as f64) * 100.0;
+            return format!(
+                "{percent:.1}%/{}{}",
+                format_tokens(context_window),
+                auto_suffix
+            );
+        }
 
         if let Some(usage) = runtime_usage {
             if let Some(tokens) = usage.tokens.filter(|tokens| *tokens > 0) {
                 let percent = (tokens as f64 / context_window as f64) * 100.0;
-                return format!("{percent:.1}%/{} (auto)", format_tokens(context_window));
+                return format!(
+                    "{percent:.1}%/{}{}",
+                    format_tokens(context_window),
+                    auto_suffix
+                );
             }
             if let Some(percent) = usage.percent.filter(|percent| *percent > 0) {
-                return format!("{percent:.1}%/{} (auto)", format_tokens(context_window));
+                return format!(
+                    "{percent:.1}%/{}{}",
+                    format_tokens(context_window),
+                    auto_suffix
+                );
             }
         }
 
-        if let Some(tokens) = estimated_tokens.filter(|_| context_window > 0) {
-            let percent = (tokens as f64 / context_window as f64) * 100.0;
-            format!("{percent:.1}%/{} (auto)", format_tokens(context_window))
-        } else {
-            format!("?/{} (auto)", format_tokens(context_window))
-        }
+        format!("?/{}{}", format_tokens(context_window), auto_suffix)
     }
 
     fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
@@ -233,6 +278,46 @@ impl FullscreenController {
         })
         .unwrap_or((0, 0, 0, 0, 0.0))
     }
+}
+
+fn build_status_line(
+    retry_status: Option<&str>,
+    manual_compaction_in_progress: bool,
+    auto_compaction_in_progress: bool,
+    queued_prompts: &VecDeque<QueuedPrompt>,
+) -> String {
+    if let Some(status) = retry_status {
+        return status.to_string();
+    }
+    if manual_compaction_in_progress {
+        return compaction_status_line("Compacting session...", queued_prompts);
+    }
+    if auto_compaction_in_progress {
+        return compaction_status_line("Auto-compacting session...", queued_prompts);
+    }
+    queued_prompt_status_line(queued_prompts).unwrap_or_default()
+}
+
+fn compaction_status_line(label: &str, queued_prompts: &VecDeque<QueuedPrompt>) -> String {
+    if queued_prompts.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} • {} queued", queued_prompts.len())
+    }
+}
+
+fn queued_prompt_status_line(queued_prompts: &VecDeque<QueuedPrompt>) -> Option<String> {
+    let last = queued_prompts.back()?;
+    let last = match last {
+        QueuedPrompt::Visible(text) | QueuedPrompt::Hidden(text) => text,
+    };
+    let preview = last.replace('\n', " ⏎ ");
+    let preview: String = preview.chars().take(80).collect();
+    Some(format!("Steering: {preview}"))
+}
+
+fn compaction_auto_suffix(enabled: bool) -> &'static str {
+    if enabled { " (auto)" } else { "" }
 }
 
 fn image_mime_type(path: &std::path::Path) -> Option<&'static str> {
@@ -290,7 +375,11 @@ fn push_usage_part(parts: &mut Vec<String>, tokens: u64, prefix: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::permission_posture_badge;
+    use std::collections::VecDeque;
+
+    use super::{
+        QueuedPrompt, build_status_line, compaction_auto_suffix, permission_posture_badge,
+    };
     use bb_tools::ExecutionPolicy;
 
     #[test]
@@ -302,6 +391,35 @@ mod tests {
         assert_eq!(
             permission_posture_badge(ExecutionPolicy::Yolo),
             "mode yolo/full-access"
+        );
+    }
+
+    #[test]
+    fn compaction_auto_suffix_reflects_real_enabled_state() {
+        assert_eq!(compaction_auto_suffix(true), " (auto)");
+        assert_eq!(compaction_auto_suffix(false), "");
+    }
+
+    #[test]
+    fn status_line_prioritizes_manual_compaction_over_queued_steering() {
+        let mut queued = VecDeque::new();
+        queued.push_back(QueuedPrompt::Visible("run tests after compact".to_string()));
+
+        assert_eq!(
+            build_status_line(None, true, false, &queued),
+            "Compacting session... • 1 queued"
+        );
+    }
+
+    #[test]
+    fn status_line_shows_auto_compaction_state_before_steering_preview() {
+        let mut queued = VecDeque::new();
+        queued.push_back(QueuedPrompt::Visible("first".to_string()));
+        queued.push_back(QueuedPrompt::Hidden("second".to_string()));
+
+        assert_eq!(
+            build_status_line(None, false, true, &queued),
+            "Auto-compacting session... • 2 queued"
         );
     }
 }

@@ -47,6 +47,41 @@ fn rebuild_transcript_preserves_user_image_attachment_markers() {
 }
 
 #[test]
+fn rebuild_transcript_renders_compaction_summary_as_visible_block() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+
+    let compaction_entry = SessionEntry::Compaction {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: None,
+            timestamp: Utc::now(),
+        },
+        summary: "## Goal\nKeep working\n\n## Next Steps\n1. Continue".to_string(),
+        first_kept_entry_id: EntryId::generate(),
+        tokens_before: 12345,
+        details: None,
+        from_plugin: false,
+    };
+    store::append_entry(&conn, &session_id, &compaction_entry).expect("append compaction");
+
+    let (transcript, _) = build_fullscreen_transcript(&conn, &session_id).expect("transcript");
+    let root = transcript.root_blocks()[0];
+    let block = transcript.block(root).expect("compaction block");
+    assert_eq!(block.kind, bb_tui::fullscreen::BlockKind::SystemNote);
+    assert_eq!(block.title, "compaction");
+    assert!(block.expandable);
+    assert!(block.collapsed);
+    assert!(
+        block
+            .content
+            .contains("[compaction: 12345 tokens summarized]")
+    );
+    assert!(block.content.contains("## Goal"));
+    assert!(block.content.contains("## Next Steps"));
+}
+
+#[test]
 fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     let conn = store::open_memory().expect("memory db");
     let session_id = store::create_session(&conn, "/tmp").expect("session");

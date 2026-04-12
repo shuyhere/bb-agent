@@ -1,16 +1,26 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use bb_core::agent_session::{ModelRef, ThinkingLevel};
+use bb_core::agent_session_runtime::RuntimeModelRef;
+use bb_core::settings::Settings;
 use bb_core::types::{
     AgentMessage, AssistantContent, ContentBlock, EntryBase, EntryId, SessionEntry, StopReason,
     UserMessage,
 };
+use bb_provider::Provider;
+use bb_provider::anthropic::AnthropicProvider;
+use bb_provider::google::GoogleProvider;
+use bb_provider::openai::OpenAiProvider;
+use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::{compaction, context, store, tree};
-use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel, Transcript};
+use bb_tui::fullscreen::{BlockKind, FullscreenCommand, FullscreenNoteLevel, NewBlock, Transcript};
 use bb_tui::select_list::SelectItem;
 use chrono::Utc;
 
-use super::controller::FullscreenController;
+use super::controller::{FullscreenController, ManualCompactionEvent};
+
+const HIDDEN_DISPATCH_PREFIX: &str = "[[bb-hidden-dispatch]]\n";
 use super::formatting::{format_assistant_text, format_user_text, text_from_blocks};
 use super::{FORK_ENTRY_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID};
 
@@ -32,29 +42,100 @@ pub(super) fn build_fullscreen_transcript(
     Transcript,
     HashMap<String, bb_tui::fullscreen::HistoricalToolState>,
 )> {
-    let session_context = context::build_context(conn, session_id)?;
+    let path = tree::active_path(conn, session_id)?;
+    let entries: Vec<SessionEntry> = path.iter().map(store::parse_entry).collect::<Result<_>>()?;
+
     let mut transcript = Transcript::new();
     let mut tool_map: HashMap<String, bb_tui::fullscreen::BlockId> = HashMap::new();
     let mut tool_states: HashMap<String, bb_tui::fullscreen::HistoricalToolState> = HashMap::new();
     let mut last_assistant_root: Option<bb_tui::fullscreen::BlockId> = None;
 
-    for message in session_context.messages {
-        match message {
+    let latest_compaction_idx = entries
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, entry)| matches!(entry, SessionEntry::Compaction { .. }))
+        .map(|(idx, _)| idx);
+
+    if let Some(compaction_idx) = latest_compaction_idx {
+        if let SessionEntry::Compaction {
+            first_kept_entry_id,
+            ..
+        } = &entries[compaction_idx]
+        {
+            if let Some(first_kept_idx) = entries[..compaction_idx]
+                .iter()
+                .position(|entry| entry.base().id.as_str() == first_kept_entry_id.as_str())
+            {
+                for entry in &entries[first_kept_idx..compaction_idx] {
+                    append_entry_to_fullscreen_transcript(
+                        entry,
+                        &mut transcript,
+                        &mut tool_map,
+                        &mut tool_states,
+                        &mut last_assistant_root,
+                    )?;
+                }
+            }
+
+            append_entry_to_fullscreen_transcript(
+                &entries[compaction_idx],
+                &mut transcript,
+                &mut tool_map,
+                &mut tool_states,
+                &mut last_assistant_root,
+            )?;
+
+            for entry in &entries[compaction_idx + 1..] {
+                append_entry_to_fullscreen_transcript(
+                    entry,
+                    &mut transcript,
+                    &mut tool_map,
+                    &mut tool_states,
+                    &mut last_assistant_root,
+                )?;
+            }
+        }
+    } else {
+        for entry in &entries {
+            append_entry_to_fullscreen_transcript(
+                entry,
+                &mut transcript,
+                &mut tool_map,
+                &mut tool_states,
+                &mut last_assistant_root,
+            )?;
+        }
+    }
+
+    Ok((transcript, tool_states))
+}
+
+fn append_entry_to_fullscreen_transcript(
+    entry: &SessionEntry,
+    transcript: &mut Transcript,
+    tool_map: &mut HashMap<String, bb_tui::fullscreen::BlockId>,
+    tool_states: &mut HashMap<String, bb_tui::fullscreen::HistoricalToolState>,
+    last_assistant_root: &mut Option<bb_tui::fullscreen::BlockId>,
+) -> Result<()> {
+    match entry {
+        SessionEntry::Message { message, .. } => match message {
             AgentMessage::User(user) => {
+                let rendered = format_user_text(&user.content);
+                if rendered.starts_with(HIDDEN_DISPATCH_PREFIX) {
+                    *last_assistant_root = None;
+                    return Ok(());
+                }
                 transcript.append_root_block(
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::UserMessage,
-                        "prompt",
-                    )
-                    .with_content(format_user_text(&user.content)),
+                    NewBlock::new(BlockKind::UserMessage, "prompt").with_content(rendered),
                 );
-                last_assistant_root = None;
+                *last_assistant_root = None;
             }
             AgentMessage::Assistant(message) => {
-                let content = format_assistant_text(&message);
+                let content = format_assistant_text(message);
                 let root_id = transcript.append_root_block(
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::AssistantMessage,
+                    NewBlock::new(
+                        BlockKind::AssistantMessage,
                         match message.stop_reason {
                             StopReason::Aborted => "aborted",
                             StopReason::Error => "error",
@@ -68,11 +149,8 @@ pub(super) fn build_fullscreen_transcript(
                         AssistantContent::Thinking { thinking } => {
                             let _ = transcript.append_child_block(
                                 root_id,
-                                bb_tui::fullscreen::NewBlock::new(
-                                    bb_tui::fullscreen::BlockKind::Thinking,
-                                    "thinking",
-                                )
-                                .with_content(thinking.clone()),
+                                NewBlock::new(BlockKind::Thinking, "thinking")
+                                    .with_content(thinking.clone()),
                             );
                         }
                         AssistantContent::ToolCall {
@@ -83,8 +161,8 @@ pub(super) fn build_fullscreen_transcript(
                             let raw_args = arguments.to_string();
                             let tool_id = transcript.append_child_block(
                                 root_id,
-                                bb_tui::fullscreen::NewBlock::new(
-                                    bb_tui::fullscreen::BlockKind::ToolUse,
+                                NewBlock::new(
+                                    BlockKind::ToolUse,
                                     bb_tui::fullscreen::format_tool_call_title(name, &raw_args),
                                 )
                                 .with_content(bb_tui::fullscreen::format_tool_call_content(
@@ -110,7 +188,7 @@ pub(super) fn build_fullscreen_transcript(
                         AssistantContent::Text { .. } => {}
                     }
                 }
-                last_assistant_root = Some(root_id);
+                *last_assistant_root = Some(root_id);
             }
             AgentMessage::ToolResult(result) => {
                 let body = bb_tui::fullscreen::format_tool_result_content(
@@ -124,8 +202,8 @@ pub(super) fn build_fullscreen_transcript(
                 if let Some(tool_use_id) = tool_map.get(&result.tool_call_id).copied() {
                     let tool_result_id = transcript.append_child_block(
                         tool_use_id,
-                        bb_tui::fullscreen::NewBlock::new(
-                            bb_tui::fullscreen::BlockKind::ToolResult,
+                        NewBlock::new(
+                            BlockKind::ToolResult,
                             if result.is_error { "error" } else { "output" },
                         )
                         .with_content(body),
@@ -136,27 +214,24 @@ pub(super) fn build_fullscreen_transcript(
                         tool.result_details = result.details.clone();
                         tool.is_error = result.is_error;
                     }
-                } else if let Some(root_id) = last_assistant_root {
+                } else if let Some(root_id) = *last_assistant_root {
                     let tool_use_id = transcript.append_child_block(
                         root_id,
-                        bb_tui::fullscreen::NewBlock::new(
-                            bb_tui::fullscreen::BlockKind::ToolUse,
-                            result.tool_name.clone(),
-                        )
-                        .with_expandable(true),
+                        NewBlock::new(BlockKind::ToolUse, result.tool_name.clone())
+                            .with_expandable(true),
                     )?;
                     let _ = transcript.append_child_block(
                         tool_use_id,
-                        bb_tui::fullscreen::NewBlock::new(
-                            bb_tui::fullscreen::BlockKind::ToolResult,
+                        NewBlock::new(
+                            BlockKind::ToolResult,
                             if result.is_error { "error" } else { "output" },
                         )
                         .with_content(body),
                     );
                 } else {
                     transcript.append_root_block(
-                        bb_tui::fullscreen::NewBlock::new(
-                            bb_tui::fullscreen::BlockKind::SystemNote,
+                        NewBlock::new(
+                            BlockKind::SystemNote,
                             if result.is_error { "error" } else { "tool" },
                         )
                         .with_content(body),
@@ -165,21 +240,18 @@ pub(super) fn build_fullscreen_transcript(
             }
             AgentMessage::BashExecution(message) => {
                 let tool_id = transcript.append_root_block(
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::ToolUse,
-                        message.command.clone(),
-                    )
-                    .with_expandable(true),
+                    NewBlock::new(BlockKind::ToolUse, message.command.clone())
+                        .with_expandable(true),
                 );
                 let output = if message.output.is_empty() {
                     String::new()
                 } else {
-                    message.output
+                    message.output.clone()
                 };
                 let _ = transcript.append_child_block(
                     tool_id,
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::ToolResult,
+                    NewBlock::new(
+                        BlockKind::ToolResult,
                         if message.cancelled {
                             "cancelled"
                         } else {
@@ -188,44 +260,80 @@ pub(super) fn build_fullscreen_transcript(
                     )
                     .with_content(output),
                 );
-                last_assistant_root = None;
+                *last_assistant_root = None;
             }
             AgentMessage::Custom(message) => {
                 if message.display {
                     transcript.append_root_block(
-                        bb_tui::fullscreen::NewBlock::new(
-                            bb_tui::fullscreen::BlockKind::SystemNote,
-                            message.custom_type,
-                        )
-                        .with_content(text_from_blocks(&message.content, "\n")),
+                        NewBlock::new(BlockKind::SystemNote, message.custom_type.clone())
+                            .with_content(text_from_blocks(&message.content, "\n")),
                     );
                 }
-                last_assistant_root = None;
+                *last_assistant_root = None;
             }
             AgentMessage::BranchSummary(message) => {
                 transcript.append_root_block(
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::SystemNote,
-                        "branch summary",
-                    )
-                    .with_content(message.summary),
+                    NewBlock::new(BlockKind::SystemNote, "branch summary")
+                        .with_content(message.summary.clone()),
                 );
-                last_assistant_root = None;
+                *last_assistant_root = None;
             }
             AgentMessage::CompactionSummary(message) => {
-                transcript.append_root_block(
-                    bb_tui::fullscreen::NewBlock::new(
-                        bb_tui::fullscreen::BlockKind::SystemNote,
-                        "compaction",
-                    )
-                    .with_content(message.summary),
+                let content = format!(
+                    "[compaction: {} tokens summarized]\n\n{}",
+                    message.tokens_before, message.summary
                 );
-                last_assistant_root = None;
+                transcript.append_root_block(
+                    NewBlock::new(BlockKind::SystemNote, "compaction")
+                        .with_content(content)
+                        .with_expandable(true)
+                        .with_collapsed(true),
+                );
+                *last_assistant_root = None;
             }
+        },
+        SessionEntry::CustomMessage {
+            custom_type,
+            content,
+            display,
+            ..
+        } => {
+            if *display {
+                transcript.append_root_block(
+                    NewBlock::new(BlockKind::SystemNote, custom_type.clone())
+                        .with_content(text_from_blocks(content, "\n")),
+                );
+            }
+            *last_assistant_root = None;
         }
+        SessionEntry::BranchSummary { summary, .. } => {
+            transcript.append_root_block(
+                NewBlock::new(BlockKind::SystemNote, "branch summary")
+                    .with_content(summary.clone()),
+            );
+            *last_assistant_root = None;
+        }
+        SessionEntry::Compaction {
+            summary,
+            tokens_before,
+            ..
+        } => {
+            let content = format!(
+                "[compaction: {} tokens summarized]\n\n{}",
+                tokens_before, summary
+            );
+            transcript.append_root_block(
+                NewBlock::new(BlockKind::SystemNote, "compaction")
+                    .with_content(content)
+                    .with_expandable(true)
+                    .with_collapsed(true),
+            );
+            *last_assistant_root = None;
+        }
+        _ => {}
     }
 
-    Ok((transcript, tool_states))
+    Ok(())
 }
 
 impl FullscreenController {
@@ -267,6 +375,29 @@ impl FullscreenController {
             },
             message: AgentMessage::User(UserMessage {
                 content,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+
+        store::append_entry(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &user_entry,
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn append_hidden_user_entry(&mut self, prompt: &str) -> Result<()> {
+        let user_entry = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: self.get_session_leaf(),
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::User(UserMessage {
+                content: vec![ContentBlock::Text {
+                    text: format!("{HIDDEN_DISPATCH_PREFIX}{prompt}"),
+                }],
                 timestamp: Utc::now().timestamp_millis(),
             }),
         };
@@ -328,9 +459,12 @@ impl FullscreenController {
         self.pending_tree_custom_prompt_target = None;
         self.pending_images.clear();
         self.retry_status = None;
+        self.manual_compaction_in_progress = false;
+        self.manual_compaction_generation += 1;
         if let Some(cancel) = self.local_action_cancel.take() {
             cancel.cancel();
         }
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
         self.send_command(FullscreenCommand::SetTranscript(Transcript::new()));
         self.send_command(FullscreenCommand::SetInput(String::new()));
         self.publish_footer();
@@ -381,9 +515,87 @@ impl FullscreenController {
         self.queued_prompts.clear();
         self.streaming = false;
         self.retry_status = None;
+        self.manual_compaction_in_progress = false;
+        self.manual_compaction_generation += 1;
         if let Some(cancel) = self.local_action_cancel.take() {
             cancel.cancel();
         }
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+
+        if let Ok(session_context) = context::build_context(&self.session_setup.conn, session_id) {
+            if let Some(model_info) = session_context.model.clone() {
+                let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+                let mut registry = ModelRegistry::new();
+                registry.load_custom_models(&settings);
+                crate::login::add_cached_github_copilot_models(&mut registry);
+                if let Some(model) = registry
+                    .find(&model_info.provider, &model_info.model_id)
+                    .cloned()
+                    .or_else(|| {
+                        registry
+                            .find_fuzzy(&model_info.model_id, Some(&model_info.provider))
+                            .cloned()
+                    })
+                    .or_else(|| registry.find_fuzzy(&model_info.model_id, None).cloned())
+                {
+                    let api_key =
+                        crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+                    let base_url = if model.provider == "github-copilot" {
+                        crate::login::github_copilot_api_base_url()
+                    } else {
+                        model
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| "https://api.openai.com/v1".into())
+                    };
+                    let headers = if model.provider == "github-copilot" {
+                        crate::login::github_copilot_runtime_headers()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                    let provider: std::sync::Arc<dyn Provider> = match model.api {
+                        ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
+                        ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
+                        _ => std::sync::Arc::new(OpenAiProvider::new()),
+                    };
+
+                    self.runtime_host.session_mut().set_model(ModelRef {
+                        provider: model.provider.clone(),
+                        id: model.id.clone(),
+                        reasoning: model.reasoning,
+                    });
+                    self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
+                        provider: model.provider.clone(),
+                        id: model.id.clone(),
+                        context_window: model.context_window as usize,
+                    });
+                    self.session_setup.model = model;
+                    self.session_setup.provider = provider;
+                    self.session_setup.api_key = api_key;
+                    self.session_setup.base_url = base_url;
+                    self.session_setup.headers = headers.clone();
+                    self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
+                        provider: self.session_setup.provider.clone(),
+                        model: self.session_setup.model.clone(),
+                        api_key: self.session_setup.api_key.clone(),
+                        base_url: self.session_setup.base_url.clone(),
+                        headers,
+                        enabled: true,
+                    });
+                    self.options.model_display = Some(format!(
+                        "{}/{}",
+                        self.session_setup.model.provider, self.session_setup.model.id
+                    ));
+                }
+            }
+
+            let thinking_level = session_context.thinking_level;
+            self.session_setup.thinking_level = thinking_level.as_str().to_string();
+            self.runtime_host.session_mut().set_thinking_level(
+                ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium),
+            );
+        }
+
         self.rebuild_current_transcript()?;
         self.send_command(FullscreenCommand::SetInput(String::new()));
         self.publish_footer();
@@ -540,7 +752,8 @@ impl FullscreenController {
                             Some(bb_tui::fullscreen::FullscreenSubmission::Input(_))
                             | Some(bb_tui::fullscreen::FullscreenSubmission::InputWithImages { .. })
                             | Some(bb_tui::fullscreen::FullscreenSubmission::MenuSelection { .. })
-                            | Some(bb_tui::fullscreen::FullscreenSubmission::ApprovalDecision { .. }) => {}
+                            | Some(bb_tui::fullscreen::FullscreenSubmission::ApprovalDecision { .. })
+                            | Some(bb_tui::fullscreen::FullscreenSubmission::EditQueuedMessages) => {}
                             None => {
                                 cancel.cancel();
                                 break TreeSummaryAction::Closed;
@@ -670,8 +883,21 @@ impl FullscreenController {
         Ok(())
     }
 
-    pub(super) fn handle_compact_command(&mut self, instructions: Option<&str>) -> Result<()> {
-        let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+    pub(super) async fn handle_compact_command(
+        &mut self,
+        instructions: Option<&str>,
+    ) -> Result<()> {
+        if self.streaming || self.manual_compaction_in_progress {
+            self.queued_prompts.push_back(match instructions {
+                Some(instructions) => {
+                    super::controller::QueuedPrompt::Visible(format!("/compact {instructions}"))
+                }
+                None => super::controller::QueuedPrompt::Visible("/compact".to_string()),
+            });
+            self.publish_status();
+            return Ok(());
+        }
+
         let merged_settings =
             bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd);
         let settings = bb_core::types::CompactionSettings {
@@ -679,28 +905,124 @@ impl FullscreenController {
             reserve_tokens: merged_settings.compaction.reserve_tokens,
             keep_recent_tokens: merged_settings.compaction.keep_recent_tokens,
         };
-        let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
-        let text = match compaction::prepare_compaction(&entries, &settings) {
-            Some(prep) => {
-                let mut text = format!(
-                    "Compaction prepared ({total_tokens} estimated tokens, {} messages to summarize, {} kept)",
-                    prep.messages_to_summarize.len(),
-                    prep.kept_messages.len()
-                );
-                if let Some(inst) = instructions.filter(|s| !s.trim().is_empty()) {
-                    text.push_str(&format!("\nInstructions: {inst}"));
-                }
-                text
-            }
-            None => format!(
-                "Nothing to compact ({total_tokens} estimated tokens, {} entries)",
-                entries.len()
-            ),
-        };
-        self.send_command(FullscreenCommand::PushNote {
-            level: FullscreenNoteLevel::Status,
-            text,
+
+        use tokio_util::sync::CancellationToken;
+        let cancel = CancellationToken::new();
+        self.local_action_cancel = Some(cancel.clone());
+        self.manual_compaction_in_progress = true;
+        self.manual_compaction_generation += 1;
+        let generation = self.manual_compaction_generation;
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Compacting session... (Esc to cancel)".to_string(),
+        ));
+        self.publish_status();
+        self.publish_footer();
+
+        let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+        let parent_id = crate::turn_runner::get_leaf_raw(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        );
+        let db_path = self
+            .session_setup
+            .conn
+            .path()
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| anyhow!("Compaction requires a file-backed session database"))?;
+        let session_id = self.session_setup.session_id.clone();
+        let provider = self.session_setup.provider.clone();
+        let model_id = self.session_setup.model.id.clone();
+        let api_key = self.session_setup.api_key.clone();
+        let base_url = self.session_setup.base_url.clone();
+        let headers = self.session_setup.headers.clone();
+        let manual_compaction_tx = self.manual_compaction_tx.clone();
+        let instructions = instructions.map(str::to_string);
+
+        tokio::spawn(async move {
+            let result = crate::compaction_exec::execute_session_compaction(
+                entries,
+                parent_id,
+                db_path,
+                &session_id,
+                provider,
+                &model_id,
+                &api_key,
+                &base_url,
+                &headers,
+                &settings,
+                instructions.as_deref(),
+                cancel,
+            )
+            .await;
+            let _ =
+                manual_compaction_tx.send(ManualCompactionEvent::Finished { generation, result });
         });
+        Ok(())
+    }
+
+    pub(super) async fn handle_manual_compaction_event(
+        &mut self,
+        event: ManualCompactionEvent,
+        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+            bb_tui::fullscreen::FullscreenSubmission,
+        >,
+    ) -> Result<()> {
+        let ManualCompactionEvent::Finished { generation, result } = event;
+        if generation != self.manual_compaction_generation {
+            return Ok(());
+        }
+
+        self.local_action_cancel = None;
+        self.manual_compaction_in_progress = false;
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+
+        match result {
+            Ok(result) => {
+                self.rebuild_current_transcript()?;
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Compaction complete • {} messages summarized • {} kept • {} tokens before",
+                    result.summarized_count, result.kept_count, result.tokens_before
+                )));
+            }
+            Err(err) if err.to_string() == "Nothing to compact" => {
+                let entries =
+                    store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
+                let total_tokens: u64 = entries.iter().map(compaction::estimate_tokens_row).sum();
+                self.publish_footer();
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Status,
+                    text: format!(
+                        "Nothing to compact ({total_tokens} estimated tokens, {} entries)",
+                        entries.len()
+                    ),
+                });
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Nothing to compact".to_string(),
+                ));
+            }
+            Err(err) if err.to_string().to_ascii_lowercase().contains("cancel") => {
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Compaction cancelled".to_string(),
+                ));
+            }
+            Err(err) => {
+                self.publish_footer();
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Compaction failed: {err}"),
+                });
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Compaction failed".to_string(),
+                ));
+            }
+        }
+
+        if !self.queued_prompts.is_empty() {
+            self.drain_queued_prompts(submission_rx).await?;
+        }
         Ok(())
     }
 

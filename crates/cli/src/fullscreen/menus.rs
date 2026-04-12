@@ -91,6 +91,20 @@ impl FullscreenController {
                 let setting_id = menu_id.trim_start_matches("settings:");
                 self.apply_setting_value(setting_id, value)?;
             }
+            _ if menu_id.starts_with("ext:") => {
+                if let Some(command) = self.pending_extension_menus.remove(menu_id) {
+                    let invocation = if value.trim().is_empty() {
+                        format!("/{command}")
+                    } else {
+                        format!("/{command} {value}")
+                    };
+                    self.execute_extension_command_text(&invocation).await?;
+                } else {
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Stale extension menu: {menu_id}"
+                    )));
+                }
+            }
             _ => {
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Unknown fullscreen menu: {menu_id}"
@@ -121,8 +135,13 @@ impl LocalSlashCommandHost for FullscreenController {
         Ok(())
     }
 
-    fn slash_compact(&mut self, instructions: Option<&str>) -> Result<()> {
-        self.handle_compact_command(instructions)
+    fn slash_compact(&mut self, _instructions: Option<&str>) -> Result<()> {
+        // `/compact` is handled asynchronously in `handle_local_submission`
+        // before shared local slash dispatch runs.
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Running /compact...".to_string(),
+        ));
+        Ok(())
     }
 
     fn slash_model_select(&mut self, search: Option<&str>) -> Result<()> {

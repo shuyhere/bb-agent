@@ -221,6 +221,11 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         api_key,
         base_url,
         headers,
+        compaction_settings: bb_core::types::CompactionSettings {
+            enabled: settings.compaction.enabled,
+            reserve_tokens: settings.compaction.reserve_tokens,
+            keep_recent_tokens: settings.compaction.keep_recent_tokens,
+        },
         tools: builtin_tools,
         tool_defs,
         tool_ctx,

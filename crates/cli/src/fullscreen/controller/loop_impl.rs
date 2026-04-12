@@ -6,7 +6,9 @@ use bb_tui::fullscreen::{
 };
 use tokio::sync::mpsc;
 
-use super::{FullscreenController, SessionApprovalRule, derive_session_approval_rule};
+use super::{
+    FullscreenController, QueuedPrompt, SessionApprovalRule, derive_session_approval_rule,
+};
 
 impl FullscreenController {
     pub(crate) async fn run(
@@ -64,6 +66,14 @@ impl FullscreenController {
                     };
                     self.present_approval_request(approval);
                 }
+                maybe_compaction = self.manual_compaction_rx.recv() => {
+                    let Some(event) = maybe_compaction else {
+                        continue;
+                    };
+                    if let Err(err) = self.handle_manual_compaction_event(event, &mut submission_rx).await {
+                        self.report_error("manual compaction", &err);
+                    }
+                }
                 _ = resource_watch_tick.tick() => {
                     if let Err(err) = self.maybe_auto_reload_resources().await {
                         self.report_error("auto reload", &err);
@@ -117,6 +127,17 @@ impl FullscreenController {
                 {
                     self.report_error("menu selection", &err);
                 }
+                // A menu pick may have queued a prompt for the agent (e.g.
+                // Shape's "Build agent" menu item dispatches a new turn).
+                // Drain the queue so it actually runs.
+                if !self.streaming
+                    && !self.manual_compaction_in_progress
+                    && !self.queued_prompts.is_empty()
+                {
+                    if let Err(err) = self.drain_queued_prompts(submission_rx).await {
+                        self.report_error("drain queued", &err);
+                    }
+                }
                 Ok(())
             }
             FullscreenSubmission::ApprovalDecision { .. } => Ok(()),
@@ -142,12 +163,39 @@ impl FullscreenController {
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
                     ));
+                } else if let Some(prompt) = self.pending_extension_prompt.take() {
+                    self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                    self.send_command(FullscreenCommand::CloseAuthDialog);
+                    self.send_command(FullscreenCommand::SetInput(String::new()));
+                    self.send_command(FullscreenCommand::SetStatusLine(format!(
+                        "Cancelled {}",
+                        prompt.title
+                    )));
                 } else if let Some(cancel) = self.local_action_cancel.take() {
                     cancel.cancel();
                 } else {
                     self.send_command(FullscreenCommand::SetStatusLine(
                         "press Ctrl+C to exit".to_string(),
                     ));
+                }
+                Ok(())
+            }
+            FullscreenSubmission::EditQueuedMessages => {
+                if self.queued_prompts.is_empty() {
+                    self.send_command(FullscreenCommand::SetStatusLine(
+                        "No queued messages to edit".to_string(),
+                    ));
+                } else {
+                    let queued = self
+                        .queued_prompts
+                        .drain(..)
+                        .map(|queued| match queued {
+                            QueuedPrompt::Visible(text) | QueuedPrompt::Hidden(text) => text,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    self.send_command(FullscreenCommand::SetInput(queued));
+                    self.publish_status();
                 }
                 Ok(())
             }
@@ -232,12 +280,47 @@ impl FullscreenController {
             return Ok(());
         }
 
+        if let Some(prompt) = self.pending_extension_prompt.clone() {
+            let submitted = text.trim().to_string();
+            if submitted.is_empty() || submitted == "/" {
+                self.pending_extension_prompt = None;
+                self.send_command(FullscreenCommand::SetInput(String::new()));
+                self.send_command(FullscreenCommand::SetLocalActionActive(false));
+                self.send_command(FullscreenCommand::CloseAuthDialog);
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Cancelled {}",
+                    prompt.title
+                )));
+                return Ok(());
+            }
+            self.pending_extension_prompt = None;
+            self.send_command(FullscreenCommand::SetInput(String::new()));
+            let invocation = format!(
+                "/{} __resume {} -- {}",
+                prompt.command, prompt.resume, submitted
+            );
+            self.execute_extension_command_text(&invocation).await?;
+            return Ok(());
+        }
+
         let text = text.trim().to_string();
         if (text.is_empty() && self.pending_images.is_empty()) || text == "/" {
             return Ok(());
         }
 
+        if self.manual_compaction_in_progress {
+            self.queued_prompts.push_back(QueuedPrompt::Visible(text));
+            self.publish_status();
+            return Ok(());
+        }
+
         if self.handle_local_submission(&text).await? {
+            if !self.streaming
+                && !self.manual_compaction_in_progress
+                && !self.queued_prompts.is_empty()
+            {
+                self.drain_queued_prompts(submission_rx).await?;
+            }
             return Ok(());
         }
 
@@ -260,7 +343,8 @@ impl FullscreenController {
         let prompt_text = expanded.text;
 
         if self.streaming {
-            self.queued_prompts.push_back(prompt_text);
+            self.queued_prompts
+                .push_back(QueuedPrompt::Visible(prompt_text));
             self.publish_status();
             return Ok(());
         }
