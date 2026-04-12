@@ -114,6 +114,8 @@ impl Tool for BashTool {
         let SpawnedProcess {
             mut child,
             sandbox_backend,
+            #[cfg(unix)]
+            process_group_id,
         } = match spawn_bash_process(command, ctx, safety_context) {
             Ok(process) => process,
             Err(result) => return Ok(result),
@@ -135,7 +137,11 @@ impl Tool for BashTool {
             tokio::select! {
                 _ = cancel.cancelled(), if !cancelled => {
                     cancelled = true;
-                    let _ = child.kill().await;
+                    kill_running_process(
+                        &mut child,
+                        #[cfg(unix)]
+                        process_group_id,
+                    ).await;
                     status = Some(child.wait().await.map_err(|e| BbError::Tool(format!("Failed while waiting for cancelled bash command: {e}")))?);
                 }
                 _ = async {
@@ -146,7 +152,11 @@ impl Tool for BashTool {
                     }
                 }, if timeout_secs.is_some() && !timed_out => {
                     timed_out = true;
-                    let _ = child.kill().await;
+                    kill_running_process(
+                        &mut child,
+                        #[cfg(unix)]
+                        process_group_id,
+                    ).await;
                     status = Some(child.wait().await.map_err(|e| BbError::Tool(format!("Failed while waiting for timed out bash command: {e}")))?);
                 }
                 result = child.wait() => {
@@ -277,6 +287,8 @@ impl Tool for BashTool {
 struct SpawnedProcess {
     child: Child,
     sandbox_backend: Option<SandboxBackend>,
+    #[cfg(unix)]
+    process_group_id: Option<u32>,
 }
 
 fn spawn_bash_process(
@@ -292,9 +304,13 @@ fn spawn_bash_process(
                     BashResultDetails::error(command, safety, None, None),
                 )
             })?;
+            #[cfg(unix)]
+            let process_group_id = child.id();
             Ok(SpawnedProcess {
                 child,
                 sandbox_backend: None,
+                #[cfg(unix)]
+                process_group_id,
             })
         }
         ExecutionPolicy::Safety => {
@@ -327,10 +343,14 @@ fn spawn_bash_process(
                     BashResultDetails::error(command, safety, Some(backend), Some(&details)),
                 )
             })?;
+            #[cfg(unix)]
+            let process_group_id = child.id();
 
             Ok(SpawnedProcess {
                 child,
                 sandbox_backend: Some(backend),
+                #[cfg(unix)]
+                process_group_id,
             })
         }
     }
@@ -351,7 +371,56 @@ fn configure_process_stdio(mut process: Command) -> Command {
 }
 
 fn spawn_process(mut process: Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        // Put the shell into its own process group so cancellation/timeouts can
+        // terminate the whole command tree instead of only the immediate shell.
+        unsafe {
+            process.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+
     process.spawn()
+}
+
+#[cfg(unix)]
+async fn kill_running_process(child: &mut Child, process_group_id: Option<u32>) {
+    if let Some(pgid) = process_group_id {
+        let _ = send_signal_to_process_group(pgid, libc::SIGTERM);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    let _ = child.kill().await;
+
+    if let Some(pgid) = process_group_id {
+        let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+async fn kill_running_process(child: &mut Child) {
+    let _ = child.kill().await;
+}
+
+#[cfg(unix)]
+fn send_signal_to_process_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
+    let target = -(process_group_id as i32);
+    let rc = unsafe { libc::kill(target, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            _ => Err(error),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
