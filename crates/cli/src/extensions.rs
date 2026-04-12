@@ -20,10 +20,14 @@ use bb_tools::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 mod discovery;
 mod packages;
 mod ui;
+
+const EXTENSION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const EXTENSION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 use discovery::{discover_package_resources, filter_matches, normalize_path, parse_frontmatter};
@@ -265,12 +269,22 @@ impl ExtensionCommandRegistry {
         let Some(host) = &self.host else {
             bail!("extension command runtime is not available");
         };
-        let context = self.build_context().await;
-        let mut host = host.lock().await;
-        let result = host
-            .execute_command_with_context(name, args.unwrap_or_default(), &context)
-            .await?;
-        drop(host);
+
+        let result = match tokio::time::timeout(EXTENSION_COMMAND_TIMEOUT, async {
+            let context = self.build_context().await;
+            let mut host = host.lock().await;
+            host.execute_command_with_context(name, args.unwrap_or_default(), &context)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => bail!("extension command failed: {err}"),
+            Err(_) => bail!(
+                "extension command timed out after {}s",
+                EXTENSION_COMMAND_TIMEOUT.as_secs()
+            ),
+        };
 
         if let Some(menu) = parse_command_menu_result(name, &result) {
             return Ok(menu);
@@ -292,9 +306,24 @@ impl ExtensionCommandRegistry {
 
     pub(crate) async fn send_event(&self, event: &bb_hooks::Event) -> Option<bb_hooks::HookResult> {
         let host = self.host.as_ref()?;
-        let context = self.build_context().await;
-        let mut host = host.lock().await;
-        host.send_event_with_context(event, &context).await
+
+        match tokio::time::timeout(EXTENSION_EVENT_TIMEOUT, async {
+            let context = self.build_context().await;
+            let mut host = host.lock().await;
+            host.send_event_with_context(event, &context).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(
+                    "extension event timed out after {}s: {:?}",
+                    EXTENSION_EVENT_TIMEOUT.as_secs(),
+                    event
+                );
+                None
+            }
+        }
     }
 
     pub(crate) async fn apply_input_hooks(

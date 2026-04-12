@@ -26,8 +26,8 @@ fn parses_frontmatter_name_and_description() {
     );
 }
 
-#[test]
-fn parses_command_invocation_and_args() {
+#[tokio::test]
+async fn parses_command_invocation_and_args() {
     assert_eq!(
         parse_command_invocation("/hello world"),
         Some(("hello", Some("world")))
@@ -463,6 +463,51 @@ async fn package_loaded_extension_command_executes_with_context() {
     assert!(output.contains(&format!("leaf:{}", label.base().id)));
     assert!(output.contains("label:root-label"));
     assert!(output.contains(&format!("session:{session_id}")));
+}
+
+#[tokio::test]
+async fn extension_command_timeout_returns_error_instead_of_hanging() {
+    if !node_available() {
+        eprintln!("Skipping test: node not available");
+        return;
+    }
+
+    let cwd = tempdir().unwrap();
+    let extension_path = cwd.path().join("slow.js");
+    fs::write(
+        &extension_path,
+        r#"
+                module.exports = function(bb) {
+                    bb.registerCommand('slow', {
+                        description: 'slow command',
+                        handler: async () => {
+                            await new Promise((resolve) => setTimeout(resolve, 60000));
+                            return { message: 'done' };
+                        },
+                    });
+                };
+            "#,
+    )
+    .unwrap();
+
+    let support = load_runtime_extension_support_with_ui(
+        cwd.path(),
+        &Settings::default(),
+        &ExtensionBootstrap {
+            paths: vec![extension_path],
+            package_sources: Vec::new(),
+        },
+        true,
+    )
+    .await
+    .unwrap();
+
+    let err = support
+        .commands
+        .execute_text_structured("/slow")
+        .await
+        .expect_err("slow extension command should time out");
+    assert!(err.to_string().contains("timed out"));
 }
 
 #[tokio::test]
