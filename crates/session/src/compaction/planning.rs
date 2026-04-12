@@ -1,6 +1,16 @@
 use super::types::*;
 use crate::store::EntryRow;
-use bb_core::types::{AgentMessage, CompactionSettings, SessionEntry};
+use bb_core::types::{
+    AgentMessage, AssistantContent, CompactionSettings, ContentBlock, SessionEntry, StopReason,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextUsageEstimate {
+    pub tokens: u64,
+    pub usage_tokens: u64,
+    pub trailing_tokens: u64,
+    pub last_usage_index: Option<usize>,
+}
 
 /// Whether compaction should trigger.
 pub fn should_compact(
@@ -11,9 +21,101 @@ pub fn should_compact(
     settings.enabled && context_tokens > context_window.saturating_sub(settings.reserve_tokens)
 }
 
+/// Calculate total context tokens from usage.
+pub fn calculate_context_tokens(usage: &bb_core::types::Usage) -> u64 {
+    if usage.total_tokens > 0 {
+        usage.total_tokens
+    } else {
+        usage.input + usage.output + usage.cache_read + usage.cache_write
+    }
+}
+
 /// Estimate tokens for a message (rough: ~4 chars per token).
 pub fn estimate_tokens_text(text: &str) -> u64 {
-    (text.len() as u64) / 4
+    (text.len() as u64).div_ceil(4)
+}
+
+/// Estimate tokens for a structured message.
+pub fn estimate_tokens_message(message: &AgentMessage) -> u64 {
+    match message {
+        AgentMessage::User(user) => user
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text } => estimate_tokens_text(text),
+                ContentBlock::Image { .. } => 1200,
+            })
+            .sum(),
+        AgentMessage::Assistant(assistant) => assistant
+            .content
+            .iter()
+            .map(|block| match block {
+                AssistantContent::Text { text } => estimate_tokens_text(text),
+                AssistantContent::Thinking { thinking } => estimate_tokens_text(thinking),
+                AssistantContent::ToolCall {
+                    name, arguments, ..
+                } => estimate_tokens_text(name)
+                    + estimate_tokens_text(&serde_json::to_string(arguments).unwrap_or_default()),
+            })
+            .sum(),
+        AgentMessage::ToolResult(tool) => tool
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text } => estimate_tokens_text(text),
+                ContentBlock::Image { .. } => 1200,
+            })
+            .sum(),
+        AgentMessage::BashExecution(msg) => {
+            estimate_tokens_text(&msg.command) + estimate_tokens_text(&msg.output)
+        }
+        AgentMessage::Custom(msg) => msg
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text } => estimate_tokens_text(text),
+                ContentBlock::Image { .. } => 1200,
+            })
+            .sum(),
+        AgentMessage::BranchSummary(msg) => estimate_tokens_text(&msg.summary),
+        AgentMessage::CompactionSummary(msg) => estimate_tokens_text(&msg.summary),
+    }
+}
+
+/// Estimate context tokens from messages using the last successful assistant usage when available.
+pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimate {
+    let last_usage = messages.iter().enumerate().rev().find_map(|(idx, msg)| match msg {
+        AgentMessage::Assistant(assistant)
+            if assistant.stop_reason != StopReason::Aborted
+                && assistant.stop_reason != StopReason::Error
+                && calculate_context_tokens(&assistant.usage) > 0 =>
+        {
+            Some((idx, calculate_context_tokens(&assistant.usage)))
+        }
+        _ => None,
+    });
+
+    let Some((last_usage_index, usage_tokens)) = last_usage else {
+        let trailing_tokens = messages.iter().map(estimate_tokens_message).sum();
+        return ContextUsageEstimate {
+            tokens: trailing_tokens,
+            usage_tokens: 0,
+            trailing_tokens,
+            last_usage_index: None,
+        };
+    };
+
+    let trailing_tokens = messages[last_usage_index + 1..]
+        .iter()
+        .map(estimate_tokens_message)
+        .sum::<u64>();
+
+    ContextUsageEstimate {
+        tokens: usage_tokens + trailing_tokens,
+        usage_tokens,
+        trailing_tokens,
+        last_usage_index: Some(last_usage_index),
+    }
 }
 
 /// Estimate tokens for an entry row by its payload size.
@@ -125,8 +227,11 @@ pub fn prepare_compaction(
 
     let boundary_end = path_entries.len();
 
-    // Estimate current context tokens
-    let tokens_before: u64 = path_entries.iter().map(estimate_tokens_row).sum();
+    // Estimate current context tokens from rebuilt context, preferring real assistant usage.
+    let tokens_before: u64 = crate::context::build_context_from_path(path_entries)
+        .ok()
+        .map(|ctx| estimate_context_tokens(&ctx.messages).tokens)
+        .unwrap_or(0);
 
     // Find cut point
     let cut = find_cut_point(

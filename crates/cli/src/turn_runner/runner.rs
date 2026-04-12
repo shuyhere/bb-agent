@@ -34,8 +34,7 @@ async fn maybe_execute_auto_compaction(
     let active_path = bb_session::tree::active_path(&conn, &config.session_id)?;
     let context_tokens = context::build_context_from_path(&active_path)
         .ok()
-        .map(|ctx| bb_session::compaction::serialize_conversation(&ctx.messages))
-        .map(|text| bb_session::compaction::estimate_tokens_text(&text))
+        .map(|ctx| bb_session::compaction::estimate_context_tokens(&ctx.messages).tokens)
         .unwrap_or(0);
     let should_run = force
         || bb_session::compaction::should_compact(

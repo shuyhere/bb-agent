@@ -141,8 +141,6 @@ impl FullscreenController {
             conn
         };
         let tools = std::mem::take(&mut self.session_setup.tools);
-        let merged_settings =
-            bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd);
 
         Ok(TurnConfig {
             conn: sibling_conn,
@@ -154,9 +152,9 @@ impl FullscreenController {
             base_url: self.session_setup.base_url.clone(),
             headers: self.session_setup.headers.clone(),
             compaction_settings: bb_core::types::CompactionSettings {
-                enabled: merged_settings.compaction.enabled,
-                reserve_tokens: merged_settings.compaction.reserve_tokens,
-                keep_recent_tokens: merged_settings.compaction.keep_recent_tokens,
+                enabled: self.session_setup.compaction_enabled,
+                reserve_tokens: self.session_setup.compaction_reserve_tokens,
+                keep_recent_tokens: self.session_setup.compaction_keep_recent_tokens,
             },
             tools,
             tool_defs: self.session_setup.tool_defs.clone(),

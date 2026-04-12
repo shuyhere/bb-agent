@@ -7,6 +7,19 @@ fn execution_mode_menu_label(mode: ExecutionMode) -> &'static str {
     }
 }
 
+fn persist_fullscreen_compaction_settings(
+    enabled: bool,
+    reserve_tokens: u64,
+    keep_recent_tokens: u64,
+) -> Result<()> {
+    let mut settings = Settings::load_global();
+    settings.compaction.enabled = enabled;
+    settings.compaction.reserve_tokens = reserve_tokens.max(1);
+    settings.compaction.keep_recent_tokens = keep_recent_tokens.max(1);
+    settings.save_global()?;
+    Ok(())
+}
+
 fn persist_fullscreen_retry_settings(
     enabled: bool,
     max_retries: u32,
@@ -53,6 +66,34 @@ impl FullscreenController {
                 ),
                 detail: Some("Safety — current project only • Yolo — full access".to_string()),
                 value: "execution-mode".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Auto-compact [{}]",
+                    if self.session_setup.compaction_enabled {
+                        "true"
+                    } else {
+                        "false"
+                    }
+                ),
+                detail: Some("Automatically compact context when it gets too large".to_string()),
+                value: "compaction-enabled".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Reserve tokens [{}]",
+                    self.session_setup.compaction_reserve_tokens
+                ),
+                detail: Some("Tokens reserved before auto-compaction triggers".to_string()),
+                value: "compaction-reserve".to_string(),
+            },
+            SelectItem {
+                label: format!(
+                    "Keep recent tokens [{}]",
+                    self.session_setup.compaction_keep_recent_tokens
+                ),
+                detail: Some("Recent tokens kept verbatim during compaction".to_string()),
+                value: "compaction-keep-recent".to_string(),
             },
             SelectItem {
                 label: format!(
@@ -108,6 +149,15 @@ impl FullscreenController {
                 vec!["off", "low", "medium", "high", "xhigh"],
             ),
             "execution-mode" => ("Execution mode", vec!["safety", "yolo"]),
+            "compaction-enabled" => ("Auto-compact", vec!["true", "false"]),
+            "compaction-reserve" => (
+                "Reserve tokens",
+                vec!["2048", "4096", "8192", "16384", "32768", "65536"],
+            ),
+            "compaction-keep-recent" => (
+                "Keep recent tokens",
+                vec!["4000", "8000", "12000", "20000", "32000", "50000"],
+            ),
             "retry-enabled" => ("Auto-retry", vec!["true", "false"]),
             "retry-max" => ("Retry attempts", vec!["1", "2", "3", "4", "5"]),
             "retry-delay" => ("Retry base delay", vec!["1s", "2s", "5s", "10s"]),
@@ -195,6 +245,51 @@ impl FullscreenController {
                 self.send_command(FullscreenCommand::SetStatusLine(format!(
                     "Execution mode: {}",
                     execution_mode_menu_label(mode)
+                )));
+            }
+            "compaction-enabled" => {
+                self.session_setup.compaction_enabled = value == "true";
+                persist_fullscreen_compaction_settings(
+                    self.session_setup.compaction_enabled,
+                    self.session_setup.compaction_reserve_tokens,
+                    self.session_setup.compaction_keep_recent_tokens,
+                )?;
+                self.mark_local_settings_saved();
+                self.publish_footer();
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Auto-compact: {value}"
+                )));
+            }
+            "compaction-reserve" => {
+                let parsed = value
+                    .parse::<u64>()
+                    .unwrap_or(self.session_setup.compaction_reserve_tokens)
+                    .max(1);
+                self.session_setup.compaction_reserve_tokens = parsed;
+                persist_fullscreen_compaction_settings(
+                    self.session_setup.compaction_enabled,
+                    self.session_setup.compaction_reserve_tokens,
+                    self.session_setup.compaction_keep_recent_tokens,
+                )?;
+                self.mark_local_settings_saved();
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Reserve tokens: {parsed}"
+                )));
+            }
+            "compaction-keep-recent" => {
+                let parsed = value
+                    .parse::<u64>()
+                    .unwrap_or(self.session_setup.compaction_keep_recent_tokens)
+                    .max(1);
+                self.session_setup.compaction_keep_recent_tokens = parsed;
+                persist_fullscreen_compaction_settings(
+                    self.session_setup.compaction_enabled,
+                    self.session_setup.compaction_reserve_tokens,
+                    self.session_setup.compaction_keep_recent_tokens,
+                )?;
+                self.mark_local_settings_saved();
+                self.send_command(FullscreenCommand::SetStatusLine(format!(
+                    "Keep recent tokens: {parsed}"
                 )));
             }
             "retry-enabled" => {

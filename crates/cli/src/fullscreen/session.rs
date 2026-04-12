@@ -240,8 +240,7 @@ fn append_entry_to_fullscreen_transcript(
             }
             AgentMessage::BashExecution(message) => {
                 let tool_id = transcript.append_root_block(
-                    NewBlock::new(BlockKind::ToolUse, message.command.clone())
-                        .with_expandable(true),
+                    NewBlock::new(BlockKind::ToolUse, message.command.clone()).with_expandable(true),
                 );
                 let output = if message.output.is_empty() {
                     String::new()
@@ -252,11 +251,7 @@ fn append_entry_to_fullscreen_transcript(
                     tool_id,
                     NewBlock::new(
                         BlockKind::ToolResult,
-                        if message.cancelled {
-                            "cancelled"
-                        } else {
-                            "output"
-                        },
+                        if message.cancelled { "cancelled" } else { "output" },
                     )
                     .with_content(output),
                 );
@@ -538,8 +533,7 @@ impl FullscreenController {
                     })
                     .or_else(|| registry.find_fuzzy(&model_info.model_id, None).cloned())
                 {
-                    let api_key =
-                        crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+                    let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
                     let base_url = if model.provider == "github-copilot" {
                         crate::login::github_copilot_api_base_url()
                     } else {
@@ -591,9 +585,9 @@ impl FullscreenController {
 
             let thinking_level = session_context.thinking_level;
             self.session_setup.thinking_level = thinking_level.as_str().to_string();
-            self.runtime_host.session_mut().set_thinking_level(
-                ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium),
-            );
+            self.runtime_host
+                .session_mut()
+                .set_thinking_level(ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium));
         }
 
         self.rebuild_current_transcript()?;
@@ -883,27 +877,20 @@ impl FullscreenController {
         Ok(())
     }
 
-    pub(super) async fn handle_compact_command(
-        &mut self,
-        instructions: Option<&str>,
-    ) -> Result<()> {
+    pub(super) async fn handle_compact_command(&mut self, instructions: Option<&str>) -> Result<()> {
         if self.streaming || self.manual_compaction_in_progress {
             self.queued_prompts.push_back(match instructions {
-                Some(instructions) => {
-                    super::controller::QueuedPrompt::Visible(format!("/compact {instructions}"))
-                }
+                Some(instructions) => super::controller::QueuedPrompt::Visible(format!("/compact {instructions}")),
                 None => super::controller::QueuedPrompt::Visible("/compact".to_string()),
             });
             self.publish_status();
             return Ok(());
         }
 
-        let merged_settings =
-            bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd);
         let settings = bb_core::types::CompactionSettings {
-            enabled: merged_settings.compaction.enabled,
-            reserve_tokens: merged_settings.compaction.reserve_tokens,
-            keep_recent_tokens: merged_settings.compaction.keep_recent_tokens,
+            enabled: self.session_setup.compaction_enabled,
+            reserve_tokens: self.session_setup.compaction_reserve_tokens,
+            keep_recent_tokens: self.session_setup.compaction_keep_recent_tokens,
         };
 
         use tokio_util::sync::CancellationToken;
@@ -920,13 +907,8 @@ impl FullscreenController {
         self.publish_footer();
 
         let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
-        let parent_id = crate::turn_runner::get_leaf_raw(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        );
-        let db_path = self
-            .session_setup
-            .conn
+        let parent_id = crate::turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id);
+        let db_path = self.session_setup.conn
             .path()
             .map(std::path::PathBuf::from)
             .ok_or_else(|| anyhow!("Compaction requires a file-backed session database"))?;
@@ -955,8 +937,7 @@ impl FullscreenController {
                 cancel,
             )
             .await;
-            let _ =
-                manual_compaction_tx.send(ManualCompactionEvent::Finished { generation, result });
+            let _ = manual_compaction_tx.send(ManualCompactionEvent::Finished { generation, result });
         });
         Ok(())
     }
@@ -1025,6 +1006,7 @@ impl FullscreenController {
         }
         Ok(())
     }
+
 
     pub(super) fn get_session_leaf(&self) -> Option<EntryId> {
         crate::turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id)
