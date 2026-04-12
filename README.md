@@ -246,7 +246,6 @@ Or set this in `~/.bb-agent/settings.json`:
 - [Development Guide](docs/development.md) — build from source, dev workflow, project structure, debugging
 - [Contributing](CONTRIBUTING.md) — code style, PR process
 - [Changelog](CHANGELOG.md) — release history
-- [Security](SECURITY.md) — vulnerability reporting, security model
 
 ## Development
 
