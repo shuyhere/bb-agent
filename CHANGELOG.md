@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - session resume now restores the prior model and thinking level instead of starting with mismatched runtime defaults
 - fullscreen/TUI terminal rendering now sanitizes terminal control text more reliably and avoids ANSI leakage into the UI
-- auto-compaction token estimation now matches pi more closely by using the last successful assistant usage plus trailing estimates, using ceil-based token heuristics, and computing `tokens_before` from rebuilt context instead of raw payload size
-- fullscreen compaction behavior and status reporting are more consistent after auto-compaction and manual compaction events
+- auto-compaction token estimation now matches pi more closely by using the last successful assistant usage plus trailing estimates, using ceil-based token heuristics, computing `tokens_before` from rebuilt context instead of raw payload size, and ignoring assistant usage from before the latest compaction boundary
+- fullscreen compaction behavior and status reporting are more consistent after auto-compaction and manual compaction events, and local fullscreen actions now show an animated elapsed-time status while they run
 
 ### Changed
 

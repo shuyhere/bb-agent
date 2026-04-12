@@ -52,6 +52,8 @@ pub struct FullscreenState {
     pub(super) editing_queued_messages: bool,
     pub(super) active_turn: Option<ActiveTurnState>,
     pub(super) local_action_active: bool,
+    pub(super) local_action_started_tick: Option<u64>,
+    pub(super) local_action_started_at: Option<std::time::Instant>,
     pub(super) expanded_tool_blocks: std::collections::HashSet<BlockId>,
     /// Persistent tool call state — survives after active_turn is cleared.
     pub(super) all_tool_states: std::collections::HashMap<String, super::streaming::ToolCallState>,
@@ -110,6 +112,8 @@ impl FullscreenState {
             editing_queued_messages: false,
             active_turn: None,
             local_action_active: false,
+            local_action_started_tick: None,
+            local_action_started_at: None,
             expanded_tool_blocks: std::collections::HashSet::new(),
             all_tool_states: std::collections::HashMap::new(),
             extra_slash_items: config.extra_slash_items,

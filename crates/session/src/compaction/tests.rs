@@ -227,6 +227,127 @@ fn test_estimate_context_tokens_ignores_aborted_and_error_assistant_usage() {
 }
 
 #[test]
+fn test_estimate_context_tokens_ignores_usage_before_latest_compaction() {
+    let before_compaction = AgentMessage::Assistant(AssistantMessage {
+        content: vec![AssistantContent::Text {
+            text: "before".to_string(),
+        }],
+        provider: "test".to_string(),
+        model: "test".to_string(),
+        usage: Usage {
+            total_tokens: 320_000,
+            ..Default::default()
+        },
+        stop_reason: StopReason::Stop,
+        error_message: None,
+        timestamp: 0,
+    });
+    let compaction = AgentMessage::CompactionSummary(bb_core::types::CompactionSummaryMessage {
+        summary: "summary".to_string(),
+        tokens_before: 320_000,
+        timestamp: 1,
+    });
+    let after_one = make_user_msg("12345678"); // 2 tokens
+    let after_two = make_user_msg("abcdefgh"); // 2 tokens
+
+    let estimate = estimate_context_tokens(&[before_compaction, compaction.clone(), after_one, after_two]);
+    let expected = estimate_tokens_message(&compaction)
+        + estimate_tokens_message(&make_user_msg("12345678"))
+        + estimate_tokens_message(&make_user_msg("abcdefgh"));
+
+    assert_eq!(estimate.last_usage_index, None);
+    assert_eq!(estimate.usage_tokens, 0);
+    assert_eq!(estimate.tokens, expected);
+}
+
+#[test]
+fn prepare_compaction_tokens_before_ignores_usage_before_latest_compaction() {
+    let now = Utc::now();
+    let before_assistant = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("a1".to_string()),
+            parent_id: None,
+            timestamp: now,
+        },
+        message: AgentMessage::Assistant(AssistantMessage {
+            content: vec![AssistantContent::Text {
+                text: "before".to_string(),
+            }],
+            provider: "test".to_string(),
+            model: "test".to_string(),
+            usage: Usage {
+                total_tokens: 320_000,
+                ..Default::default()
+            },
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        }),
+    };
+    let compaction = SessionEntry::Compaction {
+        base: EntryBase {
+            id: bb_core::types::EntryId("c1".to_string()),
+            parent_id: Some(bb_core::types::EntryId("a1".to_string())),
+            timestamp: now,
+        },
+        summary: "summary".to_string(),
+        first_kept_entry_id: bb_core::types::EntryId("u1".to_string()),
+        tokens_before: 320_000,
+        details: None,
+        from_plugin: false,
+    };
+    let after_one = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("u1".to_string()),
+            parent_id: Some(bb_core::types::EntryId("c1".to_string())),
+            timestamp: now,
+        },
+        message: make_user_msg("12345678"),
+    };
+    let after_two = SessionEntry::Message {
+        base: EntryBase {
+            id: bb_core::types::EntryId("u2".to_string()),
+            parent_id: Some(bb_core::types::EntryId("u1".to_string())),
+            timestamp: now,
+        },
+        message: make_user_msg("abcdefgh"),
+    };
+
+    let entries: Vec<EntryRow> = vec![before_assistant, compaction, after_one, after_two]
+        .into_iter()
+        .enumerate()
+        .map(|(seq, entry)| EntryRow {
+            session_id: "test-session".to_string(),
+            seq: seq as i64,
+            entry_id: entry.base().id.to_string(),
+            parent_id: entry.base().parent_id.as_ref().map(ToString::to_string),
+            entry_type: match &entry {
+                SessionEntry::Compaction { .. } => "compaction".to_string(),
+                _ => "message".to_string(),
+            },
+            timestamp: entry.base().timestamp.to_rfc3339(),
+            payload: serde_json::to_string(&entry).unwrap(),
+        })
+        .collect();
+
+    let settings = CompactionSettings {
+        keep_recent_tokens: 1,
+        ..CompactionSettings::default()
+    };
+    let prep = prepare_compaction(&entries, &settings).expect("prep");
+    let expected = estimate_tokens_message(&AgentMessage::CompactionSummary(
+        bb_core::types::CompactionSummaryMessage {
+            summary: "summary".to_string(),
+            tokens_before: 320_000,
+            timestamp: now.timestamp_millis(),
+        },
+    )) + estimate_tokens_message(&make_user_msg("12345678"))
+        + estimate_tokens_message(&make_user_msg("abcdefgh"));
+
+    assert_eq!(prep.tokens_before, expected);
+}
+
+#[test]
 fn prepare_compaction_uses_session_entry_payloads_for_cut_detection() {
     let now = Utc::now();
     let user_entry = SessionEntry::Message {

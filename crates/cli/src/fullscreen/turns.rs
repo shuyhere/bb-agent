@@ -473,10 +473,12 @@ impl FullscreenController {
             }
             TurnEvent::Done { .. } => {}
             TurnEvent::Status(message) => {
-                if is_auto_compaction_terminal_status(&message) {
+                let is_auto_success = is_auto_compaction_status(&message);
+                let is_auto_terminal = is_auto_compaction_terminal_status(&message);
+                if is_auto_terminal {
                     self.auto_compaction_in_progress = false;
                 }
-                if is_auto_compaction_status(&message) {
+                if is_auto_success {
                     if let Err(err) = self.rebuild_current_transcript() {
                         self.send_command(FullscreenCommand::PushNote {
                             level: FullscreenNoteLevel::Error,
@@ -485,14 +487,16 @@ impl FullscreenController {
                     } else {
                         self.publish_footer();
                     }
-                } else if is_auto_compaction_terminal_status(&message) {
+                } else if is_auto_terminal {
                     self.publish_footer();
                 }
                 self.publish_status();
-                self.send_command(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Status,
-                    text: message,
-                });
+                if !is_auto_success {
+                    self.send_command(FullscreenCommand::PushNote {
+                        level: FullscreenNoteLevel::Status,
+                        text: message,
+                    });
+                }
             }
             TurnEvent::Error(message) => {
                 self.auto_compaction_in_progress = false;

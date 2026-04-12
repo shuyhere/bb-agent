@@ -32,6 +32,33 @@ fn working_status_uses_animated_spinner() {
 }
 
 #[test]
+fn local_action_status_uses_animated_spinner_with_elapsed_time() {
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    let _ = state.apply_command(FullscreenCommand::SetLocalActionActive(true));
+    let _ = state.apply_command(FullscreenCommand::SetStatusLine(
+        "Compacting session... (Esc to cancel)".to_string(),
+    ));
+
+    let first = render_status(&state, 80);
+    let plain_first = crate::utils::strip_ansi(&first);
+    assert!(plain_first.contains("Compacting session... (Esc to cancel) • "));
+    assert!(first.contains("\x1b[38;2;"));
+
+    for _ in 0..3 {
+        state.on_tick();
+    }
+    let later = render_status(&state, 80);
+    let plain_later = crate::utils::strip_ansi(&later);
+    assert!(plain_later.contains("Compacting session... (Esc to cancel) • "));
+}
+
+#[test]
 fn tool_use_rows_stay_aligned_when_focused_in_transcript_mode() {
     let mut config = FullscreenAppConfig::default();
     let mut transcript = crate::fullscreen::transcript::Transcript::new();

@@ -52,7 +52,7 @@ pub(super) struct ToolCallState {
 
 const TOOL_TIMER_TICK_MS: u64 = 80;
 
-fn format_elapsed_ms(ms: u64) -> String {
+pub(super) fn format_elapsed_ms(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms}ms")
     } else if ms >= 60_000 {
@@ -169,6 +169,29 @@ impl FullscreenState {
         }
         tool.started_tick
             .map(|started| self.tick_count.saturating_sub(started) * TOOL_TIMER_TICK_MS)
+    }
+
+    pub(super) fn local_action_elapsed_ms(&self) -> Option<u64> {
+        if let Some(started_at) = self.local_action_started_at {
+            return Some(started_at.elapsed().as_millis() as u64);
+        }
+        self.local_action_started_tick
+            .map(|started| self.tick_count.saturating_sub(started) * TOOL_TIMER_TICK_MS)
+    }
+
+    pub(super) fn local_action_status_message(&self) -> Option<String> {
+        if !self.local_action_active {
+            return None;
+        }
+        let base = self.status_line.trim();
+        if base.is_empty() {
+            return None;
+        }
+        let elapsed = self
+            .local_action_elapsed_ms()
+            .map(format_elapsed_ms)
+            .unwrap_or_else(|| "0.0s".to_string());
+        Some(format!("{base} • {elapsed}"))
     }
 
     pub(super) fn running_tool_status_message(&self) -> Option<String> {

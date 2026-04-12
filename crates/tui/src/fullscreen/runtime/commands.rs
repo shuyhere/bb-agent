@@ -71,7 +71,16 @@ impl FullscreenState {
             }
             FullscreenCommand::SetLocalActionActive(active) => {
                 self.local_action_active = active;
-                if !active {
+                if active {
+                    if self.local_action_started_tick.is_none() {
+                        self.local_action_started_tick = Some(self.tick_count);
+                    }
+                    if self.local_action_started_at.is_none() {
+                        self.local_action_started_at = Some(std::time::Instant::now());
+                    }
+                } else {
+                    self.local_action_started_tick = None;
+                    self.local_action_started_at = None;
                     self.queued_submission_previews.clear();
                     self.editing_queued_messages = false;
                 }

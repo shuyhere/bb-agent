@@ -38,6 +38,9 @@ impl FullscreenState {
             self.spinner.tick();
             self.refresh_running_tool_visuals();
             self.dirty = true;
+        } else if self.local_action_active {
+            self.spinner.tick();
+            self.dirty = true;
         } else if self.should_animate_status() {
             self.dirty = true;
         }

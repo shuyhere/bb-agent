@@ -84,19 +84,37 @@ pub fn estimate_tokens_message(message: &AgentMessage) -> u64 {
 
 /// Estimate context tokens from messages using the last successful assistant usage when available.
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimate {
-    let last_usage = messages.iter().enumerate().rev().find_map(|(idx, msg)| match msg {
-        AgentMessage::Assistant(assistant)
-            if assistant.stop_reason != StopReason::Aborted
-                && assistant.stop_reason != StopReason::Error
-                && calculate_context_tokens(&assistant.usage) > 0 =>
-        {
-            Some((idx, calculate_context_tokens(&assistant.usage)))
-        }
-        _ => None,
-    });
+    let compaction_boundary = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, msg)| matches!(msg, AgentMessage::CompactionSummary(_)).then_some(idx));
+
+    let search_start = compaction_boundary.map_or(0, |idx| idx + 1);
+
+    let last_usage = messages
+        .iter()
+        .enumerate()
+        .skip(search_start)
+        .rev()
+        .find_map(|(idx, msg)| match msg {
+            AgentMessage::Assistant(assistant)
+                if assistant.stop_reason != StopReason::Aborted
+                    && assistant.stop_reason != StopReason::Error
+                    && calculate_context_tokens(&assistant.usage) > 0 =>
+            {
+                Some((idx, calculate_context_tokens(&assistant.usage)))
+            }
+            _ => None,
+        });
+
+    let trailing_start = compaction_boundary.unwrap_or(0);
 
     let Some((last_usage_index, usage_tokens)) = last_usage else {
-        let trailing_tokens = messages.iter().map(estimate_tokens_message).sum();
+        let trailing_tokens = messages[trailing_start..]
+            .iter()
+            .map(estimate_tokens_message)
+            .sum();
         return ContextUsageEstimate {
             tokens: trailing_tokens,
             usage_tokens: 0,

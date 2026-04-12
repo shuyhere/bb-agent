@@ -73,6 +73,19 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
                 };
                 let rendered = state.spinner.render(msg, width);
                 return pad_to_width(&rendered, width);
+            } else if state.local_action_active {
+                let msg_owned;
+                let msg = if let Some(status) = state.local_action_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
+                    &msg_owned
+                } else if state.status_line.trim().is_empty() {
+                    ""
+                } else {
+                    msg_owned = sanitize_terminal_text(&state.status_line);
+                    &msg_owned
+                };
+                let rendered = state.spinner.render(msg, width);
+                return pad_to_width(&rendered, width);
             } else {
                 state.status_line.clone()
             }
