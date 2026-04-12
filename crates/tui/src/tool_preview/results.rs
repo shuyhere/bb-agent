@@ -1,8 +1,6 @@
 use bb_core::types::ContentBlock;
 use serde_json::Value;
 
-use crate::syntax;
-
 use super::helpers::{
     collapse_preview_line, preview_text_lines, replace_tabs, shorten_path, text_output,
 };
@@ -99,7 +97,6 @@ fn render_read_result(
     expanded: bool,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    let mut file_path = String::new();
     if let Some(details) = details {
         let path = details
             .get("path")
@@ -123,34 +120,16 @@ fn render_read_result(
                 "read {} lines {start}-{end} / {total}",
                 shorten_path(&path)
             ));
-            file_path = path;
         }
     }
 
     let raw = text_output(content);
-    let lang = syntax::language_from_path(&file_path);
-
-    if lang.is_some() && !raw.trim().is_empty() {
-        let highlighted = syntax::highlight_code(&raw, lang);
-        let max_lines = if expanded { 120 } else { 3 };
-        let total = highlighted.len();
-        for line in highlighted.into_iter().take(max_lines) {
-            lines.push(replace_tabs(&line));
-        }
-        if total > max_lines {
-            lines.push(format!(
-                "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
-                total - max_lines
-            ));
-        }
-    } else {
-        lines.extend(preview_text_lines(
-            &raw,
-            if expanded { 120 } else { 3 },
-            expanded,
-        ));
-    }
-    lines
+    lines.extend(preview_text_lines(
+        &raw,
+        if expanded { 120 } else { 3 },
+        expanded,
+    ));
+    lines.into_iter().map(|line| replace_tabs(&line)).collect()
 }
 
 fn render_write_result(details: Option<&Value>) -> Vec<String> {
