@@ -17,6 +17,7 @@ pub mod session;
 pub mod settings;
 mod settings_defaults;
 mod settings_packages;
+pub mod tool_names;
 pub mod types;
 
 // agent_session types are accessed via bb_core::agent_session::

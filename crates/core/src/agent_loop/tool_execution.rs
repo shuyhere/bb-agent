@@ -5,6 +5,7 @@ use crate::agent::{
     AgentMessage, AgentMessageContent, AgentMessageRole, AgentTool, BeforeToolCallContext,
     RuntimeAgentEvent,
 };
+use crate::tool_names::normalize_requested_tool_name;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -167,8 +168,9 @@ async fn execute_tool_calls_parallel(
 }
 
 fn prepare_tool_call_arguments(tool: &AgentTool, tool_call: &AgentToolCall) -> AgentToolCall {
-    let _ = tool;
-    tool_call.clone()
+    let mut prepared = tool_call.clone();
+    prepared.name = tool.name.clone();
+    prepared
 }
 
 async fn prepare_tool_call(
@@ -178,10 +180,11 @@ async fn prepare_tool_call(
     config: &AgentLoopConfig,
     signal: Option<AgentAbortSignal>,
 ) -> std::result::Result<PreparedToolCall, ImmediateToolCallOutcome> {
+    let normalized_name = normalize_requested_tool_name(&tool_call.name);
     let tool = current_context
         .tools
         .iter()
-        .find(|tool| tool.name == tool_call.name)
+        .find(|tool| tool.name == normalized_name.as_ref())
         .cloned()
         .ok_or_else(|| ImmediateToolCallOutcome {
             result: create_error_tool_result(format!("Tool {} not found", tool_call.name)),
@@ -326,4 +329,59 @@ fn extract_text_content(content: &[AgentMessageContent]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_tool_call;
+    use crate::agent::{
+        AgentContextSnapshot, AgentLoopConfig, AgentMessage, AgentMessageContent, AgentMessageRole,
+        AgentTool,
+    };
+    use crate::agent_loop::types::{AgentToolCall, LoopAssistantMessage};
+
+    #[tokio::test]
+    async fn prepare_tool_call_normalizes_builtin_aliases_before_lookup() {
+        let current_context = AgentContextSnapshot {
+            system_prompt: "system".to_string(),
+            messages: Vec::new(),
+            tools: vec![AgentTool {
+                name: "bash".to_string(),
+                description: Some("run bash".to_string()),
+            }],
+        };
+        let assistant_message = LoopAssistantMessage {
+            message: AgentMessage {
+                role: AgentMessageRole::Assistant,
+                content: vec![AgentMessageContent::Text(String::new())],
+                api: None,
+                provider: None,
+                model: None,
+                usage: None,
+                stop_reason: None,
+                error_message: None,
+                timestamp: 0,
+            },
+            tool_calls: Vec::new(),
+            stop_reason: Some("tool_use".to_string()),
+        };
+        let tool_call = AgentToolCall {
+            id: "tool-1".to_string(),
+            name: "functions.Bash".to_string(),
+            arguments: serde_json::json!({"command": "pwd"}),
+        };
+
+        let prepared = prepare_tool_call(
+            &current_context,
+            &assistant_message,
+            tool_call,
+            &AgentLoopConfig::default(),
+            None,
+        )
+        .await
+        .expect("aliased builtin tool should resolve successfully");
+
+        assert_eq!(prepared.tool.name, "bash");
+        assert_eq!(prepared.tool_call.name, "bash");
+    }
 }

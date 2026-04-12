@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bb_core::tool_names::normalize_requested_tool_name;
 use bb_core::types::*;
 use bb_hooks::events::ToolResultEvent;
 use bb_hooks::{Event, ToolCallEvent};
@@ -124,15 +125,7 @@ pub(super) async fn execute_tool_calls(
             }
         }
 
-        persist_tool_result(
-            &env,
-            tool_call,
-            content,
-            details,
-            artifact_path,
-            is_error,
-        )
-        .await?;
+        persist_tool_result(&env, tool_call, content, details, artifact_path, is_error).await?;
     }
 
     Ok(())
@@ -204,7 +197,12 @@ async fn execute_tool(
     args: serde_json::Value,
     env: &ToolExecutionEnv<'_>,
 ) -> bb_core::error::BbResult<bb_tools::ToolResult> {
-    let Some(tool) = env.tools.iter().find(|tool| tool.name() == tool_call.name) else {
+    let normalized_name = normalize_requested_tool_name(&tool_call.name);
+    let Some(tool) = env
+        .tools
+        .iter()
+        .find(|tool| tool.name() == normalized_name.as_ref())
+    else {
         return Err(bb_core::error::BbError::Tool(format!(
             "Unknown tool: {}",
             tool_call.name
