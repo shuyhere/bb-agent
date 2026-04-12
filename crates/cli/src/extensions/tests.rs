@@ -37,6 +37,74 @@ fn parses_command_invocation_and_args() {
 }
 
 #[test]
+fn parses_extension_menu_result_with_items() {
+    let value = serde_json::json!({
+        "menu": {
+            "title": "Shape",
+            "items": [
+                { "label": "New", "detail": "Make one", "value": "new" },
+                { "label": "List", "value": "list" }
+            ]
+        }
+    });
+    let outcome = parse_command_menu_result("shape", &value).expect("menu");
+    match outcome {
+        ExtensionCommandOutcome::Menu {
+            command,
+            title,
+            items,
+        } => {
+            assert_eq!(command, "shape");
+            assert_eq!(title, "Shape");
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].label, "New");
+            assert_eq!(items[0].detail.as_deref(), Some("Make one"));
+            assert_eq!(items[0].value, "new");
+            assert_eq!(items[1].label, "List");
+            assert_eq!(items[1].detail, None);
+            assert_eq!(items[1].value, "list");
+        }
+        other => panic!("expected Menu, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_extension_prompt_result_with_resume_token() {
+    let value = serde_json::json!({
+        "prompt": {
+            "title": "Shape — New Agent",
+            "lines": ["Give me your resources."],
+            "inputLabel": "Resources",
+            "inputPlaceholder": "https://...",
+            "resume": "opaque-token"
+        }
+    });
+    let outcome = parse_command_prompt_result("shape", &value).expect("prompt");
+    match outcome {
+        ExtensionCommandOutcome::Prompt(prompt) => {
+            assert_eq!(prompt.command, "shape");
+            assert_eq!(prompt.title, "Shape — New Agent");
+            assert_eq!(prompt.lines, vec!["Give me your resources."]);
+            assert_eq!(prompt.input_label.as_deref(), Some("Resources"));
+            assert_eq!(prompt.input_placeholder.as_deref(), Some("https://..."));
+            assert_eq!(prompt.resume, "opaque-token");
+        }
+        other => panic!("expected Prompt, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_menu_result_yields_text_or_nothing() {
+    assert!(parse_command_menu_result("x", &serde_json::json!({"message": "hi"})).is_none());
+    assert!(parse_command_menu_result("x", &serde_json::json!({"menu": {}})).is_none());
+    assert!(parse_command_menu_result("x", &serde_json::json!({"menu": {"items": []}})).is_none());
+    assert_eq!(
+        render_command_result(&serde_json::json!({"message": "hello"})).as_deref(),
+        Some("hello")
+    );
+}
+
+#[test]
 fn classifies_package_sources() {
     assert!(matches!(
         classify_package_source("npm:demo"),
