@@ -2,12 +2,13 @@ pub fn parse_model_arg(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> (String, String, Option<String>) {
-    let default_provider = provider.unwrap_or("anthropic").to_string();
+    let default_provider = provider.unwrap_or("openai").to_string();
     let default_model = match default_provider.as_str() {
+        "anthropic" => "claude-opus-4-6",
         "openai" | "openai-codex" => "gpt-5.4",
         "google" => "gemini-3.1-pro",
-        "github-copilot" => "claude-opus-4-6",
-        _ => "claude-opus-4-6",
+        "github-copilot" => "gpt-5.4",
+        _ => "gpt-5.4",
     };
 
     let model_str = match model {
