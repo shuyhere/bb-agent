@@ -5,6 +5,27 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] - 2026-04-12
+
+### Added
+
+- fullscreen now supports extension-driven workflows and structured slash-command outcomes, including menus, hidden dispatches, and richer command result handling
+- `/settings` in fullscreen now exposes compaction controls for `Auto-compact`, `Reserve tokens`, and `Keep recent tokens`
+- skills can now be listed, disabled, and re-enabled from the CLI without deleting their installed files
+- startup model selection now prefers configured provider/model defaults more consistently, with better OpenAI startup fallback behavior
+- added a parity test script against installed pi compaction logic to keep BB token accounting aligned with upstream behavior
+
+### Fixed
+
+- session resume now restores the prior model and thinking level instead of starting with mismatched runtime defaults
+- fullscreen/TUI terminal rendering now sanitizes terminal control text more reliably and avoids ANSI leakage into the UI
+- auto-compaction token estimation now matches pi more closely by using the last successful assistant usage plus trailing estimates, using ceil-based token heuristics, and computing `tokens_before` from rebuilt context instead of raw payload size
+- fullscreen compaction behavior and status reporting are more consistent after auto-compaction and manual compaction events
+
+### Changed
+
+- fullscreen extension workflows and session compaction support are now merged into the main interaction path on `master`
+
 ## [0.0.13] - 2026-04-09
 
 ### Added
@@ -107,6 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.14]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.14
 [0.0.13]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.13
 [0.0.12]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.12
 [0.0.11]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.11
