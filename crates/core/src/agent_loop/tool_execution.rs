@@ -5,6 +5,7 @@ use crate::agent::{
     AgentMessage, AgentMessageContent, AgentMessageRole, AgentTool, BeforeToolCallContext,
     RuntimeAgentEvent,
 };
+use crate::tool_names::normalize_requested_tool_name;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -178,10 +179,11 @@ async fn prepare_tool_call(
     config: &AgentLoopConfig,
     signal: Option<AgentAbortSignal>,
 ) -> std::result::Result<PreparedToolCall, ImmediateToolCallOutcome> {
+    let normalized_name = normalize_requested_tool_name(&tool_call.name);
     let tool = current_context
         .tools
         .iter()
-        .find(|tool| tool.name == tool_call.name)
+        .find(|tool| tool.name == normalized_name.as_ref())
         .cloned()
         .ok_or_else(|| ImmediateToolCallOutcome {
             result: create_error_tool_result(format!("Tool {} not found", tool_call.name)),

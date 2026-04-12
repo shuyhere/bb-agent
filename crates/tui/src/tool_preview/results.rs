@@ -1,9 +1,49 @@
 use bb_core::types::ContentBlock;
 use serde_json::Value;
 
+use crate::ui_hints::{
+    NO_TEXT_OUTPUT, TOOL_FAILED_NO_TEXT_OUTPUT, collapsed_tool_summary_hint,
+    earlier_lines_expand_hint, more_links_expand_hint,
+};
+
 use super::helpers::{
     collapse_preview_line, preview_text_lines, replace_tabs, shorten_path, text_output,
 };
+
+fn preview_bash_text_lines(text: &str, expanded: bool) -> Vec<String> {
+    const COLLAPSED_MAX_LINES: usize = 5;
+    const COLLAPSED_MAX_CHARS_PER_LINE: usize = 120;
+
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    if expanded {
+        return preview_text_lines(text, 120, true)
+            .into_iter()
+            .map(|line| replace_tabs(&line))
+            .collect();
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= COLLAPSED_MAX_LINES {
+        return lines
+            .iter()
+            .map(|line| collapse_preview_line(line, COLLAPSED_MAX_CHARS_PER_LINE))
+            .collect();
+    }
+
+    let hidden = lines.len().saturating_sub(COLLAPSED_MAX_LINES);
+    let mut out = Vec::with_capacity(COLLAPSED_MAX_LINES + 1);
+    out.push(earlier_lines_expand_hint(hidden));
+    out.extend(
+        lines
+            .iter()
+            .skip(hidden)
+            .map(|line| collapse_preview_line(line, COLLAPSED_MAX_CHARS_PER_LINE)),
+    );
+    out
+}
 
 fn format_duration_ms(ms: u64) -> String {
     if ms < 1_000 {
@@ -46,6 +86,9 @@ pub fn format_tool_result_content(
 
     if let Some(duration_line) = duration_line {
         lines.insert(0, duration_line);
+        if lines.len() > 1 {
+            lines.insert(1, String::new());
+        }
     }
 
     if let Some(details) = details {
@@ -66,9 +109,9 @@ pub fn format_tool_result_content(
 
     if lines.is_empty() {
         if is_error {
-            "tool failed with no textual output".to_string()
+            TOOL_FAILED_NO_TEXT_OUTPUT.to_string()
         } else {
-            "(no textual output)".to_string()
+            NO_TEXT_OUTPUT.to_string()
         }
     } else {
         lines.join("\n")
@@ -86,9 +129,7 @@ pub fn collapsed_tool_summary_with_count(name: &str, count: usize) -> Option<Str
         _ => return None,
     };
     let noun = if count == 1 { singular } else { plural };
-    Some(format!(
-        "{verb} {count} {noun} (click or use Ctrl+Shift+O to enter tool expand mode)"
-    ))
+    Some(collapsed_tool_summary_hint(verb, count, noun))
 }
 
 fn render_read_result(
@@ -168,10 +209,7 @@ fn render_bash_result(
 ) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(details) = details {
-        let exit = details
-            .get("exitCode")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1);
+        let exit = details.get("exitCode").and_then(|v| v.as_i64());
         let truncated = details
             .get("truncated")
             .and_then(|v| v.as_bool())
@@ -187,20 +225,26 @@ fn render_bash_result(
         if cancelled {
             flags.push("cancelled");
         }
-        if exit != 0 || !flags.is_empty() {
-            let suffix = if flags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", flags.join(", "))
-            };
-            lines.push(format!("exit code: {exit}{suffix}"));
+        match exit {
+            Some(exit) if exit != 0 || !flags.is_empty() => {
+                let suffix = if flags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", flags.join(", "))
+                };
+                lines.push(format!("exit code: {exit}{suffix}"));
+            }
+            None if !flags.is_empty() => {
+                lines.push(format!("status: {}", flags.join(", ")));
+            }
+            _ => {}
         }
     }
-    lines.extend(preview_text_lines(
-        &text_output(content),
-        if expanded { 120 } else { 3 },
-        expanded,
-    ));
+    let body_lines = preview_bash_text_lines(&text_output(content), expanded);
+    if !lines.is_empty() && !body_lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.extend(body_lines);
     lines
 }
 
@@ -323,10 +367,7 @@ fn render_web_search_result(
                 lines.push(format!("- {} — {}", collapse_preview_line(title, 90), url));
             }
             if links.len() > max_links {
-                lines.push(format!(
-                    "... ({} more link(s); click or use Ctrl+Shift+O to enter tool expand mode)",
-                    links.len() - max_links
-                ));
+                lines.push(more_links_expand_hint(links.len() - max_links));
             }
         }
 

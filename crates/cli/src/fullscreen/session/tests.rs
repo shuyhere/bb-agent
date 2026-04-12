@@ -168,7 +168,7 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
         .expect("assistant root");
     let tool_use_id = transcript.block(assistant_root).unwrap().children[0];
     let tool_use = transcript.block(tool_use_id).unwrap();
-    assert_eq!(tool_use.title, "Bash(echo one)");
+    assert_eq!(tool_use.title, "Bash(echo one timeout=5s)");
     assert!(tool_use.content.is_empty());
 
     let tool_result_id = tool_use.children[0];
@@ -179,8 +179,9 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     // exit code 0 is now hidden for successful commands (no noise)
     assert!(!tool_result.content.contains("exit code: 0"));
     assert!(tool_result.content.contains("line 1"));
+    assert!(tool_result.content.contains("line 4"));
     assert!(
-        tool_result
+        !tool_result
             .content
             .contains("click or use Ctrl+Shift+O to enter tool expand mode")
     );

@@ -239,21 +239,53 @@ fn append_entry_to_fullscreen_transcript(
                 }
             }
             AgentMessage::BashExecution(message) => {
+                let raw_args = serde_json::json!({ "command": message.command }).to_string();
                 let tool_id = transcript.append_root_block(
-                    NewBlock::new(BlockKind::ToolUse, message.command.clone()).with_expandable(true),
+                    NewBlock::new(
+                        BlockKind::ToolUse,
+                        bb_tui::fullscreen::format_tool_call_title("bash", &raw_args),
+                    )
+                    .with_content(bb_tui::fullscreen::format_tool_call_content(
+                        "bash", &raw_args, false,
+                    ))
+                    .with_expandable(true),
                 );
                 let output = if message.output.is_empty() {
                     String::new()
                 } else {
                     message.output.clone()
                 };
-                let _ = transcript.append_child_block(
+                let tool_result_id = transcript.append_child_block(
                     tool_id,
                     NewBlock::new(
                         BlockKind::ToolResult,
-                        if message.cancelled { "cancelled" } else { "output" },
+                        if message.cancelled {
+                            "cancelled"
+                        } else {
+                            "output"
+                        },
                     )
                     .with_content(output),
+                )?;
+                let historical_id = format!("bash-exec-{}", message.timestamp);
+                tool_states.insert(
+                    historical_id,
+                    bb_tui::fullscreen::HistoricalToolState {
+                        name: "bash".to_string(),
+                        raw_args,
+                        tool_use_id: tool_id,
+                        tool_result_id: Some(tool_result_id),
+                        result_content: Some(vec![ContentBlock::Text {
+                            text: message.output.clone(),
+                        }]),
+                        result_details: Some(serde_json::json!({
+                            "exitCode": message.exit_code,
+                            "cancelled": message.cancelled,
+                            "truncated": message.truncated,
+                        })),
+                        artifact_path: message.full_output_path.clone(),
+                        is_error: message.cancelled || message.exit_code.unwrap_or_default() != 0,
+                    },
                 );
                 *last_assistant_root = None;
             }
@@ -498,7 +530,7 @@ impl FullscreenController {
         Ok(())
     }
 
-    pub(super) fn handle_resume_session(&mut self, session_id: &str) -> Result<()> {
+    pub(super) async fn handle_resume_session(&mut self, session_id: &str) -> Result<()> {
         self.session_setup.session_id = session_id.to_string();
         self.session_setup.session_created = true;
         self.options.session_id = Some(session_id.to_string());
@@ -516,87 +548,112 @@ impl FullscreenController {
             cancel.cancel();
         }
         self.send_command(FullscreenCommand::SetLocalActionActive(false));
+        self.send_command(FullscreenCommand::SetStatusLine(
+            "Resuming session...".to_string(),
+        ));
+        self.send_command(FullscreenCommand::SetLocalActionActive(true));
+        tokio::task::yield_now().await;
 
-        if let Ok(session_context) = context::build_context(&self.session_setup.conn, session_id) {
-            if let Some(model_info) = session_context.model.clone() {
-                let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
-                let mut registry = ModelRegistry::new();
-                registry.load_custom_models(&settings);
-                crate::login::add_cached_github_copilot_models(&mut registry);
-                if let Some(model) = registry
-                    .find(&model_info.provider, &model_info.model_id)
-                    .cloned()
-                    .or_else(|| {
-                        registry
-                            .find_fuzzy(&model_info.model_id, Some(&model_info.provider))
-                            .cloned()
-                    })
-                    .or_else(|| registry.find_fuzzy(&model_info.model_id, None).cloned())
-                {
-                    let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
-                    let base_url = if model.provider == "github-copilot" {
-                        crate::login::github_copilot_api_base_url()
-                    } else {
-                        model
-                            .base_url
-                            .clone()
-                            .unwrap_or_else(|| "https://api.openai.com/v1".into())
-                    };
-                    let headers = if model.provider == "github-copilot" {
-                        crate::login::github_copilot_runtime_headers()
-                    } else {
-                        std::collections::HashMap::new()
-                    };
-                    let provider: std::sync::Arc<dyn Provider> = match model.api {
-                        ApiType::AnthropicMessages => std::sync::Arc::new(AnthropicProvider::new()),
-                        ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
-                        _ => std::sync::Arc::new(OpenAiProvider::new()),
-                    };
+        let result: Result<()> = (|| {
+            if let Ok(session_context) =
+                context::build_context(&self.session_setup.conn, session_id)
+            {
+                if let Some(model_info) = session_context.model.clone() {
+                    let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
+                    let mut registry = ModelRegistry::new();
+                    registry.load_custom_models(&settings);
+                    crate::login::add_cached_github_copilot_models(&mut registry);
+                    if let Some(model) = registry
+                        .find(&model_info.provider, &model_info.model_id)
+                        .cloned()
+                        .or_else(|| {
+                            registry
+                                .find_fuzzy(&model_info.model_id, Some(&model_info.provider))
+                                .cloned()
+                        })
+                        .or_else(|| registry.find_fuzzy(&model_info.model_id, None).cloned())
+                    {
+                        let api_key =
+                            crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+                        let base_url = if model.provider == "github-copilot" {
+                            crate::login::github_copilot_api_base_url()
+                        } else {
+                            model
+                                .base_url
+                                .clone()
+                                .unwrap_or_else(|| "https://api.openai.com/v1".into())
+                        };
+                        let headers = if model.provider == "github-copilot" {
+                            crate::login::github_copilot_runtime_headers()
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+                        let provider: std::sync::Arc<dyn Provider> = match model.api {
+                            ApiType::AnthropicMessages => {
+                                std::sync::Arc::new(AnthropicProvider::new())
+                            }
+                            ApiType::GoogleGenerative => std::sync::Arc::new(GoogleProvider::new()),
+                            _ => std::sync::Arc::new(OpenAiProvider::new()),
+                        };
 
-                    self.runtime_host.session_mut().set_model(ModelRef {
-                        provider: model.provider.clone(),
-                        id: model.id.clone(),
-                        reasoning: model.reasoning,
-                    });
-                    self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
-                        provider: model.provider.clone(),
-                        id: model.id.clone(),
-                        context_window: model.context_window as usize,
-                    });
-                    self.session_setup.model = model;
-                    self.session_setup.provider = provider;
-                    self.session_setup.api_key = api_key;
-                    self.session_setup.base_url = base_url;
-                    self.session_setup.headers = headers.clone();
-                    self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
-                        provider: self.session_setup.provider.clone(),
-                        model: self.session_setup.model.clone(),
-                        api_key: self.session_setup.api_key.clone(),
-                        base_url: self.session_setup.base_url.clone(),
-                        headers,
-                        enabled: true,
-                    });
-                    self.options.model_display = Some(format!(
-                        "{}/{}",
-                        self.session_setup.model.provider, self.session_setup.model.id
-                    ));
+                        self.runtime_host.session_mut().set_model(ModelRef {
+                            provider: model.provider.clone(),
+                            id: model.id.clone(),
+                            reasoning: model.reasoning,
+                        });
+                        self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
+                            provider: model.provider.clone(),
+                            id: model.id.clone(),
+                            context_window: model.context_window as usize,
+                        });
+                        self.session_setup.model = model;
+                        self.session_setup.provider = provider;
+                        self.session_setup.api_key = api_key;
+                        self.session_setup.base_url = base_url;
+                        self.session_setup.headers = headers.clone();
+                        self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
+                            provider: self.session_setup.provider.clone(),
+                            model: self.session_setup.model.clone(),
+                            api_key: self.session_setup.api_key.clone(),
+                            base_url: self.session_setup.base_url.clone(),
+                            headers,
+                            enabled: true,
+                        });
+                        self.options.model_display = Some(format!(
+                            "{}/{}",
+                            self.session_setup.model.provider, self.session_setup.model.id
+                        ));
+                    }
                 }
+
+                let thinking_level = session_context.thinking_level;
+                self.session_setup.thinking_level = thinking_level.as_str().to_string();
+                self.runtime_host.session_mut().set_thinking_level(
+                    ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium),
+                );
             }
 
-            let thinking_level = session_context.thinking_level;
-            self.session_setup.thinking_level = thinking_level.as_str().to_string();
-            self.runtime_host
-                .session_mut()
-                .set_thinking_level(ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium));
-        }
+            self.rebuild_current_transcript()?;
+            self.send_command(FullscreenCommand::SetInput(String::new()));
+            self.publish_footer();
+            Ok(())
+        })();
 
-        self.rebuild_current_transcript()?;
-        self.send_command(FullscreenCommand::SetInput(String::new()));
-        self.publish_footer();
-        self.send_command(FullscreenCommand::SetStatusLine(
-            "Resumed session".to_string(),
-        ));
-        Ok(())
+        self.send_command(FullscreenCommand::SetLocalActionActive(false));
+        match result {
+            Ok(()) => {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Resumed session".to_string(),
+                ));
+                Ok(())
+            }
+            Err(err) => {
+                self.send_command(FullscreenCommand::SetStatusLine(
+                    "Resume failed".to_string(),
+                ));
+                Err(err)
+            }
+        }
     }
 
     pub(super) fn open_tree_menu(&mut self, selected_entry_id: Option<&str>) -> Result<()> {
@@ -877,10 +934,15 @@ impl FullscreenController {
         Ok(())
     }
 
-    pub(super) async fn handle_compact_command(&mut self, instructions: Option<&str>) -> Result<()> {
+    pub(super) async fn handle_compact_command(
+        &mut self,
+        instructions: Option<&str>,
+    ) -> Result<()> {
         if self.streaming || self.manual_compaction_in_progress {
             self.queued_prompts.push_back(match instructions {
-                Some(instructions) => super::controller::QueuedPrompt::Visible(format!("/compact {instructions}")),
+                Some(instructions) => {
+                    super::controller::QueuedPrompt::Visible(format!("/compact {instructions}"))
+                }
                 None => super::controller::QueuedPrompt::Visible("/compact".to_string()),
             });
             self.publish_status();
@@ -907,8 +969,13 @@ impl FullscreenController {
         self.publish_footer();
 
         let entries = store::get_entries(&self.session_setup.conn, &self.session_setup.session_id)?;
-        let parent_id = crate::turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id);
-        let db_path = self.session_setup.conn
+        let parent_id = crate::turn_runner::get_leaf_raw(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+        );
+        let db_path = self
+            .session_setup
+            .conn
             .path()
             .map(std::path::PathBuf::from)
             .ok_or_else(|| anyhow!("Compaction requires a file-backed session database"))?;
@@ -937,7 +1004,8 @@ impl FullscreenController {
                 cancel,
             )
             .await;
-            let _ = manual_compaction_tx.send(ManualCompactionEvent::Finished { generation, result });
+            let _ =
+                manual_compaction_tx.send(ManualCompactionEvent::Finished { generation, result });
         });
         Ok(())
     }
@@ -1006,7 +1074,6 @@ impl FullscreenController {
         }
         Ok(())
     }
-
 
     pub(super) fn get_session_leaf(&self) -> Option<EntryId> {
         crate::turn_runner::get_leaf_raw(&self.session_setup.conn, &self.session_setup.session_id)

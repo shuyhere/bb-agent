@@ -172,7 +172,7 @@ impl FullscreenState {
 
     fn toggle_focused_transcript_block(&mut self) {
         let Some(block_id) = self.focused_block else {
-            self.status_line = "no block focused".to_string();
+            self.status_line = crate::ui_hints::NO_BLOCK_FOCUSED_HINT.to_string();
             self.dirty = true;
             return;
         };
@@ -194,7 +194,7 @@ impl FullscreenState {
 
     fn copy_focused_block(&mut self) {
         let Some(block_id) = self.focused_block else {
-            self.status_line = "no block focused".to_string();
+            self.status_line = crate::ui_hints::NO_BLOCK_FOCUSED_HINT.to_string();
             self.dirty = true;
             return;
         };

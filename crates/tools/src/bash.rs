@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
+use regex::{Captures, Regex};
 use serde_json::{Map, Value, json};
-use std::{future, process::Stdio};
+use std::{future, process::Stdio, sync::OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
@@ -16,6 +17,115 @@ use crate::{
 
 const MAX_OUTPUT_LINES: usize = 2000;
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
+
+#[derive(Default)]
+struct BashOutputRedactor {
+    pending: String,
+}
+
+impl BashOutputRedactor {
+    fn push(&mut self, chunk: &str) -> String {
+        self.pending.push_str(chunk);
+        let Some(flush_at) = self.last_line_boundary() else {
+            return String::new();
+        };
+        let stable = self.pending[..flush_at].to_string();
+        self.pending.drain(..flush_at);
+        redact_bash_output_text(&stable)
+    }
+
+    fn finish(&mut self) -> String {
+        let tail = std::mem::take(&mut self.pending);
+        redact_bash_output_text(&tail)
+    }
+
+    fn last_line_boundary(&self) -> Option<usize> {
+        self.pending.char_indices().find_map(|(idx, ch)| match ch {
+            '\n' | '\r' => Some(idx + ch.len_utf8()),
+            _ => None,
+        }).and_then(|_| {
+            self.pending
+                .char_indices()
+                .filter_map(|(idx, ch)| match ch {
+                    '\n' | '\r' => Some(idx + ch.len_utf8()),
+                    _ => None,
+                })
+                .last()
+        })
+    }
+}
+
+fn is_secret_name(name: &str) -> bool {
+    let upper = name.replace('-', "_").to_ascii_uppercase();
+    upper.contains("API_KEY")
+        || upper == "APIKEY"
+        || upper == "TOKEN"
+        || upper.ends_with("_TOKEN")
+        || upper.contains("ACCESS_TOKEN")
+        || upper.contains("REFRESH_TOKEN")
+        || upper.contains("SECRET")
+        || upper.contains("PASSWORD")
+        || upper.contains("PASSWD")
+}
+
+fn secret_assignment_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)").expect("valid regex"))
+}
+
+fn secret_field_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(["']?(?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)["']?\s*[:=]\s*["']?)([^"'\s,;&]+)(["']?)"#,
+        )
+        .expect("valid regex")
+    })
+}
+
+fn authorization_header_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)Authorization:\s*(Bearer|token)\s+[^\s"']+"#)
+            .expect("valid regex")
+    })
+}
+
+fn bearer_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)\bBearer\s+[^\s"']+"#).expect("valid regex"))
+}
+
+fn redact_bash_output_text(text: &str) -> String {
+    let redacted_assignments = secret_assignment_regex().replace_all(text, |caps: &Captures| {
+        let name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        if is_secret_name(name) {
+            format!("{name}=[REDACTED]")
+        } else {
+            caps.get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default()
+        }
+    });
+    let redacted_fields = secret_field_regex().replace_all(
+        redacted_assignments.as_ref(),
+        |caps: &Captures| {
+            let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let suffix = caps.get(3).map(|m| m.as_str()).unwrap_or_default();
+            format!("{prefix}[REDACTED]{suffix}")
+        },
+    );
+    let redacted_auth = authorization_header_regex().replace_all(
+        redacted_fields.as_ref(),
+        |caps: &Captures| {
+            let scheme = caps.get(1).map(|m| m.as_str()).unwrap_or("Bearer");
+            format!("Authorization: {scheme} [REDACTED]")
+        },
+    );
+    bearer_token_regex()
+        .replace_all(redacted_auth.as_ref(), "Bearer [REDACTED]")
+        .into_owned()
+}
 
 pub struct BashTool;
 
@@ -55,10 +165,13 @@ impl Tool for BashTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| BbError::Tool("Missing 'command' parameter".into()))?;
 
-        let timeout_secs = params
-            .get("timeout")
-            .and_then(|v| v.as_f64())
-            .map(std::time::Duration::from_secs_f64);
+        let timeout_raw = params.get("timeout").and_then(|v| v.as_f64());
+        if let Some(timeout) = timeout_raw
+            && (!timeout.is_finite() || timeout <= 0.0)
+        {
+            return Err(BbError::Tool("bash timeout must be > 0".into()));
+        }
+        let timeout_secs = timeout_raw.map(std::time::Duration::from_secs_f64);
 
         let safety = classify_bash_command(command);
         let approval_required = ctx.execution_policy == ExecutionPolicy::Safety
@@ -130,6 +243,7 @@ impl Tool for BashTool {
         let mut status = None;
         let mut cancelled = false;
         let mut timed_out = false;
+        let mut live_redactor = BashOutputRedactor::default();
         let timeout = timeout_secs.map(tokio::time::sleep);
         tokio::pin!(timeout);
 
@@ -175,7 +289,10 @@ impl Tool for BashTool {
                     } else {
                         let chunk = String::from_utf8_lossy(&stdout_chunk[..n]);
                         if let Some(ref on_output) = ctx.on_output {
-                            on_output(&chunk);
+                            let redacted = live_redactor.push(&chunk);
+                            if !redacted.is_empty() {
+                                on_output(&redacted);
+                            }
                         }
                         stdout_buf.extend_from_slice(&stdout_chunk[..n]);
                     }
@@ -191,6 +308,13 @@ impl Tool for BashTool {
                     if n == 0 {
                         stderr = None;
                     } else {
+                        let chunk = String::from_utf8_lossy(&stderr_chunk[..n]);
+                        if let Some(ref on_output) = ctx.on_output {
+                            let redacted = live_redactor.push(&chunk);
+                            if !redacted.is_empty() {
+                                on_output(&redacted);
+                            }
+                        }
                         stderr_buf.extend_from_slice(&stderr_chunk[..n]);
                     }
                 }
@@ -208,6 +332,13 @@ impl Tool for BashTool {
                 .read_to_end(&mut stderr_buf)
                 .await
                 .map_err(|e| BbError::Tool(format!("Failed draining bash stderr: {e}")))?;
+        }
+
+        if let Some(ref on_output) = ctx.on_output {
+            let final_redacted = live_redactor.finish();
+            if !final_redacted.is_empty() {
+                on_output(&final_redacted);
+            }
         }
 
         let exit_code = status.map(|s| s.code().unwrap_or(-1));
@@ -237,6 +368,8 @@ impl Tool for BashTool {
         if let Some(failure) = sandbox_failure.as_ref() {
             output = render_sandbox_failure_output(failure, &output);
         }
+
+        output = redact_bash_output_text(&output);
 
         let mut truncated = false;
         let (output, artifact_path) =
@@ -557,7 +690,7 @@ mod tests {
     use bb_core::types::ContentBlock;
     use std::path::Path;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -601,6 +734,126 @@ mod tests {
         assert!(text.contains("done") || result.artifact_path.is_some());
         assert!(text.contains("err-1"));
         assert!(!text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bash_streams_stdout_and_stderr_chunks_to_on_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let streamed_clone = streamed.clone();
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "printf 'out\\n'; printf 'err\\n' 1>&2"
+                }),
+                &ToolContext {
+                    on_output: Some(Box::new(move |chunk| {
+                        streamed_clone
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push_str(chunk);
+                    })),
+                    ..make_ctx(dir.path())
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        let streamed = streamed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert!(streamed.contains("out"));
+        assert!(streamed.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn bash_redacts_live_streamed_secrets_and_final_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let streamed_clone = streamed.clone();
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "printf 'Authorization: Bearer '; sleep 0.05; printf 'sk-top-secret\\nOPENAI_API_KEY=sk-inline'"
+                }),
+                &ToolContext {
+                    on_output: Some(Box::new(move |chunk| {
+                        streamed_clone
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push_str(chunk);
+                    })),
+                    ..make_ctx(dir.path())
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let streamed = streamed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert!(streamed.contains("Authorization: Bearer [REDACTED]"));
+        assert!(streamed.contains("OPENAI_API_KEY=[REDACTED]"));
+        assert!(!streamed.contains("sk-top-secret"));
+        assert!(!streamed.contains("sk-inline"));
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            other => panic!("unexpected content block: {other:?}"),
+        };
+        assert!(text.contains("Authorization: Bearer [REDACTED]"));
+        assert!(text.contains("OPENAI_API_KEY=[REDACTED]"));
+        assert!(!text.contains("sk-top-secret"));
+        assert!(!text.contains("sk-inline"));
+    }
+
+    #[tokio::test]
+    async fn bash_redacts_offloaded_artifact_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let command = "for i in $(seq 1 1800); do printf 'Authorization: Bearer sk-artifact-secret\\n'; done";
+
+        let result = tool
+            .execute(
+                json!({ "command": command }),
+                &make_ctx(dir.path()),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let artifact_path = result.artifact_path.expect("artifact path");
+        let artifact = std::fs::read_to_string(&artifact_path).expect("read artifact");
+        assert!(artifact.contains("Authorization: Bearer [REDACTED]"));
+        assert!(!artifact.contains("sk-artifact-secret"));
+    }
+
+    #[tokio::test]
+    async fn bash_rejects_invalid_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let err = tool
+            .execute(
+                json!({
+                    "command": "echo hi",
+                    "timeout": 0
+                }),
+                &make_ctx(dir.path()),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("zero timeout should be rejected");
+
+        assert!(err.to_string().contains("bash timeout must be > 0"));
     }
 
     #[tokio::test]

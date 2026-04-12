@@ -100,12 +100,40 @@ fn test_nested_ordered_list_markers_change_by_depth() {
 }
 
 #[test]
-fn test_horizontal_rule() {
+fn test_plain_url_is_not_treated_as_markdown() {
+    let text = "https://example.com/some-long-path-with-dashes?foo=bar";
+    assert!(!has_markdown_syntax(text));
+
+    let mut renderer = MarkdownRenderer::new(text);
+    let lines = renderer.render(80);
+    let joined = lines.join("\n");
+    assert!(joined.contains(text));
+    assert!(!joined.contains("─"));
+}
+
+#[test]
+fn test_plain_text_with_hyphenated_url_does_not_render_horizontal_rule() {
+    let text = "See https://example.com/my-long-url-with-dashes for details.";
+    let mut renderer = MarkdownRenderer::new(text);
+    let lines = renderer.render(80);
+    let joined = lines.join("\n");
+    assert!(joined.contains("https://example.com/my-long-url-with-dashes"));
+    assert!(!joined.contains("─"));
+}
+
+#[test]
+fn test_horizontal_rule_still_renders_when_explicit() {
     let md = "---\n";
     let mut renderer = MarkdownRenderer::new(md);
     let lines = renderer.render(40);
     let joined = lines.join("\n");
     assert!(joined.contains("─"));
+}
+
+#[test]
+fn test_setext_heading_detection_still_counts_as_markdown() {
+    let md = "Heading\n---\n";
+    assert!(has_markdown_syntax(md));
 }
 
 #[test]

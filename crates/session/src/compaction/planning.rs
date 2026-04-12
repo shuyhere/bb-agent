@@ -54,8 +54,12 @@ pub fn estimate_tokens_message(message: &AgentMessage) -> u64 {
                 AssistantContent::Thinking { thinking } => estimate_tokens_text(thinking),
                 AssistantContent::ToolCall {
                     name, arguments, ..
-                } => estimate_tokens_text(name)
-                    + estimate_tokens_text(&serde_json::to_string(arguments).unwrap_or_default()),
+                } => {
+                    estimate_tokens_text(name)
+                        + estimate_tokens_text(
+                            &serde_json::to_string(arguments).unwrap_or_default(),
+                        )
+                }
             })
             .sum(),
         AgentMessage::ToolResult(tool) => tool
@@ -84,11 +88,10 @@ pub fn estimate_tokens_message(message: &AgentMessage) -> u64 {
 
 /// Estimate context tokens from messages using the last successful assistant usage when available.
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimate {
-    let compaction_boundary = messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(idx, msg)| matches!(msg, AgentMessage::CompactionSummary(_)).then_some(idx));
+    let compaction_boundary =
+        messages.iter().enumerate().rev().find_map(|(idx, msg)| {
+            matches!(msg, AgentMessage::CompactionSummary(_)).then_some(idx)
+        });
 
     let search_start = compaction_boundary.map_or(0, |idx| idx + 1);
 

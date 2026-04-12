@@ -2,7 +2,13 @@ use std::collections::HashMap;
 
 use bb_core::types::ContentBlock;
 
+use crate::ui_hints::{
+    NO_TEXT_OUTPUT, TOOL_COLLAPSE_HINT, TOOL_EXPAND_HINT, TOOL_FAILED_NO_TEXT_OUTPUT,
+    image_placeholder,
+};
+
 use super::{
+    projection::wrap_visual_preview_lines,
     runtime::FullscreenState,
     tool_format::{format_tool_call_content, format_tool_call_title, format_tool_result_content},
     transcript::{BlockId, BlockKind, NewBlock},
@@ -44,6 +50,7 @@ pub(super) struct ToolCallState {
     pub(super) started_tick: Option<u64>,
     pub(super) started_at: Option<std::time::Instant>,
     pub(super) finished_duration_ms: Option<u64>,
+    pub(super) live_output: String,
     pub(super) result_content: Option<Vec<ContentBlock>>,
     pub(super) result_details: Option<serde_json::Value>,
     pub(super) artifact_path: Option<String>,
@@ -51,6 +58,32 @@ pub(super) struct ToolCallState {
 }
 
 const TOOL_TIMER_TICK_MS: u64 = 80;
+const LIVE_TOOL_OUTPUT_MAX_BYTES: usize = 16 * 1024;
+const LIVE_BASH_PREVIEW_VISUAL_LINES: usize = 5;
+
+impl ToolCallState {
+    pub(super) fn append_live_output(&mut self, chunk: &str) {
+        self.live_output.push_str(chunk);
+        if self.live_output.len() <= LIVE_TOOL_OUTPUT_MAX_BYTES {
+            return;
+        }
+
+        let overflow = self
+            .live_output
+            .len()
+            .saturating_sub(LIVE_TOOL_OUTPUT_MAX_BYTES);
+        let mut trim_at = self
+            .live_output
+            .char_indices()
+            .find(|(idx, _)| *idx >= overflow)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        if let Some(next_newline) = self.live_output[trim_at..].find('\n') {
+            trim_at += next_newline + 1;
+        }
+        self.live_output.drain(..trim_at);
+    }
+}
 
 pub(super) fn format_elapsed_ms(ms: u64) -> String {
     if ms < 1_000 {
@@ -60,6 +93,157 @@ pub(super) fn format_elapsed_ms(ms: u64) -> String {
     } else {
         format!("{:.1}s", ms as f64 / 1000.0)
     }
+}
+
+fn format_bash_footer(
+    label: &str,
+    elapsed: Option<&str>,
+    hidden_visual_lines: usize,
+    expanded: bool,
+) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("{label} {}", elapsed.unwrap_or("0ms")));
+    if hidden_visual_lines > 0 {
+        parts.push(format!("{hidden_visual_lines} earlier lines hidden"));
+    }
+    parts.push(if expanded {
+        TOOL_COLLAPSE_HINT.to_string()
+    } else {
+        TOOL_EXPAND_HINT.to_string()
+    });
+    parts.join(" • ")
+}
+
+fn bash_text_output(content: &[ContentBlock]) -> String {
+    let mut parts = Vec::new();
+    for block in content {
+        match block {
+            ContentBlock::Text { text } => parts.push(text.clone()),
+            ContentBlock::Image { mime_type, .. } => parts.push(image_placeholder(mime_type)),
+        }
+    }
+    parts.join("\n")
+}
+
+fn bash_status_lines(details: Option<&serde_json::Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(details) = details {
+        let exit = details.get("exitCode").and_then(|v| v.as_i64());
+        let truncated = details
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let cancelled = details
+            .get("cancelled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let mut flags = Vec::new();
+        if truncated {
+            flags.push("truncated");
+        }
+        if cancelled {
+            flags.push("cancelled");
+        }
+        match exit {
+            Some(exit) if exit != 0 || !flags.is_empty() => {
+                let suffix = if flags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", flags.join(", "))
+                };
+                lines.push(format!("exit code: {exit}{suffix}"));
+            }
+            None if !flags.is_empty() => {
+                lines.push(format!("status: {}", flags.join(", ")));
+            }
+            _ => {}
+        }
+    }
+    lines
+}
+
+pub(super) fn format_bash_visual_result_content(
+    label: &str,
+    content: &[ContentBlock],
+    details: Option<&serde_json::Value>,
+    artifact_path: Option<&str>,
+    is_error: bool,
+    expanded: bool,
+    total_width: usize,
+    elapsed: Option<&str>,
+) -> String {
+    let available_width = total_width.saturating_sub(2).max(1);
+    let mut out = bash_status_lines(details);
+    let text = bash_text_output(content).replace('\t', "   ");
+
+    if !text.trim().is_empty() {
+        let visual_lines = wrap_visual_preview_lines(&text, available_width);
+        let hidden_visual_lines = if expanded {
+            0
+        } else {
+            visual_lines
+                .len()
+                .saturating_sub(LIVE_BASH_PREVIEW_VISUAL_LINES)
+        };
+        let visible_lines = if expanded {
+            visual_lines
+        } else {
+            visual_lines
+                .into_iter()
+                .skip(hidden_visual_lines)
+                .collect::<Vec<_>>()
+        };
+        if !out.is_empty() && !visible_lines.is_empty() {
+            out.push(String::new());
+        }
+        out.extend(visible_lines);
+        out.push(format_bash_footer(
+            label,
+            elapsed,
+            hidden_visual_lines,
+            expanded,
+        ));
+    } else if out.is_empty() {
+        out.push(if is_error {
+            TOOL_FAILED_NO_TEXT_OUTPUT.to_string()
+        } else {
+            NO_TEXT_OUTPUT.to_string()
+        });
+    } else {
+        out.push(format_bash_footer(label, elapsed, 0, expanded));
+    }
+
+    if let Some(path) = artifact_path {
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(format!(
+            "artifact: {}",
+            super::tool_format::shorten_display_path(path)
+        ));
+    }
+
+    out.join("\n")
+}
+
+fn format_live_bash_result_content(
+    live_output: &str,
+    expanded: bool,
+    total_width: usize,
+    elapsed: Option<&str>,
+) -> String {
+    format_bash_visual_result_content(
+        "Elapsed",
+        &[ContentBlock::Text {
+            text: live_output.to_string(),
+        }],
+        None,
+        None,
+        false,
+        expanded,
+        total_width,
+        elapsed,
+    )
 }
 
 impl FullscreenState {
@@ -238,13 +422,13 @@ impl FullscreenState {
         let elapsed = self.tool_elapsed_ms(&tool).map(format_elapsed_ms);
         let title = if tool.result_content.is_some() {
             let status = if tool.is_error { "error" } else { "done" };
-            if let Some(elapsed) = elapsed {
+            if let Some(elapsed) = elapsed.as_deref() {
                 format!("{display_name} • {status} in {elapsed}")
             } else {
                 format!("{display_name} • {status}")
             }
         } else if tool.execution_started {
-            if let Some(elapsed) = elapsed {
+            if let Some(elapsed) = elapsed.as_deref() {
                 format!("{display_name} • running {elapsed}")
             } else {
                 format!("{display_name} • running")
@@ -275,14 +459,54 @@ impl FullscreenState {
                     "output"
                 },
             );
-            let formatted = format_tool_result_content(
-                &tool.name,
-                &result_content,
-                tool.result_details.clone(),
-                tool.artifact_path.clone(),
-                tool.is_error,
-                expanded,
-            );
+            let formatted = if tool.name == "bash" {
+                format_bash_visual_result_content(
+                    "Took",
+                    &result_content,
+                    tool.result_details.as_ref(),
+                    tool.artifact_path.as_deref(),
+                    tool.is_error,
+                    expanded,
+                    self.size.width as usize,
+                    elapsed.as_deref(),
+                )
+            } else {
+                format_tool_result_content(
+                    &tool.name,
+                    &result_content,
+                    tool.result_details.clone(),
+                    tool.artifact_path.clone(),
+                    tool.is_error,
+                    expanded,
+                )
+            };
+            let _ = self
+                .transcript
+                .replace_tool_result_content(tool_result_id, formatted);
+        } else if !tool.live_output.trim().is_empty() {
+            let Some(tool_result_id) = self.ensure_tool_result_block(id) else {
+                return;
+            };
+            let _ = self.transcript.update_title(tool_result_id, "live output");
+            let formatted = if tool.name == "bash" {
+                format_live_bash_result_content(
+                    &tool.live_output,
+                    expanded,
+                    self.size.width as usize,
+                    elapsed.as_deref(),
+                )
+            } else {
+                format_tool_result_content(
+                    &tool.name,
+                    &[ContentBlock::Text {
+                        text: tool.live_output.clone(),
+                    }],
+                    None,
+                    None,
+                    false,
+                    expanded,
+                )
+            };
             let _ = self
                 .transcript
                 .replace_tool_result_content(tool_result_id, formatted);

@@ -8,7 +8,7 @@ fn ctrl_v_without_clipboard_data_sets_status() {
     assert!(
         state
             .status_line
-            .contains("No clipboard text or image available for paste")
+            .contains(crate::ui_hints::CLIPBOARD_EMPTY_HINT)
             || state.status_line.contains("attached")
             || state.status_line.contains("Inserted")
             || !state.input.is_empty()
@@ -23,7 +23,7 @@ fn shift_insert_without_clipboard_data_sets_status() {
     assert!(
         state
             .status_line
-            .contains("No clipboard text or image available for paste")
+            .contains(crate::ui_hints::CLIPBOARD_EMPTY_HINT)
             || state.status_line.contains("attached")
             || state.status_line.contains("Inserted")
             || !state.input.is_empty()
@@ -38,7 +38,7 @@ fn super_v_without_clipboard_data_sets_status() {
     assert!(
         state
             .status_line
-            .contains("No clipboard text or image available for paste")
+            .contains(crate::ui_hints::CLIPBOARD_EMPTY_HINT)
             || state.status_line.contains("attached")
             || state.status_line.contains("Inserted")
             || !state.input.is_empty()

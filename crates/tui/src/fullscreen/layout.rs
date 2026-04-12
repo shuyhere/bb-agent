@@ -42,7 +42,8 @@ pub fn compute_layout_with_footer(
     let header_height = if size.height >= 8 { 3 } else { 0 };
     let max_footer_height = size.height.saturating_sub(header_height + 1);
     let footer_height = requested_footer_lines.min(max_footer_height);
-    let status_height = 1u16.min(size.height.saturating_sub(header_height + footer_height));
+    let requested_status_height = if size.height >= 16 { 2 } else { 1 };
+    let status_height = requested_status_height.min(size.height.saturating_sub(header_height + footer_height));
     let available_for_input = size
         .height
         .saturating_sub(header_height + status_height + footer_height);
@@ -172,5 +173,26 @@ mod tests {
 
         assert_eq!(layout.footer.height, 8);
         assert_eq!(layout.input.y + layout.input.height, layout.footer.y);
+    }
+
+    #[test]
+    fn grows_status_band_on_taller_terminals_for_more_even_spacing() {
+        let medium = compute_layout(
+            Size {
+                width: 100,
+                height: 20,
+            },
+            2,
+        );
+        let tall = compute_layout(
+            Size {
+                width: 100,
+                height: 30,
+            },
+            2,
+        );
+
+        assert_eq!(medium.status.height, 2);
+        assert_eq!(tall.status.height, 2);
     }
 }

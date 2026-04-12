@@ -1,4 +1,98 @@
+use std::sync::OnceLock;
+
 use bb_core::types::ContentBlock;
+use regex::{Captures, Regex};
+
+fn is_bash_prelude_line(line: &str) -> bool {
+    matches!(
+        line.trim(),
+        "set -e"
+            | "set -u"
+            | "set -eu"
+            | "set -ue"
+            | "set -o pipefail"
+            | "set -eo pipefail"
+            | "set -ueo pipefail"
+            | "set -euo pipefail"
+            | "set -uo pipefail"
+    )
+}
+
+fn looks_like_env_assignment(token: &str) -> bool {
+    let Some((name, value)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && !value.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn is_secret_env_name(name: &str) -> bool {
+    let upper = name.replace('-', "_").to_ascii_uppercase();
+    upper.contains("API_KEY")
+        || upper.ends_with("_KEY")
+        || upper.ends_with("_TOKEN")
+        || upper.contains("ACCESS_TOKEN")
+        || upper.contains("REFRESH_TOKEN")
+        || upper.contains("SECRET")
+        || upper.contains("PASSWORD")
+        || upper.contains("PASSWD")
+}
+
+fn strip_leading_env_assignments(line: &str) -> String {
+    let tokens = line.split_whitespace().collect::<Vec<_>>();
+    let first_non_assignment = tokens
+        .iter()
+        .position(|token| !looks_like_env_assignment(token));
+    match first_non_assignment {
+        Some(index) if index > 0 => tokens[index..].join(" "),
+        _ => line.trim().to_string(),
+    }
+}
+
+fn secret_assignment_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)").expect("valid regex"))
+}
+
+fn authorization_header_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)Authorization:\s*(Bearer|token)\s+[^\s"']+"#)
+            .expect("valid regex")
+    })
+}
+
+fn bearer_token_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)\bBearer\s+[^\s"']+"#).expect("valid regex"))
+}
+
+fn redact_bash_title_line(line: &str) -> String {
+    let stripped = strip_leading_env_assignments(line);
+    let redacted_assignments = secret_assignment_regex().replace_all(&stripped, |caps: &Captures| {
+        let name = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        if is_secret_env_name(name) {
+            format!("{name}=[REDACTED]")
+        } else {
+            caps.get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default()
+        }
+    });
+    let redacted_auth = authorization_header_regex().replace_all(
+        redacted_assignments.as_ref(),
+        |caps: &Captures| {
+            let scheme = caps.get(1).map(|m| m.as_str()).unwrap_or("Bearer");
+            format!("Authorization: {scheme} [REDACTED]")
+        },
+    );
+    bearer_token_regex()
+        .replace_all(redacted_auth.as_ref(), "Bearer [REDACTED]")
+        .into_owned()
+}
 
 pub fn format_tool_call_title(name: &str, raw_args: &str) -> String {
     let parsed_args = serde_json::from_str::<serde_json::Value>(raw_args).ok();
@@ -14,23 +108,42 @@ pub fn format_tool_call_title(name: &str, raw_args: &str) -> String {
                     crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "command")
                 })
                 .unwrap_or_default();
+            let timeout = parsed_args
+                .as_ref()
+                .and_then(|args| args.get("timeout"))
+                .and_then(|value| value.as_f64());
             // Find the first non-empty, non-comment line as the display command.
             // If all lines are comments, fall back to the first non-empty line.
             let first_real = full_cmd
                 .lines()
                 .find(|line| {
                     let t = line.trim();
-                    !t.is_empty() && !t.starts_with('#')
+                    !t.is_empty() && !t.starts_with('#') && !is_bash_prelude_line(t)
+                })
+                .or_else(|| {
+                    full_cmd.lines().find(|line| {
+                        let t = line.trim();
+                        !t.is_empty() && !t.starts_with('#')
+                    })
                 })
                 .or_else(|| full_cmd.lines().find(|line| !line.trim().is_empty()))
                 .unwrap_or_default()
                 .trim();
-            // Truncate very long commands for the header
-            if first_real.len() > 120 {
-                format!("{}…", &first_real[..119])
+            let redacted = redact_bash_title_line(first_real);
+            let mut display = if redacted.len() > 120 {
+                format!("{}…", &redacted[..119])
             } else {
-                first_real.to_string()
+                redacted
+            };
+            if let Some(timeout) = timeout {
+                let timeout_text = if timeout.fract() == 0.0 {
+                    format!(" timeout={}s", timeout as i64)
+                } else {
+                    format!(" timeout={timeout}s")
+                };
+                display.push_str(&timeout_text);
             }
+            display
         }
         "read" => {
             let path = crate::tool_preview::extract_tool_arg_string_relaxed(raw_args, "path")

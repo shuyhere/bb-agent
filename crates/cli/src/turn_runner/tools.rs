@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bb_core::tool_names::normalize_requested_tool_name;
 use bb_core::types::*;
 use bb_hooks::events::ToolResultEvent;
 use bb_hooks::{Event, ToolCallEvent};
@@ -124,15 +125,7 @@ pub(super) async fn execute_tool_calls(
             }
         }
 
-        persist_tool_result(
-            &env,
-            tool_call,
-            content,
-            details,
-            artifact_path,
-            is_error,
-        )
-        .await?;
+        persist_tool_result(&env, tool_call, content, details, artifact_path, is_error).await?;
     }
 
     Ok(())
@@ -199,19 +192,47 @@ async fn persist_tool_result(
     Ok(())
 }
 
+fn tool_context_with_output_forwarding(
+    env: &ToolExecutionEnv<'_>,
+    tool_call_id: String,
+) -> ToolContext {
+    let event_tx = env.event_tx.clone();
+    ToolContext {
+        cwd: env.tool_ctx.cwd.clone(),
+        artifacts_dir: env.tool_ctx.artifacts_dir.clone(),
+        execution_policy: env.tool_ctx.execution_policy,
+        on_output: Some(Box::new(move |chunk| {
+            let _ = event_tx.send(TurnEvent::ToolOutputDelta {
+                id: tool_call_id.clone(),
+                chunk: chunk.to_string(),
+            });
+        })),
+        web_search: env.tool_ctx.web_search.clone(),
+        execution_mode: env.tool_ctx.execution_mode,
+        request_approval: env.tool_ctx.request_approval.clone(),
+    }
+}
+
 async fn execute_tool(
     tool_call: &bb_provider::CollectedToolCall,
     args: serde_json::Value,
     env: &ToolExecutionEnv<'_>,
 ) -> bb_core::error::BbResult<bb_tools::ToolResult> {
-    let Some(tool) = env.tools.iter().find(|tool| tool.name() == tool_call.name) else {
+    let normalized_name = normalize_requested_tool_name(&tool_call.name);
+    let Some(tool) = env
+        .tools
+        .iter()
+        .find(|tool| tool.name() == normalized_name.as_ref())
+    else {
         return Err(bb_core::error::BbError::Tool(format!(
             "Unknown tool: {}",
             tool_call.name
         )));
     };
 
-    match catch_contained_panics(tool.execute(args, env.tool_ctx, env.cancel.clone())).await {
+    let tool_ctx = tool_context_with_output_forwarding(env, tool_call.id.clone());
+
+    match catch_contained_panics(tool.execute(args, &tool_ctx, env.cancel.clone())).await {
         Ok(result) => result,
         Err(message) => Err(bb_core::error::BbError::Tool(format!(
             "Tool {} panicked: {message}",

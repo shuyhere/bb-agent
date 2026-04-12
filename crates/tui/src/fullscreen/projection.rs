@@ -3,11 +3,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
 use crate::markdown::MarkdownRenderer;
+use crate::ui_hints::TOOL_EXPAND_HINT;
 use crate::utils::{ansi_sequence_len, char_width, sanitize_terminal_text, visible_width};
 
 const COMPACT_CONTEXT_PREVIEW_LINES: usize = 5;
 const COMPACT_CONTEXT_HEADER: &str = "[Compact Context]";
-const COMPACT_CONTEXT_EXPAND_HINT: &str = "Click or Ctrl+Shift+O to expand";
+const COMPACT_CONTEXT_EXPAND_HINT: &str = TOOL_EXPAND_HINT;
 
 use super::transcript::{BlockId, BlockKind, Transcript, TranscriptBlock};
 
@@ -380,6 +381,7 @@ fn render_compaction_preview_lines(text: &str, width: usize, _depth: usize) -> V
     let mut out = Vec::new();
     if !preview.trim().is_empty() {
         out.extend(wrap_with_prefix(&preview, width, "", ""));
+        out.push(String::new());
     }
     out.extend(wrap_with_prefix(COMPACT_CONTEXT_EXPAND_HINT, width, "", ""));
     out
@@ -426,7 +428,7 @@ fn render_markdown_content_lines(
 }
 
 fn response_prefixes(depth: usize, content: &str) -> (&str, &str) {
-    if content.contains("(click or use Ctrl+Shift+O to enter tool expand mode)") {
+    if content.contains("click or use Ctrl+Shift+O") {
         ("  ", "  ")
     } else if depth > 2 {
         ("     ", "     ")
@@ -525,6 +527,25 @@ fn wrap_with_prefix(
 
     if out.is_empty() {
         out.push(first_prefix.to_string());
+    }
+
+    out
+}
+
+pub(crate) fn wrap_visual_preview_lines(text: &str, width: usize) -> Vec<String> {
+    let logical_lines: Vec<&str> = if text.is_empty() {
+        vec![""]
+    } else {
+        text.split('\n').collect()
+    };
+
+    let mut out = Vec::new();
+    for logical_line in logical_lines {
+        out.extend(wrap_visual_line(logical_line, width, "", ""));
+    }
+
+    if out.is_empty() {
+        out.push(String::new());
     }
 
     out

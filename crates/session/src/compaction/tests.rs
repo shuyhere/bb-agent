@@ -1,7 +1,7 @@
 use super::{
-    SUMMARIZATION_PROMPT, calculate_context_tokens, estimate_context_tokens, estimate_tokens_message,
-    estimate_tokens_text, extract_file_operations, prepare_compaction, serialize_conversation,
-    should_compact,
+    SUMMARIZATION_PROMPT, calculate_context_tokens, estimate_context_tokens,
+    estimate_tokens_message, estimate_tokens_text, extract_file_operations, prepare_compaction,
+    serialize_conversation, should_compact,
 };
 use bb_core::types::{
     AgentMessage, AssistantContent, AssistantMessage, CompactionSettings, ContentBlock, EntryBase,
@@ -250,7 +250,8 @@ fn test_estimate_context_tokens_ignores_usage_before_latest_compaction() {
     let after_one = make_user_msg("12345678"); // 2 tokens
     let after_two = make_user_msg("abcdefgh"); // 2 tokens
 
-    let estimate = estimate_context_tokens(&[before_compaction, compaction.clone(), after_one, after_two]);
+    let estimate =
+        estimate_context_tokens(&[before_compaction, compaction.clone(), after_one, after_two]);
     let expected = estimate_tokens_message(&compaction)
         + estimate_tokens_message(&make_user_msg("12345678"))
         + estimate_tokens_message(&make_user_msg("abcdefgh"));

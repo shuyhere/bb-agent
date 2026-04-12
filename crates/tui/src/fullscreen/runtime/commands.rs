@@ -1,5 +1,7 @@
 use super::*;
-use crate::fullscreen::streaming::{ActiveTurnState, ToolCallState};
+use crate::fullscreen::streaming::{
+    ActiveTurnState, ToolCallState, format_bash_visual_result_content, format_elapsed_ms,
+};
 use crate::fullscreen::types::{
     FullscreenCommand, FullscreenMode, FullscreenNoteLevel, FullscreenSearchState,
 };
@@ -48,6 +50,7 @@ impl FullscreenState {
                                 started_tick: None,
                                 started_at: None,
                                 finished_duration_ms: None,
+                                live_output: String::new(),
                                 result_content: tool.result_content,
                                 result_details: tool.result_details,
                                 artifact_path: tool.artifact_path,
@@ -56,6 +59,7 @@ impl FullscreenState {
                         )
                     })
                     .collect();
+                self.restore_historical_tool_rendering();
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Render
@@ -246,6 +250,7 @@ impl FullscreenState {
                             started_tick: None,
                             started_at: None,
                             finished_duration_ms: None,
+                            live_output: String::new(),
                             result_content: None,
                             result_details: None,
                             artifact_path: None,
@@ -287,6 +292,21 @@ impl FullscreenState {
                 }
                 RenderIntent::Render
             }
+            FullscreenCommand::ToolOutputDelta { id, chunk } => {
+                if chunk.is_empty() {
+                    return RenderIntent::None;
+                }
+                self.spinner.notify_activity();
+                let Some(tool) = self.tool_call_state_mut(&id) else {
+                    return RenderIntent::None;
+                };
+                tool.append_live_output(&chunk);
+                self.refresh_tool_rendering(&id);
+                if let Some(message) = self.running_tool_status_message() {
+                    self.status_line = message;
+                }
+                RenderIntent::Schedule
+            }
             FullscreenCommand::ToolResult {
                 id,
                 name: _,
@@ -300,6 +320,7 @@ impl FullscreenState {
                 let Some(tool) = self.tool_call_state_mut(&id) else {
                     return RenderIntent::None;
                 };
+                tool.live_output.clear();
                 tool.result_content = Some(content);
                 tool.result_details = details;
                 tool.artifact_path = artifact_path;
@@ -428,7 +449,7 @@ impl FullscreenState {
         let block_id = match self.focused_block {
             Some(id) => id,
             None => {
-                self.status_line = "no block focused".to_string();
+                self.status_line = crate::ui_hints::NO_BLOCK_FOCUSED_HINT.to_string();
                 self.dirty = true;
                 return;
             }
@@ -481,37 +502,77 @@ impl FullscreenState {
             }
         }
 
-        let tool_ids: Vec<String> = self
+        let historical_tool_ids = self
             .all_tool_states
             .iter()
             .filter(|(_, tool)| tool.tool_use_id == tool_use_id)
             .map(|(id, _)| id.clone())
-            .collect();
-        for tool_id in tool_ids {
-            if let Some(tool) = self.all_tool_states.get(&tool_id).cloned() {
-                let _ = self.transcript.replace_content(
-                    tool.tool_use_id,
-                    format_tool_call_content(&tool.name, &tool.raw_args, should_expand),
-                );
-                if let (Some(result_id), Some(content)) =
-                    (tool.tool_result_id, tool.result_content.as_ref())
-                {
-                    let formatted = format_tool_result_content(
-                        &tool.name,
-                        content,
-                        tool.result_details.clone(),
-                        tool.artifact_path.clone(),
-                        tool.is_error,
-                        should_expand,
-                    );
-                    let _ = self
-                        .transcript
-                        .replace_tool_result_content(result_id, formatted);
-                }
-            }
+            .collect::<Vec<_>>();
+        for tool_id in historical_tool_ids {
+            self.refresh_historical_tool_rendering(&tool_id);
         }
         self.projection_dirty = true;
         self.dirty = true;
+    }
+
+    fn restore_historical_tool_rendering(&mut self) {
+        let historical_tool_ids = self.all_tool_states.keys().cloned().collect::<Vec<_>>();
+        for tool_id in historical_tool_ids {
+            self.refresh_historical_tool_rendering(&tool_id);
+        }
+    }
+
+    fn refresh_historical_tool_rendering(&mut self, tool_id: &str) {
+        let Some(tool) = self.all_tool_states.get(tool_id).cloned() else {
+            return;
+        };
+        let expanded = self.expanded_tool_blocks.contains(&tool.tool_use_id);
+        let _ = self.transcript.replace_content(
+            tool.tool_use_id,
+            format_tool_call_content(&tool.name, &tool.raw_args, expanded),
+        );
+        if let Some(formatted) = self.format_historical_tool_result(&tool, expanded)
+            && let Some(result_id) = tool.tool_result_id
+        {
+            let _ = self
+                .transcript
+                .replace_tool_result_content(result_id, formatted);
+        }
+    }
+
+    fn format_historical_tool_result(
+        &self,
+        tool: &ToolCallState,
+        expanded: bool,
+    ) -> Option<String> {
+        let content = tool.result_content.as_ref()?;
+        let elapsed = tool
+            .result_details
+            .as_ref()
+            .and_then(|details| details.get("durationMs"))
+            .and_then(|value| value.as_u64())
+            .map(format_elapsed_ms);
+        Some(if tool.name == "bash" {
+            format_bash_visual_result_content(
+                "Took",
+                content,
+                tool.result_details.as_ref(),
+                tool.artifact_path.as_deref(),
+                tool.is_error,
+                expanded,
+                self.size.width as usize,
+                elapsed.as_deref(),
+            )
+        } else {
+            format_tool_result_content(
+                &tool.name,
+                content,
+                tool.result_details.clone(),
+                tool.artifact_path.clone(),
+                tool.is_error,
+                expanded,
+            )
+        })
     }
 
     pub(crate) fn is_tool_block_expanded(&self, tool_use_id: BlockId) -> bool {

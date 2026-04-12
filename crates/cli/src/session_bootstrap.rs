@@ -139,7 +139,9 @@ pub(crate) async fn prepare_session_runtime(
     let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
     let resumed_session_context = load_resumed_session_context(&conn, &session_id, session_created);
-    let resumed_model = resumed_session_context.as_ref().and_then(|ctx| ctx.model.as_ref());
+    let resumed_model = resumed_session_context
+        .as_ref()
+        .and_then(|ctx| ctx.model.as_ref());
     let model_input = entry
         .model
         .as_deref()
