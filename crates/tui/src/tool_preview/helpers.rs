@@ -1,6 +1,8 @@
 use bb_core::types::ContentBlock;
 use serde_json::Value;
 
+use crate::ui_hints::{image_placeholder, more_lines_expand_hint};
+
 pub(super) fn arg_str(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -100,7 +102,7 @@ pub(super) fn text_output(content: &[ContentBlock]) -> String {
     for block in content {
         match block {
             ContentBlock::Text { text } => parts.push(text.clone()),
-            ContentBlock::Image { mime_type, .. } => parts.push(format!("[image: {mime_type}]")),
+            ContentBlock::Image { mime_type, .. } => parts.push(image_placeholder(mime_type)),
         }
     }
     parts.join("\n")
@@ -129,10 +131,7 @@ pub(super) fn preview_text_lines(text: &str, max_lines: usize, expanded: bool) -
         for line in lines.iter().take(max_lines) {
             out.push(collapse_preview_line(line, COLLAPSED_MAX_CHARS_PER_LINE));
         }
-        out.push(format!(
-            "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
-            lines.len() - max_lines
-        ));
+        out.push(more_lines_expand_hint(lines.len() - max_lines));
         return out;
     }
 

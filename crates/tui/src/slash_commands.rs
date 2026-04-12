@@ -9,14 +9,25 @@ pub struct SlashCommandSpec {
     pub accepts_arguments: bool,
 }
 
+impl SlashCommandSpec {
+    const fn same_detail(
+        command: &'static str,
+        detail: &'static str,
+        help_usage: &'static str,
+        accepts_arguments: bool,
+    ) -> Self {
+        Self {
+            command,
+            menu_detail: detail,
+            help_usage,
+            help_detail: detail,
+            accepts_arguments,
+        }
+    }
+}
+
 const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
-    SlashCommandSpec {
-        command: "/settings",
-        menu_detail: "Open settings menu",
-        help_usage: "/settings",
-        help_detail: "Open settings menu",
-        accepts_arguments: false,
-    },
+    SlashCommandSpec::same_detail("/settings", "Open settings menu", "/settings", false),
     SlashCommandSpec {
         command: "/model",
         menu_detail: "Select model",
@@ -45,20 +56,8 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         help_detail: "Copy last agent message to clipboard",
         accepts_arguments: false,
     },
-    SlashCommandSpec {
-        command: "/name",
-        menu_detail: "Set session display name",
-        help_usage: "/name <name>",
-        help_detail: "Set session display name",
-        accepts_arguments: true,
-    },
-    SlashCommandSpec {
-        command: "/session",
-        menu_detail: "Show session info and stats",
-        help_usage: "/session",
-        help_detail: "Show session info and stats",
-        accepts_arguments: false,
-    },
+    SlashCommandSpec::same_detail("/name", "Set session display name", "/name <name>", true),
+    SlashCommandSpec::same_detail("/session", "Show session info and stats", "/session", false),
     SlashCommandSpec {
         command: "/hotkeys",
         menu_detail: "Show keyboard shortcuts",
@@ -80,27 +79,9 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         help_detail: "Navigate session tree (switch branches)",
         accepts_arguments: false,
     },
-    SlashCommandSpec {
-        command: "/login",
-        menu_detail: "Login with OAuth provider",
-        help_usage: "/login",
-        help_detail: "Login with OAuth provider",
-        accepts_arguments: false,
-    },
-    SlashCommandSpec {
-        command: "/logout",
-        menu_detail: "Logout from OAuth provider",
-        help_usage: "/logout",
-        help_detail: "Logout from OAuth provider",
-        accepts_arguments: false,
-    },
-    SlashCommandSpec {
-        command: "/new",
-        menu_detail: "Start a new session",
-        help_usage: "/new",
-        help_detail: "Start a new session",
-        accepts_arguments: false,
-    },
+    SlashCommandSpec::same_detail("/login", "Login with OAuth provider", "/login", false),
+    SlashCommandSpec::same_detail("/logout", "Logout from OAuth provider", "/logout", false),
+    SlashCommandSpec::same_detail("/new", "Start a new session", "/new", false),
     SlashCommandSpec {
         command: "/compact",
         menu_detail: "Compact the session context",
@@ -108,13 +89,7 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         help_detail: "Manually compact the session context",
         accepts_arguments: true,
     },
-    SlashCommandSpec {
-        command: "/resume",
-        menu_detail: "Resume a different session",
-        help_usage: "/resume",
-        help_detail: "Resume a different session",
-        accepts_arguments: false,
-    },
+    SlashCommandSpec::same_detail("/resume", "Resume a different session", "/resume", false),
     SlashCommandSpec {
         command: "/reload",
         menu_detail: "Reload extensions, skills, and prompts",

@@ -58,6 +58,9 @@ impl FullscreenState {
         } else {
             format!("resized to {}x{} • {}", width, height, help)
         };
+        if self.has_running_tool() {
+            self.refresh_running_tool_visuals();
+        }
         self.projection_dirty = true;
         self.refresh_projection(true);
         self.dirty = true;
@@ -102,8 +105,7 @@ impl FullscreenState {
                     } else if let Some(text) = try_read_clipboard_text() {
                         self.on_paste(&text);
                     } else {
-                        self.status_line =
-                            "No clipboard text or image available for paste".to_string();
+                        self.status_line = crate::ui_hints::CLIPBOARD_EMPTY_HINT.to_string();
                         self.dirty = true;
                     }
                 }

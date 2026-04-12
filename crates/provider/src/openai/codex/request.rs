@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 pub(super) fn resolve_codex_url(base_url: &str) -> String {
     let raw = if base_url.trim().is_empty() || base_url.contains("api.openai.com") {
@@ -39,7 +40,48 @@ pub(super) fn convert_tools_for_codex(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+pub(super) fn sanitize_messages_for_codex(messages: &[Value]) -> Vec<Value> {
+    let mut result = Vec::new();
+    let mut pending_tool_calls: HashSet<String> = HashSet::new();
+
+    for msg in messages {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        match role {
+            "assistant" => {
+                pending_tool_calls.clear();
+                if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tc in tool_calls {
+                        if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                            pending_tool_calls
+                                .insert(id.split('|').next().unwrap_or(id).to_string());
+                        }
+                    }
+                }
+                result.push(msg.clone());
+            }
+            "tool" => {
+                let tool_call_id = msg
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let call_id = tool_call_id.split('|').next().unwrap_or(tool_call_id);
+                if pending_tool_calls.remove(call_id) {
+                    result.push(msg.clone());
+                }
+            }
+            "user" | "system" => {
+                pending_tool_calls.clear();
+                result.push(msg.clone());
+            }
+            _ => result.push(msg.clone()),
+        }
+    }
+
+    result
+}
+
 pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
+    let messages = sanitize_messages_for_codex(messages);
     let mut out = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
         let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
@@ -141,36 +183,4 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
         }
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::convert_messages_for_codex;
-    use serde_json::json;
-
-    #[test]
-    fn convert_messages_for_codex_preserves_user_image_blocks() {
-        let messages = vec![json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "describe this"},
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": "abcd"
-                    }
-                }
-            ]
-        })];
-
-        let converted = convert_messages_for_codex(&messages);
-        assert_eq!(converted.len(), 1);
-        let content = converted[0]["content"].as_array().expect("content array");
-        assert_eq!(content[0]["type"], "input_text");
-        assert_eq!(content[1]["type"], "input_image");
-        assert_eq!(content[1]["detail"], "high");
-        assert_eq!(content[1]["image_url"], "data:image/png;base64,abcd");
-    }
 }

@@ -134,6 +134,50 @@ fn bash_title_recovers_from_multiline_non_strict_json_args() {
 }
 
 #[test]
+fn bash_title_skips_common_set_e_prelude_lines() {
+    let raw = serde_json::json!({
+        "command": "set -e\nset -o pipefail\nprintf hello"
+    })
+    .to_string();
+    let title = format_tool_call_title("bash", &raw);
+    assert_eq!(title, "Bash(printf hello)");
+}
+
+#[test]
+fn bash_title_shows_timeout_when_present() {
+    let raw = serde_json::json!({
+        "command": "printf hello",
+        "timeout": 5
+    })
+    .to_string();
+    let title = format_tool_call_title("bash", &raw);
+    assert_eq!(title, "Bash(printf hello timeout=5s)");
+}
+
+#[test]
+fn bash_title_strips_leading_secret_env_assignments() {
+    let raw = serde_json::json!({
+        "command": "OPENAI_API_KEY=sk-secret ANTHROPIC_API_KEY=sk-other curl https://example.com"
+    })
+    .to_string();
+    let title = format_tool_call_title("bash", &raw);
+    assert_eq!(title, "Bash(curl https://example.com)");
+}
+
+#[test]
+fn bash_title_redacts_secret_assignments_and_authorization_headers() {
+    let raw = serde_json::json!({
+        "command": "export OPENAI_API_KEY=sk-secret && curl -H \"Authorization: Bearer sk-top-secret\" https://example.com"
+    })
+    .to_string();
+    let title = format_tool_call_title("bash", &raw);
+    assert_eq!(
+        title,
+        "Bash(export OPENAI_API_KEY=[REDACTED] && curl -H \"Authorization: Bearer [REDACTED]\" https://example.com)"
+    );
+}
+
+#[test]
 fn artifact_paths_shorten_home_prefix() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp/test-home".to_string());
     let rendered = format_tool_result_content(
@@ -164,7 +208,7 @@ fn write_and_edit_call_content_use_interactive_style_previews() {
     assert!(write.contains("one"));
     assert!(write.contains("three"));
     assert!(!write.contains("five"));
-    assert!(write.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
+    assert!(write.contains(&format!("more lines; {}", crate::ui_hints::TOOL_EXPAND_HINT)));
     assert!(!write.contains("\"content\""));
 
     let edit = format_tool_call_content(
@@ -202,10 +246,10 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
         false,
         false,
     );
-    assert!(bash.contains("line   1"));
-    assert!(bash.contains("line   3"));
-    assert!(bash.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
-    assert!(!bash.contains("line   4"));
+    assert!(bash.contains("line   10"));
+    assert!(bash.contains("line   14"));
+    assert!(bash.contains(&format!("earlier lines; {}", crate::ui_hints::TOOL_EXPAND_HINT)));
+    assert!(!bash.contains("line   9"));
 
     let grep_lines = (1..=16)
         .map(|i| format!("match {i}"))
@@ -223,7 +267,7 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
     );
     assert!(grep.contains("match 1"));
     assert!(grep.contains("match 3"));
-    assert!(grep.contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode"));
+    assert!(grep.contains(&format!("more lines; {}", crate::ui_hints::TOOL_EXPAND_HINT)));
     assert!(!grep.contains("match 4"));
 
     let expanded = format_tool_result_content(
@@ -236,8 +280,7 @@ fn tool_result_previews_use_interactive_limits_and_truncation() {
     );
     assert!(expanded.contains("line   14"));
     assert!(
-        !expanded
-            .contains("... (2 more lines; click or use Ctrl+Shift+O to enter tool expand mode)")
+        !expanded.contains(&crate::ui_hints::more_lines_expand_hint(2))
     );
 
     let long_lines = (1..=140)

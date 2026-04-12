@@ -1,8 +1,12 @@
 mod auth;
 mod request;
 
+#[cfg(test)]
+mod request_tests;
+
 use super::*;
 use futures::StreamExt;
+use std::collections::HashSet;
 
 use crate::UsageInfo;
 
@@ -28,7 +32,7 @@ impl OpenAiProvider {
             "input": convert_messages_for_codex(&request.messages),
             "text": { "verbosity": "medium" },
             "tool_choice": "auto",
-            "parallel_tool_calls": true,
+            "parallel_tool_calls": false,
         });
 
         if !request.tools.is_empty() {
@@ -79,7 +83,8 @@ impl OpenAiProvider {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
-        let mut current_tool: Option<(String, String)> = None;
+        let mut started_tool_calls: HashSet<String> = HashSet::new();
+        let mut completed_tool_calls: HashSet<String> = HashSet::new();
 
         while let Some(chunk_result) = stream.next().await {
             if options.cancel.is_cancelled() {
@@ -125,8 +130,9 @@ impl OpenAiProvider {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("tool")
                                 .to_string();
-                            current_tool = Some((id.clone(), name.clone()));
-                            let _ = tx.send(StreamEvent::ToolCallStart { id, name });
+                            if started_tool_calls.insert(id.clone()) {
+                                let _ = tx.send(StreamEvent::ToolCallStart { id, name });
+                            }
                         }
                     }
                     "response.output_text.delta" => {
@@ -147,22 +153,40 @@ impl OpenAiProvider {
                             });
                         }
                     }
-                    "response.function_call_arguments.delta" => {
-                        if let Some((id, _)) = &current_tool
-                            && let Some(delta) = event.get("delta").and_then(|v| v.as_str())
-                        {
-                            let _ = tx.send(StreamEvent::ToolCallDelta {
-                                id: id.clone(),
-                                arguments_delta: delta.to_string(),
-                            });
-                        }
-                    }
+                    "response.function_call_arguments.delta" => {}
                     "response.output_item.done" => {
                         if let Some(item) = event.get("item")
                             && item.get("type").and_then(|v| v.as_str()) == Some("function_call")
-                            && let Some((id, _)) = current_tool.take()
                         {
-                            let _ = tx.send(StreamEvent::ToolCallEnd { id });
+                            let call_id = item
+                                .get("call_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("toolcall");
+                            let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("item");
+                            let id = format!("{call_id}|{item_id}");
+                            let name = item
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("tool")
+                                .to_string();
+                            let arguments = item
+                                .get("arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("{}");
+
+                            if started_tool_calls.insert(id.clone()) {
+                                let _ = tx.send(StreamEvent::ToolCallStart {
+                                    id: id.clone(),
+                                    name,
+                                });
+                            }
+                            let _ = tx.send(StreamEvent::ToolCallDelta {
+                                id: id.clone(),
+                                arguments_delta: arguments.to_string(),
+                            });
+                            if completed_tool_calls.insert(id.clone()) {
+                                let _ = tx.send(StreamEvent::ToolCallEnd { id });
+                            }
                         }
                     }
                     "response.completed" => {

@@ -1,4 +1,5 @@
 use crate::theme::theme;
+use crate::ui_hints::FULLSCREEN_HEADER_TOOL_HINT;
 use crate::utils::{pad_to_width, sanitize_terminal_text, truncate_to_width, visible_width};
 
 use super::super::{runtime::FullscreenState, types::FullscreenMode};
@@ -23,8 +24,8 @@ pub(crate) fn render_header(state: &FullscreenState, width: usize) -> Vec<String
             t.reset,
         ));
         let hints = format!(
-            "{}Ctrl-C exit . / commands . ! bash . click or use Ctrl+Shift+O to enter tool expand mode . Ctrl+Y drag-copy . /help for more{}",
-            t.dim, t.reset
+            "{}Ctrl-C exit . / commands . ! bash . {} . Ctrl+Y drag-copy . /help for more{}",
+            t.dim, FULLSCREEN_HEADER_TOOL_HINT, t.reset
         );
         lines.push(pad_to_width(&truncate_to_width(&hints, width), width));
         lines.push(blank_line(width));
@@ -87,14 +88,14 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
                 let rendered = state.spinner.render(msg, width);
                 return pad_to_width(&rendered, width);
             } else {
-                state.status_line.clone()
+                format_plain_status_line(&state.status_line)
             }
         }
         FullscreenMode::Transcript => {
             let base = if state.status_line.trim().is_empty() {
                 "Transcript mode".to_string()
             } else {
-                sanitize_terminal_text(&state.status_line)
+                format_plain_status_line(&state.status_line)
             };
             let follow = if state.viewport.auto_follow {
                 "follow on"
@@ -113,6 +114,26 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
         pad_to_width(&truncate_to_width(&text, width), width),
         t.reset
     )
+}
+
+pub(crate) fn render_status_lines(
+    state: &FullscreenState,
+    width: usize,
+    height: usize,
+) -> Vec<String> {
+    if height == 0 {
+        return Vec::new();
+    }
+
+    let status = render_status(state, width);
+    if height == 1 {
+        return vec![status];
+    }
+
+    let mut lines = vec![blank_line(width); height];
+    let status_row = height - 1;
+    lines[status_row] = status;
+    lines
 }
 
 pub(crate) fn render_footer(state: &FullscreenState, width: usize, height: usize) -> Vec<String> {
@@ -190,6 +211,18 @@ fn pad_footer_lines(mut lines: Vec<String>, width: usize, height: usize) -> Vec<
         lines.push(blank_line(width));
     }
     lines
+}
+
+fn format_plain_status_line(text: &str) -> String {
+    let trimmed = sanitize_terminal_text(text).trim().to_string();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("Ctrl+") || trimmed.contains('•') || trimmed.starts_with("Transcript mode") {
+        trimmed
+    } else {
+        format!("· {trimmed}")
+    }
 }
 
 fn style_footer_left(text: &str) -> String {

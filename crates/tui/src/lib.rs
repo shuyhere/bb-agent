@@ -26,6 +26,7 @@ pub mod terminal;
 pub mod theme;
 pub mod tool_preview;
 pub mod tree_selector;
+pub(crate) mod ui_hints;
 pub mod tui_core;
 pub mod undo_stack;
 pub mod utils;

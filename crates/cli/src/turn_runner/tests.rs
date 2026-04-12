@@ -95,6 +95,96 @@ impl Provider for CancelAfterToolCallProvider {
     }
 }
 
+struct AliasProvider {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for AliasProvider {
+    fn name(&self) -> &str {
+        "alias-provider"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+        if call_index == 0 {
+            let _ = tx.send(StreamEvent::ToolCallStart {
+                id: "tool-alias-1".to_string(),
+                name: "functions.Bash".to_string(),
+            });
+            let _ = tx.send(StreamEvent::ToolCallDelta {
+                id: "tool-alias-1".to_string(),
+                arguments_delta: r#"{"command":"pwd"}"#.to_string(),
+            });
+        } else {
+            let _ = tx.send(StreamEvent::TextDelta {
+                text: "done".to_string(),
+            });
+        }
+        let _ = tx.send(StreamEvent::Done);
+        Ok(())
+    }
+}
+
+struct EchoTool {
+    invocations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "records normalized bash invocations"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"}
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        _ctx: &bb_tools::ToolContext,
+        _cancel: CancellationToken,
+    ) -> BbResult<ToolResult> {
+        self.invocations.fetch_add(1, Ordering::SeqCst);
+        let command = params
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: format!("echoed: {command}"),
+            }],
+            details: None,
+            is_error: false,
+            artifact_path: None,
+        })
+    }
+}
+
 struct OverflowProvider;
 
 #[async_trait]
@@ -263,6 +353,90 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         saw_done,
         "turn should still complete after contained tool panic"
     );
+}
+
+#[tokio::test]
+async fn run_turn_normalizes_builtin_tool_aliases_before_lookup() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let invocations = Arc::new(AtomicUsize::new(0));
+
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(AliasProvider {
+            call_count: AtomicUsize::new(0),
+        }),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![Box::new(EchoTool {
+            invocations: invocations.clone(),
+        })],
+        tool_defs: vec![json!({
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "records normalized bash invocations",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        })],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("aliased builtin tool should resolve successfully");
+    assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+    let mut saw_successful_tool_result = false;
+    let mut saw_done = false;
+    while let Ok(event) = event_rx.try_recv() {
+        match event {
+            TurnEvent::ToolResult {
+                is_error, content, ..
+            } => {
+                let text = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !is_error && text.contains("echoed: pwd") {
+                    saw_successful_tool_result = true;
+                }
+            }
+            TurnEvent::Done { text } => {
+                saw_done = true;
+                assert_eq!(text, "done");
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_successful_tool_result,
+        "normalized alias should execute the builtin tool"
+    );
+    assert!(saw_done, "turn should complete after the aliased tool call");
 }
 
 #[tokio::test]

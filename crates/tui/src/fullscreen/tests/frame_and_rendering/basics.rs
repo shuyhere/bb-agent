@@ -110,6 +110,40 @@ fn header_and_input_borders_follow_fullscreen_color_theme() {
 }
 
 #[test]
+fn local_action_status_spinner_uses_fullscreen_color_theme() {
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 12,
+        },
+    );
+    state.color_theme = crate::fullscreen::spinner::ColorTheme::Ocean;
+    state
+        .spinner
+        .set_color_theme(crate::fullscreen::spinner::ColorTheme::Ocean);
+    let _ = state.apply_command(crate::fullscreen::FullscreenCommand::SetStatusLine(
+        "Resuming session...".to_string(),
+    ));
+    let _ = state.apply_command(crate::fullscreen::FullscreenCommand::SetLocalActionActive(
+        true,
+    ));
+    state.prepare_for_render();
+    let frame = build_frame(&state);
+    let layout = state.current_layout();
+    let status_lines = &frame.lines
+        [layout.status.y as usize..(layout.status.y + layout.status.height) as usize];
+    let status_line = status_lines
+        .iter()
+        .find(|line| crate::utils::strip_ansi(line).contains("Resuming session..."))
+        .expect("status line should be rendered inside status band");
+    let plain_status_line = crate::utils::strip_ansi(status_line);
+
+    assert!(plain_status_line.contains("Resuming session..."));
+    assert!(status_line.contains(&state.color_theme.title_escape()));
+}
+
+#[test]
 fn ctrl_o_enters_tool_expand_mode_in_terminal_fallbacks() {
     let (mut state, _, tool, _) = sample_state();
 
@@ -195,8 +229,10 @@ fn transcript_toggle_expands_only_focused_tool_block() {
     let _ = transcript
         .append_child_block(
             tool1,
-            NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
+            NewBlock::new(BlockKind::ToolResult, "output").with_content(format!(
+                "Read 1 file ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
         )
         .expect("result1");
     let tool2 = transcript
@@ -208,8 +244,10 @@ fn transcript_toggle_expands_only_focused_tool_block() {
     let _ = transcript
         .append_child_block(
             tool2,
-            NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
+            NewBlock::new(BlockKind::ToolResult, "output").with_content(format!(
+                "Read 1 file ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
         )
         .expect("result2");
 

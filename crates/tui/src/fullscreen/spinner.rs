@@ -354,7 +354,9 @@ impl SpinnerState {
         out.push(' ');
 
         let available = max_width.saturating_sub(3);
-        let separator = "  ";
+        // Give the status text and the rotating vibe word a clearer visual break
+        // so lines like `Compacting session... • 27.0s · stitching...` feel less cramped.
+        let separator = "  ·  ";
         let separator_width = UnicodeWidthStr::width(separator);
         let vibe_status = format_vibe_status(self.current_vibe);
         let vibe_width = UnicodeWidthStr::width(vibe_status.as_str());

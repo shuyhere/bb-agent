@@ -172,7 +172,8 @@ fn collapsed_compaction_shows_compact_context_preview_and_expand_hint() {
     assert!(content_text.contains("Keep it native"));
     assert!(!content_text.contains("## Next Steps"));
     assert!(!content_text.contains("1. Build"));
-    assert!(content_text.contains("Click or Ctrl+Shift+O to expand"));
+    assert!(content_text.contains(crate::ui_hints::TOOL_EXPAND_HINT));
+    assert!(content_text.contains("Keep it native\n\nCtrl+Shift+O to expand"));
 }
 
 #[test]
@@ -289,8 +290,10 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
     let result1 = transcript
         .append_child_block(
             read1,
-            NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
+            NewBlock::new(BlockKind::ToolResult, "output").with_content(format!(
+                "Read 1 file ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
         )
         .expect("result1");
     let read2 = transcript
@@ -302,8 +305,10 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
     let result2 = transcript
         .append_child_block(
             read2,
-            NewBlock::new(BlockKind::ToolResult, "output")
-                .with_content("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)"),
+            NewBlock::new(BlockKind::ToolResult, "output").with_content(format!(
+                "Read 1 file ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
         )
         .expect("result2");
 
@@ -321,12 +326,16 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
     assert!(header1.text.contains("Read(/tmp/a.txt)"));
     assert!(header2.text.contains("Read(/tmp/b.txt)"));
     assert!(rows1.iter().any(|row| {
-        row.text
-            .contains("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)")
+        row.text.contains(&format!(
+            "Read 1 file ({})",
+            crate::ui_hints::TOOL_EXPAND_HINT
+        ))
     }));
     assert!(rows2.iter().any(|row| {
-        row.text
-            .contains("Read 1 file (click or use Ctrl+Shift+O to enter tool expand mode)")
+        row.text.contains(&format!(
+            "Read 1 file ({})",
+            crate::ui_hints::TOOL_EXPAND_HINT
+        ))
     }));
 }
 

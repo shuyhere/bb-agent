@@ -6,6 +6,7 @@ use bb_session::{store::EntryRow, tree::TreeNode};
 use super::transcript::BlockId;
 
 use crate::select_list::SelectItem;
+use crate::ui_hints::FULLSCREEN_TOOL_STATUS_HINT;
 
 use super::transcript::Transcript;
 
@@ -80,9 +81,7 @@ impl Default for FullscreenAppConfig {
         Self {
             title: "BB-Agent fullscreen transcript".to_string(),
             input_placeholder: "Type a prompt…".to_string(),
-            status_line:
-                "click or use Ctrl+Shift+O to enter tool expand mode • Enter submits • Shift+Enter inserts a newline • wheel scrolls transcript"
-                    .to_string(),
+            status_line: FULLSCREEN_TOOL_STATUS_HINT.to_string(),
             footer: FullscreenFooterData::default(),
             transcript: Transcript::new(),
             extra_slash_items: Vec::new(),
@@ -188,6 +187,10 @@ pub enum FullscreenCommand {
     },
     ToolExecuting {
         id: String,
+    },
+    ToolOutputDelta {
+        id: String,
+        chunk: String,
     },
     ToolResult {
         id: String,

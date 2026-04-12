@@ -12,6 +12,9 @@ mod runtime;
 mod session;
 mod state;
 
+#[cfg(test)]
+mod provider_tests;
+
 pub use config::{
     AgentSessionConfig, CustomMessageDelivery, PromptOptions, PromptSource,
     SendCustomMessageOptions, SendUserMessageOptions, StreamingBehavior,

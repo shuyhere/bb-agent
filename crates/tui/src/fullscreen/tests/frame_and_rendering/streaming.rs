@@ -237,9 +237,64 @@ fn resumed_tool_transcript_can_expand_from_historical_tool_state() {
     assert!(
         !tool_result
             .content
-            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
+            .contains(crate::ui_hints::TOOL_EXPAND_HINT)
     );
     assert!(tool_use.title.contains("Bash"));
+}
+
+#[test]
+fn historical_bash_result_does_not_render_missing_exit_code_as_negative_one() {
+    let mut transcript = Transcript::new();
+    let assistant = transcript.append_root_block(
+        NewBlock::new(BlockKind::AssistantMessage, "assistant").with_content(""),
+    );
+    let tool_use_id = transcript
+        .append_child_block(
+            assistant,
+            NewBlock::new(BlockKind::ToolUse, "Bash(printf ok)").with_expandable(true),
+        )
+        .expect("tool use");
+    let tool_result_id = transcript
+        .append_child_block(
+            tool_use_id,
+            NewBlock::new(BlockKind::ToolResult, "output").with_content("ok"),
+        )
+        .expect("tool result");
+
+    let mut tool_states = std::collections::HashMap::new();
+    tool_states.insert(
+        "tool-1".to_string(),
+        HistoricalToolState {
+            name: "bash".to_string(),
+            raw_args: serde_json::json!({ "command": "printf ok" }).to_string(),
+            tool_use_id,
+            tool_result_id: Some(tool_result_id),
+            result_content: Some(vec![ContentBlock::Text { text: "ok".into() }]),
+            result_details: Some(serde_json::json!({ "exitCode": null })),
+            artifact_path: None,
+            is_error: false,
+        },
+    );
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    let _ = state.apply_command(FullscreenCommand::SetTranscriptWithToolStates {
+        transcript,
+        tool_states,
+    });
+    state.prepare_for_render();
+
+    let tool_result = state
+        .transcript
+        .block(tool_result_id)
+        .expect("tool result after restore");
+    assert!(!tool_result.content.contains("exit code: -1"));
+    assert!(tool_result.content.contains("ok"));
 }
 
 #[test]
@@ -298,7 +353,7 @@ fn tool_result_appears_only_when_finished_and_enter_expands_output() {
     assert!(
         tool_result
             .content
-            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
+            .contains(crate::ui_hints::TOOL_EXPAND_HINT)
     );
     assert!(!tool_result.content.contains("line 14"));
 
@@ -317,7 +372,7 @@ fn tool_result_appears_only_when_finished_and_enter_expands_output() {
     assert!(
         !tool_result
             .content
-            .contains("more lines; click or use Ctrl+Shift+O to enter tool expand mode")
+            .contains(crate::ui_hints::TOOL_EXPAND_HINT)
     );
     assert!(tool_result.content.contains("line 14"));
 }

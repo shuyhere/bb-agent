@@ -72,7 +72,41 @@ fn truncated_preview_mentions_ctrl_o_expand() {
         false,
         false,
     );
-    assert!(rendered.contains("click or use Ctrl+Shift+O to enter tool expand mode"));
+    assert!(rendered.contains(crate::ui_hints::TOOL_EXPAND_HINT));
+}
+
+#[test]
+fn bash_collapsed_preview_shows_recent_tail_lines() {
+    let text = (1..=14)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = format_tool_result_content(
+        "bash",
+        &[ContentBlock::Text { text }],
+        None,
+        None,
+        false,
+        false,
+    );
+    assert!(rendered.contains("line 10"));
+    assert!(rendered.contains("line 14"));
+    assert!(rendered.contains("earlier lines"));
+    assert!(!rendered.contains("line 9"));
+}
+
+#[test]
+fn bash_preview_does_not_render_missing_exit_code_as_negative_one() {
+    let rendered = format_tool_result_content(
+        "bash",
+        &[ContentBlock::Text { text: "ok".into() }],
+        Some(serde_json::json!({ "exitCode": null })),
+        None,
+        false,
+        false,
+    );
+    assert!(!rendered.contains("exit code: -1"));
+    assert!(rendered.contains("ok"));
 }
 
 #[test]
@@ -88,6 +122,23 @@ fn collapsed_preview_truncates_very_long_single_line() {
     );
     assert!(rendered.contains('…'));
     assert!(!rendered.contains("tail-marker"));
+}
+
+#[test]
+fn duration_line_is_separated_from_tool_body() {
+    let rendered = format_tool_result_content(
+        "bash",
+        &[ContentBlock::Text {
+            text: "line 1\nline 2".to_string(),
+        }],
+        Some(serde_json::json!({
+            "durationMs": 12
+        })),
+        None,
+        false,
+        false,
+    );
+    assert!(rendered.contains("duration: 12ms\n\nline 1"));
 }
 
 #[test]

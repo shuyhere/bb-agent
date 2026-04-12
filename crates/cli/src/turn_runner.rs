@@ -57,6 +57,10 @@ pub(crate) enum TurnEvent {
     ToolExecuting {
         id: String,
     },
+    ToolOutputDelta {
+        id: String,
+        chunk: String,
+    },
     ToolResult {
         id: String,
         name: String,

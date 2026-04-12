@@ -422,6 +422,9 @@ impl FullscreenController {
             TurnEvent::ToolExecuting { id } => {
                 self.send_command(FullscreenCommand::ToolExecuting { id });
             }
+            TurnEvent::ToolOutputDelta { id, chunk } => {
+                self.send_command(FullscreenCommand::ToolOutputDelta { id, chunk });
+            }
             TurnEvent::ToolResult {
                 id,
                 name,

@@ -5,6 +5,21 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2026-04-12
+
+### Fixed
+
+- fullscreen bash output now streams live stdout/stderr and keeps running, finished, historical, and expanded/collapsed tool blocks visually consistent with width-aware tail previews and elapsed/took footer hints
+- bash tool titles now skip shell prelude lines like `set -e`, show configured timeout values in the UI, and validate invalid timeout arguments instead of accepting zero or non-finite values
+- fixed the session getting stuck after interrupted or failed tool calls by flushing synthetic tool results before later prompts, preventing follow-up turns from failing with missing tool output
+- Codex tool-call request handling is more robust: tool calls are serialized sequentially, orphan tool results are sanitized out of requests, and streamed/done function-call events are deduplicated more safely
+- plain URLs and hyphenated text no longer trigger accidental markdown horizontal-rule rendering while explicit markdown rules and setext headings still render correctly
+- fullscreen resume menu handling now awaits the async resume path correctly instead of dropping back through the synchronous menu flow
+
+### Added
+
+- regression coverage for interrupted tool-call recovery, Codex orphan-tool sanitization, builtin tool-name normalization, fullscreen bash rendering consistency, and bash timeout validation/visibility
+
 ## [0.0.14] - 2026-04-12
 
 ### Added

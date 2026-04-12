@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::ui_hints::more_lines_expand_hint;
+
 use super::helpers::{arg_str, extract_tool_arg_string_relaxed, replace_tabs, summarize_inline};
 
 pub fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> String {
@@ -68,10 +70,7 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
                 .map(|line| replace_tabs(line)),
         );
         if preview_lines.len() > max_lines {
-            lines.push(format!(
-                "... ({} more lines; click or use Ctrl+Shift+O to enter tool expand mode)",
-                preview_lines.len() - max_lines
-            ));
+            lines.push(more_lines_expand_hint(preview_lines.len() - max_lines));
         }
     }
     lines

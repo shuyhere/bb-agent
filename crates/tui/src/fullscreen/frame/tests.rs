@@ -59,6 +59,32 @@ fn local_action_status_uses_animated_spinner_with_elapsed_time() {
 }
 
 #[test]
+fn plain_status_line_is_visually_separated_from_transcript_content() {
+    let state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    let rendered = render_status(&state, 80);
+    let plain = crate::utils::strip_ansi(&rendered);
+    assert!(plain.contains("Ctrl+Shift+O expands tools"));
+
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    state.status_line = "Resumed session".to_string();
+    let rendered = render_status(&state, 80);
+    let plain = crate::utils::strip_ansi(&rendered);
+    assert!(plain.contains("· Resumed session"));
+}
+
+#[test]
 fn tool_use_rows_stay_aligned_when_focused_in_transcript_mode() {
     let mut config = FullscreenAppConfig::default();
     let mut transcript = crate::fullscreen::transcript::Transcript::new();
@@ -138,7 +164,10 @@ fn transcript_blank_line_rhythm_matches_user_tool_text_flow() {
                 crate::fullscreen::transcript::BlockKind::ToolResult,
                 "output",
             )
-            .with_content("Ran 1 command (click or use Ctrl+Shift+O to enter tool expand mode)"),
+            .with_content(format!(
+                "Ran 1 command ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
         )
         .expect("tool result");
     transcript.append_root_block(
@@ -175,7 +204,7 @@ fn transcript_blank_line_rhythm_matches_user_tool_text_flow() {
     let summary_idx = lines
         .iter()
         .position(|line| {
-            line.contains("Ran 1 command (click or use Ctrl+Shift+O to enter tool expand mode)")
+            line.contains(&format!("Ran 1 command ({})", crate::ui_hints::TOOL_EXPAND_HINT))
         })
         .expect("summary line");
     let text_idx = lines

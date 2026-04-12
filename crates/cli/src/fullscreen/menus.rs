@@ -48,7 +48,7 @@ impl FullscreenController {
                 }
             }
             "settings" => self.open_setting_values_menu(value),
-            RESUME_SESSION_MENU_ID => self.handle_resume_session(value)?,
+            RESUME_SESSION_MENU_ID => self.handle_resume_session(value).await?,
             TREE_ENTRY_MENU_ID => self.open_tree_summary_menu(value)?,
             TREE_SUMMARY_MENU_ID => {
                 self.handle_tree_summary_selection(value, submission_rx)
