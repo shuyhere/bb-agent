@@ -37,7 +37,6 @@ static HEADING_H3: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(
 static HEADING_DEFAULT: std::sync::LazyLock<&'static str> =
     std::sync::LazyLock::new(|| Box::leak(format!("{}{}", theme().accent, BOLD).into_boxed_str()));
 const CODE_INLINE: &str = "\x1b[38;5;75m";
-const CODE_BORDER: &str = "\x1b[90m";
 const QUOTE_PREFIX: &str = "\x1b[90m│\x1b[0m ";
 const BULLET: &str = "\x1b[90m•\x1b[0m";
 const DIM: &str = "\x1b[2m";
@@ -341,23 +340,15 @@ impl RenderState {
         let code_lines = std::mem::take(&mut self.code_block_lines);
         let prefix = self.line_prefix();
         let prefix_w = self.prefix_width();
-        let avail = (self.width as usize).saturating_sub(prefix_w);
+        let avail = (self.width as usize).saturating_sub(prefix_w).max(1);
 
-        let label = if lang.is_empty() {
-            String::new()
+        let opening_fence = if lang.is_empty() {
+            "```".to_string()
         } else {
-            format!(" {} ", lang)
+            format!("```{lang}")
         };
-        let border_len = avail.saturating_sub(label.len()).saturating_sub(2);
-        let top_border = format!(
-            "{}{}┌{}{}┐{}",
-            prefix,
-            CODE_BORDER,
-            label,
-            "─".repeat(border_len),
-            RESET
-        );
-        self.lines.push(top_border);
+        self.lines
+            .push(format!("{}{DIM}{}{RESET}", prefix, opening_fence));
 
         let syntax = self
             .syntax_set
@@ -383,27 +374,18 @@ impl RenderState {
                 styled.push_str(text);
                 styled.push_str(RESET);
             }
-            let inner_width = avail.saturating_sub(4);
-            let vis_width = visible_width(&styled);
-            let padding = if inner_width > vis_width {
-                " ".repeat(inner_width - vis_width)
+
+            let wrapped = word_wrap_ansi(&styled, avail);
+            if wrapped.is_empty() {
+                self.lines.push(prefix.clone());
             } else {
-                String::new()
-            };
-            self.lines.push(format!(
-                "{}{}│ {}{}{}│{}",
-                prefix, CODE_BORDER, styled, padding, CODE_BORDER, RESET
-            ));
+                for line in wrapped {
+                    self.lines.push(format!("{}{}", prefix, line));
+                }
+            }
         }
 
-        let bottom_border = format!(
-            "{}{}└{}┘{}",
-            prefix,
-            CODE_BORDER,
-            "─".repeat(avail.saturating_sub(2)),
-            RESET
-        );
-        self.lines.push(bottom_border);
+        self.lines.push(format!("{}{DIM}```{RESET}", prefix));
     }
 }
 

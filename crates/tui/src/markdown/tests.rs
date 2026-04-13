@@ -32,14 +32,19 @@ fn test_code_block() {
     let md = "```rust\nfn main() {}\n```\n";
     let mut renderer = MarkdownRenderer::new(md);
     let lines = renderer.render(80);
-    // Should have top border, code line, bottom border
     assert!(
         lines.len() >= 3,
         "Expected at least 3 lines for code block, got {}",
         lines.len()
     );
-    let joined = lines.join("\n");
-    assert!(joined.contains("main"));
+    let plain = lines
+        .iter()
+        .map(|line| strip_ansi(line))
+        .collect::<Vec<_>>();
+    assert_eq!(plain.first().map(|line| line.trim()), Some("```rust"));
+    assert!(plain.iter().any(|line| line.contains("main")));
+    assert_eq!(plain.last().map(|line| line.trim()), Some("```"));
+    assert!(!plain.iter().any(|line| line.contains('┌') || line.contains('└')));
 }
 
 #[test]

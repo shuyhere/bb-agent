@@ -489,6 +489,68 @@ fn pending_tool_header_has_no_intermediate_output_placeholder() {
 }
 
 #[test]
+fn bash_tool_call_body_renders_as_raw_fenced_lines_without_tool_prefixes() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 100,
+            height: 24,
+        },
+    );
+
+    let _ = state.apply_command(TuiCommand::TurnStart { turn_index: 0 });
+    let _ = state.apply_command(TuiCommand::ToolCallStart {
+        id: "tool-1".into(),
+        name: "bash".into(),
+    });
+    let _ = state.apply_command(TuiCommand::ToolCallDelta {
+        id: "tool-1".into(),
+        args: serde_json::json!({"command":"./native/bb-dev --help\necho \"bash is working\""}).to_string(),
+    });
+    let _ = state.apply_command(TuiCommand::ToolExecuting {
+        id: "tool-1".into(),
+    });
+    let _ = state.apply_command(TuiCommand::ToolResult {
+        id: "tool-1".into(),
+        name: "bash".into(),
+        content: vec![ContentBlock::Text {
+            text: "ok".to_string(),
+        }],
+        details: Some(serde_json::json!({"exitCode": 0})),
+        artifact_path: None,
+        is_error: false,
+    });
+    state.prepare_for_render();
+
+    let plain_lines = render_transcript(&state, &state.projection, 100, 24)
+        .into_iter()
+        .map(|line| crate::utils::strip_ansi(&line))
+        .collect::<Vec<_>>();
+
+    let fence = plain_lines
+        .iter()
+        .find(|line| line.trim() == "```bash")
+        .expect("opening fence");
+    let cmd1 = plain_lines
+        .iter()
+        .find(|line| line.trim() == "./native/bb-dev --help")
+        .expect("first command line");
+    let cmd2 = plain_lines
+        .iter()
+        .find(|line| line.trim() == "echo \"bash is working\"")
+        .expect("second command line");
+    let closing = plain_lines
+        .iter()
+        .find(|line| line.trim() == "```")
+        .expect("closing fence");
+
+    assert!(!fence.contains("⎿"));
+    assert!(!cmd1.contains("⎿"));
+    assert!(!cmd2.contains("⎿"));
+    assert!(!closing.contains("⎿"));
+}
+
+#[test]
 fn summary_notes_render_with_header_block() {
     let mut transcript = crate::tui::transcript::Transcript::new();
     transcript.append_root_block(

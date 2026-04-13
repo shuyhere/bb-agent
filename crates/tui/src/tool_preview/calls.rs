@@ -11,9 +11,9 @@ pub fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> S
 
     let Ok(args) = serde_json::from_str::<Value>(raw_args) else {
         return match name {
-            "bash" if extract_tool_arg_string_relaxed(raw_args, "command").is_some() => {
-                String::new()
-            }
+            "bash" => extract_tool_arg_string_relaxed(raw_args, "command")
+                .map(|command| render_bash_call_body_from_command(&command, expanded).join("\n"))
+                .unwrap_or_default(),
             _ => raw_args.to_string(),
         };
     };
@@ -21,7 +21,8 @@ pub fn format_tool_call_content(name: &str, raw_args: &str, expanded: bool) -> S
     let lines = match name {
         "write" => render_write_call_body(&args, expanded),
         "edit" => render_edit_call_body(&args),
-        "bash" | "read" | "ls" | "grep" | "find" | "web_search" | "web_fetch" | "browser_fetch" => {
+        "bash" => render_bash_call_body(&args, expanded),
+        "read" | "ls" | "grep" | "find" | "web_search" | "web_fetch" | "browser_fetch" => {
             Vec::new()
         }
         _ => render_generic_call_body(&args),
@@ -73,5 +74,28 @@ fn render_write_call_body(args: &Value, expanded: bool) -> Vec<String> {
             lines.push(more_lines_expand_hint(preview_lines.len() - max_lines));
         }
     }
+    lines
+}
+
+fn render_bash_call_body(args: &Value, expanded: bool) -> Vec<String> {
+    let command = arg_str(args, "command").unwrap_or_default();
+    render_bash_call_body_from_command(&command, expanded)
+}
+
+fn render_bash_call_body_from_command(command: &str, expanded: bool) -> Vec<String> {
+    if command.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let preview_lines: Vec<String> = command.lines().map(replace_tabs).collect();
+    let max_lines = if expanded { 120 } else { 8 };
+
+    let mut lines = Vec::with_capacity(preview_lines.len().min(max_lines) + 3);
+    lines.push("```bash".to_string());
+    lines.extend(preview_lines.iter().take(max_lines).cloned());
+    if preview_lines.len() > max_lines {
+        lines.push(more_lines_expand_hint(preview_lines.len() - max_lines));
+    }
+    lines.push("```".to_string());
     lines
 }
