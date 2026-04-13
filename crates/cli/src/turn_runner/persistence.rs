@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bb_core::types::*;
 use bb_provider::CollectedResponse;
+
+use crate::cache_metrics::ResolvedCacheUsage;
 use bb_provider::registry::Model;
 use bb_session::store;
 use chrono::Utc;
@@ -38,11 +40,11 @@ fn assistant_content_from_response(collected: &CollectedResponse) -> Vec<Assista
     assistant_content
 }
 
-fn calculate_cost(model: &Model, collected: &CollectedResponse) -> Cost {
-    let inp = collected.input_tokens;
-    let out = collected.output_tokens;
-    let cr = collected.cache_read_tokens;
-    let cw = collected.cache_write_tokens;
+fn calculate_cost(model: &Model, usage: &ResolvedCacheUsage) -> Cost {
+    let inp = usage.effective_input_tokens;
+    let out = usage.effective_output_tokens;
+    let cr = usage.effective_cache_read_tokens;
+    let cw = usage.effective_cache_write_tokens;
     let model_cost = &model.cost;
 
     Cost {
@@ -110,11 +112,12 @@ pub(super) fn append_assistant_message(
     session_id: &str,
     model: &Model,
     collected: &CollectedResponse,
+    usage: &ResolvedCacheUsage,
 ) -> Result<()> {
-    let inp = collected.input_tokens;
-    let out = collected.output_tokens;
-    let cr = collected.cache_read_tokens;
-    let cw = collected.cache_write_tokens;
+    let inp = usage.effective_input_tokens;
+    let out = usage.effective_output_tokens;
+    let cr = usage.effective_cache_read_tokens;
+    let cw = usage.effective_cache_write_tokens;
 
     let assistant_entry = SessionEntry::Message {
         base: next_entry_base(conn, session_id),
@@ -127,8 +130,8 @@ pub(super) fn append_assistant_message(
                 output: out,
                 cache_read: cr,
                 cache_write: cw,
-                total_tokens: inp + out + cr + cw,
-                cost: calculate_cost(model, collected),
+                total_tokens: usage.prompt_token_total + out,
+                cost: calculate_cost(model, usage),
             },
             stop_reason: if collected.tool_calls.is_empty() {
                 StopReason::Stop

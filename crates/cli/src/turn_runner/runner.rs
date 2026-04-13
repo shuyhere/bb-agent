@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cache_metrics::{
     RequestMutationFlags, append_request_metrics_log, build_final_request_metrics,
-    commit_request_metrics_state, prepare_request_metrics,
+    commit_request_metrics_state, prepare_request_metrics, resolve_cache_usage,
 };
 use crate::compaction_exec::execute_session_compaction;
 
@@ -189,9 +189,16 @@ pub(crate) async fn run_turn_inner(
         }
 
         let collected = CollectedResponse::from_events(&stream.events);
+        let resolved_usage = resolve_cache_usage(&prepared_metrics, &collected);
         {
             let conn = config.conn.lock().await;
-            append_assistant_message(&conn, &config.session_id, &config.model, &collected)?;
+            append_assistant_message(
+                &conn,
+                &config.session_id,
+                &config.model,
+                &collected,
+                &resolved_usage,
+            )?;
         }
         overflow_recovery_attempted = false;
 
@@ -208,10 +215,7 @@ pub(crate) async fn run_turn_inner(
             stream.first_stream_event_at_ms,
             stream.first_text_delta_at_ms,
             finished_at_ms,
-            collected.input_tokens,
-            collected.output_tokens,
-            collected.cache_read_tokens,
-            collected.cache_write_tokens,
+            &resolved_usage,
             total_latency_ms,
             tool_wait_ms_total,
             resume_latency_ms,
@@ -274,7 +278,7 @@ pub(crate) async fn run_turn_inner(
         )
         .await?;
         tool_wait_ms_total = tool_wait_started.elapsed().as_millis() as u64;
-        resume_latency_ms = Some(0);
+        resume_latency_ms = None;
 
         turn_index += 1;
         system_prompt_mutated = false;
