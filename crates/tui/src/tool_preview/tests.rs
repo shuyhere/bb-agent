@@ -34,20 +34,44 @@ fn grep_call_body_is_empty_because_title_shows_details() {
 }
 
 #[test]
-fn bash_call_body_is_empty_because_header_shows_command_context() {
+fn bash_call_body_renders_as_fenced_code_block() {
     let rendered = format_tool_call_content(
         "bash",
         &serde_json::json!({"command":"echo hi\nprintf done","timeout": 5.0}).to_string(),
         false,
     );
-    assert!(rendered.is_empty());
+    assert!(rendered.starts_with("```bash\n"));
+    assert!(rendered.contains("echo hi"));
+    assert!(rendered.contains("printf done"));
+    assert!(rendered.ends_with("\n```") || rendered.ends_with("```"));
 }
 
 #[test]
-fn bash_invalid_json_args_do_not_dump_raw_command_blob() {
+fn bash_invalid_json_args_still_render_relaxed_fenced_command_preview() {
     let raw = "{\"command\": \"cat > /tmp/demo.py << 'PYEOF'\nprint('hi')\nPYEOF\"}";
     let rendered = format_tool_call_content("bash", raw, false);
-    assert!(rendered.is_empty());
+    assert!(rendered.starts_with("```bash\n"));
+    assert!(rendered.contains("cat > /tmp/demo.py << 'PYEOF'"));
+    assert!(rendered.contains("print('hi')"));
+    assert!(rendered.ends_with("\n```") || rendered.ends_with("```"));
+}
+
+#[test]
+fn collapsed_bash_call_preview_mentions_expand_hint_when_multiline() {
+    let command = (1..=12)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = format_tool_call_content(
+        "bash",
+        &serde_json::json!({"command": command}).to_string(),
+        false,
+    );
+    assert!(rendered.contains("```bash"));
+    assert!(rendered.contains("line 1"));
+    assert!(rendered.contains("line 8"));
+    assert!(!rendered.contains("line 9"));
+    assert!(rendered.contains(crate::ui_hints::more_lines_expand_hint(4).as_str()));
 }
 
 #[test]

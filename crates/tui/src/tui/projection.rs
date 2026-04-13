@@ -345,8 +345,12 @@ fn render_content_lines(block: &TranscriptBlock, width: usize, depth: usize) -> 
             }
         }
         BlockKind::ToolUse => {
-            let (first_prefix, continuation_prefix) = response_prefixes(depth, &safe_content);
-            wrap_with_prefix(&safe_content, width, first_prefix, continuation_prefix)
+            if safe_content.trim_start().starts_with("```") {
+                wrap_with_prefix(&safe_content, width, "", "")
+            } else {
+                let (first_prefix, continuation_prefix) = response_prefixes(depth, &safe_content);
+                wrap_with_prefix(&safe_content, width, first_prefix, continuation_prefix)
+            }
         }
         BlockKind::ToolResult => render_tool_result_content_lines(&safe_content, width, depth),
     }
