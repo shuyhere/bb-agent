@@ -175,6 +175,52 @@ fn validate_input(input: &WebFetchInput) -> BbResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bb_core::types::ContentBlock;
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use std::thread;
+
+    fn make_ctx(dir: &Path) -> ToolContext {
+        ToolContext {
+            cwd: dir.to_path_buf(),
+            artifacts_dir: dir.to_path_buf(),
+            execution_policy: crate::ExecutionPolicy::Safety,
+            on_output: None,
+            web_search: None,
+            execution_mode: crate::ToolExecutionMode::Interactive,
+            request_approval: None,
+        }
+    }
+
+    fn spawn_single_response_server(
+        status_line: &str,
+        content_type: &str,
+        body: &str,
+    ) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let body = body.to_string();
+        let content_type = content_type.to_string();
+        let status_line = status_line.to_string();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+            let mut request_buf = [0u8; 2048];
+            let _ = stream.read(&mut request_buf);
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            let _ = stream.flush();
+        });
+
+        format!("http://{addr}/github-contents")
+    }
 
     #[test]
     fn validation_fails_on_empty_url() {
@@ -289,5 +335,49 @@ mod tests {
             )
         );
         assert!(output.contains("copy the citation line above exactly"));
+    }
+
+    #[tokio::test]
+    async fn public_json_api_response_is_returned_as_plain_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let url = spawn_single_response_server(
+            "200 OK",
+            "application/json; charset=utf-8",
+            r#"[{"name":"cli","path":"codex-rs/cli","type":"dir"}]"#,
+        );
+
+        let result = WebFetchTool
+            .execute(
+                serde_json::json!({
+                    "url": url,
+                    "max_chars": 2_000,
+                    "timeout": 5,
+                }),
+                &make_ctx(dir.path()),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("web_fetch should accept public JSON API responses");
+
+        assert!(!result.is_error);
+        let details = result.details.expect("details");
+        assert_eq!(
+            details.get("contentType").and_then(|v| v.as_str()),
+            Some("application/json; charset=utf-8")
+        );
+        assert_eq!(
+            details.get("extractionSource").and_then(|v| v.as_str()),
+            Some("plain_text")
+        );
+        assert_eq!(details.get("status").and_then(|v| v.as_u64()), Some(200));
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text result"),
+        };
+        assert!(text.contains("\"name\":\"cli\""));
+        assert!(text.contains("\"path\":\"codex-rs/cli\""));
+        assert!(text.contains("Content-Type: application/json; charset=utf-8"));
+        assert!(text.contains("Extraction: plain_text"));
     }
 }
