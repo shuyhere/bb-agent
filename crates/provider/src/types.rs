@@ -1,3 +1,4 @@
+use bb_core::types::CacheMetricsSource;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -97,4 +98,5 @@ pub struct UsageInfo {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    pub cache_metrics_source: CacheMetricsSource,
 }

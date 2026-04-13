@@ -12,6 +12,7 @@ mod traits;
 mod transforms;
 mod types;
 
+pub use bb_core::types::CacheMetricsSource;
 pub use error::{ProviderError, Result};
 pub use streaming::{CollectedResponse, CollectedToolCall};
 pub use traits::Provider;

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::{StreamEvent, UsageInfo};
+use crate::{CacheMetricsSource, StreamEvent, UsageInfo};
 
 #[derive(Clone, Debug)]
 enum BlockKind {
@@ -35,6 +35,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
                     cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
                     cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                    cache_metrics_source: CacheMetricsSource::Unknown,
                 }));
             }
         }
@@ -179,6 +180,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
                     cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
                     cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                    cache_metrics_source: CacheMetricsSource::Unknown,
                 }));
             }
         }

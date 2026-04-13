@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::CompletionRequest;
 use crate::RequestOptions;
 use crate::StreamEvent;
-use crate::UsageInfo;
+use crate::{CacheMetricsSource, UsageInfo};
 use crate::retry::with_retry;
 
 pub(super) fn should_use_responses_api(
@@ -440,5 +440,6 @@ fn send_responses_usage(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) 
         output_tokens: output,
         cache_read_tokens: cached,
         cache_write_tokens: 0,
+        cache_metrics_source: CacheMetricsSource::Unknown,
     }));
 }

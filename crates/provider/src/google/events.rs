@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::UsageInfo;
+use crate::{CacheMetricsSource, UsageInfo};
 
 pub(super) fn process_google_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
     if let Some(usage) = event.get("usageMetadata") {
@@ -12,6 +12,7 @@ pub(super) fn process_google_event(event: &Value, tx: &mpsc::UnboundedSender<Str
             output_tokens: output,
             cache_read_tokens: cache_read,
             cache_write_tokens: 0,
+            cache_metrics_source: CacheMetricsSource::Unknown,
         }));
     }
 

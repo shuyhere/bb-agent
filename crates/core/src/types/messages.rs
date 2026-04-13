@@ -15,6 +15,15 @@ pub struct Cost {
     pub total: f64,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheMetricsSource {
+    #[default]
+    Unknown,
+    Official,
+    Estimated,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input: u64,

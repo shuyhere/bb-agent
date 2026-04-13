@@ -8,7 +8,7 @@ use super::*;
 use futures::StreamExt;
 use std::collections::HashSet;
 
-use crate::UsageInfo;
+use crate::{CacheMetricsSource, UsageInfo};
 
 pub(super) use auth::extract_openai_account_id;
 use request::{
@@ -211,6 +211,7 @@ impl OpenAiProvider {
                                 output_tokens: output,
                                 cache_read_tokens: cached,
                                 cache_write_tokens: 0,
+                                cache_metrics_source: CacheMetricsSource::Unknown,
                             }));
                         }
                         let _ = tx.send(StreamEvent::Done);

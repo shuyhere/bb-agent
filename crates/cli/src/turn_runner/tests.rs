@@ -225,6 +225,7 @@ impl Provider for CacheAwareProvider {
             output_tokens: 10,
             cache_read_tokens: cached,
             cache_write_tokens: 0,
+            cache_metrics_source: bb_provider::CacheMetricsSource::Unknown,
         }));
         let _ = tx.send(StreamEvent::TextDelta {
             text: format!("turn-{call_index}"),
