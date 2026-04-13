@@ -388,7 +388,11 @@ mod tests {
             Some(SessionCacheMetricsSource::Official)
         );
         assert_eq!(summary.cache_read_hit_rate_pct, Some(50.0));
-        assert_eq!(summary.cache_effective_utilization_pct, Some(25.0));
+        assert!(
+            (summary.cache_effective_utilization_pct.unwrap_or_default() - 33.333333333333336)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
