@@ -1,52 +1,36 @@
 use rand::Rng;
 
 const STATUS_WORDS: &[&str] = &[
-    // BB-ish thinking / coding motion
-    "thinking",
-    "pondering",
-    "mulling",
-    "planning",
-    "reading",
-    "scanning",
-    "grepping",
-    "diffing",
-    "patching",
-    "stitching",
-    "checking",
-    "rechecking",
-    "comparing",
-    "tracing",
-    "tracking",
-    "sorting",
-    "gathering",
-    "indexing",
-    "compacting",
-    "summarizing",
-    "polishing",
-    "tidying",
-    "smoothing",
-    "untangling",
-    "tinkering",
-    "noodling",
-    "scribbling",
-    // Soft / cuddly BB personality
-    "peeking",
-    "listening",
-    "humming",
-    "purring",
-    "blinking",
-    "wiggling",
-    "scooting",
-    "sniffing",
-    "snuffling",
-    "nuzzling",
-    "snuggling",
-    "cuddling",
-    "nesting",
-    "settling",
-    "drifting",
-    "resting",
-    "tiptoeing",
+    "Thinking",
+    "Inferring",
+    "Processing",
+    "Generating",
+    "Composing",
+    "Considering",
+    "Contemplating",
+    "Deliberating",
+    "Determining",
+    "Imagining",
+    "Musing",
+    "Pondering",
+    "Puzzling",
+    "Synthesizing",
+    "Working",
+    "Computing",
+    "Creating",
+    "Crafting",
+    "Tinkering",
+    "Vibing",
+    "Beboppin'",
+    "Booping",
+    "Canoodling",
+    "Dilly-dallying",
+    "Flibbertigibbeting",
+    "Lollygagging",
+    "Razzle-dazzling",
+    "Shenaniganing",
+    "Tomfoolering",
+    "Whatchamacalliting",
 ];
 
 /// Returns a randomly selected fullscreen status vibe.
@@ -90,18 +74,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vibe_list_is_nonempty_and_all_ing_status_words() {
-        assert!(all_vibes().len() >= 24);
+    fn vibe_list_matches_expected_curated_words() {
+        assert_eq!(all_vibes().len(), 30);
         assert!(all_vibes().iter().all(|word| !word.trim().is_empty()));
-        assert!(all_vibes().iter().all(|word| word.ends_with("ing")));
-    }
-
-    #[test]
-    fn vibe_list_contains_bbish_status_words() {
-        assert!(all_vibes().contains(&"thinking"));
-        assert!(all_vibes().contains(&"patching"));
-        assert!(all_vibes().contains(&"purring"));
-        assert!(all_vibes().contains(&"snuggling"));
+        assert!(all_vibes().contains(&"Thinking"));
+        assert!(all_vibes().contains(&"Synthesizing"));
+        assert!(all_vibes().contains(&"Vibing"));
+        assert!(all_vibes().contains(&"Beboppin'"));
+        assert!(all_vibes().contains(&"Whatchamacalliting"));
     }
 
     #[test]
