@@ -98,7 +98,7 @@ pub(crate) enum ExtensionCommandOutcome {
     Nothing,
     /// Plain status text to surface to the user.
     Text(String),
-    /// Open an interactive select menu in the fullscreen TUI. Picking an
+    /// Open an interactive select menu in the TUI. Picking an
     /// item re-invokes `/<command> <item.value>`.
     Menu {
         command: String,
@@ -114,7 +114,7 @@ pub(crate) enum ExtensionCommandOutcome {
         note: Option<String>,
         prompt: String,
     },
-    /// Activate a saved agent directly in the current fullscreen session
+    /// Activate a saved agent directly in the current TUI session
     /// without routing through the model loop.
     ActivateAgent {
         agent_id: String,
@@ -127,7 +127,7 @@ impl ExtensionCommandOutcome {
         match self {
             ExtensionCommandOutcome::Text(text) => Some(text),
             ExtensionCommandOutcome::Dispatch { note, prompt } => {
-                // Non-fullscreen callers (e.g. `bb run`) can't dispatch a
+                // Non-TUI callers (e.g. `bb run`) can't dispatch a
                 // turn mid-flight, so fall back to printing both the note
                 // and the prompt as plain text.
                 let mut out = String::new();
@@ -663,7 +663,7 @@ fn parse_command_prompt_result(command: &str, value: &Value) -> Option<Extension
 }
 
 /// A result shaped like `{ dispatch: { prompt: "...", note?: "..." } }`
-/// (or `{ dispatch: "prompt text" }` for the short form) tells the fullscreen
+/// (or `{ dispatch: "prompt text" }` for the short form) tells the tui
 /// controller to show `note` as a status banner AND to immediately submit
 /// `prompt` as a user turn so the agent acts on it. This is how Shape hands
 /// a build plan back to the main agent loop.

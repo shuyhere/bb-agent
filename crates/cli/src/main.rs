@@ -5,7 +5,7 @@ mod agents_md;
 mod compaction_exec;
 mod extensions;
 
-mod fullscreen;
+mod tui;
 mod input_files;
 mod login;
 mod models;
@@ -123,14 +123,6 @@ struct Cli {
     /// Verbose startup
     #[arg(long)]
     verbose: bool,
-
-    /// Legacy no-op flag kept for compatibility; the TUI is now the default
-    #[arg(
-        long = "fullscreen-transcript",
-        visible_alias = "fullscreen",
-        hide = true
-    )]
-    fullscreen_transcript: bool,
 
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
@@ -398,7 +390,7 @@ async fn main() -> Result<()> {
     if cli.print {
         run::run_print_mode(cli).await
     } else {
-        fullscreen::run_fullscreen_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
+        tui::run_tui_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
             .await
     }
 }

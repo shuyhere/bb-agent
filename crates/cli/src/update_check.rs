@@ -5,7 +5,7 @@ use std::{
 };
 
 use bb_core::settings::Settings;
-use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel};
+use bb_tui::tui::{TuiCommand, TuiNoteLevel};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -51,14 +51,14 @@ struct UpdateCheckCache {
 }
 
 pub(crate) fn spawn_update_check_notice_task(
-    command_tx: mpsc::UnboundedSender<FullscreenCommand>,
+    command_tx: mpsc::UnboundedSender<TuiCommand>,
     cwd: PathBuf,
 ) {
     tokio::spawn(async move {
         match check_for_updates(false, &cwd).await {
             Ok(UpdateCheckOutcome::UpdateAvailable(notice)) => {
-                let _ = command_tx.send(FullscreenCommand::PushNote {
-                    level: FullscreenNoteLevel::Highlight,
+                let _ = command_tx.send(TuiCommand::PushNote {
+                    level: TuiNoteLevel::Highlight,
                     text: build_update_available_note(&notice),
                 });
             }

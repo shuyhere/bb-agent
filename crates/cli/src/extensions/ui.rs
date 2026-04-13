@@ -126,7 +126,7 @@ impl UiHandler for ExtensionUiHandler {
                     statuses.lock().await.insert(key, text);
                 }
                 "confirm" | "select" | "input" | "editor" => {
-                    // Fullscreen currently does not surface extension dialogs inline.
+                    // Tui currently does not surface extension dialogs inline.
                     // Fall back to the default canned response behavior.
                 }
                 "setWidget" | "setTitle" | "set_editor_text" => {

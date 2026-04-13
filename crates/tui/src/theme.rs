@@ -116,7 +116,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Default dark theme for the fullscreen TUI.
+    /// Default dark theme for the TUI.
     pub fn dark() -> Self {
         Self {
             // Text styles

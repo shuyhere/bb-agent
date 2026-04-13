@@ -1,0 +1,272 @@
+use std::path::Path;
+
+use crate::{
+    tui::events::cleanup_managed_clipboard_temp_image,
+    slash_commands::matches_shared_local_slash_submission,
+};
+
+use super::{
+    frame::attachment_chip_label,
+    runtime::TuiState,
+    transcript::{BlockKind, NewBlock},
+    types::TuiSubmission,
+};
+
+impl TuiState {
+    pub(super) fn approval_insert_char(&mut self, ch: char) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_input.insert(dialog.deny_cursor, ch);
+        dialog.deny_cursor += ch.len_utf8();
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_backspace(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor == 0 {
+            return;
+        }
+        let prev = previous_boundary(&dialog.deny_input, dialog.deny_cursor);
+        dialog.deny_input.drain(prev..dialog.deny_cursor);
+        dialog.deny_cursor = prev;
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_left(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor == 0 {
+            return;
+        }
+        dialog.deny_cursor = previous_boundary(&dialog.deny_input, dialog.deny_cursor);
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_right(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        if dialog.deny_cursor >= dialog.deny_input.len() {
+            return;
+        }
+        dialog.deny_cursor = next_boundary(&dialog.deny_input, dialog.deny_cursor);
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_home(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_cursor = 0;
+        self.dirty = true;
+    }
+
+    pub(super) fn approval_move_end(&mut self) {
+        let Some(dialog) = self.approval_dialog.as_mut() else {
+            return;
+        };
+        dialog.deny_cursor = dialog.deny_input.len();
+        self.dirty = true;
+    }
+
+    pub(super) fn submit_input(&mut self) {
+        let submitted = self.input.trim_end().to_string();
+        let image_paths = self.take_pending_image_paths();
+        if submitted.trim().is_empty() && image_paths.is_empty() {
+            self.status_line = "empty input ignored".to_string();
+            self.dirty = true;
+            return;
+        }
+
+        if image_paths.is_empty() && matches_shared_local_slash_submission(&submitted) {
+            self.submit_local_command(submitted);
+            return;
+        }
+
+        // Expand paste markers back to full content before submitting.
+        let expanded = self.expand_paste_markers(&submitted);
+
+        if !submitted.is_empty() && !self.local_action_active {
+            self.submitted_inputs.push(submitted.clone());
+        }
+
+        if self.local_action_active {
+            let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
+            self.queued_submission_previews
+                .push_back(transcript_preview);
+            if image_paths.is_empty() {
+                self.pending_submissions
+                    .push_back(TuiSubmission::Input(expanded));
+            } else {
+                self.pending_submissions
+                    .push_back(TuiSubmission::InputWithImages {
+                        text: expanded,
+                        image_paths,
+                    });
+            }
+            self.input.clear();
+            self.cursor = 0;
+            self.slash_menu = None;
+            self.select_menu = None;
+            self.at_file_menu = None;
+            self.editing_queued_messages = false;
+            self.status_line = self.mode_help_text();
+            self.paste_storage.clear();
+            self.paste_counter = 0;
+            self.dirty = true;
+            return;
+        }
+
+        // Include any pending image attachments with this submission.
+        let transcript_preview = format_submitted_user_message(&submitted, &image_paths);
+
+        // Show the collapsed version in transcript (keeps it readable)
+        self.transcript.append_root_block(
+            NewBlock::new(BlockKind::UserMessage, "prompt").with_content(transcript_preview),
+        );
+        if image_paths.is_empty() {
+            self.pending_submissions
+                .push_back(TuiSubmission::Input(expanded));
+        } else {
+            self.pending_submissions
+                .push_back(TuiSubmission::InputWithImages {
+                    text: expanded,
+                    image_paths,
+                });
+        }
+
+        self.input.clear();
+        self.cursor = 0;
+        self.slash_menu = None;
+        self.select_menu = None;
+        self.at_file_menu = None;
+        self.status_line = "Working...".to_string();
+        // Clear paste storage after submit
+        self.paste_storage.clear();
+        self.paste_counter = 0;
+        self.projection_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Expand `[paste #N ...]` markers back to their stored content.
+    fn expand_paste_markers(&self, text: &str) -> String {
+        if self.paste_storage.is_empty() {
+            return text.to_string();
+        }
+        let mut result = text.to_string();
+        for (&id, content) in &self.paste_storage {
+            // Match markers like [paste #1 +123 lines] or [paste #1 1234 chars]
+            let patterns = [format!("[paste #{id} "), format!("[paste #{id}]")];
+            for pat in &patterns {
+                if let Some(start) = result.find(pat.as_str()) {
+                    // Find the closing bracket
+                    if let Some(end) = result[start..].find(']') {
+                        result.replace_range(start..start + end + 1, content);
+                        break; // Only replace first occurrence per ID
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub(super) fn submit_local_command(&mut self, submitted: String) {
+        self.pending_submissions
+            .push_back(TuiSubmission::Input(submitted));
+        self.input.clear();
+        self.cursor = 0;
+        self.slash_menu = None;
+        self.select_menu = None;
+        self.status_line = self.mode_help_text();
+        self.dirty = true;
+    }
+
+    pub(super) fn insert_char(&mut self, ch: char) {
+        self.input.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+        self.update_slash_menu();
+        self.update_at_file_menu();
+        self.dirty = true;
+    }
+
+    pub(super) fn insert_str(&mut self, text: &str) {
+        self.input.insert_str(self.cursor, text);
+        self.cursor += text.len();
+        self.update_slash_menu();
+        self.update_at_file_menu();
+        self.dirty = true;
+    }
+
+    pub(super) fn backspace(&mut self) {
+        if self.input.is_empty() {
+            if let Some(path) = self.pending_image_paths.pop() {
+                cleanup_managed_clipboard_temp_image(Path::new(&path));
+                self.suppress_next_paste_payload = false;
+                self.status_line.clear();
+                self.dirty = true;
+            }
+            return;
+        }
+        if self.cursor == 0 {
+            return;
+        }
+        let prev = previous_boundary(&self.input, self.cursor);
+        self.input.drain(prev..self.cursor);
+        self.cursor = prev;
+        self.update_slash_menu();
+        self.update_at_file_menu();
+        self.dirty = true;
+    }
+
+    pub(super) fn move_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor = previous_boundary(&self.input, self.cursor);
+        self.update_slash_menu();
+        self.update_at_file_menu();
+        self.dirty = true;
+    }
+
+    pub(super) fn move_right(&mut self) {
+        if self.cursor >= self.input.len() {
+            return;
+        }
+        self.cursor = next_boundary(&self.input, self.cursor);
+        self.update_slash_menu();
+        self.update_at_file_menu();
+        self.dirty = true;
+    }
+}
+
+fn format_submitted_user_message(text: &str, image_paths: &[String]) -> String {
+    let attachment_lines = image_paths
+        .iter()
+        .filter_map(|path| attachment_chip_label(Path::new(path)));
+
+    let mut lines: Vec<String> = attachment_lines.collect();
+    if !text.is_empty() {
+        lines.push(text.to_string());
+    }
+    lines.join("\n")
+}
+
+fn previous_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .char_indices()
+        .next_back()
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn next_boundary(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .char_indices()
+        .nth(1)
+        .map(|(idx, _)| cursor + idx)
+        .unwrap_or(text.len())
+}

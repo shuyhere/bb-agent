@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn allows_simple_read_only_commands() {
-        let assessment = classify_bash_command("rg Fullscreen crates/tui/src | head -n 5");
+        let assessment = classify_bash_command("rg Tui crates/tui/src | head -n 5");
         assert_eq!(assessment.disposition, BashSafetyDisposition::Safe);
     }
 
