@@ -1,19 +1,27 @@
 use std::borrow::Cow;
 
+pub const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "find",
+    "grep",
+    "ls",
+    "web_search",
+    "web_fetch",
+    "browser_fetch",
+];
+
 fn is_builtin_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "read"
-            | "bash"
-            | "edit"
-            | "write"
-            | "find"
-            | "grep"
-            | "ls"
-            | "web_search"
-            | "web_fetch"
-            | "browser_fetch"
-    )
+    BUILTIN_TOOL_NAMES.contains(&name)
+}
+
+pub fn default_builtin_tool_names() -> Vec<String> {
+    BUILTIN_TOOL_NAMES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect()
 }
 
 pub fn normalize_requested_tool_name(name: &str) -> Cow<'_, str> {

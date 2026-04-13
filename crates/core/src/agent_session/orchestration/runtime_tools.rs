@@ -1,8 +1,9 @@
 use super::super::config::{PromptSource, StreamingBehavior};
 use super::super::events::AgentSessionEvent;
-use super::super::messages::{ImageContent, UserMessage, content_from_text_and_images};
+use super::super::messages::{content_from_text_and_images, ImageContent, UserMessage};
 use super::super::runtime::RuntimeBuildOptions;
 use super::super::session::AgentSession;
+use crate::tool_names::default_builtin_tool_names;
 
 impl AgentSession {
     pub(crate) fn install_agent_subscription(&mut self) {
@@ -38,10 +39,10 @@ impl AgentSession {
                     })
                     .collect()
             } else {
-                ["read", "bash", "edit", "write"]
-                    .iter()
-                    .map(|&name| RtToolDefinition {
-                        name: name.to_owned(),
+                default_builtin_tool_names()
+                    .into_iter()
+                    .map(|name| RtToolDefinition {
+                        name,
                         description: None,
                     })
                     .collect()

@@ -8,6 +8,7 @@ use bb_provider::{
     StreamEvent,
 };
 use bb_session::context;
+use bb_tools::Tool;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -246,7 +247,7 @@ async fn build_request(
     let mut request = CompletionRequest {
         system_prompt: system_prompt.to_string(),
         messages: provider_messages,
-        tools: config.tool_defs.clone(),
+        tools: build_tool_defs(&config.tools),
         extra_tool_schemas: vec![],
         model: config.model.id.clone(),
         max_tokens: Some(config.model.max_tokens as u32),
@@ -295,6 +296,22 @@ async fn apply_context_hook(
     }
 
     Ok(messages)
+}
+
+fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name(),
+                    "description": tool.description(),
+                    "parameters": tool.parameters_schema(),
+                }
+            })
+        })
+        .collect()
 }
 
 async fn collect_stream_events(

@@ -139,6 +139,71 @@ impl Provider for AliasProvider {
     }
 }
 
+struct SchemaAwareProvider {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for SchemaAwareProvider {
+    fn name(&self) -> &str {
+        "schema-aware-provider"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+        if call_index == 0 {
+            let tool_names: Vec<String> = request
+                .tools
+                .iter()
+                .filter_map(|tool| tool.get("function"))
+                .filter_map(|function| function.get("name"))
+                .filter_map(|name| name.as_str())
+                .map(|name| name.to_string())
+                .collect();
+
+            let requested_tool = if tool_names.iter().any(|name| name == "bash") {
+                "bash"
+            } else {
+                "read"
+            };
+
+            let args = if requested_tool == "bash" {
+                r#"{"command":"pwd"}"#
+            } else {
+                r#"{"path":"Cargo.toml"}"#
+            };
+
+            let _ = tx.send(StreamEvent::ToolCallStart {
+                id: "tool-schema-1".to_string(),
+                name: requested_tool.to_string(),
+            });
+            let _ = tx.send(StreamEvent::ToolCallDelta {
+                id: "tool-schema-1".to_string(),
+                arguments_delta: args.to_string(),
+            });
+        } else {
+            let _ = tx.send(StreamEvent::TextDelta {
+                text: "done".to_string(),
+            });
+        }
+        let _ = tx.send(StreamEvent::Done);
+        Ok(())
+    }
+}
+
 struct EchoTool {
     invocations: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -177,6 +242,52 @@ impl Tool for EchoTool {
         Ok(ToolResult {
             content: vec![ContentBlock::Text {
                 text: format!("echoed: {command}"),
+            }],
+            details: None,
+            is_error: false,
+            artifact_path: None,
+        })
+    }
+}
+
+struct ReadOnlyTool {
+    invocations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for ReadOnlyTool {
+    fn name(&self) -> &str {
+        "read"
+    }
+
+    fn description(&self) -> &str {
+        "records read invocations"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        _ctx: &bb_tools::ToolContext,
+        _cancel: CancellationToken,
+    ) -> BbResult<ToolResult> {
+        self.invocations.fetch_add(1, Ordering::SeqCst);
+        let path = params
+            .get("path")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: format!("read: {path}"),
             }],
             details: None,
             is_error: false,
@@ -437,6 +548,82 @@ async fn run_turn_normalizes_builtin_tool_aliases_before_lookup() {
         "normalized alias should execute the builtin tool"
     );
     assert!(saw_done, "turn should complete after the aliased tool call");
+}
+
+#[tokio::test]
+async fn run_turn_builds_provider_tool_defs_from_executable_tools() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let invocations = Arc::new(AtomicUsize::new(0));
+
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(SchemaAwareProvider {
+            call_count: AtomicUsize::new(0),
+        }),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![Box::new(ReadOnlyTool {
+            invocations: invocations.clone(),
+        })],
+        tool_defs: vec![json!({
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "stale tool schema that should be ignored",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        })],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("request should use executable tool schemas");
+    assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+    let mut saw_read_tool_result = false;
+    while let Ok(event) = event_rx.try_recv() {
+        if let TurnEvent::ToolResult {
+            is_error, content, ..
+        } = event
+        {
+            let text = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !is_error && text.contains("read: Cargo.toml") {
+                saw_read_tool_result = true;
+            }
+        }
+    }
+
+    assert!(
+        saw_read_tool_result,
+        "provider should only see the executable read tool, not stale bash schemas"
+    );
 }
 
 #[tokio::test]

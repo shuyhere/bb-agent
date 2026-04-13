@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool_names::{default_builtin_tool_names, BUILTIN_TOOL_NAMES};
 
 impl AgentSessionExtensions {
     pub fn refresh_tool_registry(&mut self, options: RefreshToolRegistryOptions) {
@@ -143,12 +144,7 @@ impl AgentSessionExtensions {
         let default_active_tool_names = if let Some(overrides) = &self.base_tools_override {
             overrides.keys().cloned().collect()
         } else {
-            vec![
-                "read".to_owned(),
-                "bash".to_owned(),
-                "edit".to_owned(),
-                "write".to_owned(),
-            ]
+            default_builtin_tool_names()
         };
         let base_active_tool_names = options
             .active_tool_names
@@ -291,13 +287,13 @@ impl AgentSessionExtensions {
 }
 
 pub fn create_all_tool_definitions() -> BTreeMap<String, ToolDefinition> {
-    ["read", "bash", "edit", "write"]
-        .into_iter()
+    BUILTIN_TOOL_NAMES
+        .iter()
         .map(|name| {
             (
-                name.to_owned(),
+                (*name).to_owned(),
                 ToolDefinition {
-                    name: name.to_owned(),
+                    name: (*name).to_owned(),
                     prompt_snippet: None,
                     prompt_guidelines: Vec::new(),
                 },

@@ -4,6 +4,7 @@ use bb_tui::fullscreen::{FullscreenCommand, FullscreenNoteLevel, FullscreenSubmi
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::session_bootstrap::build_tool_defs;
 use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
 use super::controller::{FullscreenController, QueuedPrompt};
@@ -141,6 +142,7 @@ impl FullscreenController {
             conn
         };
         let tools = std::mem::take(&mut self.session_setup.tools);
+        let tool_defs = build_tool_defs(&tools);
 
         Ok(TurnConfig {
             conn: sibling_conn,
@@ -157,7 +159,7 @@ impl FullscreenController {
                 keep_recent_tokens: self.session_setup.compaction_keep_recent_tokens,
             },
             tools,
-            tool_defs: self.session_setup.tool_defs.clone(),
+            tool_defs,
             tool_ctx: bb_tools::ToolContext {
                 cwd: self.session_setup.tool_ctx.cwd.clone(),
                 artifacts_dir: self.session_setup.tool_ctx.artifacts_dir.clone(),
@@ -373,6 +375,7 @@ impl FullscreenController {
             };
 
         if let Some(config) = returned_config {
+            self.session_setup.tool_defs = config.tool_defs;
             self.session_setup.tools = config.tools;
         }
 
