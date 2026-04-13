@@ -440,6 +440,6 @@ fn send_responses_usage(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) 
         output_tokens: output,
         cache_read_tokens: cached,
         cache_write_tokens: 0,
-        cache_metrics_source: CacheMetricsSource::Unknown,
+        cache_metrics_source: CacheMetricsSource::Official,
     }));
 }

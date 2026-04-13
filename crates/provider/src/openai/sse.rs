@@ -53,7 +53,43 @@ pub(super) fn process_openai_sse(
             output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
             cache_read_tokens: cached,
             cache_write_tokens: 0,
-            cache_metrics_source: CacheMetricsSource::Unknown,
+            cache_metrics_source: CacheMetricsSource::Official,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn usage_events_are_marked_official() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_openai_sse(
+            &json!({
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 12,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 30
+                    }
+                }
+            }),
+            &tx,
+            &mut Vec::new(),
+        );
+        drop(tx);
+
+        match rx.blocking_recv().expect("usage event") {
+            StreamEvent::Usage(usage) => {
+                assert_eq!(usage.input_tokens, 90);
+                assert_eq!(usage.output_tokens, 12);
+                assert_eq!(usage.cache_read_tokens, 30);
+                assert_eq!(usage.cache_write_tokens, 0);
+                assert_eq!(usage.cache_metrics_source, CacheMetricsSource::Official);
+            }
+            other => panic!("expected Usage event, got {other:?}"),
+        }
     }
 }

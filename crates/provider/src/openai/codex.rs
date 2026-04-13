@@ -211,7 +211,7 @@ impl OpenAiProvider {
                                 output_tokens: output,
                                 cache_read_tokens: cached,
                                 cache_write_tokens: 0,
-                                cache_metrics_source: CacheMetricsSource::Unknown,
+                                cache_metrics_source: CacheMetricsSource::Estimated,
                             }));
                         }
                         let _ = tx.send(StreamEvent::Done);
