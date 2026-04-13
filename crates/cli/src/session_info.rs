@@ -1,11 +1,8 @@
 use anyhow::Result;
-use bb_core::settings::Settings;
-use bb_core::types::{AgentMessage, AssistantContent, AssistantMessage, SessionEntry, Usage};
-use bb_provider::registry::{CostConfig, ModelRegistry};
+use bb_core::types::{AgentMessage, AssistantContent, AssistantMessage, SessionEntry};
 use bb_session::store;
 use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
-use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionInfoSummary {
@@ -34,28 +31,8 @@ pub(crate) struct SessionInfoSummary {
     pub total_cost: f64,
 }
 
-fn load_session_model_registry(conn: &Connection, session_id: &str) -> ModelRegistry {
-    let mut registry = ModelRegistry::new();
-    if let Ok(Some(row)) = store::get_session(conn, session_id) {
-        registry.load_custom_models(&Settings::load_merged(Path::new(&row.cwd)));
-    }
-    registry
-}
-
-fn calculate_usage_total_cost(usage: &Usage, model_cost: &CostConfig) -> f64 {
-    (model_cost.input / 1_000_000.0) * usage.input as f64
-        + (model_cost.output / 1_000_000.0) * usage.output as f64
-        + (model_cost.cache_read / 1_000_000.0) * usage.cache_read as f64
-        + (model_cost.cache_write / 1_000_000.0) * usage.cache_write as f64
-}
-
-fn recompute_assistant_message_cost(message: &AssistantMessage, registry: &ModelRegistry) -> f64 {
-    registry
-        .find(&message.provider, &message.model)
-        .or_else(|| registry.find_fuzzy(&message.model, Some(&message.provider)))
-        .or_else(|| registry.find_fuzzy(&message.model, None))
-        .map(|model| calculate_usage_total_cost(&message.usage, &model.cost))
-        .unwrap_or(message.usage.cost.total)
+fn assistant_message_cost(message: &AssistantMessage) -> f64 {
+    message.usage.cost.total
 }
 
 pub(crate) fn collect_session_info_summary(
@@ -91,7 +68,6 @@ pub(crate) fn collect_session_info_summary(
         summary.copilot_runtime_expires_at = copilot.copilot_expires_at;
     }
 
-    let registry = load_session_model_registry(conn, session_id);
     let rows = store::get_entries(conn, session_id)?;
     for row in rows {
         let Ok(entry) = store::parse_entry(&row) else {
@@ -112,7 +88,7 @@ pub(crate) fn collect_session_info_summary(
                     summary.output_tokens += message.usage.output;
                     summary.cache_read_tokens += message.usage.cache_read;
                     summary.cache_write_tokens += message.usage.cache_write;
-                    summary.total_cost += recompute_assistant_message_cost(&message, &registry);
+                    summary.total_cost += assistant_message_cost(&message);
                 }
                 AgentMessage::ToolResult(_) => summary.tool_results += 1,
                 _ => {}
@@ -261,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn session_summary_recomputes_cost_from_model_registry() {
+    fn session_summary_uses_stored_message_cost() {
         let conn = store::open_memory().expect("memory db");
         let session_id = store::create_session(&conn, "/tmp").expect("session");
         let assistant = SessionEntry::Message {
@@ -305,7 +281,7 @@ mod tests {
         )
         .expect("summary");
 
-        assert!((summary.total_cost - 36.75).abs() < 1e-9);
+        assert!((summary.total_cost - 110.25).abs() < 1e-9);
         assert_eq!(summary.execution_mode, ExecutionPolicy::Safety);
     }
 
