@@ -8,9 +8,14 @@ use bb_provider::{
     StreamEvent,
 };
 use bb_session::context;
+use chrono::Utc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::cache_metrics::{
+    RequestMutationFlags, append_request_metrics_log, build_final_request_metrics,
+    commit_request_metrics_state, prepare_request_metrics,
+};
 use crate::compaction_exec::execute_session_compaction;
 
 use super::TurnConfig;
@@ -23,6 +28,8 @@ use super::tools::{ToolExecutionEnv, append_cancelled_tool_results, execute_tool
 struct StreamCollection {
     events: Vec<StreamEvent>,
     context_overflow_error: Option<String>,
+    first_stream_event_at_ms: Option<i64>,
+    first_text_delta_at_ms: Option<i64>,
 }
 
 async fn maybe_execute_auto_compaction(
@@ -113,7 +120,10 @@ pub(crate) async fn run_turn_inner(
     let mut turn_index: u32 = 0;
     let mut system_prompt = config.system_prompt.clone();
     let mut overflow_recovery_attempted = false;
+    let mut tool_wait_ms_total: u64 = 0;
+    let mut resume_latency_ms: Option<u64> = None;
 
+    let mut system_prompt_mutated = false;
     if let Some(result) = send_extension_event_safe(
         &config.extensions,
         Event::BeforeAgentStart {
@@ -126,6 +136,9 @@ pub(crate) async fn run_turn_inner(
     .await
     {
         if let Some(updated_prompt) = result.system_prompt {
+            if updated_prompt != system_prompt {
+                system_prompt_mutated = true;
+            }
             system_prompt = updated_prompt;
         }
         if let Some(message) = result.message {
@@ -150,7 +163,12 @@ pub(crate) async fn run_turn_inner(
             break;
         }
 
-        let request = build_request(config, event_tx, &system_prompt).await?;
+        let request_started_at_ms = Utc::now().timestamp_millis();
+        let (request, mut mutation_flags) = build_request(config, event_tx, &system_prompt).await?;
+        mutation_flags.system_prompt_mutated = system_prompt_mutated;
+
+        let prepared_metrics =
+            prepare_request_metrics(&config.request_metrics_state, &request).await?;
         let stream = collect_stream_events(config, event_tx, request).await?;
 
         if let Some(message) = stream.context_overflow_error {
@@ -160,6 +178,10 @@ pub(crate) async fn run_turn_inner(
             }
             if maybe_execute_auto_compaction(config, event_tx, true).await? {
                 overflow_recovery_attempted = true;
+                {
+                    let mut state = config.request_metrics_state.lock().await;
+                    state.context_epoch = state.context_epoch.saturating_add(1);
+                }
                 continue;
             }
             let _ = event_tx.send(TurnEvent::ContextOverflow { message });
@@ -173,8 +195,36 @@ pub(crate) async fn run_turn_inner(
         }
         overflow_recovery_attempted = false;
 
+        let finished_at_ms = Utc::now().timestamp_millis();
+        let total_latency_ms = finished_at_ms.saturating_sub(request_started_at_ms) as u64;
+        let metrics = build_final_request_metrics(
+            prepared_metrics.clone(),
+            &config.session_id,
+            config.provider.name(),
+            &config.model.id,
+            turn_index,
+            &mutation_flags,
+            request_started_at_ms,
+            stream.first_stream_event_at_ms,
+            stream.first_text_delta_at_ms,
+            finished_at_ms,
+            collected.input_tokens,
+            collected.output_tokens,
+            collected.cache_read_tokens,
+            collected.cache_write_tokens,
+            total_latency_ms,
+            tool_wait_ms_total,
+            resume_latency_ms,
+        );
+        let _ = append_request_metrics_log(&metrics);
+        commit_request_metrics_state(&config.request_metrics_state, &prepared_metrics).await;
+
         if collected.tool_calls.is_empty() {
-            let _ = maybe_execute_auto_compaction(config, event_tx, false).await?;
+            let compacted = maybe_execute_auto_compaction(config, event_tx, false).await?;
+            if compacted {
+                let mut state = config.request_metrics_state.lock().await;
+                state.context_epoch = state.context_epoch.saturating_add(1);
+            }
         }
 
         if config.cancel.is_cancelled() && !collected.tool_calls.is_empty() {
@@ -209,6 +259,7 @@ pub(crate) async fn run_turn_inner(
             break;
         }
 
+        let tool_wait_started = std::time::Instant::now();
         execute_tool_calls(
             &collected,
             ToolExecutionEnv {
@@ -222,8 +273,11 @@ pub(crate) async fn run_turn_inner(
             },
         )
         .await?;
+        tool_wait_ms_total = tool_wait_started.elapsed().as_millis() as u64;
+        resume_latency_ms = Some(0);
 
         turn_index += 1;
+        system_prompt_mutated = false;
     }
 
     let _ =
@@ -235,13 +289,17 @@ async fn build_request(
     config: &TurnConfig,
     event_tx: &mpsc::UnboundedSender<TurnEvent>,
     system_prompt: &str,
-) -> Result<CompletionRequest> {
+) -> Result<(CompletionRequest, RequestMutationFlags)> {
     let conn = config.conn.lock().await;
     let context = context::build_context(&conn, &config.session_id)?;
     drop(conn);
 
-    let provider_messages =
-        messages_to_provider(&apply_context_hook(config, event_tx, context.messages).await?);
+    let (messages, context_rewritten) =
+        apply_context_hook(config, event_tx, context.messages).await?;
+    let provider_messages = messages_to_provider(&messages);
+
+    let mut mutation_flags = RequestMutationFlags::default();
+    mutation_flags.context_rewritten = context_rewritten;
 
     let mut request = CompletionRequest {
         system_prompt: system_prompt.to_string(),
@@ -266,17 +324,19 @@ async fn build_request(
         && let Some(payload) = result.payload
         && let Ok(updated_request) = serde_json::from_value::<CompletionRequest>(payload)
     {
+        mutation_flags.request_rewritten = true;
         request = updated_request;
     }
 
-    Ok(request)
+    Ok((request, mutation_flags))
 }
 
 async fn apply_context_hook(
     config: &TurnConfig,
     event_tx: &mpsc::UnboundedSender<TurnEvent>,
     mut messages: Vec<AgentMessage>,
-) -> Result<Vec<AgentMessage>> {
+) -> Result<(Vec<AgentMessage>, bool)> {
+    let mut rewritten = false;
     if let Some(result) = send_extension_event_safe(
         &config.extensions,
         Event::Context(bb_hooks::events::ContextEvent {
@@ -288,13 +348,14 @@ async fn apply_context_hook(
     .await
         && let Some(replacement) = result.messages
     {
+        rewritten = true;
         messages = replacement
             .into_iter()
             .filter_map(|message| serde_json::from_value::<AgentMessage>(message).ok())
             .collect();
     }
 
-    Ok(messages)
+    Ok((messages, rewritten))
 }
 
 async fn collect_stream_events(
@@ -332,9 +393,17 @@ async fn collect_stream_events(
 
     let mut events = Vec::new();
     let mut context_overflow_error = None;
+    let mut first_stream_event_at_ms = None;
+    let mut first_text_delta_at_ms = None;
 
     while let Some(event) = stream_rx.recv().await {
-        forward_stream_event(event_tx, &event, &mut context_overflow_error);
+        forward_stream_event(
+            event_tx,
+            &event,
+            &mut context_overflow_error,
+            &mut first_stream_event_at_ms,
+            &mut first_text_delta_at_ms,
+        );
         events.push(event);
 
         if config.cancel.is_cancelled() {
@@ -363,6 +432,8 @@ async fn collect_stream_events(
     Ok(StreamCollection {
         events,
         context_overflow_error,
+        first_stream_event_at_ms,
+        first_text_delta_at_ms,
     })
 }
 
@@ -408,15 +479,29 @@ fn forward_stream_event(
     event_tx: &mpsc::UnboundedSender<TurnEvent>,
     event: &StreamEvent,
     context_overflow_error: &mut Option<String>,
+    first_stream_event_at_ms: &mut Option<i64>,
+    first_text_delta_at_ms: &mut Option<i64>,
 ) {
     match event {
         StreamEvent::TextDelta { text } => {
+            if first_stream_event_at_ms.is_none() {
+                *first_stream_event_at_ms = Some(Utc::now().timestamp_millis());
+            }
+            if first_text_delta_at_ms.is_none() {
+                *first_text_delta_at_ms = Some(Utc::now().timestamp_millis());
+            }
             let _ = event_tx.send(TurnEvent::TextDelta(text.clone()));
         }
         StreamEvent::ThinkingDelta { text } => {
+            if first_stream_event_at_ms.is_none() {
+                *first_stream_event_at_ms = Some(Utc::now().timestamp_millis());
+            }
             let _ = event_tx.send(TurnEvent::ThinkingDelta(text.clone()));
         }
         StreamEvent::ToolCallStart { id, name } => {
+            if first_stream_event_at_ms.is_none() {
+                *first_stream_event_at_ms = Some(Utc::now().timestamp_millis());
+            }
             let _ = event_tx.send(TurnEvent::ToolCallStart {
                 id: id.clone(),
                 name: name.clone(),

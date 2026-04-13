@@ -45,6 +45,8 @@ impl OpenAiProvider {
             });
         }
 
+        body["prompt_cache_key"] = json!(super::default_prompt_cache_key(&request.model));
+
         let response = with_retry(
             options.max_retries,
             options.retry_base_delay_ms,

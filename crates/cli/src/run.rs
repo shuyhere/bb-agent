@@ -22,6 +22,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::Cli;
+use crate::cache_metrics::{
+    hydrate_request_metrics_state_from_session_messages, new_shared_request_metrics_state,
+};
 use crate::extensions::{
     ExtensionBootstrap, RuntimeExtensionSupport, auto_install_missing_packages,
     build_skill_system_prompt_section, load_runtime_extension_support,
@@ -212,6 +215,17 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     };
     let follow_up_messages = prepared_messages;
 
+    let request_metrics_state = new_shared_request_metrics_state();
+    if let Ok(session_context) = bb_session::context::build_context(&conn, &session_id) {
+        let _ = hydrate_request_metrics_state_from_session_messages(
+            &request_metrics_state,
+            &system_prompt,
+            &tool_defs,
+            &session_context.messages,
+        )
+        .await;
+    }
+
     let turn_config = TurnConfig {
         conn: wrap_conn(conn),
         session_id,
@@ -236,6 +250,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         retry_max_delay_ms: settings.retry.max_delay_ms,
         cancel: CancellationToken::new(),
         extensions: commands.clone(),
+        request_metrics_state,
     };
 
     let mut last_result = None;

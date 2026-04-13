@@ -8,6 +8,7 @@
 //! - Executing tool calls
 //! - Looping for multi-turn tool use
 
+use crate::cache_metrics::SharedRequestMetricsState;
 use crate::extensions::ExtensionCommandRegistry;
 use bb_core::types::ContentBlock;
 use bb_provider::Provider;
@@ -37,6 +38,7 @@ pub(crate) struct TurnConfig {
     pub retry_max_delay_ms: u64,
     pub cancel: CancellationToken,
     pub extensions: ExtensionCommandRegistry,
+    pub request_metrics_state: SharedRequestMetricsState,
 }
 
 #[derive(Clone, Debug)]

@@ -1,4 +1,5 @@
 mod codex;
+mod responses;
 mod sse;
 
 use async_trait::async_trait;
@@ -12,11 +13,16 @@ use crate::transforms::{convert_messages_for_openai, strip_thinking_blocks};
 use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 
 use codex::extract_openai_account_id;
+use responses::should_use_responses_api;
 use sse::process_openai_sse;
 
 /// OpenAI-compatible provider (works with OpenAI, Groq, Ollama, etc.)
 pub struct OpenAiProvider {
     client: Client,
+}
+
+pub(super) fn default_prompt_cache_key(model: &str) -> String {
+    format!("bb-agent:{model}")
 }
 
 impl Default for OpenAiProvider {
@@ -127,6 +133,12 @@ impl Provider for OpenAiProvider {
         }
         messages.extend(converted);
 
+        if should_use_responses_api(&request, &options) {
+            return self
+                .stream_responses_api(request, options, messages, tx)
+                .await;
+        }
+
         let mut body = json!({
             "model": request.model,
             "messages": messages,
@@ -157,6 +169,9 @@ impl Provider for OpenAiProvider {
             };
             body["reasoning_effort"] = json!(effort);
         }
+
+        let prompt_cache_key = default_prompt_cache_key(&request.model);
+        body["prompt_cache_key"] = json!(prompt_cache_key);
 
         let is_copilot = is_github_copilot_request(&options);
         let model_name = request.model.clone();

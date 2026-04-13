@@ -19,6 +19,10 @@ use bb_session::store;
 use bb_tools::{ExecutionPolicy, Tool, ToolContext, builtin_tools};
 use std::sync::Arc;
 
+use crate::cache_metrics::{
+    SharedRequestMetricsState, hydrate_request_metrics_state_from_session_messages,
+    new_shared_request_metrics_state,
+};
 use crate::extensions::{
     ExtensionBootstrap, ExtensionCommandRegistry, RuntimeExtensionSupport,
     auto_install_missing_packages, build_skill_system_prompt_section,
@@ -107,6 +111,7 @@ pub struct SessionRuntimeSetup {
     pub sibling_conn: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
     pub extension_commands: ExtensionCommandRegistry,
     pub extension_bootstrap: ExtensionBootstrap,
+    pub request_metrics_state: SharedRequestMetricsState,
 }
 
 fn load_resumed_session_context(
@@ -283,6 +288,17 @@ pub(crate) async fn prepare_session_runtime(
         context_window: model.context_window as usize,
     };
 
+    let request_metrics_state = new_shared_request_metrics_state();
+    if let Some(session_context) = resumed_session_context.as_ref() {
+        let _ = hydrate_request_metrics_state_from_session_messages(
+            &request_metrics_state,
+            &system_prompt,
+            &tool_defs,
+            &session_context.messages,
+        )
+        .await;
+    }
+
     let setup = SessionRuntimeSetup {
         conn,
         session_id,
@@ -308,6 +324,7 @@ pub(crate) async fn prepare_session_runtime(
         sibling_conn: Some(sibling_conn),
         extension_commands: commands,
         extension_bootstrap,
+        request_metrics_state,
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {

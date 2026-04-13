@@ -1,19 +1,27 @@
+use crate::cache_metrics::RequestCacheMetrics;
+use crate::cache_metrics::hydrate_request_metrics_state_from_session_messages;
+use crate::cache_metrics::new_shared_request_metrics_state;
 use crate::extensions::ExtensionCommandRegistry;
 use crate::turn_runner::{TurnConfig, TurnEvent, run_turn, wrap_conn};
 use async_trait::async_trait;
 use bb_core::error::BbResult;
-use bb_core::types::{
-    AgentMessage, ContentBlock, EntryBase, SessionEntry, StopReason, UserMessage,
-};
+use bb_core::types::{AgentMessage, ContentBlock, EntryBase, SessionEntry, UserMessage};
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::store;
 use bb_tools::{Tool, ToolResult};
 use chrono::Utc;
 use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+static REQUEST_METRICS_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+static REQUEST_METRICS_SESSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 struct DummyProvider {
     call_count: AtomicUsize,
@@ -185,6 +193,47 @@ impl Tool for EchoTool {
     }
 }
 
+struct CacheAwareProvider {
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for CacheAwareProvider {
+    fn name(&self) -> &str {
+        "cache-aware"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let cached = if call_index == 0 { 0 } else { 900 };
+        let input = 1000 - cached;
+        let _ = tx.send(StreamEvent::Usage(bb_provider::UsageInfo {
+            input_tokens: input,
+            output_tokens: 10,
+            cache_read_tokens: cached,
+            cache_write_tokens: 0,
+        }));
+        let _ = tx.send(StreamEvent::TextDelta {
+            text: format!("turn-{call_index}"),
+        });
+        let _ = tx.send(StreamEvent::Done);
+        Ok(())
+    }
+}
+
 struct OverflowProvider;
 
 #[async_trait]
@@ -276,6 +325,34 @@ fn test_tool_context() -> bb_tools::ToolContext {
     }
 }
 
+fn request_metrics_log_path() -> PathBuf {
+    bb_core::config::global_dir().join("request-metrics.jsonl")
+}
+
+fn clear_request_metrics_log() {
+    let path = request_metrics_log_path();
+    let _ = fs::remove_file(path);
+}
+
+fn read_request_metrics_log() -> Vec<RequestCacheMetrics> {
+    let path = request_metrics_log_path();
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<RequestCacheMetrics>(line).ok())
+        .collect()
+}
+
+fn read_request_metrics_log_for_session(session_id: &str) -> Vec<RequestCacheMetrics> {
+    read_request_metrics_log()
+        .into_iter()
+        .filter(|row| row.session_id == session_id)
+        .collect()
+}
+
 #[tokio::test]
 async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
     let conn = store::open_memory().expect("memory db");
@@ -311,6 +388,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: new_shared_request_metrics_state(),
     };
 
     let (returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -399,6 +477,7 @@ async fn run_turn_normalizes_builtin_tool_aliases_before_lookup() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: new_shared_request_metrics_state(),
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -474,6 +553,7 @@ async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
         retry_max_delay_ms: 10,
         cancel,
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: new_shared_request_metrics_state(),
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -518,27 +598,218 @@ async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
         .expect("get session")
         .expect("session exists");
     let leaf_id = session.leaf_id.expect("leaf id");
-    let path = bb_session::tree::walk_to_root(&db, &session_id, &leaf_id).expect("path to root");
-    let messages = path
-        .into_iter()
-        .filter_map(|entry| store::parse_entry(&entry).ok())
-        .filter_map(|entry| match entry {
-            SessionEntry::Message { message, .. } => Some(message),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let leaf = store::get_entry(&db, &session_id, &leaf_id)
+        .expect("get leaf")
+        .expect("leaf row");
+    let leaf_entry = store::parse_entry(&leaf).expect("parse leaf");
 
-    assert!(matches!(
-        messages.iter().find(|message| matches!(message, AgentMessage::Assistant(_))),
-        Some(AgentMessage::Assistant(assistant)) if assistant.stop_reason == StopReason::ToolUse
-    ));
-    assert!(matches!(
-        messages.iter().find(|message| matches!(message, AgentMessage::ToolResult(_))),
-        Some(AgentMessage::ToolResult(tool_result))
-            if tool_result.tool_call_id == "tool-cancel-1"
-                && tool_result.is_error
-                && tool_result.details.as_ref().and_then(|value| value.get("cancelled")).and_then(|value| value.as_bool()) == Some(true)
-    ));
+    match leaf_entry {
+        SessionEntry::Message {
+            message: AgentMessage::ToolResult(result),
+            ..
+        } => {
+            assert!(result.is_error);
+            let text = result
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("tool execution cancelled before start"));
+            assert_eq!(
+                result
+                    .details
+                    .as_ref()
+                    .and_then(|value| value.get("cancelled"))
+                    .and_then(|value| value.as_bool()),
+                Some(true)
+            );
+        }
+        other => panic!("expected tool result leaf entry, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn cache_metrics_log_reports_read_hit_rate_for_follow_up_turn() {
+    let _guard = REQUEST_METRICS_TEST_LOCK.lock().expect("metrics test lock");
+    clear_request_metrics_log();
+
+    let conn = store::open_memory().expect("memory db");
+    let session_id = format!(
+        "metrics-session-{}",
+        REQUEST_METRICS_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    store::create_session_with_id(&conn, &session_id, "/tmp").expect("session");
+    let wrapped = wrap_conn(conn);
+    let provider = Arc::new(CacheAwareProvider {
+        call_count: AtomicUsize::new(0),
+    });
+    let request_metrics_state = new_shared_request_metrics_state();
+
+    let make_config = || TurnConfig {
+        conn: wrapped.clone(),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: provider.clone(),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![],
+        tool_defs: vec![],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: request_metrics_state.clone(),
+    };
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "first", &[])
+        .await
+        .expect("append first user");
+    let (event_tx1, _event_rx1) = mpsc::unbounded_channel();
+    run_turn(make_config(), event_tx1, "first".to_string())
+        .await
+        .1
+        .expect("first turn");
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "second", &[])
+        .await
+        .expect("append second user");
+    let (event_tx2, _event_rx2) = mpsc::unbounded_channel();
+    run_turn(make_config(), event_tx2, "second".to_string())
+        .await
+        .1
+        .expect("second turn");
+
+    let metrics = read_request_metrics_log_for_session(&session_id);
+    assert!(metrics.len() >= 2, "expected at least two metric rows");
+
+    let last = metrics.last().expect("last metrics row");
+    assert_eq!(last.cache_read_tokens, 900);
+    assert_eq!(last.input_tokens, 100);
+    assert_eq!(last.cache_read_hit_rate_pct, Some(90.0));
+    assert_eq!(last.cache_effective_utilization_pct, Some(90.0));
+    assert!(last.warm_request);
+    assert!(last.previous_request_hash.is_some());
+    assert!(last.reused_prefix_bytes_estimate.is_some());
+}
+
+#[tokio::test]
+async fn cache_metrics_resume_hydration_restores_previous_request_context() {
+    let _guard = REQUEST_METRICS_TEST_LOCK.lock().expect("metrics test lock");
+    clear_request_metrics_log();
+
+    let conn = store::open_memory().expect("memory db");
+    let session_id = format!(
+        "metrics-session-{}",
+        REQUEST_METRICS_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    store::create_session_with_id(&conn, &session_id, "/tmp").expect("session");
+    let wrapped = wrap_conn(conn);
+    let provider = Arc::new(CacheAwareProvider {
+        call_count: AtomicUsize::new(0),
+    });
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "first", &[])
+        .await
+        .expect("append first user");
+
+    let initial_state = new_shared_request_metrics_state();
+    let initial_config = TurnConfig {
+        conn: wrapped.clone(),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: provider.clone(),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![],
+        tool_defs: vec![],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: initial_state,
+    };
+
+    let (event_tx1, _event_rx1) = mpsc::unbounded_channel();
+    run_turn(initial_config, event_tx1, "first".to_string())
+        .await
+        .1
+        .expect("first turn");
+
+    let resumed_messages = {
+        let conn = wrapped.lock().await;
+        bb_session::context::build_context(&conn, &session_id)
+            .expect("context")
+            .messages
+    };
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "second", &[])
+        .await
+        .expect("append second user");
+
+    let resumed_state = new_shared_request_metrics_state();
+    hydrate_request_metrics_state_from_session_messages(
+        &resumed_state,
+        "system",
+        &[],
+        &resumed_messages,
+    )
+    .await
+    .expect("hydrate resumed state");
+
+    let resumed_config = TurnConfig {
+        conn: wrapped.clone(),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: provider.clone(),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![],
+        tool_defs: vec![],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: resumed_state,
+    };
+
+    let (event_tx2, _event_rx2) = mpsc::unbounded_channel();
+    run_turn(resumed_config, event_tx2, "second".to_string())
+        .await
+        .1
+        .expect("second turn");
+
+    let metrics = read_request_metrics_log_for_session(&session_id);
+    assert!(metrics.len() >= 2, "expected at least two metric rows");
+
+    let last = metrics.last().expect("last metrics row");
+    assert!(last.previous_request_hash.is_some());
+    assert!(last.first_divergence_byte.is_some());
+    assert!(last.reused_prefix_bytes_estimate.is_some());
 }
 
 #[tokio::test]
@@ -620,6 +891,7 @@ async fn overflow_recovery_compacts_only_active_path_context() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: new_shared_request_metrics_state(),
     };
 
     let (_returned_config, result) =

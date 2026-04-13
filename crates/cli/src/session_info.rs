@@ -7,6 +7,8 @@ use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
 use std::path::Path;
 
+use crate::cache_metrics::{cache_effective_utilization_pct, cache_read_hit_rate_pct};
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionInfoSummary {
     pub file: String,
@@ -30,6 +32,8 @@ pub(crate) struct SessionInfoSummary {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    pub cache_read_hit_rate_pct: Option<f64>,
+    pub cache_effective_utilization_pct: Option<f64>,
     pub total_tokens: u64,
     pub total_cost: f64,
 }
@@ -124,6 +128,13 @@ pub(crate) fn collect_session_info_summary(
         + summary.output_tokens
         + summary.cache_read_tokens
         + summary.cache_write_tokens;
+    summary.cache_read_hit_rate_pct =
+        cache_read_hit_rate_pct(summary.input_tokens, summary.cache_read_tokens);
+    summary.cache_effective_utilization_pct = cache_effective_utilization_pct(
+        summary.input_tokens,
+        summary.cache_read_tokens,
+        summary.cache_write_tokens,
+    );
 
     Ok(summary)
 }
@@ -195,6 +206,12 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
             "Cache Write: {}\n",
             format_u64(summary.cache_write_tokens)
         ));
+    }
+    if let Some(read_hit_rate) = summary.cache_read_hit_rate_pct {
+        out.push_str(&format!("Cache Read Hit Rate: {:.2}%\n", read_hit_rate));
+    }
+    if let Some(utilization) = summary.cache_effective_utilization_pct {
+        out.push_str(&format!("Cache Utilization: {:.2}%\n", utilization));
     }
     out.push_str(&format!("Total: {}\n", format_u64(summary.total_tokens)));
 
@@ -307,6 +324,8 @@ mod tests {
 
         assert!((summary.total_cost - 36.75).abs() < 1e-9);
         assert_eq!(summary.execution_mode, ExecutionPolicy::Safety);
+        assert_eq!(summary.cache_read_hit_rate_pct, Some(50.0));
+        assert_eq!(summary.cache_effective_utilization_pct, Some(25.0));
     }
 
     #[test]

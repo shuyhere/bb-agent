@@ -178,6 +178,7 @@ impl FullscreenController {
             retry_max_delay_ms: self.session_setup.retry_max_delay_ms,
             cancel: self.abort_token.clone(),
             extensions: self.session_setup.extension_commands.clone(),
+            request_metrics_state: self.session_setup.request_metrics_state.clone(),
         })
     }
 
