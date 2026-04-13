@@ -110,7 +110,14 @@ impl FullscreenState {
         } else {
             "follow off • Esc to jump to latest"
         };
-        format!("transcript row {} • {follow}", self.viewport.viewport_top)
+        let scroll = format!("transcript row {} • {follow}", self.viewport.viewport_top);
+        if let Some(status) = self.active_turn_status_message() {
+            return format!("{status} • {scroll}");
+        }
+        if let Some(status) = self.local_action_status_message() {
+            return format!("{status} • {scroll}");
+        }
+        scroll
     }
 
     pub(super) fn toggle_block(&mut self, block_id: BlockId) {

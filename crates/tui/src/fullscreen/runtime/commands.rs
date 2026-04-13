@@ -188,6 +188,7 @@ impl FullscreenState {
                 self.spinner
                     .set_mode(super::super::spinner::SpinnerMode::Requesting);
                 self.spinner.notify_activity();
+                self.status_line = "Requesting response...".to_string();
                 let root_id = self.transcript.append_root_block(
                     NewBlock::new(
                         BlockKind::AssistantMessage,
@@ -195,7 +196,7 @@ impl FullscreenState {
                     )
                     .with_expandable(true),
                 );
-                self.active_turn = Some(ActiveTurnState::new(root_id, turn_index));
+                self.active_turn = Some(ActiveTurnState::new(root_id, turn_index, self.tick_count));
                 self.projection_dirty = true;
                 self.dirty = true;
                 RenderIntent::Render
@@ -207,6 +208,7 @@ impl FullscreenState {
                 if text.is_empty() {
                     return RenderIntent::None;
                 }
+                self.status_line = "Writing...".to_string();
                 let Ok(content_id) = self.ensure_assistant_content_block() else {
                     return RenderIntent::None;
                 };
@@ -216,9 +218,13 @@ impl FullscreenState {
                 RenderIntent::Schedule
             }
             FullscreenCommand::ThinkingDelta(text) => {
+                self.spinner.notify_activity();
+                self.spinner
+                    .set_mode(super::super::spinner::SpinnerMode::Thinking);
                 if text.is_empty() {
                     return RenderIntent::None;
                 }
+                self.status_line = "Thinking...".to_string();
                 let Ok(thinking_id) = self.ensure_thinking_block() else {
                     return RenderIntent::None;
                 };
@@ -228,10 +234,14 @@ impl FullscreenState {
                 RenderIntent::Schedule
             }
             FullscreenCommand::ToolCallStart { id, name } => {
+                self.spinner.notify_activity();
+                self.spinner
+                    .set_mode(super::super::spinner::SpinnerMode::Thinking);
                 let Some(turn_root_id) = self.ensure_active_turn_root() else {
                     return RenderIntent::None;
                 };
                 let initial_title = format_tool_call_title(&name, "");
+                self.status_line = format!("Preparing {initial_title}...");
                 let Ok(tool_use_id) = self.transcript.append_child_block(
                     turn_root_id,
                     NewBlock::new(BlockKind::ToolUse, initial_title).with_expandable(true),
@@ -263,13 +273,20 @@ impl FullscreenState {
                 RenderIntent::Render
             }
             FullscreenCommand::ToolCallDelta { id, args } => {
+                self.spinner.notify_activity();
+                self.spinner
+                    .set_mode(super::super::spinner::SpinnerMode::Thinking);
                 if args.is_empty() {
                     return RenderIntent::None;
                 }
-                match self.tool_call_state_mut(&id) {
-                    Some(tool) => tool.raw_args.push_str(&args),
+                let display_name = match self.tool_call_state_mut(&id) {
+                    Some(tool) => {
+                        tool.raw_args.push_str(&args);
+                        format_tool_call_title(&tool.name, &tool.raw_args)
+                    }
                     None => return RenderIntent::None,
                 };
+                self.status_line = format!("Preparing {display_name}...");
                 self.refresh_tool_rendering(&id);
                 RenderIntent::Render
             }

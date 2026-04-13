@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use bb_core::types::ContentBlock;
 
 use crate::ui_hints::{
-    NO_TEXT_OUTPUT, TOOL_COLLAPSE_HINT, TOOL_EXPAND_HINT, TOOL_FAILED_NO_TEXT_OUTPUT,
-    image_placeholder,
+    image_placeholder, NO_TEXT_OUTPUT, TOOL_COLLAPSE_HINT, TOOL_EXPAND_HINT,
+    TOOL_FAILED_NO_TEXT_OUTPUT,
 };
 
 use super::{
@@ -25,10 +25,12 @@ pub(super) struct ActiveTurnState {
     /// True once TurnEnd has been received. The turn data stays alive
     /// so late-arriving ToolResult events can still be processed.
     pub(super) finished: bool,
+    pub(super) started_tick: u64,
+    pub(super) started_at: Option<std::time::Instant>,
 }
 
 impl ActiveTurnState {
-    pub(super) fn new(root_id: BlockId, turn_index: u32) -> Self {
+    pub(super) fn new(root_id: BlockId, turn_index: u32, started_tick: u64) -> Self {
         Self {
             root_id,
             turn_index,
@@ -36,6 +38,8 @@ impl ActiveTurnState {
             content_id: None,
             tools: HashMap::new(),
             finished: false,
+            started_tick,
+            started_at: Some(std::time::Instant::now()),
         }
     }
 }
@@ -376,6 +380,47 @@ impl FullscreenState {
             .map(format_elapsed_ms)
             .unwrap_or_else(|| "0.0s".to_string());
         Some(format!("{base} • {elapsed}"))
+    }
+
+    fn active_turn_elapsed_ms(&self) -> Option<u64> {
+        let active_turn = self.active_turn.as_ref()?;
+        if active_turn.finished {
+            return None;
+        }
+        active_turn
+            .started_at
+            .map(|started_at| started_at.elapsed().as_millis() as u64)
+            .or_else(|| {
+                Some(self.tick_count.saturating_sub(active_turn.started_tick) * TOOL_TIMER_TICK_MS)
+            })
+    }
+
+    pub(super) fn active_turn_status_message(&self) -> Option<String> {
+        if let Some(message) = self.running_tool_status_message() {
+            return Some(message);
+        }
+
+        let active_turn = self.active_turn.as_ref().filter(|turn| !turn.finished)?;
+        let elapsed = self
+            .active_turn_elapsed_ms()
+            .map(format_elapsed_ms)
+            .unwrap_or_else(|| "0.0s".to_string());
+
+        if active_turn.content_id.is_some() {
+            return Some(format!("writing • {elapsed}"));
+        }
+        if active_turn.thinking_id.is_some() {
+            return Some(format!("thinking • {elapsed}"));
+        }
+        if let Some(tool) = active_turn
+            .tools
+            .values()
+            .find(|tool| !tool.execution_started && tool.result_content.is_none())
+        {
+            let display_name = format_tool_call_title(&tool.name, &tool.raw_args);
+            return Some(format!("preparing {display_name} • {elapsed}"));
+        }
+        Some(format!("requesting response • {elapsed}"))
     }
 
     pub(super) fn running_tool_status_message(&self) -> Option<String> {

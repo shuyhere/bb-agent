@@ -66,7 +66,10 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
             }
             if state.has_active_turn() || state.has_running_tool() {
                 let msg_owned;
-                let msg = if state.status_line.trim().is_empty() {
+                let msg = if let Some(status) = state.active_turn_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
+                    &msg_owned
+                } else if state.status_line.trim().is_empty() {
                     ""
                 } else {
                     msg_owned = sanitize_terminal_text(&state.status_line);
@@ -92,17 +95,49 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
             }
         }
         FullscreenMode::Transcript => {
-            let base = if state.status_line.trim().is_empty() {
-                "Transcript mode".to_string()
-            } else {
-                format_plain_status_line(&state.status_line)
-            };
+            if state.has_active_turn() || state.has_running_tool() {
+                let msg_owned;
+                let msg = if let Some(status) = state.active_turn_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
+                    &msg_owned
+                } else if state.status_line.trim().is_empty() {
+                    ""
+                } else {
+                    msg_owned = sanitize_terminal_text(&state.status_line);
+                    &msg_owned
+                };
+                let rendered = state.spinner.render(msg, width);
+                return pad_to_width(&rendered, width);
+            } else if state.local_action_active {
+                let msg_owned;
+                let msg = if let Some(status) = state.local_action_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
+                    &msg_owned
+                } else if state.status_line.trim().is_empty() {
+                    ""
+                } else {
+                    msg_owned = sanitize_terminal_text(&state.status_line);
+                    &msg_owned
+                };
+                let rendered = state.spinner.render(msg, width);
+                return pad_to_width(&rendered, width);
+            }
+
             let follow = if state.viewport.auto_follow {
                 "follow on"
             } else {
                 "follow paused"
             };
-            format!("{base} • {follow}")
+            if state.status_line.trim().is_empty() {
+                format!("Transcript mode • {follow}")
+            } else if state.status_line.contains("transcript row ") {
+                state.status_line.clone()
+            } else {
+                format!(
+                    "{} • {follow}",
+                    format_plain_status_line(&state.status_line)
+                )
+            }
         }
     };
     if text.trim().is_empty() {
@@ -218,7 +253,8 @@ fn format_plain_status_line(text: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.contains("Ctrl+") || trimmed.contains('•') || trimmed.starts_with("Transcript mode") {
+    if trimmed.contains("Ctrl+") || trimmed.contains('•') || trimmed.starts_with("Transcript mode")
+    {
         trimmed
     } else {
         format!("· {trimmed}")
