@@ -14,6 +14,7 @@ mod run;
 mod session_bootstrap;
 mod session_info;
 mod session_navigation;
+mod setup;
 mod slash;
 mod turn_runner;
 mod update_check;
@@ -35,6 +36,7 @@ mod update_check;
   bb --list-models sonnet             Search models
   bb login                            Login to a provider (OAuth)
   bb logout                           Logout from a provider
+  bb setup browser                    Detect/configure Chrome/Chromium for browser_fetch
   bb install npm:bb-example-skill     Install a global package source
   bb install --local ./my-skill       Install a local/project package source
   bb list                             List configured package sources
@@ -149,6 +151,11 @@ enum Commands {
         /// Provider name
         provider: Option<String>,
     },
+    /// Setup optional local runtime dependencies
+    Setup {
+        #[command(subcommand)]
+        target: SetupCommands,
+    },
     #[command(after_help = r#"Examples:
   bb install npm:bb-example-skill
   bb install --local npm:my-project-skill
@@ -202,6 +209,16 @@ Notes:
     },
 }
 
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Detect/configure a local browser for browser_fetch
+    Browser {
+        /// Persist BB_BROWSER to your shell rc file
+        #[arg(long)]
+        persist: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -238,6 +255,9 @@ async fn main() -> Result<()> {
         return match cmd {
             Commands::Login { provider } => login::handle_login(provider.as_deref()).await,
             Commands::Logout { provider } => login::handle_logout(provider.as_deref()).await,
+            Commands::Setup { target } => match target {
+                SetupCommands::Browser { persist } => setup::handle_setup_browser(*persist),
+            },
             Commands::Install { local, source } => {
                 let scope = if *local {
                     extensions::SettingsScope::Project
