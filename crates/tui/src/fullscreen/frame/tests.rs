@@ -59,6 +59,24 @@ fn local_action_status_uses_animated_spinner_with_elapsed_time() {
 }
 
 #[test]
+fn transcript_mode_active_turn_uses_spinner_status() {
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+    state.mode = crate::fullscreen::types::FullscreenMode::Transcript;
+
+    let rendered = render_status(&state, 80);
+    let plain = crate::utils::strip_ansi(&rendered);
+    assert!(plain.contains("Requesting response..."));
+    assert!(rendered.contains("\x1b[38;2;"));
+}
+
+#[test]
 fn plain_status_line_is_visually_separated_from_transcript_content() {
     let state = FullscreenState::new(
         FullscreenAppConfig::default(),

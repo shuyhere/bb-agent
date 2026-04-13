@@ -553,6 +553,23 @@ fn mouse_scroll_does_not_enter_transcript_mode() {
 }
 
 #[test]
+fn mouse_scroll_status_keeps_active_progress_when_turn_is_running() {
+    let (mut state, _) = scrolling_state();
+    let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+    let transcript_row = state.current_layout().transcript.y;
+
+    state.on_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 10,
+        row: transcript_row,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert!(state.status_line.contains("requesting response"));
+    assert!(state.status_line.contains("transcript row"));
+}
+
+#[test]
 fn push_note_creates_visible_content_in_frame() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),
