@@ -219,24 +219,6 @@ impl FullscreenController {
                 .enabled;
         let auto_suffix = compaction_auto_suffix(compaction_enabled);
 
-        let estimated_tokens = bb_session::context::build_context(
-            &self.session_setup.conn,
-            &self.session_setup.session_id,
-        )
-        .ok()
-        .map(|ctx| bb_session::compaction::serialize_conversation(&ctx.messages))
-        .map(|text| bb_session::compaction::estimate_tokens_text(&text))
-        .filter(|tokens| *tokens > 0);
-
-        if let Some(tokens) = estimated_tokens.filter(|_| context_window > 0) {
-            let percent = (tokens as f64 / context_window as f64) * 100.0;
-            return format!(
-                "{percent:.1}%/{}{}",
-                format_tokens(context_window),
-                auto_suffix
-            );
-        }
-
         if let Some(usage) = runtime_usage {
             if let Some(tokens) = usage.tokens.filter(|tokens| *tokens > 0) {
                 let percent = (tokens as f64 / context_window as f64) * 100.0;
@@ -253,6 +235,28 @@ impl FullscreenController {
                     auto_suffix
                 );
             }
+            return format!("?/{}{}", format_tokens(context_window), auto_suffix);
+        }
+
+        if self.manual_compaction_in_progress
+            || self.auto_compaction_in_progress
+            || latest_entry_is_compaction
+        {
+            return format!("?/{}{}", format_tokens(context_window), auto_suffix);
+        }
+
+        let estimated_tokens = active_path
+            .as_deref()
+            .and_then(estimate_active_path_context_tokens)
+            .filter(|tokens| *tokens > 0);
+
+        if let Some(tokens) = estimated_tokens.filter(|_| context_window > 0) {
+            let percent = (tokens as f64 / context_window as f64) * 100.0;
+            return format!(
+                "{percent:.1}%/{}{}",
+                format_tokens(context_window),
+                auto_suffix
+            );
         }
 
         format!("?/{}{}", format_tokens(context_window), auto_suffix)
@@ -373,14 +377,50 @@ fn push_usage_part(parts: &mut Vec<String>, tokens: u64, prefix: &str) {
     }
 }
 
+fn estimate_active_path_context_tokens(path: &[bb_session::store::EntryRow]) -> Option<u64> {
+    let latest_compaction_index = path.iter().rposition(|row| row.entry_type == "compaction");
+    if let Some(compaction_index) = latest_compaction_index {
+        let has_post_compaction_usage = path.iter().skip(compaction_index + 1).rev().any(|row| {
+            let Ok(entry) = bb_session::store::parse_entry(row) else {
+                return false;
+            };
+            match entry {
+                bb_core::types::SessionEntry::Message {
+                    message: bb_core::types::AgentMessage::Assistant(assistant),
+                    ..
+                } => {
+                    assistant.stop_reason != bb_core::types::StopReason::Aborted
+                        && assistant.stop_reason != bb_core::types::StopReason::Error
+                        && bb_session::compaction::calculate_context_tokens(&assistant.usage) > 0
+                }
+                _ => false,
+            }
+        });
+        if !has_post_compaction_usage {
+            return None;
+        }
+    }
+
+    bb_session::context::build_context_from_path(path)
+        .ok()
+        .map(|ctx| bb_session::compaction::estimate_context_tokens(&ctx.messages).tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        QueuedPrompt, build_status_line, compaction_auto_suffix, permission_posture_badge,
+        QueuedPrompt, build_status_line, compaction_auto_suffix,
+        estimate_active_path_context_tokens, permission_posture_badge,
     };
+    use bb_core::types::{
+        AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
+        StopReason, Usage,
+    };
+    use bb_session::{store, tree};
     use bb_tools::ExecutionPolicy;
+    use chrono::Utc;
 
     #[test]
     fn permission_badge_is_compact_for_footer_use() {
@@ -420,6 +460,105 @@ mod tests {
         assert_eq!(
             build_status_line(None, false, true, &queued),
             "Auto-compacting session... • 2 queued"
+        );
+    }
+
+    #[test]
+    fn active_path_context_estimate_uses_usage_aware_estimator() {
+        let conn = store::open_memory().expect("memory db");
+        let session_id = store::create_session(&conn, "/tmp").expect("session");
+        let assistant = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: None,
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::Assistant(AssistantMessage {
+                content: vec![AssistantContent::Text {
+                    text: "tiny text".to_string(),
+                }],
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+                usage: Usage {
+                    total_tokens: 120_000,
+                    ..Default::default()
+                },
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
+
+        let path = tree::active_path(&conn, &session_id).expect("active path");
+        let estimated = estimate_active_path_context_tokens(&path).expect("estimated tokens");
+
+        assert_eq!(estimated, 120_000);
+    }
+
+    #[test]
+    fn active_path_context_estimate_ignores_stale_usage_before_latest_compaction() {
+        let conn = store::open_memory().expect("memory db");
+        let session_id = store::create_session(&conn, "/tmp").expect("session");
+
+        let assistant = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: None,
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::Assistant(AssistantMessage {
+                content: vec![AssistantContent::Text {
+                    text: "before compact".to_string(),
+                }],
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+                usage: Usage {
+                    total_tokens: 240_000,
+                    ..Default::default()
+                },
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
+
+        let compaction = SessionEntry::Compaction {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: Some(assistant.base().id.clone()),
+                timestamp: Utc::now(),
+            },
+            summary: "summary".to_string(),
+            first_kept_entry_id: assistant.base().id.clone(),
+            tokens_before: 240_000,
+            details: None,
+            from_plugin: false,
+        };
+        store::append_entry(&conn, &session_id, &compaction).expect("append compaction");
+
+        let user = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: Some(compaction.base().id.clone()),
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::User(bb_core::types::UserMessage {
+                content: vec![bb_core::types::ContentBlock::Text {
+                    text: "12345678".to_string(),
+                }],
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &user).expect("append user");
+
+        let path = tree::active_path(&conn, &session_id).expect("active path");
+        let estimated = estimate_active_path_context_tokens(&path);
+
+        assert!(
+            estimated.is_none(),
+            "expected post-compaction context usage to stay unknown until fresh assistant usage"
         );
     }
 }
