@@ -62,7 +62,7 @@ crates/
 ├── provider/      # LLM provider integrations (Anthropic, OpenAI, Google, etc.)
 ├── hooks/         # Event types for extensions
 ├── plugin-host/   # JS/TS plugin discovery and runtime
-├── tui/           # Terminal UI components and fullscreen experience
+├── tui/           # Terminal UI components and tui experience
 └── cli/           # The `bb` binary — CLI, controller, TUI wiring
 ```
 

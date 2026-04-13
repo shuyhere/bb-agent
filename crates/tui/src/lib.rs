@@ -10,7 +10,7 @@ pub mod editor;
 pub mod error;
 pub mod footer;
 pub mod footer_data;
-pub mod fullscreen;
+pub mod tui;
 pub mod fuzzy;
 pub mod kill_ring;
 pub mod markdown;

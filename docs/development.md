@@ -99,7 +99,7 @@ cargo test -p bb-provider --release
 cargo test -p bb-cli --release
 
 # Run a specific test
-cargo test -p bb-tui --release -- fullscreen::tests::typing_at
+cargo test -p bb-tui --release -- tui::tests::typing_at
 
 # Run tests with output
 cargo test --workspace --release -- --nocapture
@@ -181,7 +181,7 @@ bb-agent/
 │   │
 │   ├── tui/                # bb-tui: terminal UI (largest crate)
 │   │   └── src/
-│   │       ├── fullscreen/     # Legacy-named TUI app/runtime (events, frame, projection, etc.)
+│   │       ├── tui/     # TUI app/runtime (events, frame, projection, etc.)
 │   │       ├── editor/         # Multi-line text editor
 │   │       ├── markdown/       # Markdown rendering
 │   │       ├── syntax.rs       # Syntax highlighting
@@ -191,7 +191,7 @@ bb-agent/
 │   └── cli/                # bb-cli: the `bb` binary
 │       └── src/
 │           ├── main.rs         # CLI arg parsing, entry point
-│           ├── fullscreen/     # Legacy-named TUI controller, menus, session
+│           ├── tui/     # TUI controller, menus, session
 │           ├── session_bootstrap.rs  # Runtime setup
 │           ├── turn_runner.rs  # LLM turn execution
 │           ├── login.rs        # Auth store (auth.json)
@@ -211,9 +211,9 @@ bb-agent/
 
 1. `cli/src/main.rs` → parses CLI args
 2. `cli/src/session_bootstrap.rs` → loads settings, resolves model/provider, builds tools
-3. `cli/src/fullscreen/mod.rs` → creates TUI config, spawns controller + UI tasks
-4. `tui/src/fullscreen/` → runs the terminal event loop (key/mouse/paste → state → render)
-5. `cli/src/fullscreen/controller/loop_impl.rs` → processes submissions, runs LLM turns
+3. `cli/src/tui/mod.rs` → creates TUI config, spawns controller + UI tasks
+4. `tui/src/tui/` → runs the terminal event loop (key/mouse/paste → state → render)
+5. `cli/src/tui/controller/loop_impl.rs` → processes submissions, runs LLM turns
 6. `cli/src/turn_runner/runner.rs` → sends messages to provider, executes tool calls
 
 ### What happens when the agent calls a tool

@@ -16,8 +16,8 @@ auth.json
 Cargo.toml
 Cargo.lock
 rust-toolchain.toml
-FULLSCREEN-TUI-PLAN.md
-FULLSCREEN-TUI-GAPS.md
+TUI-PLAN.md
+TUI-GAPS.md
 CODE_REVIEW_AND_OPTIMIZATION_PLAN.md
 ROLLING-MERGE-QUEUE.md
 PLAN.md

@@ -9,23 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fullscreen bash output now streams live stdout/stderr and keeps running, finished, historical, and expanded/collapsed tool blocks visually consistent with width-aware tail previews and elapsed/took footer hints
+- tui bash output now streams live stdout/stderr and keeps running, finished, historical, and expanded/collapsed tool blocks visually consistent with width-aware tail previews and elapsed/took footer hints
 - bash tool titles now skip shell prelude lines like `set -e`, show configured timeout values in the UI, and validate invalid timeout arguments instead of accepting zero or non-finite values
 - fixed the session getting stuck after interrupted or failed tool calls by flushing synthetic tool results before later prompts, preventing follow-up turns from failing with missing tool output
 - Codex tool-call request handling is more robust: tool calls are serialized sequentially, orphan tool results are sanitized out of requests, and streamed/done function-call events are deduplicated more safely
 - plain URLs and hyphenated text no longer trigger accidental markdown horizontal-rule rendering while explicit markdown rules and setext headings still render correctly
-- fullscreen resume menu handling now awaits the async resume path correctly instead of dropping back through the synchronous menu flow
+- tui resume menu handling now awaits the async resume path correctly instead of dropping back through the synchronous menu flow
 
 ### Added
 
-- regression coverage for interrupted tool-call recovery, Codex orphan-tool sanitization, builtin tool-name normalization, fullscreen bash rendering consistency, and bash timeout validation/visibility
+- regression coverage for interrupted tool-call recovery, Codex orphan-tool sanitization, builtin tool-name normalization, tui bash rendering consistency, and bash timeout validation/visibility
 
 ## [0.0.14] - 2026-04-12
 
 ### Added
 
-- fullscreen now supports extension-driven workflows and structured slash-command outcomes, including menus, hidden dispatches, and richer command result handling
-- `/settings` in fullscreen now exposes compaction controls for `Auto-compact`, `Reserve tokens`, and `Keep recent tokens`
+- tui now supports extension-driven workflows and structured slash-command outcomes, including menus, hidden dispatches, and richer command result handling
+- `/settings` in tui now exposes compaction controls for `Auto-compact`, `Reserve tokens`, and `Keep recent tokens`
 - skills can now be listed, disabled, and re-enabled from the CLI without deleting their installed files
 - startup model selection now prefers configured provider/model defaults more consistently, with better OpenAI startup fallback behavior
 - added a parity test script against installed pi compaction logic to keep BB token accounting aligned with upstream behavior
@@ -33,39 +33,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - session resume now restores the prior model and thinking level instead of starting with mismatched runtime defaults
-- fullscreen/TUI terminal rendering now sanitizes terminal control text more reliably and avoids ANSI leakage into the UI
+- tui/TUI terminal rendering now sanitizes terminal control text more reliably and avoids ANSI leakage into the UI
 - auto-compaction token estimation now matches pi more closely by using the last successful assistant usage plus trailing estimates, using ceil-based token heuristics, computing `tokens_before` from rebuilt context instead of raw payload size, and ignoring assistant usage from before the latest compaction boundary
-- fullscreen compaction behavior and status reporting are more consistent after auto-compaction and manual compaction events, and local fullscreen actions now show an animated elapsed-time status while they run
+- tui compaction behavior and status reporting are more consistent after auto-compaction and manual compaction events, and local tui actions now show an animated elapsed-time status while they run
 
 ### Changed
 
-- fullscreen extension workflows and session compaction support are now merged into the main interaction path on `master`
+- tui extension workflows and session compaction support are now merged into the main interaction path on `master`
 
 ## [0.0.13] - 2026-04-09
 
 ### Added
 
-- fullscreen screenshot and image clipboard paste now works on the normal paste path, with macOS clipboard fallbacks and Codex image preservation so pasted images reach image-capable models correctly
+- tui screenshot and image clipboard paste now works on the normal paste path, with macOS clipboard fallbacks and Codex image preservation so pasted images reach image-capable models correctly
 - model registry metadata now tracks image input capability, making `/models` truthful about image support and allowing runtime warnings when users attach images to text-only models
 
 ### Fixed
 
-- fullscreen clipboard image attach no longer leaks helper `true` / `false` output or stray follow-up paste text into the input block
+- tui clipboard image attach no longer leaks helper `true` / `false` output or stray follow-up paste text into the input block
 - attached image chips can now be removed with `Backspace`, image-only prompts can be submitted, and optimistic user messages keep attachment chip previews in the transcript
-- rebuilt fullscreen session transcripts now preserve user image attachment markers instead of silently dropping image blocks
+- rebuilt tui session transcripts now preserve user image attachment markers instead of silently dropping image blocks
 - managed `bb-clipboard-*.png` temp files are now cleaned up after removal or ingestion instead of lingering in `/tmp`
-- the fullscreen input block now hides raw `@file` tokens when the corresponding attachment chip is already shown, preventing duplicated `@file` text in the editor
-- fullscreen tool-header regression tests now match the intended live bash-header rendering and running-dot animation behavior
+- the tui input block now hides raw `@file` tokens when the corresponding attachment chip is already shown, preventing duplicated `@file` text in the editor
+- tui tool-header regression tests now match the intended live bash-header rendering and running-dot animation behavior
 
 ## [0.0.12] - 2026-04-06
 
 ### Fixed
 
-- direct `@image` references in print mode and fullscreen now attach real image inputs instead of falling back to UTF-8 read warnings
+- direct `@image` references in print mode and tui now attach real image inputs instead of falling back to UTF-8 read warnings
 - `@path with spaces` parsing now correctly keeps the full file path before trailing prompt text, including whole-message forms
 - image tool results are now preserved through provider conversion so models can actually see images returned by tools instead of responding as if no image was provided
-- fullscreen `@` folder navigation now keeps the completion menu open when you select a directory and immediately shows the next level, including directories with spaces
-- the fullscreen input block now shows attached files as `[name, sizeKB]`, keeps those chips visible, and places the cursor below them so typing starts after the attachments
+- tui `@` folder navigation now keeps the completion menu open when you select a directory and immediately shows the next level, including directories with spaces
+- the tui input block now shows attached files as `[name, sizeKB]`, keeps those chips visible, and places the cursor below them so typing starts after the attachments
 
 ### Changed
 
@@ -75,9 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- startup update notices in the fullscreen transcript are now highlighted so available updates stand out clearly during startup
-- read-tool line ranges in fullscreen tool activity now highlight the requested span, so values like `2148-2267/5006` stand out while the model is using tools
-- fullscreen footer and `/session` info now show the active execution posture so safety vs yolo is visible during a run
+- startup update notices in the tui transcript are now highlighted so available updates stand out clearly during startup
+- read-tool line ranges in tui tool activity now highlight the requested span, so values like `2148-2267/5006` stand out while the model is using tools
+- tui footer and `/session` info now show the active execution posture so safety vs yolo is visible during a run
 
 ### Improved
 
@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - npm install now uses a longer timeout, retries release-binary downloads, and reports real download errors instead of incorrectly saying no matching prebuilt binary exists
 - npm install now shows progress logs during native binary download and verification so first-time installs on macOS/Linux are less confusing
-- fullscreen `/login` provider-family status now correctly shows OpenAI OAuth state after ChatGPT login instead of incorrectly showing the API key path as not authenticated
+- tui `/login` provider-family status now correctly shows OpenAI OAuth state after ChatGPT login instead of incorrectly showing the API key path as not authenticated
 
 ### Changed
 
@@ -112,9 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fullscreen paste in iTerm2/SSH no longer corrupts the input area after paste
+- tui paste in iTerm2/SSH no longer corrupts the input area after paste
 - pasted file and image paths are normalized more reliably, including quoted paths and `file://` URLs
-- fullscreen prompt submission now expands `@file` references consistently
+- tui prompt submission now expands `@file` references consistently
 - running tool timers continue updating after `TurnEnd` while tools are still executing
 - sub-second tool durations now display as `ms` instead of `0.0s`
 - startup Skills/Prompts/Extensions note now only appears at startup or explicit `/reload`
@@ -122,7 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- fullscreen `Ctrl+V` now falls back to clipboard text when no clipboard image is available
+- tui `Ctrl+V` now falls back to clipboard text when no clipboard image is available
 - `@` autocomplete now inserts quoted file references when paths contain spaces
 
 ## [0.0.8] - 2026-04-06

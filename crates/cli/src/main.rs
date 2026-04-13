@@ -5,7 +5,7 @@ mod agents_md;
 mod compaction_exec;
 mod extensions;
 
-mod fullscreen;
+mod tui;
 mod input_files;
 mod login;
 mod models;
@@ -390,7 +390,7 @@ async fn main() -> Result<()> {
     if cli.print {
         run::run_print_mode(cli).await
     } else {
-        fullscreen::run_fullscreen_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
+        tui::run_tui_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
             .await
     }
 }
