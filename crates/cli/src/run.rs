@@ -222,6 +222,9 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             &system_prompt,
             &tool_defs,
             &session_context.messages,
+            &model.id,
+            Some(model.max_tokens as u32),
+            None,
         )
         .await;
     }

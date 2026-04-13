@@ -295,6 +295,9 @@ pub(crate) async fn prepare_session_runtime(
             &system_prompt,
             &tool_defs,
             &session_context.messages,
+            &model.id,
+            Some(model.max_tokens as u32),
+            Some(thinking_str),
         )
         .await;
     }
