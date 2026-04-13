@@ -120,6 +120,31 @@ fn load_resumed_session_context(
     bb_session::context::build_context(conn, session_id).ok()
 }
 
+fn load_resumed_thinking_level(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    session_created: bool,
+) -> Option<ThinkingLevel> {
+    if !session_created {
+        return None;
+    }
+    bb_session::context::active_path_explicit_thinking_level(conn, session_id)
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn resolve_thinking_level(
+    requested: Option<&str>,
+    resumed: Option<ThinkingLevel>,
+    settings_default: Option<&str>,
+) -> ThinkingLevel {
+    requested
+        .and_then(ThinkingLevel::parse)
+        .or(resumed)
+        .or_else(|| settings_default.and_then(ThinkingLevel::parse))
+        .unwrap_or(ThinkingLevel::Medium)
+}
+
 pub(crate) async fn prepare_session_runtime(
     entry: SessionBootstrapOptions,
 ) -> Result<(
@@ -139,6 +164,7 @@ pub(crate) async fn prepare_session_runtime(
     let execution_policy = ExecutionPolicy::from(settings.resolved_execution_mode());
     let startup_fallback = crate::login::preferred_startup_provider_and_model(&settings);
     let resumed_session_context = load_resumed_session_context(&conn, &session_id, session_created);
+    let resumed_thinking_level = load_resumed_thinking_level(&conn, &session_id, session_created);
     let resumed_model = resumed_session_context
         .as_ref()
         .and_then(|ctx| ctx.model.as_ref());
@@ -158,14 +184,12 @@ pub(crate) async fn prepare_session_runtime(
         .or(settings.default_provider.as_deref());
     let (provider_name, model_id, thinking_override) = parse_model_arg(provider_input, model_input);
 
-    let requested_thinking = thinking_override
-        .as_deref()
-        .or(entry.thinking.as_deref())
-        .or(resumed_session_context
-            .as_ref()
-            .map(|ctx| ctx.thinking_level.as_str()))
-        .unwrap_or("medium");
-    let thinking_level = ThinkingLevel::parse(requested_thinking).unwrap_or(ThinkingLevel::Medium);
+    let requested_thinking = thinking_override.as_deref().or(entry.thinking.as_deref());
+    let thinking_level = resolve_thinking_level(
+        requested_thinking,
+        resumed_thinking_level,
+        settings.default_thinking.as_deref(),
+    );
     let thinking_str = thinking_level.as_str();
 
     let agents_md = load_agents_md(&cwd);
@@ -369,4 +393,34 @@ pub(crate) fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value>
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_thinking_level;
+    use bb_core::agent_session::ThinkingLevel;
+
+    #[test]
+    fn resolve_thinking_level_prefers_requested_value() {
+        assert_eq!(
+            resolve_thinking_level(Some("high"), Some(ThinkingLevel::Low), Some("medium")),
+            ThinkingLevel::High
+        );
+    }
+
+    #[test]
+    fn resolve_thinking_level_uses_resumed_explicit_value_before_settings_default() {
+        assert_eq!(
+            resolve_thinking_level(None, Some(ThinkingLevel::Low), Some("high")),
+            ThinkingLevel::Low
+        );
+    }
+
+    #[test]
+    fn resolve_thinking_level_falls_back_to_settings_default_when_resume_has_no_explicit_value() {
+        assert_eq!(
+            resolve_thinking_level(None, None, Some("high")),
+            ThinkingLevel::High
+        );
+    }
 }
