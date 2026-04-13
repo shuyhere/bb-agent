@@ -97,7 +97,7 @@ Execution posture for built-in tools.
   - allows broader built-in file mutation behavior
   - skips the safer bash posture
 
-BB-Agent shows the active posture in `/session` and the fullscreen footer/settings UI so it stays visible during a run.
+BB-Agent shows the active posture in `/session` and the TUI footer/settings UI so it stays visible during a run.
 
 #### `default_provider`
 Default LLM provider. Values: `anthropic`, `openai`, `google`, `groq`, `xai`, `openrouter`, or a custom provider name.

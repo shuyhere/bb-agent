@@ -4,7 +4,7 @@
 
 > BB means Bridge Baby in Death Stranding. I named this project that way because while building it, I was also enjoying Death Stranding and loved the idea of connecting everyone together.
 
-A Rust-native AI coding agent for the terminal — featuring a fullscreen TUI, multi-provider support, tool use, session persistence, branching, extensions, and skills.
+A Rust-native AI coding agent for the terminal — featuring a TUI, multi-provider support, tool use, session persistence, branching, extensions, and skills.
 
 ## Install
 
@@ -68,7 +68,7 @@ Inside the TUI, run:
 /login
 ```
 
-This opens the provider picker and auth flow directly in the fullscreen UI.
+This opens the provider picker and auth flow directly in the TUI.
 
 If you prefer, you can also log in from a normal terminal:
 
@@ -81,12 +81,12 @@ bb login google       # Login to Google (API key)
 
 Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
 
-That's it! Run `bb` to launch the fullscreen interactive terminal UI. Type your prompt and press Enter.
+That's it! Run `bb` to launch the interactive TUI. Type your prompt and press Enter.
 
 ### More ways to use `bb`
 
 ```bash
-bb                                    # Launch the fullscreen TUI
+bb                                    # Launch the TUI
 bb "Explain this codebase"            # TUI with an initial prompt
 bb -p "What is 2+2?"                  # Print mode (non-interactive, pipe-friendly)
 bb -c                                 # Continue your last session
@@ -98,7 +98,7 @@ bb --list-models                      # List all available models
 
 ## Features
 
-- **Fullscreen TUI** — rich terminal interface with streaming output, markdown rendering, syntax highlighting
+- **TUI** — rich terminal interface with streaming output, markdown rendering, syntax highlighting
 - **Multi-provider** — Anthropic (Claude), OpenAI, Google (Gemini), Groq, xAI, OpenRouter, and custom OpenAI-compatible endpoints
 - **Built-in tools** — `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`, `web_search`, `web_fetch`, `browser_fetch`
 - **Safety and yolo execution modes** — default safety posture restricts built-in `write` and `edit` to the active workspace; yolo removes that guard
@@ -165,7 +165,7 @@ BB-Agent uses layered configuration:
 
 ### Execution Modes
 
-BB-Agent exposes the active permission posture in fullscreen and `/session`.
+BB-Agent exposes the active permission posture in the TUI and `/session`.
 
 - `safety` is the default. Built-in `write` and `edit` stay inside the current workspace, and bash commands use the safer approval/sandboxed posture.
 - `yolo` is the opt-in less-restrictive mode.
@@ -202,14 +202,14 @@ Example:
 | `bb-provider` | Model/provider integrations and streaming |
 | `bb-hooks` | Hook event types for extensions |
 | `bb-plugin-host` | Plugin discovery and host runtime |
-| `bb-tui` | Terminal UI components and fullscreen experience |
+| `bb-tui` | Terminal UI components and the interactive TUI experience |
 | `bb-cli` | The `bb` command-line application |
 
 ## Troubleshooting
 
 ### Terminal & Font Compatibility
 
-BB-Agent uses Unicode glyphs and ANSI color in the fullscreen TUI. For the best visual experience, use a modern terminal and a Unicode-capable monospace font such as:
+BB-Agent uses Unicode glyphs and ANSI color in the TUI. For the best visual experience, use a modern terminal and a Unicode-capable monospace font such as:
 
 - JetBrains Mono
 - SF Mono / Menlo

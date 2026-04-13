@@ -1,5 +1,5 @@
 use crate::theme::theme;
-use crate::ui_hints::FULLSCREEN_HEADER_TOOL_HINT;
+use crate::ui_hints::TUI_HEADER_TOOL_HINT;
 use crate::utils::{pad_to_width, sanitize_terminal_text, truncate_to_width, visible_width};
 
 use super::super::{runtime::FullscreenState, types::FullscreenMode};
@@ -25,7 +25,7 @@ pub(crate) fn render_header(state: &FullscreenState, width: usize) -> Vec<String
         ));
         let hints = format!(
             "{}Ctrl-C exit . / commands . ! bash . {} . Ctrl+Y drag-copy . /help for more{}",
-            t.dim, FULLSCREEN_HEADER_TOOL_HINT, t.reset
+            t.dim, TUI_HEADER_TOOL_HINT, t.reset
         );
         lines.push(pad_to_width(&truncate_to_width(&hints, width), width));
         lines.push(blank_line(width));

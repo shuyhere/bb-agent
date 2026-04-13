@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Terminal UI components and fullscreen experience for BB-Agent."
+description = "Terminal UI components and TUI experience for BB-Agent."
 publish = false
 
 [dependencies]

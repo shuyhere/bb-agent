@@ -181,7 +181,7 @@ bb-agent/
 │   │
 │   ├── tui/                # bb-tui: terminal UI (largest crate)
 │   │   └── src/
-│   │       ├── fullscreen/     # Fullscreen mode (events, frame, projection, etc.)
+│   │       ├── fullscreen/     # Legacy-named TUI app/runtime (events, frame, projection, etc.)
 │   │       ├── editor/         # Multi-line text editor
 │   │       ├── markdown/       # Markdown rendering
 │   │       ├── syntax.rs       # Syntax highlighting
@@ -191,7 +191,7 @@ bb-agent/
 │   └── cli/                # bb-cli: the `bb` binary
 │       └── src/
 │           ├── main.rs         # CLI arg parsing, entry point
-│           ├── fullscreen/     # Fullscreen controller, menus, session
+│           ├── fullscreen/     # Legacy-named TUI controller, menus, session
 │           ├── session_bootstrap.rs  # Runtime setup
 │           ├── turn_runner.rs  # LLM turn execution
 │           ├── login.rs        # Auth store (auth.json)
