@@ -3,7 +3,6 @@
 //! Provides the terminal user interface components including
 //! the interactive TUI editor, chat view, and syntax highlighting.
 
-pub mod app;
 pub mod chat;
 pub mod component;
 pub mod components;

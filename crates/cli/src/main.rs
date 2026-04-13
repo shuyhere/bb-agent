@@ -124,14 +124,6 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Legacy no-op flag kept for compatibility; the TUI is now the default
-    #[arg(
-        long = "fullscreen-transcript",
-        visible_alias = "fullscreen",
-        hide = true
-    )]
-    fullscreen_transcript: bool,
-
     /// Initial prompt / messages
     #[arg(trailing_var_arg = true)]
     messages: Vec<String>,
