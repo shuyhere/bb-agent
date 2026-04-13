@@ -195,6 +195,7 @@ impl Tool for EchoTool {
 
 struct CacheAwareProvider {
     call_count: AtomicUsize,
+    cache_metrics_source: bb_provider::CacheMetricsSource,
 }
 
 #[async_trait]
@@ -225,7 +226,7 @@ impl Provider for CacheAwareProvider {
             output_tokens: 10,
             cache_read_tokens: cached,
             cache_write_tokens: 0,
-            cache_metrics_source: bb_provider::CacheMetricsSource::Unknown,
+            cache_metrics_source: self.cache_metrics_source.clone(),
         }));
         let _ = tx.send(StreamEvent::TextDelta {
             text: format!("turn-{call_index}"),
@@ -647,6 +648,7 @@ async fn cache_metrics_log_reports_read_hit_rate_for_follow_up_turn() {
     let wrapped = wrap_conn(conn);
     let provider = Arc::new(CacheAwareProvider {
         call_count: AtomicUsize::new(0),
+        cache_metrics_source: bb_provider::CacheMetricsSource::Official,
     });
     let request_metrics_state = new_shared_request_metrics_state();
 
@@ -695,13 +697,99 @@ async fn cache_metrics_log_reports_read_hit_rate_for_follow_up_turn() {
     assert!(metrics.len() >= 2, "expected at least two metric rows");
 
     let last = metrics.last().expect("last metrics row");
+    assert_eq!(
+        last.cache_metrics_source,
+        bb_provider::CacheMetricsSource::Official
+    );
     assert_eq!(last.cache_read_tokens, 900);
     assert_eq!(last.input_tokens, 100);
+    assert_eq!(last.provider_cache_read_tokens, Some(900));
+    assert_eq!(last.estimated_cache_read_tokens, None);
     assert_eq!(last.cache_read_hit_rate_pct, Some(90.0));
     assert_eq!(last.cache_effective_utilization_pct, Some(90.0));
     assert!(last.warm_request);
     assert!(last.previous_request_hash.is_some());
     assert!(last.reused_prefix_bytes_estimate.is_some());
+}
+
+#[tokio::test]
+async fn cache_metrics_log_uses_estimated_values_for_estimated_provider_metrics() {
+    let _guard = REQUEST_METRICS_TEST_LOCK.lock().expect("metrics test lock");
+    clear_request_metrics_log();
+
+    let conn = store::open_memory().expect("memory db");
+    let session_id = format!(
+        "metrics-session-{}",
+        REQUEST_METRICS_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    store::create_session_with_id(&conn, &session_id, "/tmp").expect("session");
+    let wrapped = wrap_conn(conn);
+    let provider = Arc::new(CacheAwareProvider {
+        call_count: AtomicUsize::new(0),
+        cache_metrics_source: bb_provider::CacheMetricsSource::Estimated,
+    });
+    let request_metrics_state = new_shared_request_metrics_state();
+
+    let make_config = || TurnConfig {
+        conn: wrapped.clone(),
+        session_id: session_id.clone(),
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: provider.clone(),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tools: vec![],
+        tool_defs: vec![],
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+        request_metrics_state: request_metrics_state.clone(),
+    };
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "first", &[])
+        .await
+        .expect("append first user");
+    let (event_tx1, _event_rx1) = mpsc::unbounded_channel();
+    run_turn(make_config(), event_tx1, "first".to_string())
+        .await
+        .1
+        .expect("first turn");
+
+    crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "second", &[])
+        .await
+        .expect("append second user");
+    let (event_tx2, _event_rx2) = mpsc::unbounded_channel();
+    run_turn(make_config(), event_tx2, "second".to_string())
+        .await
+        .1
+        .expect("second turn");
+
+    let metrics = read_request_metrics_log_for_session(&session_id);
+    assert!(metrics.len() >= 2, "expected at least two metric rows");
+
+    let last = metrics.last().expect("last metrics row");
+    assert_eq!(
+        last.cache_metrics_source,
+        bb_provider::CacheMetricsSource::Estimated
+    );
+    assert_eq!(last.provider_cache_read_tokens, Some(900));
+    assert_eq!(
+        last.estimated_cache_read_tokens,
+        last.reused_prefix_tokens_estimate
+    );
+    assert_eq!(
+        last.cache_read_tokens,
+        last.reused_prefix_tokens_estimate.unwrap_or(0)
+    );
+    assert!(last.input_tokens < 1000);
+    assert!(last.warm_request);
 }
 
 #[tokio::test]
@@ -718,6 +806,7 @@ async fn cache_metrics_resume_hydration_restores_previous_request_context() {
     let wrapped = wrap_conn(conn);
     let provider = Arc::new(CacheAwareProvider {
         call_count: AtomicUsize::new(0),
+        cache_metrics_source: bb_provider::CacheMetricsSource::Official,
     });
 
     crate::turn_runner::append_user_message_with_images(&wrapped, &session_id, "first", &[])
@@ -771,6 +860,9 @@ async fn cache_metrics_resume_hydration_restores_previous_request_context() {
         "system",
         &[],
         &resumed_messages,
+        "dummy-model",
+        Some(128_000),
+        None,
     )
     .await
     .expect("hydrate resumed state");
