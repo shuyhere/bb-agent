@@ -226,6 +226,10 @@ impl FullscreenController {
             }
             "thinking" => {
                 let level = ThinkingLevel::parse(value).unwrap_or(ThinkingLevel::Medium);
+                self.ensure_session_row_created()?;
+                if self.session_setup.thinking_level != level.as_str() {
+                    self.append_thinking_level_change_entry(level)?;
+                }
                 self.session_setup.thinking_level = level.as_str().to_string();
                 self.runtime_host.session_mut().set_thinking_level(level);
                 self.publish_footer();

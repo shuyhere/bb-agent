@@ -12,6 +12,80 @@ fn test_build_context_empty() {
 }
 
 #[test]
+fn test_explicit_thinking_level_from_path_is_none_when_unset() {
+    let conn = store::open_memory().unwrap();
+    let sid = store::create_session(&conn, "/tmp").unwrap();
+
+    let e1 = SessionEntry::Message {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: None,
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &sid, &e1).unwrap();
+
+    assert_eq!(
+        active_path_explicit_thinking_level(&conn, &sid).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn test_explicit_thinking_level_from_path_returns_latest_change() {
+    let conn = store::open_memory().unwrap();
+    let sid = store::create_session(&conn, "/tmp").unwrap();
+
+    let root_id = EntryId::generate();
+    let root = SessionEntry::Message {
+        base: EntryBase {
+            id: root_id.clone(),
+            parent_id: None,
+            timestamp: Utc::now(),
+        },
+        message: AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            timestamp: Utc::now().timestamp_millis(),
+        }),
+    };
+    store::append_entry(&conn, &sid, &root).unwrap();
+
+    let low_id = EntryId::generate();
+    let low = SessionEntry::ThinkingLevelChange {
+        base: EntryBase {
+            id: low_id.clone(),
+            parent_id: Some(root_id),
+            timestamp: Utc::now(),
+        },
+        thinking_level: ThinkingLevel::Low,
+    };
+    store::append_entry(&conn, &sid, &low).unwrap();
+
+    let high = SessionEntry::ThinkingLevelChange {
+        base: EntryBase {
+            id: EntryId::generate(),
+            parent_id: Some(low_id),
+            timestamp: Utc::now(),
+        },
+        thinking_level: ThinkingLevel::High,
+    };
+    store::append_entry(&conn, &sid, &high).unwrap();
+
+    assert_eq!(
+        active_path_explicit_thinking_level(&conn, &sid).unwrap(),
+        Some(ThinkingLevel::High)
+    );
+}
+
+#[test]
 fn test_build_context_simple() {
     let conn = store::open_memory().unwrap();
     let sid = store::create_session(&conn, "/tmp").unwrap();

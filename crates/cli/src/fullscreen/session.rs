@@ -375,7 +375,32 @@ impl FullscreenController {
             &self.session_setup.session_id,
             &cwd,
         )?;
+        // Persist the initial thinking level so later resume can distinguish an
+        // explicit session setting from the absence of any recorded override.
+        let initial_thinking = ThinkingLevel::parse(&self.session_setup.thinking_level)
+            .unwrap_or(ThinkingLevel::Medium);
+        self.append_thinking_level_change_entry(initial_thinking)?;
         self.session_setup.session_created = true;
+        Ok(())
+    }
+
+    pub(super) fn append_thinking_level_change_entry(
+        &mut self,
+        thinking_level: ThinkingLevel,
+    ) -> Result<()> {
+        let entry = SessionEntry::ThinkingLevelChange {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: self.get_session_leaf(),
+                timestamp: Utc::now(),
+            },
+            thinking_level,
+        };
+        store::append_entry(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &entry,
+        )?;
         Ok(())
     }
 
@@ -555,11 +580,11 @@ impl FullscreenController {
         tokio::task::yield_now().await;
 
         let result: Result<()> = (|| {
+            let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
             if let Ok(session_context) =
                 context::build_context(&self.session_setup.conn, session_id)
             {
                 if let Some(model_info) = session_context.model.clone() {
-                    let settings = Settings::load_merged(&self.session_setup.tool_ctx.cwd);
                     let mut registry = ModelRegistry::new();
                     registry.load_custom_models(&settings);
                     crate::login::add_cached_github_copilot_models(&mut registry);
@@ -625,13 +650,19 @@ impl FullscreenController {
                         ));
                     }
                 }
-
-                let thinking_level = session_context.thinking_level;
-                self.session_setup.thinking_level = thinking_level.as_str().to_string();
-                self.runtime_host.session_mut().set_thinking_level(
-                    ThinkingLevel::parse(thinking_level.as_str()).unwrap_or(ThinkingLevel::Medium),
-                );
             }
+
+            let thinking_level = crate::session_bootstrap::resolve_thinking_level(
+                None,
+                context::active_path_explicit_thinking_level(&self.session_setup.conn, session_id)
+                    .ok()
+                    .flatten(),
+                settings.default_thinking.as_deref(),
+            );
+            self.session_setup.thinking_level = thinking_level.as_str().to_string();
+            self.runtime_host
+                .session_mut()
+                .set_thinking_level(thinking_level);
 
             self.rebuild_current_transcript()?;
             self.send_command(FullscreenCommand::SetInput(String::new()));
