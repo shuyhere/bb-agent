@@ -6,7 +6,7 @@ use bb_session::{store::EntryRow, tree::TreeNode};
 use super::transcript::BlockId;
 
 use crate::select_list::SelectItem;
-use crate::ui_hints::FULLSCREEN_TOOL_STATUS_HINT;
+use crate::ui_hints::TUI_TOOL_STATUS_HINT;
 
 use super::transcript::Transcript;
 
@@ -79,9 +79,9 @@ pub struct FullscreenAppConfig {
 impl Default for FullscreenAppConfig {
     fn default() -> Self {
         Self {
-            title: "BB-Agent fullscreen transcript".to_string(),
+            title: "BB-Agent TUI transcript".to_string(),
             input_placeholder: "Type a prompt…".to_string(),
-            status_line: FULLSCREEN_TOOL_STATUS_HINT.to_string(),
+            status_line: TUI_TOOL_STATUS_HINT.to_string(),
             footer: FullscreenFooterData::default(),
             transcript: Transcript::new(),
             extra_slash_items: Vec::new(),

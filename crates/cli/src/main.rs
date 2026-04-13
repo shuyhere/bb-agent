@@ -24,8 +24,8 @@ mod update_check;
     about = "BB-Agent — a Rust-native coding agent",
     version,
     after_help = r#"Examples:
-  bb                                  Fullscreen mode
-  bb "List all .rs files in src/"     Fullscreen with initial prompt
+  bb                                  TUI mode
+  bb "List all .rs files in src/"     TUI with initial prompt
   bb -p "What is 2+2?"               Print mode (non-interactive)
   bb -c                               Continue previous session
   bb -r                               Resume: pick a session
@@ -124,7 +124,7 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Legacy no-op flag kept for compatibility; fullscreen is now the default
+    /// Legacy no-op flag kept for compatibility; the TUI is now the default
     #[arg(
         long = "fullscreen-transcript",
         visible_alias = "fullscreen",
@@ -394,7 +394,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Print mode stays thin; interactive terminal usage now defaults to fullscreen.
+    // Print mode stays thin; interactive terminal usage now defaults to the TUI.
     if cli.print {
         run::run_print_mode(cli).await
     } else {
