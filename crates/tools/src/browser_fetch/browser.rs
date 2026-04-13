@@ -132,6 +132,41 @@ pub(super) async fn run_browser_dump_dom(
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
+pub(super) fn missing_browser_error_message() -> String {
+    let mut lines = vec![
+        "No supported Chrome/Chromium browser executable found.".to_string(),
+        "Set BB_BROWSER to a Chrome/Chromium binary path or install Google Chrome / Chromium.".to_string(),
+    ];
+
+    if let Ok(configured) = env::var("BB_BROWSER") {
+        let trimmed = configured.trim();
+        if !trimmed.is_empty() {
+            lines.push(format!("BB_BROWSER is currently set to: {trimmed}"));
+        }
+    }
+
+    lines.push(format!(
+        "Checked PATH/common candidates: {}",
+        browser_candidate_labels().join(", ")
+    ));
+
+    if cfg!(target_os = "linux") {
+        lines.push(
+            "Linux hint: install Chromium/Chrome or set BB_BROWSER=/path/to/chrome (for Ubuntu snap installs, /snap/bin/chromium is a common path).".to_string(),
+        );
+    } else if cfg!(target_os = "macos") {
+        lines.push(
+            "macOS hint: Google Chrome is commonly at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome .".to_string(),
+        );
+    } else if cfg!(target_os = "windows") {
+        lines.push(
+            "Windows hint: set BB_BROWSER to chrome.exe/msedge.exe if it is not on PATH.".to_string(),
+        );
+    }
+
+    lines.join(" ")
+}
+
 pub(super) fn resolve_browser_executable() -> Option<PathBuf> {
     if let Ok(path) = env::var("BB_BROWSER") {
         let trimmed = path.trim();
@@ -143,20 +178,83 @@ pub(super) fn resolve_browser_executable() -> Option<PathBuf> {
         }
     }
 
-    for name in [
+    for name in browser_candidate_names() {
+        if let Some(path) = find_in_path(name) {
+            return Some(path);
+        }
+    }
+
+    for path in common_browser_paths() {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn browser_candidate_names() -> &'static [&'static str] {
+    &[
         "google-chrome",
         "google-chrome-stable",
         "chromium",
         "chromium-browser",
         "chrome",
         "Google Chrome",
-    ] {
-        if let Some(path) = find_in_path(name) {
-            return Some(path);
-        }
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "msedge",
+    ]
+}
+
+fn browser_candidate_labels() -> Vec<String> {
+    let mut labels: Vec<String> = browser_candidate_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    labels.extend(
+        common_browser_paths()
+            .into_iter()
+            .map(|path| path.display().to_string()),
+    );
+    labels
+}
+
+fn common_browser_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if cfg!(target_os = "linux") {
+        paths.extend([
+            "/snap/bin/chromium",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/opt/google/chrome/chrome",
+            "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+            "/opt/microsoft/msedge/msedge",
+        ]);
     }
 
-    None
+    if cfg!(target_os = "macos") {
+        paths.extend([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]);
+    }
+
+    if cfg!(target_os = "windows") {
+        paths.extend([
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ]);
+    }
+
+    paths.into_iter().map(PathBuf::from).collect()
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {

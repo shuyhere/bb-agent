@@ -14,7 +14,8 @@ mod content;
 mod tests;
 
 use browser::{
-    build_browser_args, create_temp_profile_dir, resolve_browser_executable, run_browser_dump_dom,
+    build_browser_args, create_temp_profile_dir, missing_browser_error_message,
+    resolve_browser_executable, run_browser_dump_dom,
 };
 #[cfg(test)]
 use content::extract_canonical_like_url;
@@ -76,11 +77,8 @@ impl Tool for BrowserFetchTool {
 
         let url = parse_http_url("browser_fetch", &input.url)?;
 
-        let browser = resolve_browser_executable().ok_or_else(|| {
-            BbError::Tool(
-                "No supported Chrome/Chromium browser executable found. Set BB_BROWSER to a Chrome/Chromium binary path or install Google Chrome / Chromium.".into(),
-            )
-        })?;
+        let browser = resolve_browser_executable()
+            .ok_or_else(|| BbError::Tool(missing_browser_error_message()))?;
         let timeout_secs = input.timeout.unwrap_or(DEFAULT_TIMEOUT_SECONDS).max(1.0);
         let max_chars = input
             .max_chars
