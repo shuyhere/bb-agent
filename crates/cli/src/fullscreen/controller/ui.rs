@@ -220,46 +220,30 @@ impl FullscreenController {
         let auto_suffix = compaction_auto_suffix(compaction_enabled);
 
         if let Some(usage) = runtime_usage {
-            if let Some(tokens) = usage.tokens.filter(|tokens| *tokens > 0) {
-                let percent = (tokens as f64 / context_window as f64) * 100.0;
-                return format!(
-                    "{percent:.1}%/{}{}",
-                    format_tokens(context_window),
-                    auto_suffix
-                );
+            if let Some(tokens) = usage.tokens {
+                return format_context_from_tokens(tokens as u64, context_window, auto_suffix);
             }
-            if let Some(percent) = usage.percent.filter(|percent| *percent > 0) {
-                return format!(
-                    "{percent:.1}%/{}{}",
-                    format_tokens(context_window),
-                    auto_suffix
-                );
+            if let Some(percent) = usage.percent {
+                return format_context_percent(percent as f64, context_window, auto_suffix);
             }
-            return format!("?/{}{}", format_tokens(context_window), auto_suffix);
+            return format_unknown_context(context_window, auto_suffix);
         }
 
         if self.manual_compaction_in_progress
             || self.auto_compaction_in_progress
             || latest_entry_is_compaction
         {
-            return format!("?/{}{}", format_tokens(context_window), auto_suffix);
+            return format_unknown_context(context_window, auto_suffix);
         }
 
-        let estimated_tokens = active_path
+        if let Some(tokens) = active_path
             .as_deref()
             .and_then(estimate_active_path_context_tokens)
-            .filter(|tokens| *tokens > 0);
-
-        if let Some(tokens) = estimated_tokens.filter(|_| context_window > 0) {
-            let percent = (tokens as f64 / context_window as f64) * 100.0;
-            return format!(
-                "{percent:.1}%/{}{}",
-                format_tokens(context_window),
-                auto_suffix
-            );
+        {
+            return format_context_from_tokens(tokens, context_window, auto_suffix);
         }
 
-        format!("?/{}{}", format_tokens(context_window), auto_suffix)
+        format_unknown_context(context_window, auto_suffix)
     }
 
     fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
@@ -377,6 +361,33 @@ fn push_usage_part(parts: &mut Vec<String>, tokens: u64, prefix: &str) {
     }
 }
 
+fn format_context_percent(percent: f64, context_window: u64, auto_suffix: &str) -> String {
+    format!(
+        "{percent:.1}%/{}{}",
+        format_tokens(context_window),
+        auto_suffix
+    )
+}
+
+fn format_context_from_tokens(tokens: u64, context_window: u64, auto_suffix: &str) -> String {
+    if context_window == 0 {
+        return format_unknown_context(context_window, auto_suffix);
+    }
+    format_context_percent(
+        (tokens as f64 / context_window as f64) * 100.0,
+        context_window,
+        auto_suffix,
+    )
+}
+
+fn format_unknown_context(context_window: u64, auto_suffix: &str) -> String {
+    format!("?/{}{}", format_tokens(context_window), auto_suffix)
+}
+
+// Keep footer context reporting aligned with compaction/runtime estimation.
+// In particular, do not reuse stale pre-compaction assistant usage after the
+// latest compaction boundary; treat context usage as unknown until a fresh
+// post-compaction assistant usage record exists.
 fn estimate_active_path_context_tokens(path: &[bb_session::store::EntryRow]) -> Option<u64> {
     let latest_compaction_index = path.iter().rposition(|row| row.entry_type == "compaction");
     if let Some(compaction_index) = latest_compaction_index {
@@ -412,7 +423,8 @@ mod tests {
 
     use super::{
         QueuedPrompt, build_status_line, compaction_auto_suffix,
-        estimate_active_path_context_tokens, permission_posture_badge,
+        estimate_active_path_context_tokens, format_context_from_tokens, format_context_percent,
+        format_unknown_context, permission_posture_badge,
     };
     use bb_core::types::{
         AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
@@ -494,6 +506,16 @@ mod tests {
         let estimated = estimate_active_path_context_tokens(&path).expect("estimated tokens");
 
         assert_eq!(estimated, 120_000);
+    }
+
+    #[test]
+    fn context_footer_formatters_preserve_zero_percent() {
+        assert_eq!(
+            format_context_from_tokens(0, 272_000, " (auto)"),
+            "0.0%/272k (auto)"
+        );
+        assert_eq!(format_context_percent(0.0, 272_000, ""), "0.0%/272k");
+        assert_eq!(format_unknown_context(272_000, " (auto)"), "?/272k (auto)");
     }
 
     #[test]
