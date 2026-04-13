@@ -66,7 +66,10 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
             }
             if state.has_active_turn() || state.has_running_tool() {
                 let msg_owned;
-                let msg = if state.status_line.trim().is_empty() {
+                let msg = if let Some(status) = state.active_turn_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
+                    &msg_owned
+                } else if state.status_line.trim().is_empty() {
                     ""
                 } else {
                     msg_owned = sanitize_terminal_text(&state.status_line);
@@ -94,13 +97,11 @@ pub(crate) fn render_status(state: &FullscreenState, width: usize) -> String {
         FullscreenMode::Transcript => {
             if state.has_active_turn() || state.has_running_tool() {
                 let msg_owned;
-                let msg = if state.status_line.trim().is_empty() {
-                    msg_owned = sanitize_terminal_text(
-                        &state
-                            .active_turn_status_message()
-                            .unwrap_or_else(|| "Transcript mode".to_string()),
-                    );
+                let msg = if let Some(status) = state.active_turn_status_message() {
+                    msg_owned = sanitize_terminal_text(&status);
                     &msg_owned
+                } else if state.status_line.trim().is_empty() {
+                    ""
                 } else {
                     msg_owned = sanitize_terminal_text(&state.status_line);
                     &msg_owned

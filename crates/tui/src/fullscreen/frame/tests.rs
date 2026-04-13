@@ -7,7 +7,7 @@ use crate::fullscreen::types::FullscreenCommand;
 use bb_core::types::ContentBlock;
 
 #[test]
-fn working_status_uses_animated_spinner() {
+fn active_turn_status_uses_elapsed_progress_instead_of_static_status_line() {
     let mut state = FullscreenState::new(
         FullscreenAppConfig::default(),
         Size {
@@ -20,15 +20,16 @@ fn working_status_uses_animated_spinner() {
 
     let first = render_status(&state, 80);
     let plain_first = crate::utils::strip_ansi(&first);
-    assert!(plain_first.contains("Working..."));
+    assert!(plain_first.contains("requesting response •"));
+    assert!(!plain_first.contains("Working..."));
     assert!(first.contains("\x1b[38;2;")); // truecolor escapes
 
     for _ in 0..3 {
-        state.spinner.tick();
+        state.on_tick();
     }
     let later = render_status(&state, 80);
     let plain_later = crate::utils::strip_ansi(&later);
-    assert!(plain_later.contains("Working..."));
+    assert!(plain_later.contains("requesting response •"));
 }
 
 #[test]
@@ -72,8 +73,33 @@ fn transcript_mode_active_turn_uses_spinner_status() {
 
     let rendered = render_status(&state, 80);
     let plain = crate::utils::strip_ansi(&rendered);
-    assert!(plain.contains("Requesting response..."));
+    assert!(plain.contains("requesting response •"));
     assert!(rendered.contains("\x1b[38;2;"));
+}
+
+#[test]
+fn thinking_and_writing_status_render_with_elapsed_progress() {
+    let mut state = FullscreenState::new(
+        FullscreenAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    let _ = state.apply_command(FullscreenCommand::TurnStart { turn_index: 0 });
+    let _ = state.apply_command(FullscreenCommand::ThinkingDelta("pondering".to_string()));
+    state.on_tick();
+
+    let thinking = render_status(&state, 80);
+    let thinking_plain = crate::utils::strip_ansi(&thinking);
+    assert!(thinking_plain.contains("thinking •"));
+
+    let _ = state.apply_command(FullscreenCommand::TextDelta("answer".to_string()));
+    state.on_tick();
+
+    let writing = render_status(&state, 80);
+    let writing_plain = crate::utils::strip_ansi(&writing);
+    assert!(writing_plain.contains("writing •"));
 }
 
 #[test]
