@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::retry::with_retry;
 use crate::transforms::convert_messages_for_anthropic;
-use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent};
+use crate::{CacheMetricsSource, CompletionRequest, Provider, RequestOptions, StreamEvent};
 
 use events::process_sse_event;
 
@@ -62,6 +62,11 @@ impl Provider for AnthropicProvider {
         let is_oauth = is_anthropic_oauth_token(&options.api_key);
 
         let messages = convert_messages_for_anthropic(&request.messages);
+        let cache_metrics_source = if is_oauth {
+            CacheMetricsSource::Estimated
+        } else {
+            CacheMetricsSource::Official
+        };
 
         let mut tools: Vec<Value> = request
             .tools
@@ -216,7 +221,7 @@ impl Provider for AnthropicProvider {
                             return Ok(());
                         }
                         if let Ok(event) = serde_json::from_str::<Value>(data) {
-                            process_sse_event(&event, &tx);
+                            process_sse_event(&event, &tx, cache_metrics_source.clone());
                         }
                     }
                 }

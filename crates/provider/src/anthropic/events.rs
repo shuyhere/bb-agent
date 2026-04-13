@@ -20,7 +20,11 @@ static BLOCK_ID_MAP: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u64, TrackedBlock>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
+pub(super) fn process_sse_event(
+    event: &Value,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+    cache_metrics_source: CacheMetricsSource,
+) {
     let event_type = event["type"].as_str().unwrap_or("");
 
     match event_type {
@@ -35,7 +39,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
                     cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
                     cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-                    cache_metrics_source: CacheMetricsSource::Unknown,
+                    cache_metrics_source: cache_metrics_source.clone(),
                 }));
             }
         }
@@ -180,7 +184,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
                     output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
                     cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
                     cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-                    cache_metrics_source: CacheMetricsSource::Unknown,
+                    cache_metrics_source: cache_metrics_source.clone(),
                 }));
             }
         }
@@ -210,6 +214,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -221,6 +226,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -228,6 +234,7 @@ mod tests {
                 "index": 0
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         drop(tx);
 
@@ -270,6 +277,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         drop(tx);
 
@@ -286,6 +294,64 @@ mod tests {
                 assert_eq!(result["content"][0]["url"], "https://tokio.rs");
             }
             other => panic!("expected ServerToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn marks_api_key_usage_as_official() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sse_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 12,
+                        "cache_read_input_tokens": 40,
+                        "cache_creation_input_tokens": 5
+                    }
+                }
+            }),
+            &tx,
+            CacheMetricsSource::Official,
+        );
+        drop(tx);
+
+        match rx.blocking_recv().expect("usage event") {
+            StreamEvent::Usage(usage) => {
+                assert_eq!(usage.cache_metrics_source, CacheMetricsSource::Official);
+                assert_eq!(usage.cache_read_tokens, 40);
+                assert_eq!(usage.cache_write_tokens, 5);
+            }
+            other => panic!("expected Usage event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn marks_oauth_usage_as_estimated() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sse_event(
+            &json!({
+                "type": "message_delta",
+                "usage": {
+                    "input_tokens": 90,
+                    "output_tokens": 8,
+                    "cache_read_input_tokens": 30,
+                    "cache_creation_input_tokens": 2
+                }
+            }),
+            &tx,
+            CacheMetricsSource::Estimated,
+        );
+        drop(tx);
+
+        match rx.blocking_recv().expect("usage event") {
+            StreamEvent::Usage(usage) => {
+                assert_eq!(usage.cache_metrics_source, CacheMetricsSource::Estimated);
+                assert_eq!(usage.cache_read_tokens, 30);
+                assert_eq!(usage.cache_write_tokens, 2);
+            }
+            other => panic!("expected Usage event, got {other:?}"),
         }
     }
 }
