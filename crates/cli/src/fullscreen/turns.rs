@@ -6,6 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
+const TURN_RUNNER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 use super::controller::{FullscreenController, QueuedPrompt};
 
 fn is_auto_compaction_status(message: &str) -> bool {
@@ -14,6 +16,22 @@ fn is_auto_compaction_status(message: &str) -> bool {
 
 fn is_auto_compaction_terminal_status(message: &str) -> bool {
     is_auto_compaction_status(message) || message.starts_with("Auto-compaction failed:")
+}
+
+enum TurnJoinPoll<T> {
+    Completed(T),
+    TaskFailed(String),
+    TimedOut,
+}
+
+fn classify_turn_join_poll<T>(
+    poll: Result<Result<T, tokio::task::JoinError>, tokio::time::error::Elapsed>,
+) -> TurnJoinPoll<T> {
+    match poll {
+        Ok(Ok(value)) => TurnJoinPoll::Completed(value),
+        Ok(Err(err)) => TurnJoinPoll::TaskFailed(err.to_string()),
+        Err(_) => TurnJoinPoll::TimedOut,
+    }
 }
 
 impl FullscreenController {
@@ -200,6 +218,253 @@ impl FullscreenController {
         self.abort_token.cancel();
     }
 
+    async fn handle_submission_during_active_turn(
+        &mut self,
+        maybe_submission: Option<FullscreenSubmission>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
+        aborted: &mut bool,
+    ) -> Result<bool> {
+        match maybe_submission {
+            Some(FullscreenSubmission::ApprovalDecision {
+                choice,
+                steer_message,
+            }) => {
+                let follow_up_prompt =
+                    Self::approval_follow_up_prompt(choice, steer_message.as_deref());
+                self.handle_approval_submission(FullscreenSubmission::ApprovalDecision {
+                    choice,
+                    steer_message,
+                })?;
+                if let Some(prompt) = follow_up_prompt {
+                    self.interrupt_turn_with_prompt(prompt);
+                    *aborted = true;
+                    return Ok(true);
+                }
+            }
+            Some(FullscreenSubmission::InputWithImages { text, image_paths }) => {
+                let has_images = !image_paths.is_empty();
+                self.attach_images_from_paths(&image_paths);
+                let text = text.trim().to_string();
+                if (text.is_empty() && !has_images) || text == "/" {
+                    return Ok(false);
+                }
+                if self.handle_local_submission(&text).await? {
+                    if self.shutdown_requested {
+                        self.abort_token.cancel();
+                        *aborted = true;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
+                self.queued_prompts.push_back(QueuedPrompt::Visible(text));
+                self.publish_status();
+                if self.shutdown_requested {
+                    self.abort_token.cancel();
+                    *aborted = true;
+                    return Ok(true);
+                }
+            }
+            Some(FullscreenSubmission::Input(text)) => {
+                let text = text.trim().to_string();
+                if text.is_empty() || text == "/" {
+                    return Ok(false);
+                }
+                if self.handle_local_submission(&text).await? {
+                    if self.shutdown_requested {
+                        self.abort_token.cancel();
+                        *aborted = true;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
+                self.queued_prompts.push_back(QueuedPrompt::Visible(text));
+                self.publish_status();
+                if self.shutdown_requested {
+                    self.abort_token.cancel();
+                    *aborted = true;
+                    return Ok(true);
+                }
+            }
+            Some(FullscreenSubmission::MenuSelection { menu_id, value }) => {
+                self.handle_menu_selection(&menu_id, &value, submission_rx)
+                    .await?;
+                if self.shutdown_requested {
+                    self.abort_token.cancel();
+                    *aborted = true;
+                    return Ok(true);
+                }
+            }
+            Some(FullscreenSubmission::CancelLocalAction) => {
+                if self.pending_approval.is_some() {
+                    self.handle_approval_submission(FullscreenSubmission::CancelLocalAction)?;
+                } else {
+                    // During streaming, cancel aborts the current turn.
+                    self.abort_token.cancel();
+                    *aborted = true;
+                    return Ok(true);
+                }
+            }
+            Some(FullscreenSubmission::EditQueuedMessages) => {
+                if self.queued_prompts.is_empty() {
+                    self.send_command(FullscreenCommand::SetStatusLine(
+                        "No queued messages to edit".to_string(),
+                    ));
+                } else {
+                    let queued = self
+                        .queued_prompts
+                        .drain(..)
+                        .map(|queued| match queued {
+                            QueuedPrompt::Visible(text) | QueuedPrompt::Hidden(text) => text,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    self.send_command(FullscreenCommand::SetInput(queued));
+                    self.publish_status();
+                }
+            }
+            None => {
+                self.abort_token.cancel();
+                *aborted = true;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn finalize_completed_turn(
+        &mut self,
+        returned_config: Option<TurnConfig>,
+        turn_result: Result<()>,
+        aborted: bool,
+        saw_context_overflow: bool,
+    ) {
+        if let Some(config) = returned_config {
+            self.session_setup.tools = config.tools;
+        }
+
+        if saw_context_overflow {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Warning,
+                text: "Context overflow detected after retry. Auto-compaction could not recover this turn; try reducing context or switching to a larger-context model.".to_string(),
+            });
+        }
+
+        if let Err(err) = turn_result {
+            self.send_command(FullscreenCommand::PushNote {
+                level: FullscreenNoteLevel::Error,
+                text: err.to_string(),
+            });
+        }
+
+        if aborted {
+            self.send_command(FullscreenCommand::TurnAborted);
+        }
+
+        self.streaming = false;
+        self.retry_status = None;
+        self.auto_compaction_in_progress = false;
+        self.publish_footer();
+        self.publish_status();
+    }
+
+    fn drain_pending_turn_events(
+        &mut self,
+        turn_event_rx: &mut mpsc::UnboundedReceiver<TurnEvent>,
+        saw_context_overflow: &mut bool,
+    ) {
+        while let Ok(event) = turn_event_rx.try_recv() {
+            if matches!(&event, TurnEvent::ContextOverflow { .. }) {
+                *saw_context_overflow = true;
+            }
+            self.handle_turn_event(event);
+        }
+    }
+
+    async fn await_turn_completion(
+        &mut self,
+        mut turn_handle: tokio::task::JoinHandle<(TurnConfig, Result<()>)>,
+        turn_event_rx: &mut mpsc::UnboundedReceiver<TurnEvent>,
+        submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
+        aborted: &mut bool,
+        saw_context_overflow: &mut bool,
+    ) -> Result<(Option<TurnConfig>, Result<()>)> {
+        match classify_turn_join_poll(
+            tokio::time::timeout(TURN_RUNNER_JOIN_TIMEOUT, &mut turn_handle).await,
+        ) {
+            TurnJoinPoll::Completed((config, result)) => {
+                self.drain_pending_turn_events(turn_event_rx, saw_context_overflow);
+                Ok((Some(config), result))
+            }
+            TurnJoinPoll::TaskFailed(err) => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Error,
+                    text: format!("Turn runner task failed: {err}"),
+                });
+                Ok((None, Ok(())))
+            }
+            TurnJoinPoll::TimedOut => {
+                self.send_command(FullscreenCommand::PushNote {
+                    level: FullscreenNoteLevel::Warning,
+                    text: "Timed out waiting for the turn runner to finish; keeping the turn active until it completes".to_string(),
+                });
+
+                let mut event_stream_closed = false;
+                let mut submission_stream_closed = false;
+                let mut approval_stream_closed = false;
+
+                loop {
+                    tokio::select! {
+                        join_result = &mut turn_handle => {
+                            self.drain_pending_turn_events(turn_event_rx, saw_context_overflow);
+                            return match join_result {
+                                Ok((config, result)) => Ok((Some(config), result)),
+                                Err(err) => {
+                                    self.send_command(FullscreenCommand::PushNote {
+                                        level: FullscreenNoteLevel::Error,
+                                        text: format!("Turn runner task failed: {err}"),
+                                    });
+                                    Ok((None, Ok(())))
+                                }
+                            };
+                        }
+                        maybe_event = turn_event_rx.recv(), if !event_stream_closed => {
+                            match maybe_event {
+                                Some(event) => {
+                                    if matches!(&event, TurnEvent::ContextOverflow { .. }) {
+                                        *saw_context_overflow = true;
+                                    }
+                                    self.handle_turn_event(event);
+                                }
+                                None => {
+                                    event_stream_closed = true;
+                                }
+                            }
+                        }
+                        maybe_approval = self.approval_rx.recv(), if !approval_stream_closed => {
+                            match maybe_approval {
+                                Some(approval) => self.present_approval_request(approval),
+                                None => approval_stream_closed = true,
+                            }
+                        }
+                        maybe_submission = submission_rx.recv(), if !submission_stream_closed => {
+                            let submissions_channel_closed = maybe_submission.is_none();
+                            let should_break = self
+                                .handle_submission_during_active_turn(maybe_submission, submission_rx, aborted)
+                                .await?;
+                            if submissions_channel_closed {
+                                submission_stream_closed = true;
+                            }
+                            if should_break {
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn run_streaming_turn_loop(
         &mut self,
         submission_rx: &mut mpsc::UnboundedReceiver<FullscreenSubmission>,
@@ -244,161 +509,27 @@ impl FullscreenController {
                     }
                 }
                 maybe_prompt = submission_rx.recv() => {
-                    match maybe_prompt {
-                        Some(FullscreenSubmission::ApprovalDecision {
-                            choice,
-                            steer_message,
-                        }) => {
-                            let follow_up_prompt = Self::approval_follow_up_prompt(
-                                choice,
-                                steer_message.as_deref(),
-                            );
-                            self.handle_approval_submission(FullscreenSubmission::ApprovalDecision {
-                                choice,
-                                steer_message,
-                            })?;
-                            if let Some(prompt) = follow_up_prompt {
-                                self.interrupt_turn_with_prompt(prompt);
-                                aborted = true;
-                                break;
-                            }
-                        }
-                        Some(FullscreenSubmission::InputWithImages { text, image_paths }) => {
-                            let has_images = !image_paths.is_empty();
-                            self.attach_images_from_paths(&image_paths);
-                            let text = text.trim().to_string();
-                            if (text.is_empty() && !has_images) || text == "/" {
-                                continue;
-                            }
-                            if self.handle_local_submission(&text).await? {
-                                if self.shutdown_requested {
-                                    self.abort_token.cancel();
-                                    aborted = true;
-                                    break;
-                                }
-                                continue;
-                            }
-                            self.queued_prompts.push_back(QueuedPrompt::Visible(text));
-                            self.publish_status();
-                            if self.shutdown_requested {
-                                self.abort_token.cancel();
-                                aborted = true;
-                                break;
-                            }
-                        }
-                        Some(FullscreenSubmission::Input(text)) => {
-                            let text = text.trim().to_string();
-                            if text.is_empty() || text == "/" {
-                                continue;
-                            }
-                            if self.handle_local_submission(&text).await? {
-                                if self.shutdown_requested {
-                                    self.abort_token.cancel();
-                                    aborted = true;
-                                    break;
-                                }
-                                continue;
-                            }
-                            self.queued_prompts.push_back(QueuedPrompt::Visible(text));
-                            self.publish_status();
-                            if self.shutdown_requested {
-                                self.abort_token.cancel();
-                                aborted = true;
-                                break;
-                            }
-                        }
-                        Some(FullscreenSubmission::MenuSelection { menu_id, value }) => {
-                            self.handle_menu_selection(&menu_id, &value, submission_rx).await?;
-                            if self.shutdown_requested {
-                                self.abort_token.cancel();
-                                aborted = true;
-                                break;
-                            }
-                        }
-                        Some(FullscreenSubmission::CancelLocalAction) => {
-                            if self.pending_approval.is_some() {
-                                self.handle_approval_submission(FullscreenSubmission::CancelLocalAction)?;
-                            } else {
-                                // During streaming, cancel aborts the current turn.
-                                self.abort_token.cancel();
-                                aborted = true;
-                                break;
-                            }
-                        }
-                        Some(FullscreenSubmission::EditQueuedMessages) => {
-                            if self.queued_prompts.is_empty() {
-                                self.send_command(FullscreenCommand::SetStatusLine(
-                                    "No queued messages to edit".to_string(),
-                                ));
-                            } else {
-                                let queued = self
-                                    .queued_prompts
-                                    .drain(..)
-                                    .map(|queued| match queued {
-                                        QueuedPrompt::Visible(text) | QueuedPrompt::Hidden(text) => text,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n\n");
-                                self.send_command(FullscreenCommand::SetInput(queued));
-                                self.publish_status();
-                            }
-                        }
-                        None => {
-                            self.abort_token.cancel();
-                            aborted = true;
-                            break;
-                        }
+                    if self
+                        .handle_submission_during_active_turn(maybe_prompt, submission_rx, &mut aborted)
+                        .await?
+                    {
+                        break;
                     }
                 }
             }
         }
 
-        let (returned_config, turn_result) =
-            match tokio::time::timeout(std::time::Duration::from_secs(5), turn_handle).await {
-                Ok(Ok((config, result))) => (Some(config), result),
-                Ok(Err(err)) => {
-                    self.send_command(FullscreenCommand::PushNote {
-                        level: FullscreenNoteLevel::Error,
-                        text: format!("Turn runner task failed: {err}"),
-                    });
-                    (None, Ok(()))
-                }
-                Err(_) => {
-                    self.send_command(FullscreenCommand::PushNote {
-                        level: FullscreenNoteLevel::Warning,
-                        text: "Timed out waiting for the turn runner to finish".to_string(),
-                    });
-                    (None, Ok(()))
-                }
-            };
+        let (returned_config, turn_result) = self
+            .await_turn_completion(
+                turn_handle,
+                &mut turn_event_rx,
+                submission_rx,
+                &mut aborted,
+                &mut saw_context_overflow,
+            )
+            .await?;
 
-        if let Some(config) = returned_config {
-            self.session_setup.tools = config.tools;
-        }
-
-        if saw_context_overflow {
-            self.send_command(FullscreenCommand::PushNote {
-                level: FullscreenNoteLevel::Warning,
-                text: "Context overflow detected after retry. Auto-compaction could not recover this turn; try reducing context or switching to a larger-context model.".to_string(),
-            });
-        }
-
-        if let Err(err) = turn_result {
-            self.send_command(FullscreenCommand::PushNote {
-                level: FullscreenNoteLevel::Error,
-                text: err.to_string(),
-            });
-        }
-
-        if aborted {
-            self.send_command(FullscreenCommand::TurnAborted);
-        }
-
-        self.streaming = false;
-        self.retry_status = None;
-        self.auto_compaction_in_progress = false;
-        self.publish_footer();
-        self.publish_status();
+        self.finalize_completed_turn(returned_config, turn_result, aborted, saw_context_overflow);
         Ok(())
     }
 
@@ -520,7 +651,23 @@ impl FullscreenController {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_auto_compaction_status, is_auto_compaction_terminal_status};
+    use super::{
+        TurnJoinPoll, classify_turn_join_poll, is_auto_compaction_status,
+        is_auto_compaction_terminal_status,
+    };
+
+    #[tokio::test]
+    async fn classifies_join_timeout_without_treating_it_as_completion() {
+        let poll = tokio::time::timeout(
+            std::time::Duration::from_millis(0),
+            std::future::pending::<Result<(), tokio::task::JoinError>>(),
+        )
+        .await;
+        match classify_turn_join_poll(poll) {
+            TurnJoinPoll::TimedOut => {}
+            _ => panic!("timeout should remain an active-turn wait condition"),
+        }
+    }
 
     #[test]
     fn detects_auto_compaction_status_messages() {
