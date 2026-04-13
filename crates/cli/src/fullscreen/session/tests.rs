@@ -128,6 +128,7 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
                 cache_write: 0,
                 total_tokens: 0,
                 cost: Cost::default(),
+                cache_metrics_source: None,
             },
             stop_reason: StopReason::ToolUse,
             error_message: None,

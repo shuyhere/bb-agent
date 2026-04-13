@@ -1,6 +1,8 @@
 use anyhow::Result;
 use bb_core::settings::Settings;
-use bb_core::types::{AgentMessage, AssistantContent, AssistantMessage, SessionEntry, Usage};
+use bb_core::types::{
+    AgentMessage, AssistantContent, AssistantMessage, CacheMetricsSource, SessionEntry, Usage,
+};
 use bb_provider::registry::{CostConfig, ModelRegistry};
 use bb_session::store;
 use bb_tools::ExecutionPolicy;
@@ -8,6 +10,14 @@ use rusqlite::Connection;
 use std::path::Path;
 
 use crate::cache_metrics::{cache_effective_utilization_pct, cache_read_hit_rate_pct};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionCacheMetricsSource {
+    Official,
+    Estimated,
+    Mixed,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionInfoSummary {
@@ -32,10 +42,47 @@ pub(crate) struct SessionInfoSummary {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    pub cache_metrics_source: Option<SessionCacheMetricsSource>,
     pub cache_read_hit_rate_pct: Option<f64>,
     pub cache_effective_utilization_pct: Option<f64>,
     pub total_tokens: u64,
     pub total_cost: f64,
+}
+
+fn cache_metrics_source_state(source: Option<&CacheMetricsSource>) -> SessionCacheMetricsSource {
+    match source {
+        Some(CacheMetricsSource::Official) => SessionCacheMetricsSource::Official,
+        Some(CacheMetricsSource::Estimated) => SessionCacheMetricsSource::Estimated,
+        Some(CacheMetricsSource::Unknown) | None => SessionCacheMetricsSource::Unknown,
+    }
+}
+
+fn merge_cache_metrics_source(
+    current: &mut Option<SessionCacheMetricsSource>,
+    source: Option<&CacheMetricsSource>,
+) {
+    let next = cache_metrics_source_state(source);
+    match current {
+        None => *current = Some(next),
+        Some(existing) if *existing == next => {}
+        Some(SessionCacheMetricsSource::Unknown) | Some(SessionCacheMetricsSource::Mixed) => {}
+        Some(existing) => {
+            *existing = if matches!(next, SessionCacheMetricsSource::Unknown) {
+                SessionCacheMetricsSource::Unknown
+            } else {
+                SessionCacheMetricsSource::Mixed
+            };
+        }
+    }
+}
+
+fn render_cache_metrics_source(source: &SessionCacheMetricsSource) -> &'static str {
+    match source {
+        SessionCacheMetricsSource::Official => "official",
+        SessionCacheMetricsSource::Estimated => "estimated",
+        SessionCacheMetricsSource::Mixed => "mixed",
+        SessionCacheMetricsSource::Unknown => "unknown",
+    }
 }
 
 fn load_session_model_registry(conn: &Connection, session_id: &str) -> ModelRegistry {
@@ -116,6 +163,10 @@ pub(crate) fn collect_session_info_summary(
                     summary.output_tokens += message.usage.output;
                     summary.cache_read_tokens += message.usage.cache_read;
                     summary.cache_write_tokens += message.usage.cache_write;
+                    merge_cache_metrics_source(
+                        &mut summary.cache_metrics_source,
+                        message.usage.cache_metrics_source.as_ref(),
+                    );
                     summary.total_cost += recompute_assistant_message_cost(&message, &registry);
                 }
                 AgentMessage::ToolResult(_) => summary.tool_results += 1,
@@ -213,6 +264,12 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     if let Some(utilization) = summary.cache_effective_utilization_pct {
         out.push_str(&format!("Cache Utilization: {:.2}%\n", utilization));
     }
+    if let Some(source) = &summary.cache_metrics_source {
+        out.push_str(&format!(
+            "Cache Metrics Source: {}\n",
+            render_cache_metrics_source(source)
+        ));
+    }
     out.push_str(&format!("Total: {}\n", format_u64(summary.total_tokens)));
 
     if summary.total_cost > 0.0 {
@@ -259,11 +316,12 @@ fn format_u64(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionInfoSummary, collect_session_info_summary, format_u64, permission_posture_badge,
-        render_session_info_text,
+        SessionCacheMetricsSource, SessionInfoSummary, collect_session_info_summary, format_u64,
+        permission_posture_badge, render_session_info_text,
     };
     use bb_core::types::{
-        AgentMessage, AssistantMessage, Cost, EntryBase, EntryId, SessionEntry, StopReason, Usage,
+        AgentMessage, AssistantMessage, CacheMetricsSource, Cost, EntryBase, EntryId, SessionEntry,
+        StopReason, Usage,
     };
     use bb_session::store;
     use bb_tools::ExecutionPolicy;
@@ -304,6 +362,7 @@ mod tests {
                         cache_write: 18.75,
                         total: 110.25,
                     },
+                    cache_metrics_source: Some(CacheMetricsSource::Official),
                 },
                 stop_reason: StopReason::Stop,
                 error_message: None,
@@ -324,6 +383,10 @@ mod tests {
 
         assert!((summary.total_cost - 36.75).abs() < 1e-9);
         assert_eq!(summary.execution_mode, ExecutionPolicy::Safety);
+        assert_eq!(
+            summary.cache_metrics_source,
+            Some(SessionCacheMetricsSource::Official)
+        );
         assert_eq!(summary.cache_read_hit_rate_pct, Some(50.0));
         assert_eq!(summary.cache_effective_utilization_pct, Some(25.0));
     }
@@ -341,5 +404,16 @@ mod tests {
             permission_posture_badge(ExecutionPolicy::Safety),
             "mode safety/project-only"
         );
+    }
+
+    #[test]
+    fn session_summary_renders_cache_metrics_source() {
+        let summary = SessionInfoSummary {
+            cache_metrics_source: Some(SessionCacheMetricsSource::Estimated),
+            ..SessionInfoSummary::default()
+        };
+
+        let rendered = render_session_info_text(&summary);
+        assert!(rendered.contains("Cache Metrics Source: estimated"));
     }
 }

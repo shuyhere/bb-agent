@@ -132,6 +132,7 @@ pub(super) fn append_assistant_message(
                 cache_write: cw,
                 total_tokens: usage.prompt_token_total + out,
                 cost: calculate_cost(model, usage),
+                cache_metrics_source: Some(usage.cache_metrics_source.clone()),
             },
             stop_reason: if collected.tool_calls.is_empty() {
                 StopReason::Stop

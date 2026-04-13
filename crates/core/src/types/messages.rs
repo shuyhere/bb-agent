@@ -32,6 +32,8 @@ pub struct Usage {
     pub cache_write: u64,
     pub total_tokens: u64,
     pub cost: Cost,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_metrics_source: Option<CacheMetricsSource>,
 }
 
 // =============================================================================

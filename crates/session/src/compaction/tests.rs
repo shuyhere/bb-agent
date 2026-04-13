@@ -169,6 +169,7 @@ fn test_calculate_context_tokens_prefers_total_tokens() {
         cache_write: 40,
         total_tokens: 999,
         cost: Default::default(),
+        cache_metrics_source: None,
     };
     assert_eq!(calculate_context_tokens(&usage), 999);
 }
@@ -188,6 +189,7 @@ fn test_estimate_context_tokens_uses_last_assistant_usage_plus_trailing() {
             cache_write: 5,
             total_tokens: 0,
             cost: Default::default(),
+            cache_metrics_source: None,
         },
         stop_reason: StopReason::Stop,
         error_message: None,
