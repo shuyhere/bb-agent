@@ -34,16 +34,16 @@ pub(crate) async fn execute_session_compaction(
     let summarized_count = prep.messages_to_summarize.len();
     let kept_count = prep.kept_messages.len();
 
-    let result = bb_session::compaction::compact(
-        &prep,
-        provider.as_ref(),
-        model_id,
+    let result = bb_session::compaction::compact(bb_session::compaction::CompactionRequest {
+        preparation: &prep,
+        provider: provider.as_ref(),
+        model: model_id,
         api_key,
         base_url,
         headers,
         custom_instructions,
         cancel,
-    )
+    })
     .await?;
 
     let details = serde_json::json!({

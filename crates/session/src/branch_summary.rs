@@ -146,17 +146,32 @@ pub fn prepare_branch_summary_entries(rows: &[EntryRow]) -> Result<BranchSummary
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Inputs required to summarize an abandoned branch without relying on positional arguments that
+/// are easy to mix up at the call site.
+pub struct BranchSummaryRequest<'a> {
+    pub rows: &'a [EntryRow],
+    pub provider: &'a dyn Provider,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub base_url: &'a str,
+    pub custom_instructions: Option<&'a str>,
+    pub replace_instructions: bool,
+    pub cancel: CancellationToken,
+}
+
 pub async fn generate_branch_summary(
-    rows: &[EntryRow],
-    provider: &dyn Provider,
-    model: &str,
-    api_key: &str,
-    base_url: &str,
-    custom_instructions: Option<&str>,
-    replace_instructions: bool,
-    cancel: CancellationToken,
+    request: BranchSummaryRequest<'_>,
 ) -> Result<BranchSummaryResult> {
+    let BranchSummaryRequest {
+        rows,
+        provider,
+        model,
+        api_key,
+        base_url,
+        custom_instructions,
+        replace_instructions,
+        cancel,
+    } = request;
     let preparation = prepare_branch_summary_entries(rows)?;
     if preparation.messages.is_empty() {
         return Ok(BranchSummaryResult {

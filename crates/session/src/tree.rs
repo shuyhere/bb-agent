@@ -15,17 +15,73 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
+impl TreeNode {
+    fn from_row(row: &EntryRow, children: Vec<TreeNode>) -> Self {
+        Self {
+            entry_id: row.entry_id.clone(),
+            parent_id: row.parent_id.clone(),
+            entry_type: row.entry_type.clone(),
+            timestamp: row.timestamp.clone(),
+            children,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeSummaryCollection {
-    pub entries: Vec<EntryRow>,
-    pub common_ancestor_id: Option<String>,
+    entries: Vec<EntryRow>,
+    common_ancestor_id: Option<String>,
+}
+
+impl TreeSummaryCollection {
+    pub fn entries(&self) -> &[EntryRow] {
+        &self.entries
+    }
+
+    pub fn common_ancestor_id(&self) -> Option<&str> {
+        self.common_ancestor_id.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeTargetKind {
+    User,
+    CustomMessage,
+    Message,
+    Other,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeTargetResolution {
-    pub new_leaf_id: Option<String>,
-    pub editor_text: Option<String>,
-    pub target_entry_type: String,
+    new_leaf_id: Option<String>,
+    editor_text: Option<String>,
+    target_kind: TreeTargetKind,
+}
+
+impl TreeTargetResolution {
+    pub fn new_leaf_id(&self) -> Option<&str> {
+        self.new_leaf_id.as_deref()
+    }
+
+    pub fn into_new_leaf_id(self) -> Option<String> {
+        self.new_leaf_id
+    }
+
+    pub fn editor_text(&self) -> Option<&str> {
+        self.editor_text.as_deref()
+    }
+
+    pub fn into_editor_text(self) -> Option<String> {
+        self.editor_text
+    }
+
+    pub fn target_kind(&self) -> TreeTargetKind {
+        self.target_kind
+    }
 }
 
 /// Walk from an entry to the root, returning the path root → entry.
@@ -63,42 +119,29 @@ pub fn active_path(conn: &Connection, session_id: &str) -> Result<Vec<EntryRow>>
 /// Build the full tree structure for a session.
 pub fn get_tree(conn: &Connection, session_id: &str) -> Result<Vec<TreeNode>> {
     let entries = crate::store::get_entries(conn, session_id)?;
-
-    let mut nodes: HashMap<String, TreeNode> = HashMap::new();
+    let rows_by_id: HashMap<&str, &EntryRow> = entries
+        .iter()
+        .map(|entry| (entry.entry_id.as_str(), entry))
+        .collect();
     let mut roots = Vec::new();
-    let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut child_map: HashMap<&str, Vec<&str>> = HashMap::new();
 
-    // Create nodes
     for entry in &entries {
-        nodes.insert(
-            entry.entry_id.clone(),
-            TreeNode {
-                entry_id: entry.entry_id.clone(),
-                parent_id: entry.parent_id.clone(),
-                entry_type: entry.entry_type.clone(),
-                timestamp: entry.timestamp.clone(),
-                children: Vec::new(),
-            },
-        );
-
-        match &entry.parent_id {
-            Some(pid) => {
-                child_map
-                    .entry(pid.clone())
-                    .or_default()
-                    .push(entry.entry_id.clone());
-            }
-            None => roots.push(entry.entry_id.clone()),
+        match entry.parent_id.as_deref() {
+            Some(parent_id) => child_map
+                .entry(parent_id)
+                .or_default()
+                .push(entry.entry_id.as_str()),
+            None => roots.push(entry.entry_id.as_str()),
         }
     }
 
-    // Build tree recursively
     fn build(
         node_id: &str,
-        nodes: &HashMap<String, TreeNode>,
-        child_map: &HashMap<String, Vec<String>>,
+        rows_by_id: &HashMap<&str, &EntryRow>,
+        child_map: &HashMap<&str, Vec<&str>>,
     ) -> TreeNode {
-        let Some(base) = nodes.get(node_id) else {
+        let Some(row) = rows_by_id.get(node_id) else {
             return TreeNode {
                 entry_id: node_id.to_string(),
                 parent_id: None,
@@ -107,24 +150,22 @@ pub fn get_tree(conn: &Connection, session_id: &str) -> Result<Vec<TreeNode>> {
                 children: Vec::new(),
             };
         };
-        let mut node = base.clone();
-        if let Some(children_ids) = child_map.get(node_id) {
-            node.children = children_ids
-                .iter()
-                .map(|cid| build(cid, nodes, child_map))
-                .collect();
-            // Sort children by timestamp
-            node.children.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        }
-        node
+
+        let mut children = child_map
+            .get(node_id)
+            .into_iter()
+            .flatten()
+            .map(|child_id| build(child_id, rows_by_id, child_map))
+            .collect::<Vec<_>>();
+        children.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        TreeNode::from_row(row, children)
     }
 
-    let tree = roots
-        .iter()
-        .map(|rid| build(rid, &nodes, &child_map))
-        .collect();
-
-    Ok(tree)
+    Ok(roots
+        .into_iter()
+        .map(|root_id| build(root_id, &rows_by_id, &child_map))
+        .collect())
 }
 
 /// Find the common ancestor of two entries.
@@ -135,13 +176,13 @@ pub fn common_ancestor(
     b_id: &str,
 ) -> Result<Option<String>> {
     let path_a = walk_to_root(conn, session_id, a_id)?;
-    let set_a: HashSet<String> = path_a.iter().map(|e| e.entry_id.clone()).collect();
+    let set_a: HashSet<&str> = path_a.iter().map(|entry| entry.entry_id.as_str()).collect();
 
     let path_b = walk_to_root(conn, session_id, b_id)?;
 
-    // Walk b's path from leaf to root; first match is deepest common ancestor
+    // Walk b's path from leaf to root; the first match is the deepest common ancestor.
     for entry in path_b.iter().rev() {
-        if set_a.contains(&entry.entry_id) {
+        if set_a.contains(entry.entry_id.as_str()) {
             return Ok(Some(entry.entry_id.clone()));
         }
     }
@@ -149,6 +190,9 @@ pub fn common_ancestor(
     Ok(None)
 }
 
+/// Collect the abandoned branch segment between the current leaf and the target's common
+/// ancestor. Returned rows stay ordered from oldest → newest so branch-summary generation can
+/// serialize them directly without another reversal step.
 pub fn collect_entries_for_branch_summary(
     conn: &Connection,
     session_id: &str,
@@ -201,17 +245,22 @@ pub fn resolve_tree_target(
         } => TreeTargetResolution {
             new_leaf_id: row.parent_id.clone(),
             editor_text: Some(text_from_blocks(&user.content)),
-            target_entry_type: "user".to_string(),
+            target_kind: TreeTargetKind::User,
         },
         SessionEntry::CustomMessage { content, .. } => TreeTargetResolution {
             new_leaf_id: row.parent_id.clone(),
             editor_text: Some(text_from_blocks(&content)),
-            target_entry_type: "custom_message".to_string(),
+            target_kind: TreeTargetKind::CustomMessage,
         },
-        other => TreeTargetResolution {
+        SessionEntry::Message { .. } => TreeTargetResolution {
             new_leaf_id: Some(target_id.to_string()),
             editor_text: None,
-            target_entry_type: other.entry_type().to_string(),
+            target_kind: TreeTargetKind::Message,
+        },
+        _ => TreeTargetResolution {
+            new_leaf_id: Some(target_id.to_string()),
+            editor_text: None,
+            target_kind: TreeTargetKind::Other,
         },
     };
 
@@ -321,9 +370,9 @@ mod tests {
         store::append_entry(&conn, &sid, &user).unwrap();
 
         let resolved = resolve_tree_target(&conn, &sid, &user_id).unwrap();
-        assert_eq!(resolved.new_leaf_id, Some(root_id));
-        assert_eq!(resolved.editor_text.as_deref(), Some("continue here"));
-        assert_eq!(resolved.target_entry_type, "user");
+        assert_eq!(resolved.new_leaf_id(), Some(root_id.as_str()));
+        assert_eq!(resolved.editor_text(), Some("continue here"));
+        assert_eq!(resolved.target_kind(), TreeTargetKind::User);
     }
 
     #[test]
@@ -340,8 +389,56 @@ mod tests {
         store::append_entry(&conn, &sid, &assistant).unwrap();
 
         let resolved = resolve_tree_target(&conn, &sid, &assistant_id).unwrap();
-        assert_eq!(resolved.new_leaf_id, Some(assistant_id));
-        assert!(resolved.editor_text.is_none());
-        assert_eq!(resolved.target_entry_type, "message");
+        assert_eq!(resolved.new_leaf_id(), Some(assistant_id.as_str()));
+        assert!(resolved.editor_text().is_none());
+        assert_eq!(resolved.target_kind(), TreeTargetKind::Message);
+    }
+
+    #[test]
+    fn collecting_branch_summary_without_active_leaf_is_empty() {
+        let conn = store::open_memory().unwrap();
+        let sid = store::create_session(&conn, "/tmp").unwrap();
+        let root = make_user_entry(None, "root");
+        let root_id = root.base().id.as_str().to_string();
+        store::append_entry(&conn, &sid, &root).unwrap();
+
+        let collected = collect_entries_for_branch_summary(&conn, &sid, None, &root_id).unwrap();
+        assert!(collected.is_empty());
+        assert_eq!(collected.common_ancestor_id(), None);
+        assert!(collected.entries().is_empty());
+    }
+
+    #[test]
+    fn collecting_branch_summary_returns_ordered_abandoned_entries() {
+        let conn = store::open_memory().unwrap();
+        let sid = store::create_session(&conn, "/tmp").unwrap();
+
+        let root = make_user_entry(None, "root");
+        let root_id = root.base().id.as_str().to_string();
+        store::append_entry(&conn, &sid, &root).unwrap();
+
+        let branch_a = make_user_entry(Some(&root_id), "branch-a");
+        let branch_a_id = branch_a.base().id.as_str().to_string();
+        store::append_entry(&conn, &sid, &branch_a).unwrap();
+
+        let branch_b = make_assistant_entry(Some(&branch_a_id), "branch-b");
+        let branch_b_id = branch_b.base().id.as_str().to_string();
+        store::append_entry(&conn, &sid, &branch_b).unwrap();
+
+        let sibling = make_user_entry(Some(&root_id), "sibling");
+        let sibling_id = sibling.base().id.as_str().to_string();
+        store::append_entry(&conn, &sid, &sibling).unwrap();
+
+        let collected =
+            collect_entries_for_branch_summary(&conn, &sid, Some(&branch_b_id), &sibling_id)
+                .unwrap();
+
+        assert_eq!(collected.common_ancestor_id(), Some(root_id.as_str()));
+        let entry_ids: Vec<&str> = collected
+            .entries()
+            .iter()
+            .map(|row| row.entry_id.as_str())
+            .collect();
+        assert_eq!(entry_ids, vec![branch_a_id.as_str(), branch_b_id.as_str()]);
     }
 }

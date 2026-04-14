@@ -95,32 +95,37 @@ async fn navigate_tree_with_summary_impl(
         target_entry_id,
     )?;
 
-    if collected.entries.is_empty() {
+    if collected.is_empty() {
         let resolved = bb_session::tree::resolve_tree_target(conn, session_id, target_entry_id)?;
-        match resolved.new_leaf_id.as_deref() {
+        let new_leaf_id = resolved.new_leaf_id().map(ToOwned::to_owned);
+        match new_leaf_id.as_deref() {
             Some(new_leaf_id) => bb_session::store::set_leaf(conn, session_id, Some(new_leaf_id))?,
             None => bb_session::store::set_leaf(conn, session_id, None)?,
         }
         return Ok(TreeNavigateOutcome {
-            editor_text: resolved.editor_text,
-            new_leaf_id: resolved.new_leaf_id,
+            editor_text: resolved.into_editor_text(),
+            new_leaf_id,
             summary_entry_id: None,
         });
     }
 
     let result = bb_session::branch_summary::generate_branch_summary(
-        &collected.entries,
-        provider,
-        model,
-        api_key,
-        base_url,
-        custom_instructions,
-        replace_instructions,
-        cancel,
+        bb_session::branch_summary::BranchSummaryRequest {
+            rows: collected.entries(),
+            provider,
+            model,
+            api_key,
+            base_url,
+            custom_instructions,
+            replace_instructions,
+            cancel,
+        },
     )
     .await?;
 
-    match resolved.new_leaf_id.as_deref() {
+    let new_leaf_id = resolved.new_leaf_id().map(ToOwned::to_owned);
+    let editor_text = resolved.editor_text().map(ToOwned::to_owned);
+    match new_leaf_id.as_deref() {
         Some(new_leaf_id) => bb_session::store::set_leaf(conn, session_id, Some(new_leaf_id))?,
         None => bb_session::store::set_leaf(conn, session_id, None)?,
     }
@@ -128,7 +133,7 @@ async fn navigate_tree_with_summary_impl(
     let summary_entry = SessionEntry::BranchSummary {
         base: EntryBase {
             id: EntryId::generate(),
-            parent_id: resolved.new_leaf_id.clone().map(EntryId),
+            parent_id: new_leaf_id.clone().map(EntryId),
             timestamp: Utc::now(),
         },
         from_id: EntryId(current_leaf_id.unwrap_or("root").to_string()),
@@ -143,7 +148,7 @@ async fn navigate_tree_with_summary_impl(
     bb_session::store::append_entry(conn, session_id, &summary_entry)?;
 
     Ok(TreeNavigateOutcome {
-        editor_text: resolved.editor_text,
+        editor_text,
         new_leaf_id: Some(summary_entry_id.clone()),
         summary_entry_id: Some(summary_entry_id),
     })
