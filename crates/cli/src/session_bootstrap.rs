@@ -27,7 +27,7 @@ use crate::extensions::{
 use crate::login;
 
 #[derive(Clone, Debug, Default)]
-pub struct SessionBootstrapOptions {
+pub(crate) struct SessionBootstrapOptions {
     pub messages: Vec<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -44,15 +44,7 @@ pub struct SessionBootstrapOptions {
 
 impl From<&crate::Cli> for SessionBootstrapOptions {
     fn from(cli: &crate::Cli) -> Self {
-        let prompt_label = if cli.system_prompt_template.is_some() {
-            cli.system_prompt_template.clone().unwrap_or_default()
-        } else if cli.system_prompt.is_some() {
-            "custom".to_string()
-        } else if cli.append_system_prompt.is_some() {
-            "default+append".to_string()
-        } else {
-            "default".to_string()
-        };
+        let prompt_label = prompt_label_for_cli(cli);
         Self {
             messages: cli.messages.clone(),
             provider: cli.provider.clone(),
@@ -70,7 +62,7 @@ impl From<&crate::Cli> for SessionBootstrapOptions {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct SessionUiOptions {
+pub(crate) struct SessionUiOptions {
     pub initial_message: Option<String>,
     pub initial_messages: Vec<String>,
     pub session_id: Option<String>,
@@ -80,7 +72,7 @@ pub struct SessionUiOptions {
 }
 
 /// Non-clone runtime state needed for actual LLM calls.
-pub struct SessionRuntimeSetup {
+pub(crate) struct SessionRuntimeSetup {
     pub conn: rusqlite::Connection,
     pub session_id: String,
     pub provider: Arc<dyn Provider>,
@@ -107,6 +99,18 @@ pub struct SessionRuntimeSetup {
     pub sibling_conn: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
     pub extension_commands: ExtensionCommandRegistry,
     pub extension_bootstrap: ExtensionBootstrap,
+}
+
+fn prompt_label_for_cli(cli: &crate::Cli) -> String {
+    if cli.system_prompt_template.is_some() {
+        cli.system_prompt_template.clone().unwrap_or_default()
+    } else if cli.system_prompt.is_some() {
+        "custom".to_string()
+    } else if cli.append_system_prompt.is_some() {
+        "default+append".to_string()
+    } else {
+        "default".to_string()
+    }
 }
 
 fn load_resumed_session_context(
@@ -397,8 +401,143 @@ pub(crate) fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value>
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_thinking_level;
+    use super::{
+        SessionBootstrapOptions, build_tool_defs, prompt_label_for_cli, resolve_startup_session_id,
+        resolve_thinking_level,
+    };
+    use async_trait::async_trait;
     use bb_core::agent_session::ThinkingLevel;
+    use bb_core::error::BbResult;
+    use bb_tools::{Tool, ToolContext, ToolResult};
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
+
+    #[derive(Default)]
+    struct CliOverrides {
+        system_prompt_template: Option<String>,
+        system_prompt: Option<String>,
+        append_system_prompt: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
+        thinking: Option<String>,
+        extensions: Vec<String>,
+        session: Option<String>,
+        continue_session: bool,
+        resume: bool,
+        messages: Vec<String>,
+    }
+
+    fn make_cli(overrides: CliOverrides) -> crate::Cli {
+        crate::Cli {
+            command: None,
+            cwd: None,
+            provider: overrides.provider,
+            model: overrides.model,
+            api_key: None,
+            system_prompt: overrides.system_prompt,
+            append_system_prompt: overrides.append_system_prompt,
+            system_prompt_template: overrides.system_prompt_template,
+            list_templates: false,
+            thinking: overrides.thinking,
+            print: false,
+            r#continue: overrides.continue_session,
+            resume: overrides.resume,
+            no_session: false,
+            session: overrides.session,
+            tools: None,
+            no_tools: false,
+            list_models: None,
+            models: None,
+            extensions: overrides.extensions,
+            verbose: false,
+            messages: overrides.messages,
+        }
+    }
+
+    struct NamedTool {
+        name: &'static str,
+        description: &'static str,
+        schema: Value,
+    }
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            self.description
+        }
+
+        fn parameters_schema(&self) -> Value {
+            self.schema.clone()
+        }
+
+        async fn execute(
+            &self,
+            _params: Value,
+            _ctx: &ToolContext,
+            _cancel: CancellationToken,
+        ) -> BbResult<ToolResult> {
+            unreachable!("execution is not needed for bootstrap tests")
+        }
+    }
+
+    #[test]
+    fn prompt_label_uses_template_name_when_present() {
+        let cli = make_cli(CliOverrides {
+            system_prompt_template: Some("research".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(prompt_label_for_cli(&cli), "research");
+    }
+
+    #[test]
+    fn prompt_label_uses_custom_for_explicit_system_prompt() {
+        let cli = make_cli(CliOverrides {
+            system_prompt: Some("custom prompt".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(prompt_label_for_cli(&cli), "custom");
+    }
+
+    #[test]
+    fn prompt_label_uses_default_append_when_only_append_prompt_is_set() {
+        let cli = make_cli(CliOverrides {
+            append_system_prompt: Some("appendix".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(prompt_label_for_cli(&cli), "default+append");
+    }
+
+    #[test]
+    fn session_bootstrap_options_maps_cli_values() {
+        let cli = make_cli(CliOverrides {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-test".to_string()),
+            thinking: Some("high".to_string()),
+            extensions: vec!["ext-a".to_string(), "ext-b".to_string()],
+            session: Some("abc123".to_string()),
+            continue_session: true,
+            resume: true,
+            messages: vec!["hello".to_string(), "world".to_string()],
+            append_system_prompt: Some("appendix".to_string()),
+            ..Default::default()
+        });
+
+        let options = SessionBootstrapOptions::from(&cli);
+        assert_eq!(options.provider.as_deref(), Some("openai"));
+        assert_eq!(options.model.as_deref(), Some("gpt-test"));
+        assert_eq!(options.thinking.as_deref(), Some("high"));
+        assert_eq!(options.extensions, vec!["ext-a", "ext-b"]);
+        assert_eq!(options.session.as_deref(), Some("abc123"));
+        assert!(options.continue_session);
+        assert!(options.resume);
+        assert_eq!(options.messages, vec!["hello", "world"]);
+        assert_eq!(options.prompt_label, "default+append");
+    }
 
     #[test]
     fn resolve_thinking_level_prefers_requested_value() {
@@ -421,6 +560,77 @@ mod tests {
         assert_eq!(
             resolve_thinking_level(None, None, Some("high")),
             ThinkingLevel::High
+        );
+    }
+
+    #[test]
+    fn resolve_startup_session_id_uses_unique_prefix_match() {
+        let conn = bb_session::store::open_memory().expect("memory db");
+        let cwd = tempdir().expect("tempdir");
+        let cwd_str = cwd.path().display().to_string();
+        let session_id = bb_session::store::create_session(&conn, &cwd_str).expect("session");
+
+        let entry = SessionBootstrapOptions {
+            session: Some(session_id[..8].to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_startup_session_id(&conn, cwd.path(), &entry).expect("resolve");
+        assert_eq!(resolved, (session_id, true));
+    }
+
+    #[test]
+    fn resolve_startup_session_id_uses_latest_session_for_continue_or_resume() {
+        let conn = bb_session::store::open_memory().expect("memory db");
+        let cwd = tempdir().expect("tempdir");
+        let cwd_str = cwd.path().display().to_string();
+        let session_id = bb_session::store::create_session(&conn, &cwd_str).expect("session");
+
+        let entry = SessionBootstrapOptions {
+            continue_session: true,
+            ..Default::default()
+        };
+
+        let resolved = resolve_startup_session_id(&conn, cwd.path(), &entry).expect("resolve");
+        assert_eq!(resolved, (session_id, true));
+    }
+
+    #[test]
+    fn resolve_startup_session_id_creates_new_id_when_no_session_is_selected() {
+        let conn = bb_session::store::open_memory().expect("memory db");
+        let cwd = tempdir().expect("tempdir");
+
+        let resolved =
+            resolve_startup_session_id(&conn, cwd.path(), &Default::default()).expect("resolve");
+        assert!(!resolved.1);
+        assert!(uuid::Uuid::parse_str(&resolved.0).is_ok());
+    }
+
+    #[test]
+    fn build_tool_defs_uses_tool_metadata() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(NamedTool {
+            name: "demo_tool",
+            description: "demo description",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            }),
+        })];
+
+        let defs = build_tool_defs(&tools);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0]["type"], json!("function"));
+        assert_eq!(defs[0]["function"]["name"], json!("demo_tool"));
+        assert_eq!(
+            defs[0]["function"]["description"],
+            json!("demo description")
+        );
+        assert_eq!(
+            defs[0]["function"]["parameters"]["required"],
+            json!(["path"])
         );
     }
 }
