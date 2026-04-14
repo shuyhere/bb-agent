@@ -9,9 +9,7 @@ use std::io::Write;
 use anyhow::Result;
 use bb_tools::{ToolApprovalOutcome, ToolApprovalRequest};
 use bb_tui::footer::detect_git_branch;
-use bb_tui::tui::{
-    TuiAppConfig, TuiCommand, TuiFooterData, TuiNoteLevel, Transcript,
-};
+use bb_tui::tui::{Transcript, TuiAppConfig, TuiCommand, TuiFooterData, TuiNoteLevel};
 use tokio::sync::mpsc;
 
 use crate::session_bootstrap::{
@@ -19,7 +17,7 @@ use crate::session_bootstrap::{
 };
 use crate::session_info::permission_posture_badge;
 
-use controller::{TuiController, PendingApprovalRequest};
+use controller::{PendingApprovalRequest, TuiController};
 
 const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGIN_METHOD_MENU_ID: &str = "login-method";
@@ -38,7 +36,7 @@ const LOGIN_PROVIDERS: &[&str] = &[
     "openrouter",
 ];
 
-pub async fn run_tui_entry(entry: SessionBootstrapOptions) -> Result<()> {
+pub(crate) async fn run_tui_entry(entry: SessionBootstrapOptions) -> Result<()> {
     let (runtime_host, options, mut session_setup) = prepare_session_runtime(entry).await?;
     let extra_slash_items = build_dynamic_slash_items(&runtime_host);
     let config = build_tui_config(&session_setup, &options.prompt_label, extra_slash_items);
