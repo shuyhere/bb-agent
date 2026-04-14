@@ -10,16 +10,59 @@ pub(super) const HOST_JS: &str = include_str!("../../js/host.js");
 /// A tool registered by a plugin.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegisteredTool {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+impl RegisteredTool {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    pub fn parameters(&self) -> &serde_json::Value {
+        &self.parameters
+    }
 }
 
 /// A command registered by a plugin.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegisteredCommand {
-    pub name: String,
-    pub description: String,
+    name: String,
+    description: String,
+}
+
+impl RegisteredCommand {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
 }
 
 /// Minimal execution context exposed to plugin handlers and commands.
@@ -50,18 +93,49 @@ pub struct PluginContext {
 /// A UI request from a plugin handler to the host (dialog or fire-and-forget).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiRequest {
-    pub id: String,
-    pub method: String,
+    id: String,
+    method: String,
     #[serde(flatten)]
-    pub params: serde_json::Value,
+    params: serde_json::Value,
+}
+
+impl UiRequest {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    pub fn params(&self) -> &serde_json::Value {
+        &self.params
+    }
 }
 
 /// A UI response from the host back to the plugin handler.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiResponse {
-    pub id: String,
+    id: String,
     #[serde(flatten)]
-    pub data: serde_json::Value,
+    data: serde_json::Value,
+}
+
+impl UiResponse {
+    pub fn new(id: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            id: id.into(),
+            data,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn data(&self) -> &serde_json::Value {
+        &self.data
+    }
 }
 
 /// Handler for UI requests from plugins.
@@ -100,16 +174,13 @@ impl UiHandler for DefaultUiHandler {
 
 /// Produce a sensible default response for a UI request.
 pub fn default_ui_response(request: &UiRequest) -> UiResponse {
-    let data = match request.method.as_str() {
+    let data = match request.method() {
         "confirm" => serde_json::json!({ "confirmed": false }),
         "select" | "input" | "editor" => serde_json::json!({ "cancelled": true }),
         // Fire-and-forget methods: no meaningful response needed
         _ => serde_json::json!({}),
     };
-    UiResponse {
-        id: request.id.clone(),
-        data,
-    }
+    UiResponse::new(request.id(), data)
 }
 
 pub type SharedUiHandler = Arc<dyn UiHandler>;

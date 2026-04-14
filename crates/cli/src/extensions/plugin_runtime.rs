@@ -37,7 +37,7 @@ pub(super) async fn build_plugin_runtime(
         host: Some(shared_host),
         commands: command_registrations
             .iter()
-            .map(|command| command.name.clone())
+            .map(|command| command.name().to_string())
             .collect(),
         context: PluginContext {
             cwd: Some(cwd.display().to_string()),
@@ -79,10 +79,10 @@ fn make_ui_handler(has_ui: bool) -> SharedUiHandler {
 
 fn map_plugin_command_registration(command: &HostRegisteredCommand) -> RegisteredCommand {
     RegisteredCommand {
-        invocation_name: command.name.clone(),
-        description: command.description.clone(),
+        invocation_name: command.name().to_string(),
+        description: command.description().to_string(),
         source_info: SourceInfo {
-            path: format!("<command:{}>", command.name),
+            path: format!("<command:{}>", command.name()),
             source: "extension:plugin-host".to_string(),
         },
     }
@@ -91,12 +91,12 @@ fn map_plugin_command_registration(command: &HostRegisteredCommand) -> Registere
 fn map_plugin_tool_registration(tool: &HostRegisteredTool) -> RegisteredTool {
     RegisteredTool {
         definition: ToolDefinition {
-            name: tool.name.clone(),
+            name: tool.name().to_string(),
             prompt_snippet: None,
             prompt_guidelines: Vec::new(),
         },
         source_info: SourceInfo {
-            path: format!("<tool:{}>", tool.name),
+            path: format!("<tool:{}>", tool.name()),
             source: "extension:plugin-host".to_string(),
         },
     }
@@ -116,15 +116,15 @@ impl PluginTool {
 #[async_trait]
 impl Tool for PluginTool {
     fn name(&self) -> &str {
-        &self.registration.name
+        self.registration.name()
     }
 
     fn description(&self) -> &str {
-        &self.registration.description
+        self.registration.description()
     }
 
     fn parameters_schema(&self) -> Value {
-        self.registration.parameters.clone()
+        self.registration.parameters().clone()
     }
 
     async fn execute(
