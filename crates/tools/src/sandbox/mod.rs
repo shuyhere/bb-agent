@@ -12,7 +12,7 @@ pub(crate) enum SandboxBackend {
     Bwrap,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SandboxFailureKind {
     BackendUnavailable,
@@ -23,18 +23,38 @@ pub(crate) enum SandboxFailureKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SandboxEscalationRequest {
-    pub action: &'static str,
-    pub target_execution_mode: &'static str,
-    pub message: String,
+    action: &'static str,
+    target_execution_mode: &'static str,
+    message: String,
+}
+
+impl SandboxEscalationRequest {
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SandboxFailureDetails {
-    pub kind: SandboxFailureKind,
-    pub backend: SandboxBackend,
-    pub message: String,
-    pub escalation: SandboxEscalationRequest,
+    kind: SandboxFailureKind,
+    backend: SandboxBackend,
+    message: String,
+    escalation: SandboxEscalationRequest,
+}
+
+impl SandboxFailureDetails {
+    pub(crate) fn backend(&self) -> SandboxBackend {
+        self.backend
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn escalation(&self) -> &SandboxEscalationRequest {
+        &self.escalation
+    }
 }
 
 impl SandboxFailureDetails {
@@ -63,8 +83,14 @@ impl SandboxSetupError {
 }
 
 pub(crate) struct PreparedSandboxCommand {
-    pub command: Command,
-    pub backend: SandboxBackend,
+    command: Command,
+    backend: SandboxBackend,
+}
+
+impl PreparedSandboxCommand {
+    pub(crate) fn into_parts(self) -> (Command, SandboxBackend) {
+        (self.command, self.backend)
+    }
 }
 
 pub(crate) fn prepare_bash_command(

@@ -135,7 +135,8 @@ pub(super) async fn run_browser_dump_dom(
 pub(super) fn missing_browser_error_message() -> String {
     let mut lines = vec![
         "No supported Chrome/Chromium browser executable found.".to_string(),
-        "Set BB_BROWSER to a Chrome/Chromium binary path or install Google Chrome / Chromium.".to_string(),
+        "Set BB_BROWSER to a Chrome/Chromium binary path or install Google Chrome / Chromium."
+            .to_string(),
     ];
 
     if let Ok(configured) = env::var("BB_BROWSER") {
@@ -160,7 +161,8 @@ pub(super) fn missing_browser_error_message() -> String {
         );
     } else if cfg!(target_os = "windows") {
         lines.push(
-            "Windows hint: set BB_BROWSER to chrome.exe/msedge.exe if it is not on PATH.".to_string(),
+            "Windows hint: set BB_BROWSER to chrome.exe/msedge.exe if it is not on PATH."
+                .to_string(),
         );
     }
 
@@ -184,13 +186,9 @@ pub(super) fn resolve_browser_executable() -> Option<PathBuf> {
         }
     }
 
-    for path in common_browser_paths() {
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    common_browser_paths()
+        .into_iter()
+        .find(|path| path.exists())
 }
 
 fn browser_candidate_names() -> &'static [&'static str] {
