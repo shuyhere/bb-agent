@@ -233,3 +233,66 @@ fn test_process_google_event_usage() {
         other => panic!("Expected Usage, got {:?}", other),
     }
 }
+
+#[test]
+fn test_convert_assistant_with_malformed_tool_arguments_preserves_raw_payload() {
+    let messages = vec![json!({
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {
+                "name": "read",
+                "arguments": "{not-json}"
+            }
+        }]
+    })];
+
+    let result = convert_messages_google(&messages);
+    let fc = &result[0]["parts"][0]["functionCall"];
+    assert_eq!(fc["name"], "read");
+    assert_eq!(fc["args"]["_raw"], "{not-json}");
+}
+
+#[test]
+fn test_process_google_event_ignores_function_calls_without_names() {
+    let event = json!({
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "functionCall": {
+                        "args": { "path": "foo.rs" }
+                    }
+                }],
+                "role": "model"
+            }
+        }]
+    });
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    process_google_event(&event, &tx);
+    drop(tx);
+
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn test_process_google_event_usage_saturates_cached_tokens() {
+    let event = json!({
+        "usageMetadata": {
+            "promptTokenCount": 5,
+            "candidatesTokenCount": 7,
+            "cachedContentTokenCount": 12
+        }
+    });
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    process_google_event(&event, &tx);
+    drop(tx);
+
+    match rx.try_recv() {
+        Ok(StreamEvent::Usage(u)) => {
+            assert_eq!(u.input_tokens, 0);
+            assert_eq!(u.cache_read_tokens, 12);
+            assert_eq!(u.output_tokens, 7);
+        }
+        other => panic!("Expected Usage, got {:?}", other),
+    }
+}

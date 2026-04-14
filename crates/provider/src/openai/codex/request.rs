@@ -25,6 +25,43 @@ pub(super) fn codex_reasoning_effort(thinking: &str) -> &'static str {
     }
 }
 
+fn normalize_call_id(id: &str) -> &str {
+    id.split('|').next().unwrap_or(id)
+}
+
+fn flatten_tool_output_for_codex(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(blocks) = content.as_array() {
+        let mut parts = Vec::new();
+        for block in blocks {
+            match block.get("type").and_then(|value| value.as_str()) {
+                Some("text") => {
+                    if let Some(text) = block
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .filter(|text| !text.is_empty())
+                    {
+                        parts.push(text.to_string());
+                    }
+                }
+                Some("image") => {
+                    let media_type = block
+                        .get("source")
+                        .and_then(|source| source.get("media_type"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("image/unknown");
+                    parts.push(format!("[tool returned image result: {media_type}]"));
+                }
+                _ => {}
+            }
+        }
+        return parts.join("\n");
+    }
+    content.to_string()
+}
+
 pub(super) fn convert_tools_for_codex(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
@@ -52,8 +89,7 @@ pub(super) fn sanitize_messages_for_codex(messages: &[Value]) -> Vec<Value> {
                 if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tool_calls {
                         if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                            pending_tool_calls
-                                .insert(id.split('|').next().unwrap_or(id).to_string());
+                            pending_tool_calls.insert(normalize_call_id(id).to_string());
                         }
                     }
                 }
@@ -64,8 +100,7 @@ pub(super) fn sanitize_messages_for_codex(messages: &[Value]) -> Vec<Value> {
                     .get("tool_call_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let call_id = tool_call_id.split('|').next().unwrap_or(tool_call_id);
-                if pending_tool_calls.remove(call_id) {
+                if pending_tool_calls.remove(normalize_call_id(tool_call_id)) {
                     result.push(msg.clone());
                 }
             }
@@ -160,7 +195,7 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
                         out.push(json!({
                             "type": "function_call",
                             "id": format!("fc_{idx}_{tool_idx}"),
-                            "call_id": call_id.split('|').next().unwrap_or(call_id),
+                            "call_id": normalize_call_id(call_id),
                             "name": name,
                             "arguments": arguments,
                         }));
@@ -172,11 +207,10 @@ pub(super) fn convert_messages_for_codex(messages: &[Value]) -> Vec<Value> {
                     .get("tool_call_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let text = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 out.push(json!({
                     "type": "function_call_output",
-                    "call_id": tool_call_id.split('|').next().unwrap_or(tool_call_id),
-                    "output": text,
+                    "call_id": normalize_call_id(tool_call_id),
+                    "output": flatten_tool_output_for_codex(&msg["content"]),
                 }));
             }
             _ => {}
