@@ -1,3 +1,4 @@
+use super::KillContinuation;
 use super::types::{Editor, LastAction};
 use crate::select_list::SelectAction;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -247,21 +248,33 @@ impl Editor {
             }
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.push_undo();
-                let accumulate = old_action == LastAction::Kill;
-                self.kill_to_end(accumulate);
+                let continuation = if old_action == LastAction::Kill {
+                    KillContinuation::Continue
+                } else {
+                    KillContinuation::NewEntry
+                };
+                self.kill_to_end(continuation);
                 self.last_action = LastAction::Kill;
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
                 self.push_undo();
-                let accumulate = old_action == LastAction::Kill;
-                self.kill_to_start(accumulate);
+                let continuation = if old_action == LastAction::Kill {
+                    KillContinuation::Continue
+                } else {
+                    KillContinuation::NewEntry
+                };
+                self.kill_to_start(continuation);
                 self.last_action = LastAction::Kill;
             }
             (KeyCode::Char('w'), KeyModifiers::CONTROL)
             | (KeyCode::Backspace, KeyModifiers::ALT) => {
                 self.push_undo();
-                let accumulate = old_action == LastAction::Kill;
-                self.delete_word_backward(accumulate);
+                let continuation = if old_action == LastAction::Kill {
+                    KillContinuation::Continue
+                } else {
+                    KillContinuation::NewEntry
+                };
+                self.delete_word_backward(continuation);
                 self.last_action = LastAction::Kill;
             }
 

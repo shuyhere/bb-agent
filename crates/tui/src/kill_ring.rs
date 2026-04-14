@@ -3,31 +3,53 @@
 /// Tracks killed (deleted) text entries. Consecutive kills can accumulate
 /// into a single entry. Supports yank (paste most recent) and yank-pop
 /// (cycle through older entries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillRingUpdate<'a> {
+    Push(&'a str),
+    Append(&'a str),
+    Prepend(&'a str),
+}
+
+impl<'a> KillRingUpdate<'a> {
+    fn text(self) -> &'a str {
+        match self {
+            Self::Push(text) | Self::Append(text) | Self::Prepend(text) => text,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KillRing {
     ring: Vec<String>,
 }
 
 impl KillRing {
-    /// Add text to the kill ring.
+    /// Record killed text in the ring.
     ///
-    /// `prepend` controls whether accumulated text is prepended (backward
-    /// deletion) or appended (forward deletion).
-    pub fn push(&mut self, text: &str, prepend: bool, accumulate: bool) {
+    /// `Push` starts a fresh entry, while `Append`/`Prepend` keep consecutive
+    /// forward/backward kills in a single logical entry.
+    pub fn record(&mut self, update: KillRingUpdate<'_>) {
+        let text = update.text();
         if text.is_empty() {
             return;
         }
 
-        if accumulate && !self.ring.is_empty() {
-            if let Some(last) = self.ring.pop() {
-                self.ring.push(if prepend {
-                    format!("{text}{last}")
+        match update {
+            KillRingUpdate::Push(text) => self.ring.push(text.to_string()),
+            KillRingUpdate::Append(text) => {
+                if let Some(last) = self.ring.last_mut() {
+                    last.push_str(text);
                 } else {
-                    format!("{last}{text}")
-                });
+                    self.ring.push(text.to_string());
+                }
             }
-        } else {
-            self.ring.push(text.to_string());
+            KillRingUpdate::Prepend(text) => {
+                if let Some(last) = self.ring.last_mut() {
+                    last.insert_str(0, text);
+                } else {
+                    self.ring.push(text.to_string());
+                }
+            }
         }
     }
 
