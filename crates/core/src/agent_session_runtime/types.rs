@@ -18,10 +18,6 @@ pub enum AgentSessionRuntimeError {
     NothingToCompact,
     #[error("entry {0} not found")]
     EntryNotFound(String),
-    #[error("compaction cancelled")]
-    CompactionCancelled,
-    #[error("branch summary cancelled")]
-    BranchSummaryCancelled,
     #[error("no model available for summarization")]
     NoModelForSummarization,
 }
@@ -347,7 +343,10 @@ pub struct CompactionCheckOptions {
 
 impl CompactionCheckOptions {
     pub fn should_ignore_aborted_message(self) -> bool {
-        matches!(self.aborted_message_behavior, AbortedMessageBehavior::Ignore)
+        matches!(
+            self.aborted_message_behavior,
+            AbortedMessageBehavior::Ignore
+        )
     }
 }
 
@@ -366,39 +365,86 @@ pub enum RetryAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RetryCompletion {
+    Succeeded,
+    Failed { final_error: Option<String> },
+}
+
+impl RetryCompletion {
+    pub fn was_successful(&self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
+
+    pub fn final_error(&self) -> Option<&str> {
+        match self {
+            Self::Succeeded => None,
+            Self::Failed { final_error } => final_error.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BashContextPolicy {
+    #[default]
+    Include,
+    Exclude,
+}
+
+impl BashContextPolicy {
+    pub fn exclude_from_context(self) -> bool {
+        matches!(self, Self::Exclude)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BashMessageDelivery {
+    #[default]
+    AppendImmediately,
+    StreamPending,
+}
+
+impl BashMessageDelivery {
+    pub fn should_buffer(self) -> bool {
+        matches!(self, Self::StreamPending)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedBashCommand {
-    pub original_command: String,
-    pub resolved_command: String,
-    pub cwd: String,
-    pub exclude_from_context: bool,
+    pub(in crate::agent_session_runtime) original_command: String,
+    pub(in crate::agent_session_runtime) resolved_command: String,
+    pub(in crate::agent_session_runtime) cwd: String,
+    pub(in crate::agent_session_runtime) context_policy: BashContextPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BashExecutionState {
-    pub running_command: Option<String>,
-    pub abort_requested: bool,
-    pub pending_messages: Vec<BashExecutionMessage>,
+    pub(in crate::agent_session_runtime) running_command: Option<String>,
+    pub(in crate::agent_session_runtime) abort_requested: bool,
+    pub(in crate::agent_session_runtime) pending_messages: Vec<BashExecutionMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RetryState {
-    pub attempt: u32,
-    pub in_progress: bool,
-    pub abort_requested: bool,
+    pub(in crate::agent_session_runtime) attempt: u32,
+    pub(in crate::agent_session_runtime) in_progress: bool,
+    pub(in crate::agent_session_runtime) abort_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CompactionState {
-    pub manual_in_progress: bool,
-    pub auto_in_progress: bool,
-    pub overflow_recovery_attempted: bool,
-    pub abort_requested: bool,
+    pub(in crate::agent_session_runtime) manual_in_progress: bool,
+    pub(in crate::agent_session_runtime) auto_in_progress: bool,
+    pub(in crate::agent_session_runtime) overflow_recovery_attempted: bool,
+    pub(in crate::agent_session_runtime) abort_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TreeNavigationState {
-    pub branch_summary_in_progress: bool,
-    pub abort_requested: bool,
+    pub(in crate::agent_session_runtime) branch_summary_in_progress: bool,
+    pub(in crate::agent_session_runtime) abort_requested: bool,
 }
 
 #[derive(Debug, Clone, Default)]

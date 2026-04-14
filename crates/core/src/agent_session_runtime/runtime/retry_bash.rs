@@ -103,12 +103,13 @@ impl AgentSessionRuntime {
         }
     }
 
-    pub fn complete_retry_cycle(&mut self, success: bool, final_error: Option<String>) {
+    /// Completes the active retry cycle and emits the final retry outcome exactly once.
+    pub fn complete_retry_cycle(&mut self, completion: RetryCompletion) {
         let attempt = self.retry_state.attempt;
         self.emit(RuntimeEvent::AutoRetryEnd {
-            success,
+            success: completion.was_successful(),
             attempt,
-            final_error,
+            final_error: completion.final_error().map(ToOwned::to_owned),
         });
         self.retry_state.attempt = 0;
         self.retry_state.in_progress = false;
@@ -129,12 +130,14 @@ impl AgentSessionRuntime {
         self.resolve_retry();
     }
 
+    /// Captures bash execution metadata before the tool runs so result recording can reuse the
+    /// same normalized command/context policy without parallel boolean arguments.
     pub fn prepare_bash_command(
         &mut self,
         command: impl Into<String>,
         cwd: impl Into<String>,
         shell_command_prefix: Option<&str>,
-        exclude_from_context: bool,
+        context_policy: BashContextPolicy,
     ) -> PreparedBashCommand {
         let original_command = command.into();
         let resolved_command = shell_command_prefix
@@ -147,29 +150,29 @@ impl AgentSessionRuntime {
             original_command,
             resolved_command,
             cwd: cwd.into(),
-            exclude_from_context,
+            context_policy,
         }
     }
 
+    /// Records a bash result using the prepared command metadata captured before execution.
     pub fn record_bash_result(
         &mut self,
-        command: impl Into<String>,
+        prepared: PreparedBashCommand,
         result: BashResult,
-        exclude_from_context: bool,
-        streaming: bool,
+        delivery: BashMessageDelivery,
     ) {
         let bash_message = BashExecutionMessage {
-            command: command.into(),
+            command: prepared.original_command,
             output: result.output,
             exit_code: result.exit_code,
             cancelled: result.cancelled,
             truncated: result.truncated,
             full_output_path: result.full_output_path,
             timestamp: Utc::now(),
-            exclude_from_context,
+            exclude_from_context: prepared.context_policy.exclude_from_context(),
         };
 
-        if streaming {
+        if delivery.should_buffer() {
             self.bash_state.pending_messages.push(bash_message);
         } else {
             self.messages

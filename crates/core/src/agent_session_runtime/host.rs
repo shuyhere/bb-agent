@@ -10,9 +10,31 @@ use super::types::{
 
 #[derive(Debug)]
 pub struct AgentSessionRuntimeHandle {
-    pub cwd: PathBuf,
-    pub session: AgentSession,
-    pub runtime: AgentSessionRuntime,
+    cwd: PathBuf,
+    session: AgentSession,
+    runtime: AgentSessionRuntime,
+}
+
+impl AgentSessionRuntimeHandle {
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn session(&self) -> &AgentSession {
+        &self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut AgentSession {
+        &mut self.session
+    }
+
+    pub fn runtime(&self) -> &AgentSessionRuntime {
+        &self.runtime
+    }
+
+    pub fn runtime_mut(&mut self) -> &mut AgentSessionRuntime {
+        &mut self.runtime
+    }
 }
 
 pub fn create_agent_session_runtime(
@@ -30,10 +52,8 @@ pub fn create_agent_session_runtime(
         ..AgentSessionConfig::default()
     });
 
-    let runtime = AgentSessionRuntime {
-        model: session.model().map(runtime_model_from_session_model),
-        ..AgentSessionRuntime::default()
-    };
+    let runtime =
+        AgentSessionRuntime::with_model(session.model().map(runtime_model_from_session_model));
 
     AgentSessionRuntimeHandle {
         cwd: options.cwd,
@@ -71,30 +91,30 @@ impl AgentSessionRuntimeHost {
     }
 
     pub fn session(&self) -> &AgentSession {
-        &self.current.session
+        self.current.session()
     }
 
     pub fn session_mut(&mut self) -> &mut AgentSession {
-        &mut self.current.session
+        self.current.session_mut()
     }
 
     pub fn runtime(&self) -> &AgentSessionRuntime {
-        &self.current.runtime
+        self.current.runtime()
     }
 
     pub fn runtime_mut(&mut self) -> &mut AgentSessionRuntime {
-        &mut self.current.runtime
+        self.current.runtime_mut()
     }
 
     pub fn cwd(&self) -> &Path {
-        &self.current.cwd
+        self.current.cwd()
     }
 
     pub fn reload_resources(&mut self, resource_bootstrap: SessionResourceBootstrap) {
         self.bootstrap.resource_bootstrap = resource_bootstrap;
-        self.bootstrap.model = self.current.session.model().cloned();
-        self.bootstrap.thinking_level = Some(self.current.session.thinking_level());
-        let cwd = self.current.cwd.clone();
+        self.bootstrap.model = self.current.session().model().cloned();
+        self.bootstrap.thinking_level = Some(self.current.session().thinking_level());
+        let cwd = self.current.cwd().to_path_buf();
         let session_start_event = Some(crate::agent_session::SessionStartEvent {
             reason: crate::agent_session_extensions::SessionStartReason::Reload,
         });
