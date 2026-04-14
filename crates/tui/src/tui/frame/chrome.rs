@@ -33,37 +33,30 @@ pub(crate) fn render_header(state: &TuiState, width: usize) -> Vec<String> {
     lines
 }
 
+fn queued_preview_status_text(state: &TuiState) -> Option<String> {
+    let preview = sanitize_terminal_text(
+        state
+            .queued_submission_previews
+            .back()
+            .map(String::as_str)
+            .unwrap_or_default(),
+    )
+    .replace('\n', " ⏎ ");
+    if preview.is_empty() {
+        return None;
+    }
+    let prefix = if state.editing_queued_messages {
+        "Editing queued"
+    } else {
+        "Steering"
+    };
+    Some(format!("{prefix}: {preview} • Alt/Option+↑ edit queued"))
+}
+
 pub(crate) fn render_status(state: &TuiState, width: usize) -> String {
     let t = theme();
     let text = match state.mode {
         TuiMode::Normal => {
-            if state.local_action_active && !state.queued_submission_previews.is_empty() {
-                let preview = sanitize_terminal_text(
-                    state
-                        .queued_submission_previews
-                        .back()
-                        .map(String::as_str)
-                        .unwrap_or_default(),
-                )
-                .replace('\n', " ⏎ ");
-                let prefix = if state.editing_queued_messages {
-                    "Editing queued"
-                } else {
-                    "Steering"
-                };
-                return format!(
-                    "{}{}{}",
-                    t.dim,
-                    pad_to_width(
-                        &truncate_to_width(
-                            &format!("{prefix}: {preview} • Alt+↑ edit queued"),
-                            width
-                        ),
-                        width
-                    ),
-                    t.reset
-                );
-            }
             if state.has_active_turn() || state.has_running_tool() {
                 let msg_owned;
                 let msg = if let Some(status) = state.active_turn_status_message() {
@@ -78,11 +71,24 @@ pub(crate) fn render_status(state: &TuiState, width: usize) -> String {
                 let rendered = state.spinner.render(msg, width);
                 return pad_to_width(&rendered, width);
             } else if state.local_action_active {
+                if let Some(status) = state.local_action_status_message() {
+                    let status = sanitize_terminal_text(&status);
+                    let combined = queued_preview_status_text(state)
+                        .map(|preview| format!("{status} • {preview}"))
+                        .unwrap_or(status);
+                    let rendered = state.spinner.render(&combined, width);
+                    return pad_to_width(&rendered, width);
+                }
+                if let Some(preview) = queued_preview_status_text(state) {
+                    return format!(
+                        "{}{}{}",
+                        t.dim,
+                        pad_to_width(&truncate_to_width(&preview, width), width),
+                        t.reset
+                    );
+                }
                 let msg_owned;
-                let msg = if let Some(status) = state.local_action_status_message() {
-                    msg_owned = sanitize_terminal_text(&status);
-                    &msg_owned
-                } else if state.status_line.trim().is_empty() {
+                let msg = if state.status_line.trim().is_empty() {
                     ""
                 } else {
                     msg_owned = sanitize_terminal_text(&state.status_line);
@@ -109,11 +115,16 @@ pub(crate) fn render_status(state: &TuiState, width: usize) -> String {
                 let rendered = state.spinner.render(msg, width);
                 return pad_to_width(&rendered, width);
             } else if state.local_action_active {
+                if let Some(status) = state.local_action_status_message() {
+                    let status = sanitize_terminal_text(&status);
+                    let combined = queued_preview_status_text(state)
+                        .map(|preview| format!("{status} • {preview}"))
+                        .unwrap_or(status);
+                    let rendered = state.spinner.render(&combined, width);
+                    return pad_to_width(&rendered, width);
+                }
                 let msg_owned;
-                let msg = if let Some(status) = state.local_action_status_message() {
-                    msg_owned = sanitize_terminal_text(&status);
-                    &msg_owned
-                } else if state.status_line.trim().is_empty() {
+                let msg = if state.status_line.trim().is_empty() {
                     ""
                 } else {
                     msg_owned = sanitize_terminal_text(&state.status_line);
@@ -151,11 +162,7 @@ pub(crate) fn render_status(state: &TuiState, width: usize) -> String {
     )
 }
 
-pub(crate) fn render_status_lines(
-    state: &TuiState,
-    width: usize,
-    height: usize,
-) -> Vec<String> {
+pub(crate) fn render_status_lines(state: &TuiState, width: usize, height: usize) -> Vec<String> {
     if height == 0 {
         return Vec::new();
     }
