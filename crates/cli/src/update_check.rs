@@ -281,12 +281,48 @@ pub(crate) fn build_update_available_note(notice: &UpdateNotice) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use super::{
-        UpdateCheckOutcome, UpdateNotice, build_update_available_note, is_newer_version,
-        load_cached_outcome_from_path, store_cached_outcome_to_path,
+        UpdateCheckConfig, UpdateCheckOutcome, UpdateNotice, build_update_available_note,
+        detect_install_command, is_newer_version, load_cached_outcome_from_path, load_config,
+        store_cached_outcome_to_path,
     };
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
 
     #[test]
     fn compares_semver_like_versions() {
@@ -314,7 +350,7 @@ mod tests {
     fn cache_round_trip_preserves_available_update() {
         let dir = tempfile::tempdir().unwrap();
         let cache_path = dir.path().join("update-check.json");
-        let config = super::UpdateCheckConfig {
+        let config = UpdateCheckConfig {
             package_name: "npm:demo".to_string(),
             current_version: "0.1.0".to_string(),
             install_command: "npm install -g demo".to_string(),
@@ -330,5 +366,107 @@ mod tests {
         store_cached_outcome_to_path(&config, Some(&notice), &cache_path).unwrap();
         let loaded = load_cached_outcome_from_path(&config, &cache_path).unwrap();
         assert_eq!(loaded, Some(UpdateCheckOutcome::UpdateAvailable(notice)));
+    }
+
+    #[test]
+    fn expired_cache_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("update-check.json");
+        let config = UpdateCheckConfig {
+            package_name: "npm:demo".to_string(),
+            current_version: "0.1.0".to_string(),
+            install_command: "npm install -g demo".to_string(),
+            changelog_url: None,
+            cache_ttl: Duration::from_secs(60),
+        };
+        let cache = super::UpdateCheckCache {
+            package_name: config.package_name.clone(),
+            current_version: config.current_version.clone(),
+            checked_at_unix_secs: 0,
+            notice: Some(UpdateNotice {
+                latest_version: "0.2.0".to_string(),
+                install_command: "npm install -g demo".to_string(),
+                changelog_url: None,
+            }),
+        };
+
+        std::fs::write(&cache_path, serde_json::to_vec_pretty(&cache).unwrap()).unwrap();
+        let loaded = load_cached_outcome_from_path(&config, &cache_path).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn cache_is_ignored_when_package_name_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("update-check.json");
+        let written_config = UpdateCheckConfig {
+            package_name: "npm:demo".to_string(),
+            current_version: "0.1.0".to_string(),
+            install_command: "npm install -g demo".to_string(),
+            changelog_url: None,
+            cache_ttl: Duration::from_secs(60 * 60 * 24),
+        };
+        let read_config = UpdateCheckConfig {
+            package_name: "npm:other".to_string(),
+            ..written_config.clone()
+        };
+
+        store_cached_outcome_to_path(&written_config, None, &cache_path).unwrap();
+        let loaded = load_cached_outcome_from_path(&read_config, &cache_path).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn cache_is_ignored_when_current_version_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("update-check.json");
+        let written_config = UpdateCheckConfig {
+            package_name: "npm:demo".to_string(),
+            current_version: "0.1.0".to_string(),
+            install_command: "npm install -g demo".to_string(),
+            changelog_url: None,
+            cache_ttl: Duration::from_secs(60 * 60 * 24),
+        };
+        let read_config = UpdateCheckConfig {
+            current_version: "0.2.0".to_string(),
+            ..written_config.clone()
+        };
+
+        store_cached_outcome_to_path(&written_config, None, &cache_path).unwrap();
+        let loaded = load_cached_outcome_from_path(&read_config, &cache_path).unwrap();
+        assert_eq!(loaded, None);
+    }
+
+    #[test]
+    fn detect_install_command_prefers_explicit_env_override() {
+        let _guard = env_lock().lock().unwrap();
+        let _install = EnvGuard::set("BB_UPDATE_CHECK_INSTALL", "custom install cmd");
+        let _wrapper = EnvGuard::remove("BB_NPM_WRAPPER_ACTIVE");
+
+        assert_eq!(detect_install_command("demo"), "custom install cmd");
+    }
+
+    #[test]
+    fn load_config_returns_none_when_update_check_is_disabled_in_project_settings() {
+        let _guard = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let _package = EnvGuard::remove("BB_UPDATE_CHECK_PACKAGE");
+        let _changelog = EnvGuard::remove("BB_UPDATE_CHECK_CHANGELOG");
+        let _ttl = EnvGuard::remove("BB_UPDATE_CHECK_TTL_HOURS");
+        let _cache = EnvGuard::remove("BB_UPDATE_CHECK_CACHE_PATH");
+        let _install = EnvGuard::remove("BB_UPDATE_CHECK_INSTALL");
+        let _wrapper = EnvGuard::remove("BB_NPM_WRAPPER_ACTIVE");
+
+        let project_settings_dir = cwd.path().join(".bb-agent");
+        std::fs::create_dir_all(&project_settings_dir).unwrap();
+        std::fs::write(
+            project_settings_dir.join("settings.json"),
+            r#"{ "updateCheck": { "enabled": false } }"#,
+        )
+        .unwrap();
+
+        assert!(load_config(cwd.path()).is_none());
     }
 }
