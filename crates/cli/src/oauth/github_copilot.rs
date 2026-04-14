@@ -253,7 +253,7 @@ pub(crate) fn normalize_authority(input: &str) -> Result<String> {
     Ok(host)
 }
 
-pub fn server_url_for_authority(authority: &str) -> String {
+pub(crate) fn server_url_for_authority(authority: &str) -> String {
     if authority.eq_ignore_ascii_case("github.com") {
         "https://github.com".to_string()
     } else {
@@ -261,7 +261,7 @@ pub fn server_url_for_authority(authority: &str) -> String {
     }
 }
 
-pub fn dotcom_api_url_for_authority(authority: &str) -> String {
+pub(crate) fn dotcom_api_url_for_authority(authority: &str) -> String {
     if authority.eq_ignore_ascii_case("github.com") {
         "https://api.github.com".to_string()
     } else {

@@ -9,9 +9,7 @@ impl TuiController {
     pub(crate) async fn begin_oauth_login(
         &mut self,
         provider: &str,
-        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
-            bb_tui::tui::TuiSubmission,
-        >,
+        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<bb_tui::tui::TuiSubmission>,
     ) -> Result<()> {
         use crate::oauth::OAuthCallbacks;
         use bb_tui::tui::TuiSubmission;
@@ -19,16 +17,17 @@ impl TuiController {
         use tokio::sync::oneshot;
 
         let provider = crate::login::provider_oauth_variant(provider).unwrap_or(provider);
-        let label = crate::login::provider_display_name(provider);
+        let label = crate::login::provider_display_name(provider).into_owned();
         let (manual_tx, manual_rx) = oneshot::channel::<String>();
         let mut manual_tx = Some(manual_tx);
         let dialog_shared = Arc::new(Mutex::new((None::<String>, None::<String>, None::<String>)));
 
         self.send_command(TuiCommand::SetLocalActionActive(true));
         self.send_command(TuiCommand::SetInput(String::new()));
-        self.send_command(TuiCommand::OpenAuthDialog(
-            build_preparing_oauth_dialog(&label, "Starting browser sign-in…"),
-        ));
+        self.send_command(TuiCommand::OpenAuthDialog(build_preparing_oauth_dialog(
+            &label,
+            "Starting browser sign-in…",
+        )));
         self.send_command(TuiCommand::SetStatusLine(format!(
             "Starting OAuth login for {label}..."
         )));
@@ -50,14 +49,13 @@ impl TuiController {
                         shared.1 = Some(launcher_hint.to_string());
                         shared.2 = None;
                     }
-                    let _ = command_tx.send(TuiCommand::UpdateAuthDialog(
-                        build_waiting_oauth_dialog(
+                    let _ =
+                        command_tx.send(TuiCommand::UpdateAuthDialog(build_waiting_oauth_dialog(
                             &label_for_auth,
                             "Waiting for browser authentication…",
                             Some(url),
                             Some(launcher_hint.to_string()),
-                        ),
-                    ));
+                        )));
                 }
             }),
             on_device_code: Some(Box::new({
@@ -75,14 +73,13 @@ impl TuiController {
                         "Enter device code {} from bb in your browser",
                         device.user_code
                     )));
-                    let _ = command_tx.send(TuiCommand::UpdateAuthDialog(
-                        build_device_oauth_dialog(
+                    let _ =
+                        command_tx.send(TuiCommand::UpdateAuthDialog(build_device_oauth_dialog(
                             &label,
                             "Complete device authentication in your browser…",
                             device.verification_uri,
                             device.user_code,
-                        ),
-                    ));
+                        )));
                 }
             })),
             on_manual_input: Some(manual_rx),
@@ -272,9 +269,7 @@ impl TuiController {
         self.pending_login_copilot_enterprise = true;
         self.send_command(TuiCommand::SetLocalActionActive(true));
         self.send_command(TuiCommand::SetInput(String::new()));
-        self.send_command(TuiCommand::OpenAuthDialog(
-            build_copilot_enterprise_dialog(),
-        ));
+        self.send_command(TuiCommand::OpenAuthDialog(build_copilot_enterprise_dialog()));
         self.send_command(TuiCommand::SetStatusLine(
             "Enter your GitHub Enterprise Server domain".to_string(),
         ));

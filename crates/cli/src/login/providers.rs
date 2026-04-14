@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 const KNOWN_PROVIDERS: &[(&str, &str, &str)] = &[
@@ -44,6 +46,12 @@ pub(super) fn normalize_provider_for_model_selection(provider: &str) -> String {
     }
 }
 
+/// Resolve the environment-variable hint and help URL used by both the CLI
+/// and TUI login flows.
+///
+/// Examples:
+/// - `provider_meta("google")` => (`"GOOGLE_API_KEY"`, `"https://aistudio.google.com/app/apikey"`)
+/// - unknown providers fall back to (`"API_KEY"`, `""`)
 pub(crate) fn provider_meta(provider: &str) -> (&str, &str) {
     KNOWN_PROVIDERS
         .iter()
@@ -52,28 +60,55 @@ pub(crate) fn provider_meta(provider: &str) -> (&str, &str) {
         .unwrap_or(("API_KEY", ""))
 }
 
-pub(crate) fn provider_display_name(provider: &str) -> String {
+/// Human-readable provider label reused across login prompts, TUI menus, and
+/// session status rendering.
+///
+/// Known providers borrow a static label; unknown providers fall back to the
+/// raw provider name without allocating a new `String`.
+pub(crate) fn provider_display_name(provider: &str) -> Cow<'_, str> {
     match provider {
-        "anthropic" => "Claude Pro/Max".to_string(),
-        "openai-codex" => "ChatGPT Plus/Pro (Codex)".to_string(),
-        "github-copilot" => "GitHub Copilot".to_string(),
-        "openai" => "OpenAI".to_string(),
-        "google" => "Google Gemini".to_string(),
-        "groq" => "Groq".to_string(),
-        "xai" => "xAI".to_string(),
-        "openrouter" => "OpenRouter".to_string(),
-        _ => provider.to_string(),
+        "anthropic" => Cow::Borrowed("Claude Pro/Max"),
+        "openai-codex" => Cow::Borrowed("ChatGPT Plus/Pro (Codex)"),
+        "github-copilot" => Cow::Borrowed("GitHub Copilot"),
+        "openai" => Cow::Borrowed("OpenAI"),
+        "google" => Cow::Borrowed("Google Gemini"),
+        "groq" => Cow::Borrowed("Groq"),
+        "xai" => Cow::Borrowed("xAI"),
+        "openrouter" => Cow::Borrowed("OpenRouter"),
+        _ => Cow::Borrowed(provider),
     }
 }
 
-pub(crate) fn provider_auth_method(provider: &str) -> &'static str {
+/// Authentication mechanism shown in login menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProviderAuthMethod {
+    OAuth,
+    ApiKey,
+}
+
+impl ProviderAuthMethod {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::OAuth => "OAuth",
+            Self::ApiKey => "API key",
+        }
+    }
+}
+
+/// Return the login method used for a provider so callers can format their own
+/// UI labels without relying on stringly-typed flags.
+pub(crate) fn provider_auth_method(provider: &str) -> ProviderAuthMethod {
     if is_oauth_provider(provider) {
-        "OAuth"
+        ProviderAuthMethod::OAuth
     } else {
-        "API key"
+        ProviderAuthMethod::ApiKey
     }
 }
 
+/// Explain the non-obvious login behavior for a provider.
+///
+/// This is intentionally shared between `bb login` and the TUI auth menus so
+/// provider-specific caveats stay consistent in both entry points.
 pub(crate) fn provider_login_hint(provider: &str) -> String {
     match provider {
         "openai-codex" => {
@@ -141,9 +176,9 @@ pub(super) fn get_provider_status(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_oauth_provider, normalize_provider_for_model_selection, provider_api_key_variant,
-        provider_auth_method, provider_display_name, provider_login_hint, provider_meta,
-        provider_oauth_variant,
+        ProviderAuthMethod, is_oauth_provider, normalize_provider_for_model_selection,
+        provider_api_key_variant, provider_auth_method, provider_display_name, provider_login_hint,
+        provider_meta, provider_oauth_variant,
     };
 
     #[test]
@@ -171,8 +206,15 @@ mod tests {
         assert!(is_oauth_provider("github-copilot"));
         assert!(!is_oauth_provider("google"));
 
-        assert_eq!(provider_auth_method("openai-codex"), "OAuth");
-        assert_eq!(provider_auth_method("openrouter"), "API key");
+        assert_eq!(
+            provider_auth_method("openai-codex"),
+            ProviderAuthMethod::OAuth
+        );
+        assert_eq!(
+            provider_auth_method("openrouter"),
+            ProviderAuthMethod::ApiKey
+        );
+        assert_eq!(provider_auth_method("openrouter").label(), "API key");
 
         assert_eq!(provider_oauth_variant("openai"), Some("openai-codex"));
         assert_eq!(provider_oauth_variant("google"), None);

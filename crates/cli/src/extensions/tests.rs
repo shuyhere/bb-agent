@@ -43,6 +43,26 @@ async fn parses_command_invocation_and_args() {
 }
 
 #[test]
+fn input_hook_action_defaults_unknown_values_to_continue() {
+    assert_eq!(
+        InputHookAction::from_hook_action(Some("handled")),
+        InputHookAction::Handled
+    );
+    assert_eq!(
+        InputHookAction::from_hook_action(Some("continue")),
+        InputHookAction::Continue
+    );
+    assert_eq!(
+        InputHookAction::from_hook_action(Some("other")),
+        InputHookAction::Continue
+    );
+    assert_eq!(
+        InputHookAction::from_hook_action(None),
+        InputHookAction::Continue
+    );
+}
+
+#[test]
 fn parses_extension_menu_result_with_items() {
     let value = serde_json::json!({
         "menu": {

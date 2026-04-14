@@ -91,7 +91,7 @@ pub(crate) async fn handle_logout(provider: Option<&str>) -> Result<()> {
 fn prompt_for_provider_login() -> Result<String> {
     println!("Available providers:");
     for (i, (name, _, _url)) in known_providers().iter().enumerate() {
-        let method_label = provider_auth_method(name);
+        let method_label = provider_auth_method(name).label();
         let status = get_provider_status(name);
         let hint = provider_login_hint(name);
         println!(

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn tui_auth_display_name(provider: &str) -> String {
-    crate::login::provider_display_name(provider)
+    crate::login::provider_display_name(provider).into_owned()
 }
 
 pub(super) fn tui_auth_status_detail(provider: &str) -> String {
@@ -50,10 +50,7 @@ fn build_oauth_dialog(
         ],
         OAuthDialogStage::WaitingForBrowser => vec![
             auth_step("Open sign-in page", TuiAuthStepState::Done),
-            auth_step(
-                "Complete sign-in in your browser",
-                TuiAuthStepState::Active,
-            ),
+            auth_step("Complete sign-in in your browser", TuiAuthStepState::Active),
             auth_step(
                 "Return via localhost callback or paste it here",
                 TuiAuthStepState::Pending,
@@ -62,10 +59,7 @@ fn build_oauth_dialog(
         ],
         OAuthDialogStage::ProcessingCallback => vec![
             auth_step("Open sign-in page", TuiAuthStepState::Done),
-            auth_step(
-                "Complete sign-in in your browser",
-                TuiAuthStepState::Done,
-            ),
+            auth_step("Complete sign-in in your browser", TuiAuthStepState::Done),
             auth_step(
                 "Return via localhost callback or paste it here",
                 TuiAuthStepState::Active,
@@ -74,10 +68,7 @@ fn build_oauth_dialog(
         ],
         OAuthDialogStage::ExchangingTokens => vec![
             auth_step("Open sign-in page", TuiAuthStepState::Done),
-            auth_step(
-                "Complete sign-in in your browser",
-                TuiAuthStepState::Done,
-            ),
+            auth_step("Complete sign-in in your browser", TuiAuthStepState::Done),
             auth_step(
                 "Return via localhost callback or paste it here",
                 TuiAuthStepState::Done,
