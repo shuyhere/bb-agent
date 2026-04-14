@@ -62,6 +62,22 @@ pub(crate) struct InputHookOutcome {
     pub output: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InputHookAction {
+    #[default]
+    Continue,
+    Handled,
+}
+
+impl InputHookAction {
+    fn from_hook_action(action: Option<&str>) -> Self {
+        match action {
+            Some("handled") => Self::Handled,
+            _ => Self::Continue,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SessionSnapshotSource {
     conn: Arc<Mutex<rusqlite::Connection>>,
@@ -237,25 +253,24 @@ impl ExtensionCommandRegistry {
             });
         };
 
-        let action = result.action.as_deref().unwrap_or("continue");
-        let transformed_text = result.text.clone().or_else(|| Some(text.to_string()));
-        let output = if action == "handled" {
-            result
-                .text
-                .clone()
-                .or_else(|| result.message.as_ref().and_then(render_command_result))
-        } else {
-            None
-        };
+        let action = InputHookAction::from_hook_action(result.action.as_deref());
+        let bb_hooks::HookResult {
+            text: hook_text,
+            message,
+            ..
+        } = result;
 
-        Ok(InputHookOutcome {
-            handled: action == "handled",
-            text: if action == "handled" {
-                None
-            } else {
-                transformed_text
+        Ok(match action {
+            InputHookAction::Handled => InputHookOutcome {
+                handled: true,
+                text: None,
+                output: hook_text.or_else(|| message.as_ref().and_then(render_command_result)),
             },
-            output,
+            InputHookAction::Continue => InputHookOutcome {
+                handled: false,
+                text: Some(hook_text.unwrap_or_else(|| text.to_string())),
+                output: None,
+            },
         })
     }
 }

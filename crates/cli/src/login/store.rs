@@ -25,8 +25,14 @@ pub(super) enum AuthEntry {
     ProviderConfig { domain: String },
 }
 
+/// Snapshot of the persisted GitHub Copilot login state used by session info,
+/// auth menus, and post-login status messages.
+///
+/// The authority may come from either the dedicated provider config entry or
+/// the last OAuth payload, while cached model/API fields are only populated
+/// once an OAuth login has completed successfully.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GithubCopilotStatus {
+pub(crate) struct GithubCopilotStatus {
     pub authority: Option<String>,
     pub login: Option<String>,
     pub api_base_url: Option<String>,
@@ -37,7 +43,7 @@ pub struct GithubCopilotStatus {
     pub has_oauth: bool,
 }
 
-pub fn remove_auth(provider: &str) -> Result<bool> {
+pub(crate) fn remove_auth(provider: &str) -> Result<bool> {
     let mut store = load_auth();
     let removed = store.providers.remove(provider).is_some();
     if removed {
@@ -52,7 +58,12 @@ pub fn remove_auth(provider: &str) -> Result<bool> {
     Ok(removed)
 }
 
-pub fn auth_path() -> PathBuf {
+/// Path to the shared CLI auth store used by both `bb login` and the TUI
+/// auth flows.
+///
+/// Example:
+/// - on Linux this typically resolves under `~/.bb-agent/auth.json`
+pub(crate) fn auth_path() -> PathBuf {
     config::global_dir().join("auth.json")
 }
 
@@ -160,6 +171,11 @@ pub(crate) fn github_copilot_cached_models() -> Vec<String> {
     github_copilot_status().cached_models
 }
 
+/// Read the current GitHub Copilot login snapshot from the auth store.
+///
+/// This intentionally merges the provider-config-only case (enterprise host
+/// saved but no OAuth token yet) with the full OAuth case so session info and
+/// login UIs can explain exactly what has been configured.
 pub(crate) fn github_copilot_status() -> GithubCopilotStatus {
     let store = load_auth();
     let Some(entry) = store.providers.get("github-copilot") else {

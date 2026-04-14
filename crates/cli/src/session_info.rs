@@ -4,6 +4,10 @@ use bb_session::store;
 use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
 
+/// Aggregated session metadata shown by `/info` and related CLI surfaces.
+///
+/// Copilot-specific fields are only populated when the active provider is
+/// `github-copilot`; other providers leave those fields empty.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionInfoSummary {
     pub file: String,
@@ -35,6 +39,11 @@ fn assistant_message_cost(message: &AssistantMessage) -> f64 {
     message.usage.cost.total
 }
 
+/// Build a reusable summary for session-info rendering.
+///
+/// The summary intentionally folds together persisted session metrics and the
+/// current auth snapshot so callers can render one coherent view without
+/// duplicating login/session-info rules.
 pub(crate) fn collect_session_info_summary(
     conn: &Connection,
     session_id: &str,
@@ -104,6 +113,7 @@ pub(crate) fn collect_session_info_summary(
     Ok(summary)
 }
 
+/// Render the human-readable `/info` text block from a collected summary.
 pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     let mut out = String::from("Session Info\n\n");
     out.push_str(&format!("File: {}\n", summary.file));

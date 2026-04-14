@@ -10,8 +10,17 @@ pub(crate) struct ExtensionBootstrap {
 }
 
 impl ExtensionBootstrap {
+    /// Split CLI `--extension` values into package sources vs. local/runtime
+    /// paths before extension loading begins.
+    ///
+    /// Examples:
+    /// - `npm:demo-skill` stays in `package_sources` for package resolution
+    /// - `./local-ext` is resolved into `paths`
     pub(crate) fn from_cli_values(cwd: &Path, values: &[String]) -> Self {
-        let mut bootstrap = Self::default();
+        let mut bootstrap = Self {
+            paths: Vec::with_capacity(values.len()),
+            package_sources: Vec::with_capacity(values.len()),
+        };
         for value in values {
             if is_package_source(value) {
                 bootstrap.package_sources.push(value.clone());
@@ -30,6 +39,11 @@ pub(crate) struct RuntimeExtensionSupport {
     pub commands: ExtensionCommandRegistry,
 }
 
+/// Render the prompt section that advertises discovered skills and prompt
+/// templates to the agent.
+///
+/// This is shared by `bb run`, TUI startup, and session bootstrap so the agent
+/// sees the same skill/prompt inventory regardless of entry point.
 pub(crate) fn build_skill_system_prompt_section(resources: &SessionResourceBootstrap) -> String {
     let mut sections = Vec::new();
 
@@ -72,6 +86,7 @@ pub(crate) fn build_skill_system_prompt_section(resources: &SessionResourceBoots
     }
 }
 
+/// Load extension runtime support without attaching an interactive UI handler.
 pub(crate) async fn load_runtime_extension_support(
     cwd: &Path,
     settings: &Settings,
@@ -80,6 +95,8 @@ pub(crate) async fn load_runtime_extension_support(
     load_runtime_extension_support_with_ui(cwd, settings, bootstrap, false).await
 }
 
+/// Load extension runtime support and, when requested, wire in the interactive
+/// UI bridge used by the TUI auth/notification flows.
 pub(crate) async fn load_runtime_extension_support_with_ui(
     cwd: &Path,
     settings: &Settings,
