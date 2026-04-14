@@ -5,7 +5,7 @@ pub mod openai_codex;
 pub mod pkce;
 
 pub use anthropic::login_anthropic;
-pub use github_copilot::login_github_copilot;
+pub(crate) use github_copilot::login_github_copilot;
 pub use openai_codex::login_openai_codex;
 
 /// Credentials returned from a successful OAuth flow.

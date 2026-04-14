@@ -53,29 +53,29 @@ struct CopilotTokenEnvelope {
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
-pub struct CopilotEndpoints {
+pub(crate) struct CopilotEndpoints {
     #[serde(default)]
-    pub api: Option<String>,
+    api: Option<String>,
     #[serde(default)]
-    pub telemetry: Option<String>,
+    telemetry: Option<String>,
     #[serde(default)]
-    pub proxy: Option<String>,
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct CopilotRuntimeSession {
-    pub login: Option<String>,
-    pub copilot_token: String,
-    pub copilot_expires_at_ms: i64,
-    pub api_base_url: String,
-    pub models: Vec<String>,
-    pub raw_endpoints: Option<CopilotEndpoints>,
-    pub organization_list: Vec<String>,
-    pub enterprise_list: Vec<String>,
-    pub sku: Option<String>,
+pub(crate) struct CopilotRuntimeSession {
+    pub(crate) login: Option<String>,
+    pub(crate) copilot_token: String,
+    pub(crate) copilot_expires_at_ms: i64,
+    pub(crate) api_base_url: String,
+    pub(crate) models: Vec<String>,
+    pub(crate) raw_endpoints: Option<CopilotEndpoints>,
+    pub(crate) organization_list: Vec<String>,
+    pub(crate) enterprise_list: Vec<String>,
+    pub(crate) sku: Option<String>,
 }
 
-pub async fn login_github_copilot(
+pub(crate) async fn login_github_copilot(
     authority: &str,
     callbacks: OAuthCallbacks,
 ) -> Result<OAuthCredentials> {
@@ -142,7 +142,7 @@ pub async fn login_github_copilot(
     })
 }
 
-pub async fn refresh_github_copilot_token(
+pub(crate) async fn refresh_github_copilot_token(
     refresh_token: &str,
     authority: &str,
 ) -> Result<OAuthCredentials> {
@@ -194,7 +194,7 @@ pub async fn refresh_github_copilot_token(
     })
 }
 
-pub async fn exchange_github_token_for_copilot_session(
+pub(crate) async fn exchange_github_token_for_copilot_session(
     authority: &str,
     github_access_token: &str,
 ) -> Result<CopilotRuntimeSession> {
@@ -231,7 +231,7 @@ pub async fn exchange_github_token_for_copilot_session(
     })
 }
 
-pub fn normalize_authority(input: &str) -> Result<String> {
+pub(crate) fn normalize_authority(input: &str) -> Result<String> {
     let value = input.trim().trim_end_matches('/');
     if value.is_empty() {
         anyhow::bail!("GitHub authority cannot be empty");
@@ -529,7 +529,7 @@ async fn fetch_copilot_models(api_base_url: &str, copilot_token: &str) -> Result
     anyhow::bail!("Unsupported GitHub Copilot /models response: {text}")
 }
 
-pub fn github_copilot_runtime_headers() -> std::collections::HashMap<String, String> {
+pub(crate) fn github_copilot_runtime_headers() -> std::collections::HashMap<String, String> {
     let mut headers = std::collections::HashMap::new();
     headers.insert(
         "OpenAI-Organization".to_string(),
@@ -549,4 +549,85 @@ pub fn github_copilot_runtime_headers() -> std::collections::HashMap<String, Str
     );
     headers.insert("X-GitHub-Api-Version".to_string(), API_VERSION.to_string());
     headers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        API_VERSION, dotcom_api_url_for_authority, github_copilot_runtime_headers,
+        normalize_authority, server_url_for_authority,
+    };
+
+    #[test]
+    fn normalize_authority_accepts_plain_hosts_urls_and_paths() {
+        assert_eq!(normalize_authority("github.com").unwrap(), "github.com");
+        assert_eq!(
+            normalize_authority("  https://GitHub.com/login/device  ").unwrap(),
+            "github.com"
+        );
+        assert_eq!(
+            normalize_authority("ghe.example.com/some/path").unwrap(),
+            "ghe.example.com"
+        );
+        assert_eq!(
+            normalize_authority("HTTPS://Copilot.EXAMPLE.COM/").unwrap(),
+            "copilot.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_authority_rejects_empty_or_space_separated_values() {
+        assert!(normalize_authority("   ").is_err());
+        assert!(normalize_authority("github enterprise").is_err());
+        assert!(normalize_authority("https://github enterprise.local").is_err());
+    }
+
+    #[test]
+    fn server_url_uses_github_dot_com_or_enterprise_host() {
+        assert_eq!(server_url_for_authority("github.com"), "https://github.com");
+        assert_eq!(
+            server_url_for_authority("ghe.example.com"),
+            "https://ghe.example.com"
+        );
+    }
+
+    #[test]
+    fn api_url_uses_public_or_enterprise_prefix() {
+        assert_eq!(
+            dotcom_api_url_for_authority("github.com"),
+            "https://api.github.com"
+        );
+        assert_eq!(
+            dotcom_api_url_for_authority("ghe.example.com"),
+            "https://api.ghe.example.com"
+        );
+    }
+
+    #[test]
+    fn runtime_headers_include_expected_copilot_metadata() {
+        let headers = github_copilot_runtime_headers();
+
+        assert_eq!(
+            headers.get("OpenAI-Organization").map(String::as_str),
+            Some("github-copilot")
+        );
+        assert_eq!(
+            headers.get("Editor-Version").map(String::as_str),
+            Some(concat!("bb-agent/", env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            headers.get("Editor-Plugin-Version").map(String::as_str),
+            Some(concat!("bb-agent/", env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            headers
+                .get("Copilot-Language-Server-Version")
+                .map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            headers.get("X-GitHub-Api-Version").map(String::as_str),
+            Some(API_VERSION)
+        );
+    }
 }
