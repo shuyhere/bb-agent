@@ -11,4 +11,7 @@ pub use algorithms::{
 pub use host::{AgentSessionRuntimeHandle, AgentSessionRuntimeHost, create_agent_session_runtime};
 pub use runtime::AgentSessionRuntime;
 pub use session_tree::SessionTreeState;
-pub use types::{AgentSessionRuntimeBootstrap, CreateAgentSessionRuntimeOptions, RuntimeModelRef};
+pub use types::{
+    AgentSessionRuntimeBootstrap, CreateAgentSessionRuntimeOptions, RuntimeEntrySource,
+    RuntimeModelRef,
+};

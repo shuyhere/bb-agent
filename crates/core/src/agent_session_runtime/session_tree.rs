@@ -6,8 +6,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::types::{
-    BranchSummaryEntry, LabelChangeEntry, RuntimeMessage, SessionTreeEntry, SessionTreeEntryKind,
-    StoredCompactionEntry,
+    BranchSummaryEntry, LabelChangeEntry, RuntimeEntrySource, RuntimeMessage, SessionTreeEntry,
+    SessionTreeEntryKind, StoredCompactionEntry,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -62,14 +62,14 @@ impl SessionTreeState {
         parent_id: Option<String>,
         summary: String,
         details: Option<Value>,
-        from_extension: bool,
+        source: RuntimeEntrySource,
     ) -> String {
         self.append_entry(
             parent_id,
             SessionTreeEntryKind::BranchSummary(BranchSummaryEntry {
                 summary,
                 details,
-                from_extension,
+                from_extension: source.is_extension(),
             }),
         )
     }
@@ -91,7 +91,7 @@ impl SessionTreeState {
         first_kept_entry_id: String,
         tokens_before: usize,
         details: Option<Value>,
-        from_extension: bool,
+        source: RuntimeEntrySource,
     ) -> String {
         let parent_id = self.leaf_id.clone();
         self.append_entry(
@@ -101,7 +101,7 @@ impl SessionTreeState {
                 first_kept_entry_id,
                 tokens_before,
                 details,
-                from_extension,
+                from_extension: source.is_extension(),
             }),
         )
     }

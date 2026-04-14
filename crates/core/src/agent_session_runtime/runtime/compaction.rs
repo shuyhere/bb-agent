@@ -41,14 +41,14 @@ impl AgentSessionRuntime {
         &mut self,
         reason: CompactionReason,
         result: CompactionResult,
-        from_extension: bool,
+        source: RuntimeEntrySource,
     ) {
         self.session_tree.append_compaction(
             result.summary.clone(),
             result.first_kept_entry_id.clone(),
             result.tokens_before,
             result.details.clone(),
-            from_extension,
+            source,
         );
         self.messages = self.session_tree.build_session_context_messages();
         self.compaction_state.manual_in_progress = false;

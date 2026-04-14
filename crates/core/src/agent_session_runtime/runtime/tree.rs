@@ -12,7 +12,7 @@ impl AgentSessionRuntime {
         options: NavigateTreeOptions,
         summary_text: Option<String>,
         summary_details: Option<Value>,
-        from_extension: bool,
+        source: RuntimeEntrySource,
     ) -> Result<NavigateTreeOutcome, AgentSessionRuntimeError> {
         let old_leaf_id = self.session_tree.leaf_id().map(ToOwned::to_owned);
 
@@ -73,7 +73,7 @@ impl AgentSessionRuntime {
                 new_leaf_id.clone(),
                 summary,
                 summary_details,
-                from_extension,
+                source,
             );
             if let Some(label) = options.label {
                 self.session_tree
@@ -99,7 +99,7 @@ impl AgentSessionRuntime {
             new_leaf_id: self.session_tree.leaf_id().map(ToOwned::to_owned),
             old_leaf_id,
             summary_entry_id: summary_entry.as_ref().map(|entry| entry.id.clone()),
-            from_extension: summary_entry.as_ref().map(|_| from_extension),
+            summary_source: summary_entry.as_ref().map(|_| source),
         });
 
         Ok(NavigateTreeOutcome {
