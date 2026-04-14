@@ -9,7 +9,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "groq",
             ApiType::OpenaiCompletions,
             (128_000, 32_768),
-            runtime(false, "https://api.groq.com/openai/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.groq.com/openai/v1",
+            ),
             simple_cost(0.59, 0.79),
         ),
         text_model(
@@ -18,7 +21,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "groq",
             ApiType::OpenaiCompletions,
             (131_072, 8_192),
-            runtime(false, "https://api.groq.com/openai/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.groq.com/openai/v1",
+            ),
             simple_cost(0.05, 0.08),
         ),
         text_model(
@@ -27,7 +33,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "groq",
             ApiType::OpenaiCompletions,
             (32_768, 32_768),
-            runtime(false, "https://api.groq.com/openai/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.groq.com/openai/v1",
+            ),
             simple_cost(0.24, 0.24),
         ),
     ]

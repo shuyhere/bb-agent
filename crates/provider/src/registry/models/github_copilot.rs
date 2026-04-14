@@ -1,4 +1,4 @@
-use super::{model, runtime, simple_cost};
+use super::{ReasoningCapability, model, runtime, simple_cost};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
@@ -9,7 +9,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "github-copilot",
             ApiType::OpenaiCompletions,
             (200_000, 16_384),
-            runtime(true, "https://api.githubcopilot.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://api.githubcopilot.com",
+            ),
             simple_cost(0.0, 0.0),
         ),
         model(
@@ -18,7 +21,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "github-copilot",
             ApiType::OpenaiCompletions,
             (128_000, 16_384),
-            runtime(false, "https://api.githubcopilot.com"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.githubcopilot.com",
+            ),
             simple_cost(0.0, 0.0),
         ),
         model(
@@ -27,7 +33,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "github-copilot",
             ApiType::OpenaiCompletions,
             (200_000, 16_384),
-            runtime(true, "https://api.githubcopilot.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://api.githubcopilot.com",
+            ),
             simple_cost(0.0, 0.0),
         ),
         model(
@@ -36,7 +45,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "github-copilot",
             ApiType::OpenaiCompletions,
             (200_000, 100_000),
-            runtime(true, "https://api.githubcopilot.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://api.githubcopilot.com",
+            ),
             simple_cost(0.0, 0.0),
         ),
     ]

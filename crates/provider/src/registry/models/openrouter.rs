@@ -1,4 +1,4 @@
-use super::{model, runtime, simple_cost};
+use super::{ReasoningCapability, model, runtime, simple_cost};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
@@ -9,7 +9,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openrouter",
             ApiType::OpenaiCompletions,
             (200_000, 64_000),
-            runtime(true, "https://openrouter.ai/api/v1"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://openrouter.ai/api/v1",
+            ),
             simple_cost(3.0, 15.0),
         ),
         model(
@@ -18,7 +21,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openrouter",
             ApiType::OpenaiCompletions,
             (200_000, 32_000),
-            runtime(true, "https://openrouter.ai/api/v1"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://openrouter.ai/api/v1",
+            ),
             simple_cost(15.0, 75.0),
         ),
         model(
@@ -27,7 +33,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openrouter",
             ApiType::OpenaiCompletions,
             (256_000, 64_000),
-            runtime(true, "https://openrouter.ai/api/v1"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://openrouter.ai/api/v1",
+            ),
             simple_cost(2.0, 8.0),
         ),
     ]

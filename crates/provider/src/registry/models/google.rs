@@ -1,4 +1,4 @@
-use super::{model, runtime, simple_cost};
+use super::{ReasoningCapability, model, runtime, simple_cost};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
@@ -9,7 +9,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "google",
             ApiType::GoogleGenerative,
             (1_048_576, 65_536),
-            runtime(true, "https://generativelanguage.googleapis.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://generativelanguage.googleapis.com",
+            ),
             simple_cost(1.25, 10.0),
         ),
         model(
@@ -18,7 +21,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "google",
             ApiType::GoogleGenerative,
             (1_048_576, 65_536),
-            runtime(true, "https://generativelanguage.googleapis.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://generativelanguage.googleapis.com",
+            ),
             simple_cost(0.15, 0.6),
         ),
         model(
@@ -27,7 +33,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "google",
             ApiType::GoogleGenerative,
             (1_048_576, 65_536),
-            runtime(true, "https://generativelanguage.googleapis.com"),
+            runtime(
+                ReasoningCapability::Supported,
+                "https://generativelanguage.googleapis.com",
+            ),
             simple_cost(1.25, 10.0),
         ),
         model(
@@ -36,7 +45,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "google",
             ApiType::GoogleGenerative,
             (1_048_576, 65_536),
-            runtime(false, "https://generativelanguage.googleapis.com"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://generativelanguage.googleapis.com",
+            ),
             simple_cost(0.075, 0.3),
         ),
     ]

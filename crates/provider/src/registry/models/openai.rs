@@ -1,4 +1,4 @@
-use super::{model, runtime, simple_cost};
+use super::{ReasoningCapability, model, runtime, simple_cost};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
@@ -9,7 +9,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (272_000, 128_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(2.5, 10.0),
         ),
         model(
@@ -18,7 +18,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (400_000, 128_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(2.0, 8.0),
         ),
         model(
@@ -27,7 +27,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (400_000, 128_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(2.0, 8.0),
         ),
         model(
@@ -36,7 +36,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (400_000, 128_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(2.0, 8.0),
         ),
         model(
@@ -45,7 +45,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (400_000, 128_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(0.3, 1.2),
         ),
         model(
@@ -54,7 +54,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (128_000, 16_384),
-            runtime(false, "https://api.openai.com/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.openai.com/v1",
+            ),
             simple_cost(2.5, 10.0),
         ),
         model(
@@ -63,7 +66,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (128_000, 16_384),
-            runtime(false, "https://api.openai.com/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.openai.com/v1",
+            ),
             simple_cost(0.15, 0.6),
         ),
         model(
@@ -72,7 +78,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (200_000, 100_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(2.0, 8.0),
         ),
         model(
@@ -81,7 +87,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (200_000, 100_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(1.1, 4.4),
         ),
         model(
@@ -90,7 +96,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (200_000, 100_000),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(1.1, 4.4),
         ),
         model(
@@ -99,7 +105,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (128_000, 4_096),
-            runtime(false, "https://api.openai.com/v1"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.openai.com/v1",
+            ),
             simple_cost(10.0, 30.0),
         ),
         model(
@@ -108,7 +117,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "openai",
             ApiType::OpenaiCompletions,
             (128_000, 65_536),
-            runtime(true, "https://api.openai.com/v1"),
+            runtime(ReasoningCapability::Supported, "https://api.openai.com/v1"),
             simple_cost(3.0, 12.0),
         ),
     ]
