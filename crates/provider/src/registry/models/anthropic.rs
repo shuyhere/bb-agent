@@ -1,4 +1,4 @@
-use super::{cost, model, runtime};
+use super::{ReasoningCapability, cost, model, runtime};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
@@ -9,7 +9,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (1_000_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(3.0, 15.0, 0.3, 3.75),
         ),
         model(
@@ -18,7 +18,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (1_000_000, 128_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(5.0, 25.0, 0.5, 6.25),
         ),
         model(
@@ -27,7 +27,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(3.0, 15.0, 0.3, 3.75),
         ),
         model(
@@ -36,7 +36,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 32_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(15.0, 75.0, 1.5, 18.75),
         ),
         model(
@@ -45,7 +45,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(0.8, 4.0, 0.08, 1.0),
         ),
         model(
@@ -54,7 +54,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(0.5, 2.5, 0.05, 0.625),
         ),
         model(
@@ -63,7 +63,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(3.0, 15.0, 0.3, 3.75),
         ),
         model(
@@ -72,7 +72,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 32_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(15.0, 75.0, 1.5, 18.75),
         ),
         model(
@@ -81,7 +81,10 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 8_192),
-            runtime(false, "https://api.anthropic.com"),
+            runtime(
+                ReasoningCapability::Unsupported,
+                "https://api.anthropic.com",
+            ),
             cost(0.8, 4.0, 0.08, 1.0),
         ),
         model(
@@ -90,7 +93,7 @@ pub(super) fn builtin_models() -> Vec<Model> {
             "anthropic",
             ApiType::AnthropicMessages,
             (200_000, 64_000),
-            runtime(true, "https://api.anthropic.com"),
+            runtime(ReasoningCapability::Supported, "https://api.anthropic.com"),
             cost(3.0, 15.0, 0.3, 3.75),
         ),
     ]
