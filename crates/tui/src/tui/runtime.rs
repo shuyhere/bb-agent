@@ -7,15 +7,15 @@ use crate::select_list::SelectItem;
 
 use super::{
     frame::measure_input,
-    layout::{TuiLayout, Size, compute_layout_with_footer},
+    layout::{Size, TuiLayout, compute_layout_with_footer},
     menus::{TuiSelectMenuState, TuiSlashMenuState},
     projection::{TranscriptProjection, TranscriptProjector},
     scheduler::RenderIntent,
     streaming::ActiveTurnState,
     transcript::{BlockId, Transcript},
     types::{
-        TuiAppConfig, TuiApprovalDialog, TuiAuthDialog, TuiFooterData,
-        TuiMode, TuiOutcome, TuiSearchState, TuiSubmission,
+        TuiAppConfig, TuiApprovalDialog, TuiAuthDialog, TuiFooterData, TuiMode, TuiOutcome,
+        TuiSearchState, TuiSubmission,
     },
     viewport::ViewportState,
 };
@@ -183,7 +183,7 @@ impl TuiState {
         let transcript_width = layout.transcript.width as usize;
         let viewport_height = layout.transcript.height as usize;
         let should_refresh = self.projection_dirty
-            || self.projection.width != transcript_width
+            || self.projection.width() != transcript_width
             || self.viewport.viewport_height != viewport_height;
         if !should_refresh {
             return;

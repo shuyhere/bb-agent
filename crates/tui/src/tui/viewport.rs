@@ -77,7 +77,7 @@ impl ViewportState {
     }
 
     pub fn on_projection_changed(&mut self, projection: &TranscriptProjection) {
-        self.total_projected_rows = projection.total_rows;
+        self.total_projected_rows = projection.total_rows();
         if self.auto_follow {
             self.viewport_top = self.bottom_top();
         } else {
@@ -119,7 +119,7 @@ impl ViewportState {
         next_projection: &TranscriptProjection,
         anchor: &ViewportAnchor,
     ) {
-        self.total_projected_rows = next_projection.total_rows;
+        self.total_projected_rows = next_projection.total_rows();
         if let Some(next_row) = next_projection
             .header_row_for_block(anchor.block_id)
             .or_else(|| {

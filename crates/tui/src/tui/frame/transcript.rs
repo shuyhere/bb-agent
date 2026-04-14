@@ -20,7 +20,7 @@ pub(crate) fn render_transcript(
     }
 
     let visible = state.viewport.visible_row_range();
-    let visible_rows = &projection.rows[visible.clone()];
+    let visible_rows = &projection.rows()[visible.clone()];
     let focused_block = matches!(state.mode, TuiMode::Transcript)
         .then_some(state.focused_block)
         .flatten();
