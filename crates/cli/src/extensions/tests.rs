@@ -6,6 +6,10 @@ use bb_core::agent_session_extensions::{
 use bb_core::settings::PackageEntry;
 use tempfile::tempdir;
 
+use super::command_results::{
+    parse_command_activate_agent_result, parse_command_dispatch_result, parse_command_invocation,
+    parse_command_menu_result, parse_command_prompt_result, render_command_result,
+};
 use super::*;
 
 fn node_available() -> bool {
@@ -94,6 +98,35 @@ fn parses_extension_prompt_result_with_resume_token() {
 }
 
 #[test]
+fn parses_dispatch_and_activate_agent_results() {
+    let short_dispatch = serde_json::json!({
+        "dispatch": "  build the thing  ",
+        "message": "Queued"
+    });
+    assert_eq!(
+        parse_command_dispatch_result(&short_dispatch),
+        Some(ExtensionCommandOutcome::Dispatch {
+            note: Some("Queued".to_string()),
+            prompt: "build the thing".to_string(),
+        })
+    );
+
+    let activate = serde_json::json!({
+        "activate_agent": {
+            "agentId": "agent-123",
+            "note": "Activated"
+        }
+    });
+    assert_eq!(
+        parse_command_activate_agent_result(&activate),
+        Some(ExtensionCommandOutcome::ActivateAgent {
+            agent_id: "agent-123".to_string(),
+            note: Some("Activated".to_string()),
+        })
+    );
+}
+
+#[test]
 fn non_menu_result_yields_text_or_nothing() {
     assert!(parse_command_menu_result("x", &serde_json::json!({"message": "hi"})).is_none());
     assert!(parse_command_menu_result("x", &serde_json::json!({"menu": {}})).is_none());
@@ -102,6 +135,39 @@ fn non_menu_result_yields_text_or_nothing() {
         render_command_result(&serde_json::json!({"message": "hello"})).as_deref(),
         Some("hello")
     );
+}
+
+#[test]
+fn command_outcome_into_text_formats_non_tui_fallbacks() {
+    let menu_text = ExtensionCommandOutcome::Menu {
+        command: "shape".to_string(),
+        title: "Shape".to_string(),
+        items: vec![
+            ExtensionMenuItem {
+                label: "New".to_string(),
+                detail: Some("Create one".to_string()),
+                value: "new".to_string(),
+            },
+            ExtensionMenuItem {
+                label: "List".to_string(),
+                detail: None,
+                value: "list".to_string(),
+            },
+        ],
+    }
+    .into_text()
+    .unwrap();
+    assert!(menu_text.contains("Shape"));
+    assert!(menu_text.contains("1. New — Create one"));
+    assert!(menu_text.contains("2. List"));
+
+    let dispatch_text = ExtensionCommandOutcome::Dispatch {
+        note: Some("Queued".to_string()),
+        prompt: "Run build".to_string(),
+    }
+    .into_text()
+    .unwrap();
+    assert_eq!(dispatch_text, "Queued\nRun build");
 }
 
 #[test]
