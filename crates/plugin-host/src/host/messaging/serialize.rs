@@ -15,18 +15,18 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         }
         Event::ToolCall(tc) => serde_json::json!({
             "type": event_type,
-            "tool_call_id": tc.tool_call_id,
-            "tool_name": tc.tool_name,
-            "input": tc.input,
+            "tool_call_id": tc.tool_call_id(),
+            "tool_name": tc.tool_name(),
+            "input": tc.input(),
         }),
         Event::ToolResult(tr) => serde_json::json!({
             "type": event_type,
-            "tool_call_id": tr.tool_call_id,
-            "tool_name": tr.tool_name,
-            "input": tr.input,
-            "content": tr.content,
-            "details": tr.details,
-            "is_error": tr.is_error,
+            "tool_call_id": tr.tool_call_id(),
+            "tool_name": tr.tool_name(),
+            "input": tr.input(),
+            "content": tr.content(),
+            "details": tr.details(),
+            "is_error": tr.is_error(),
         }),
         Event::BeforeAgentStart {
             prompt,
@@ -39,8 +39,8 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         Event::SessionBeforeCompact(prep) => serde_json::json!({
             "type": event_type,
             "preparation": {
-                "firstKeptEntryId": prep.first_kept_entry_id,
-                "tokensBefore": prep.tokens_before,
+                "firstKeptEntryId": prep.first_kept_entry_id(),
+                "tokensBefore": prep.tokens_before(),
             },
         }),
         Event::SessionCompact { from_plugin } => serde_json::json!({
@@ -49,8 +49,8 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         }),
         Event::SessionBeforeTree(prep) => serde_json::json!({
             "type": event_type,
-            "target_id": prep.target_id,
-            "old_leaf_id": prep.old_leaf_id,
+            "target_id": prep.target_id(),
+            "old_leaf_id": prep.old_leaf_id(),
         }),
         Event::SessionTree { new_leaf, old_leaf } => serde_json::json!({
             "type": event_type,
@@ -59,7 +59,7 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         }),
         Event::Context(ctx) => serde_json::json!({
             "type": event_type,
-            "message_count": ctx.messages.len(),
+            "message_count": ctx.message_count(),
         }),
         Event::BeforeProviderRequest { payload } => serde_json::json!({
             "type": event_type,
@@ -67,8 +67,8 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         }),
         Event::Input(input) => serde_json::json!({
             "type": event_type,
-            "text": input.text,
-            "source": input.source,
+            "text": input.text(),
+            "source": input.source(),
         }),
     }
 }
@@ -86,11 +86,11 @@ mod tests {
 
     #[test]
     fn test_serialize_event_tool_call() {
-        let event = bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
-            tool_call_id: "tc1".into(),
-            tool_name: "bash".into(),
-            input: serde_json::json!({"command": "ls"}),
-        });
+        let event = bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent::new(
+            "tc1",
+            "bash",
+            serde_json::json!({"command": "ls"}),
+        ));
         let json = serialize_event(&event);
         assert_eq!(json["type"], "tool_call");
         assert_eq!(json["tool_name"], "bash");

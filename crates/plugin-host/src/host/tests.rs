@@ -69,11 +69,11 @@ async fn test_load_plugins_with_sample() {
     assert_eq!(hr.action, Some("started".into()));
 
     let result = host
-        .send_event(&bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
-            tool_call_id: "tc1".into(),
-            tool_name: "bash".into(),
-            input: serde_json::json!({"command": "rm -rf /"}),
-        }))
+        .send_event(&bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent::new(
+            "tc1",
+            "bash",
+            serde_json::json!({"command": "rm -rf /"}),
+        )))
         .await;
     assert!(result.is_some());
     let hr = result.unwrap();
@@ -81,11 +81,11 @@ async fn test_load_plugins_with_sample() {
     assert_eq!(hr.reason, Some("Blocked dangerous command".into()));
 
     let result = host
-        .send_event(&bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent {
-            tool_call_id: "tc2".into(),
-            tool_name: "bash".into(),
-            input: serde_json::json!({"command": "ls"}),
-        }))
+        .send_event(&bb_hooks::Event::ToolCall(bb_hooks::ToolCallEvent::new(
+            "tc2",
+            "bash",
+            serde_json::json!({"command": "ls"}),
+        )))
         .await;
     assert!(result.is_none());
 

@@ -40,11 +40,11 @@ pub(super) async fn execute_tool_calls(
 
         let hook_result = send_extension_event_safe(
             env.extensions,
-            Event::ToolCall(ToolCallEvent {
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool_call.name.clone(),
-                input: args.clone(),
-            }),
+            Event::ToolCall(ToolCallEvent::new(
+                tool_call.id.clone(),
+                tool_call.name.clone(),
+                args.clone(),
+            )),
             env.event_tx,
             "ToolCall",
         )
@@ -98,14 +98,14 @@ pub(super) async fn execute_tool_calls(
 
         if let Some(result) = send_extension_event_safe(
             env.extensions,
-            Event::ToolResult(ToolResultEvent {
-                tool_call_id: tool_call.id.clone(),
-                tool_name: tool_call.name.clone(),
-                input: args.clone(),
-                content: content.clone(),
-                details: details.clone(),
+            Event::ToolResult(ToolResultEvent::new(
+                tool_call.id.clone(),
+                tool_call.name.clone(),
+                args.clone(),
+                content.clone(),
+                details.clone(),
                 is_error,
-            }),
+            )),
             env.event_tx,
             "ToolResult",
         )

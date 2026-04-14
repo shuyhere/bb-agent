@@ -279,9 +279,7 @@ async fn apply_context_hook(
 ) -> Result<Vec<AgentMessage>> {
     if let Some(result) = send_extension_event_safe(
         &config.extensions,
-        Event::Context(bb_hooks::events::ContextEvent {
-            messages: messages.clone(),
-        }),
+        Event::Context(bb_hooks::events::ContextEvent::new(messages.clone())),
         event_tx,
         "Context",
     )
