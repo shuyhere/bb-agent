@@ -11,7 +11,9 @@ pub use planning::{
     prepare_compaction, should_compact,
 };
 pub use serialize::serialize_conversation;
-pub use summarize::{SUMMARIZATION_PROMPT, SUMMARIZATION_SYSTEM_PROMPT, compact};
+pub use summarize::{
+    CompactionRequest, SUMMARIZATION_PROMPT, SUMMARIZATION_SYSTEM_PROMPT, compact,
+};
 pub use types::{CompactionPreparation, CompactionResult};
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use super::{file_ops::extract_file_operations, serialize::serialize_conversation, types::*};
 use bb_core::types::{AgentMessage, SessionEntry};
-use bb_provider::{CompletionRequest, RequestOptions, StreamEvent};
+use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use tokio_util::sync::CancellationToken;
 
 // =============================================================================
@@ -38,35 +40,35 @@ Create a structured context checkpoint:
 "#;
 
 // =============================================================================
-// Compaction result
-// =============================================================================
-
-/// Result of executing compaction.
-#[derive(Debug)]
-pub struct CompactionResult {
-    pub summary: String,
-    pub first_kept_entry_id: String,
-    pub tokens_before: u64,
-    pub read_files: Vec<String>,
-    pub modified_files: Vec<String>,
-}
-
-// =============================================================================
 // Compact execution
 // =============================================================================
 
+/// Inputs required to generate a compaction summary without relying on a long list of
+/// positional arguments at the call site.
+pub struct CompactionRequest<'a> {
+    pub preparation: &'a CompactionPreparation,
+    pub provider: &'a dyn Provider,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub base_url: &'a str,
+    pub headers: &'a HashMap<String, String>,
+    pub custom_instructions: Option<&'a str>,
+    pub cancel: CancellationToken,
+}
+
 /// Execute compaction: call LLM to generate summary.
-/// Returns CompactionResult with summary text and metadata.
-pub async fn compact(
-    preparation: &CompactionPreparation,
-    provider: &dyn bb_provider::Provider,
-    model: &str,
-    api_key: &str,
-    base_url: &str,
-    headers: &std::collections::HashMap<String, String>,
-    custom_instructions: Option<&str>,
-    cancel: CancellationToken,
-) -> anyhow::Result<CompactionResult> {
+/// Returns `CompactionResult` with summary text and metadata.
+pub async fn compact(request: CompactionRequest<'_>) -> anyhow::Result<CompactionResult> {
+    let CompactionRequest {
+        preparation,
+        provider,
+        model,
+        api_key,
+        base_url,
+        headers,
+        custom_instructions,
+        cancel,
+    } = request;
     // 1. Parse messages from entry rows
     let messages: Vec<AgentMessage> = preparation
         .messages_to_summarize
@@ -162,7 +164,7 @@ pub async fn compact(
 
     Ok(CompactionResult {
         summary,
-        first_kept_entry_id: preparation.first_kept_entry_id.clone(),
+        first_kept_entry_id: preparation.first_kept_entry_id.to_owned(),
         tokens_before: preparation.tokens_before,
         read_files,
         modified_files,
