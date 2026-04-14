@@ -59,6 +59,54 @@ mod tests {
         }
     }
 
+    fn runtime_with_model(context_window: usize) -> AgentSessionRuntime {
+        AgentSessionRuntime {
+            model: Some(RuntimeModelRef {
+                provider: "test".to_string(),
+                id: "demo".to_string(),
+                context_window,
+            }),
+            ..AgentSessionRuntime::default()
+        }
+    }
+
+    fn append_user_entry(runtime: &mut AgentSessionRuntime, text: &str) -> String {
+        runtime.session_tree.append_entry(
+            runtime.session_tree.leaf_id().map(ToOwned::to_owned),
+            SessionTreeEntryKind::Message(user_message(text)),
+        )
+    }
+
+    fn assistant_message(stop_reason: AssistantStopReason, total_context_tokens: usize) -> AssistantMessage {
+        AssistantMessage {
+            content: vec![MessagePart::Text {
+                text: "assistant".to_string(),
+            }],
+            timestamp: Utc::now(),
+            stop_reason,
+            usage: RuntimeUsage {
+                input: total_context_tokens,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+                cost: RuntimeCost::default(),
+            },
+            error_message: None,
+            provider: Some("test".to_string()),
+            model: Some("demo".to_string()),
+        }
+    }
+
+    fn compaction_settings() -> CompactionSettings {
+        CompactionSettings {
+            enabled: true,
+            threshold_percent: 80,
+            reserve_tokens: 0,
+            min_entries: 2,
+            keep_recent_entries: 1,
+        }
+    }
+
     #[test]
     fn navigate_tree_emits_summary_source_for_extension_summary() {
         let mut runtime = AgentSessionRuntime {
@@ -134,5 +182,87 @@ mod tests {
             }
             other => panic!("expected compaction entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_compaction_ignores_aborted_messages_by_default() {
+        let mut runtime = runtime_with_model(100);
+        append_user_entry(&mut runtime, "first");
+        append_user_entry(&mut runtime, "second");
+        runtime.messages = runtime.session_tree.build_session_context_messages();
+
+        let action = runtime.check_compaction(
+            &assistant_message(AssistantStopReason::Aborted, 95),
+            &compaction_settings(),
+            CompactionCheckOptions::default(),
+        );
+
+        assert_eq!(action, CompactionAction::None);
+        assert!(!runtime.compaction_state.auto_in_progress);
+        assert!(runtime.emitted_events.is_empty());
+    }
+
+    #[test]
+    fn check_compaction_can_consider_aborted_messages_explicitly() {
+        let mut runtime = runtime_with_model(100);
+        append_user_entry(&mut runtime, "first");
+        append_user_entry(&mut runtime, "second");
+        runtime.messages = runtime.session_tree.build_session_context_messages();
+
+        let action = runtime.check_compaction(
+            &assistant_message(AssistantStopReason::Aborted, 95),
+            &compaction_settings(),
+            CompactionCheckOptions {
+                aborted_message_behavior: AbortedMessageBehavior::Consider,
+            },
+        );
+
+        match action {
+            CompactionAction::CompactForThreshold { preparation } => {
+                assert_eq!(preparation.entries_to_summarize, 1);
+            }
+            other => panic!("expected threshold compaction, got {other:?}"),
+        }
+        assert!(runtime.compaction_state.auto_in_progress);
+        assert!(matches!(
+            runtime.emitted_events.last(),
+            Some(RuntimeEvent::CompactionStart {
+                reason: CompactionReason::Threshold,
+            })
+        ));
+    }
+
+    #[test]
+    fn fail_compaction_clears_active_state_and_reports_abort() {
+        let mut runtime = AgentSessionRuntime::default();
+        runtime.compaction_state.manual_in_progress = true;
+        runtime.compaction_state.auto_in_progress = true;
+        runtime.compaction_state.abort_requested = true;
+
+        runtime.fail_compaction(
+            CompactionReason::Manual,
+            "cancelled".to_string(),
+            true,
+        );
+
+        assert_eq!(
+            runtime.compaction_state,
+            CompactionState {
+                manual_in_progress: false,
+                auto_in_progress: false,
+                overflow_recovery_attempted: false,
+                abort_requested: false,
+            }
+        );
+        assert!(matches!(
+            runtime.emitted_events.last(),
+            Some(RuntimeEvent::CompactionEnd {
+                reason: CompactionReason::Manual,
+                aborted: true,
+                will_retry: false,
+                error_message: None,
+                ..
+            })
+        ));
     }
 }
