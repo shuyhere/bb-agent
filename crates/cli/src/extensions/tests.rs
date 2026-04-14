@@ -240,6 +240,29 @@ fn classifies_package_sources() {
 }
 
 #[test]
+fn extension_bootstrap_splits_package_sources_from_paths() {
+    let cwd = tempdir().unwrap();
+    let bootstrap = ExtensionBootstrap::from_cli_values(
+        cwd.path(),
+        &[
+            "npm:demo-skill".to_string(),
+            "./local-ext".to_string(),
+            "https://example.com/ext.tgz".to_string(),
+        ],
+    );
+
+    assert_eq!(
+        bootstrap.package_sources,
+        vec![
+            "npm:demo-skill".to_string(),
+            "https://example.com/ext.tgz".to_string(),
+        ]
+    );
+    assert_eq!(bootstrap.paths.len(), 1);
+    assert!(bootstrap.paths[0].ends_with("local-ext"));
+}
+
+#[test]
 fn discovers_package_resources_from_manifest() {
     let cwd = tempdir().unwrap();
     let package_dir = cwd.path().join("demo-package");
