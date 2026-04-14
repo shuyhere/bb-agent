@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::theme::theme;
 use crate::utils::{ansi_sequence_len, char_width, pad_to_width, strip_ansi, truncate_to_width};
 
@@ -59,36 +61,36 @@ fn render_transcript_row(
             && matches!(block.kind, BlockKind::SystemNote)
             && matches!(block.title.as_str(), "branch summary" | "compaction")
         {
-            return render_note_line(block, &plain, width);
+            return render_note_line(block, plain.as_ref(), width);
         }
         return blank_line(width);
     }
 
     let content = match &block.kind {
-        BlockKind::UserMessage => style_user_line(&plain, width),
-        BlockKind::Thinking => style_thinking_line(&plain, width),
+        BlockKind::UserMessage => style_user_line(plain.as_ref(), width),
+        BlockKind::Thinking => style_thinking_line(plain.as_ref(), width),
         BlockKind::ToolUse => {
             if row.kind == ProjectedRowKind::Header {
-                style_tool_header(state, block, &plain, width)
+                style_tool_header(state, block, plain.as_ref(), width)
             } else {
-                style_tool_use_line(&plain, width)
+                style_tool_use_line(plain.as_ref(), width)
             }
         }
-        BlockKind::ToolResult => style_tool_result_line(block, &plain, width),
+        BlockKind::ToolResult => style_tool_result_line(block, plain.as_ref(), width),
         BlockKind::SystemNote => {
             if row.kind == ProjectedRowKind::Header
                 && matches!(block.title.as_str(), "branch summary" | "compaction")
             {
-                render_summary_header_line(block, &plain, width)
+                render_summary_header_line(block, plain.as_ref(), width)
             } else {
-                render_note_line(block, &plain, width)
+                render_note_line(block, plain.as_ref(), width)
             }
         }
         BlockKind::AssistantMessage => {
             format!(
                 "{}{}{}",
                 t.text,
-                pad_to_width(&truncate_to_width(&plain, width), width),
+                pad_to_width(&truncate_to_width(plain.as_ref(), width), width),
                 t.reset
             )
         }
@@ -178,21 +180,23 @@ fn is_reset_sgr(seq: &str) -> bool {
     seq == "\x1b[0m" || seq == "\x1b[m"
 }
 
-fn transcript_row_text(row: &ProjectedRow, block: &TranscriptBlock) -> String {
+// Borrow cached projection text wherever possible so steady-state renders do not re-clone every
+// visible transcript row on each frame.
+fn transcript_row_text<'a>(row: &'a ProjectedRow, block: &TranscriptBlock) -> Cow<'a, str> {
     match (row.kind, &block.kind) {
-        (ProjectedRowKind::Spacer, _) => String::new(),
+        (ProjectedRowKind::Spacer, _) => Cow::Borrowed(""),
         (ProjectedRowKind::Header, BlockKind::UserMessage)
         | (ProjectedRowKind::Header, BlockKind::AssistantMessage)
         | (ProjectedRowKind::Header, BlockKind::Thinking)
-        | (ProjectedRowKind::Header, BlockKind::ToolResult) => String::new(),
+        | (ProjectedRowKind::Header, BlockKind::ToolResult) => Cow::Borrowed(""),
         (ProjectedRowKind::Header, BlockKind::SystemNote)
             if matches!(block.title.as_str(), "branch summary" | "compaction") =>
         {
-            row.text.clone()
+            Cow::Borrowed(&row.text)
         }
-        (ProjectedRowKind::Header, BlockKind::SystemNote) => String::new(),
-        (ProjectedRowKind::Header, _) => row.text.clone(),
-        (ProjectedRowKind::Content, _) => row.text.clone(),
+        (ProjectedRowKind::Header, BlockKind::SystemNote) => Cow::Borrowed(""),
+        (ProjectedRowKind::Header, _) => Cow::Borrowed(&row.text),
+        (ProjectedRowKind::Content, _) => Cow::Borrowed(&row.text),
     }
 }
 
@@ -375,16 +379,16 @@ fn split_read_line_range(inner: &str) -> Option<(&str, &str)> {
     Some((path, range))
 }
 
-fn display_tool_header_name(name: &str) -> String {
+fn display_tool_header_name(name: &str) -> Cow<'_, str> {
     match name {
-        "bash" => "Bash".to_string(),
-        "read" => "Read".to_string(),
-        "write" => "Write".to_string(),
-        "edit" => "Edit".to_string(),
-        "ls" => "LS".to_string(),
-        "grep" => "Grep".to_string(),
-        "find" => "Find".to_string(),
-        other => other.to_string(),
+        "bash" => Cow::Borrowed("Bash"),
+        "read" => Cow::Borrowed("Read"),
+        "write" => Cow::Borrowed("Write"),
+        "edit" => Cow::Borrowed("Edit"),
+        "ls" => Cow::Borrowed("LS"),
+        "grep" => Cow::Borrowed("Grep"),
+        "find" => Cow::Borrowed("Find"),
+        other => Cow::Borrowed(other),
     }
 }
 

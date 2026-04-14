@@ -403,10 +403,9 @@ pub(super) fn wrap_visual_line(
                 first = false;
                 continue;
             }
-            let ch = line[start..]
-                .chars()
-                .next()
-                .expect("line should have a char");
+            let Some(ch) = line[start..].chars().next() else {
+                break;
+            };
             let next = start + ch.len_utf8();
             if carry_sgr.is_empty() {
                 out.push(format!("{prefix}{}", &line[start..next]));
@@ -501,7 +500,9 @@ fn trim_ansi_aware_end(s: &str) -> &str {
 fn skip_leading_whitespace(line: &str, start: usize) -> usize {
     let mut idx = start;
     while idx < line.len() {
-        let ch = line[idx..].chars().next().expect("line should have a char");
+        let Some(ch) = line[idx..].chars().next() else {
+            break;
+        };
         if !ch.is_whitespace() {
             break;
         }

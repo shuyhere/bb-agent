@@ -1,4 +1,7 @@
+use crate::kill_ring::KillRingUpdate;
+
 use super::types::Editor;
+use super::{KillContinuation, KillDirection};
 
 impl Editor {
     pub(super) fn insert_char(&mut self, c: char) {
@@ -98,27 +101,23 @@ impl Editor {
         self.state.cursor_col = 0;
     }
 
-    pub(super) fn kill_to_end(&mut self, accumulate: bool) {
+    pub(super) fn kill_to_end(&mut self, continuation: KillContinuation) {
         let line = &self.state.lines[self.state.cursor_line];
         let killed = line[self.state.cursor_col..].to_string();
-        if !killed.is_empty() {
-            self.kill_ring.push(&killed, false, accumulate);
-        }
+        self.record_kill(&killed, continuation, KillDirection::Forward);
         self.state.lines[self.state.cursor_line].truncate(self.state.cursor_col);
     }
 
-    pub(super) fn kill_to_start(&mut self, accumulate: bool) {
+    pub(super) fn kill_to_start(&mut self, continuation: KillContinuation) {
         let line = &self.state.lines[self.state.cursor_line];
         let killed = line[..self.state.cursor_col].to_string();
-        if !killed.is_empty() {
-            self.kill_ring.push(&killed, true, accumulate);
-        }
+        self.record_kill(&killed, continuation, KillDirection::Backward);
         let rest = line[self.state.cursor_col..].to_string();
         self.state.lines[self.state.cursor_line] = rest;
         self.state.cursor_col = 0;
     }
 
-    pub(super) fn delete_word_backward(&mut self, accumulate: bool) {
+    pub(super) fn delete_word_backward(&mut self, continuation: KillContinuation) {
         if self.state.cursor_col == 0 {
             return;
         }
@@ -134,12 +133,26 @@ impl Editor {
         }
         let new_col: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
         let killed = line[new_col..self.state.cursor_col].to_string();
-        if !killed.is_empty() {
-            self.kill_ring.push(&killed, true, accumulate);
-        }
+        self.record_kill(&killed, continuation, KillDirection::Backward);
         let rest = &line[self.state.cursor_col..];
         let new_line = format!("{}{}", &line[..new_col], rest);
         self.state.lines[self.state.cursor_line] = new_line;
         self.state.cursor_col = new_col;
+    }
+
+    fn record_kill(
+        &mut self,
+        killed: &str,
+        continuation: KillContinuation,
+        direction: KillDirection,
+    ) {
+        let update = match (continuation, direction) {
+            (KillContinuation::NewEntry, _) => KillRingUpdate::Push(killed),
+            (KillContinuation::Continue, KillDirection::Forward) => KillRingUpdate::Append(killed),
+            (KillContinuation::Continue, KillDirection::Backward) => {
+                KillRingUpdate::Prepend(killed)
+            }
+        };
+        self.kill_ring.record(update);
     }
 }

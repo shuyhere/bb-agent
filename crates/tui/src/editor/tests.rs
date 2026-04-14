@@ -1,4 +1,4 @@
-use super::Editor;
+use super::{Editor, KillContinuation};
 use crate::component::{CURSOR_MARKER, Component, Focusable};
 
 #[test]
@@ -151,4 +151,31 @@ fn test_slash_menu_render_contains_commands() {
     let lines = editor.render(80);
     let joined = lines.join("\n");
     assert!(joined.contains("/help") || joined.contains("/model"));
+}
+
+#[test]
+fn test_delete_word_backward_accumulates_kill_ring_in_read_order() {
+    let mut editor = Editor::new();
+    editor.set_text("alpha beta");
+
+    editor.delete_word_backward(KillContinuation::NewEntry);
+    assert_eq!(editor.get_text(), "alpha ");
+    assert_eq!(editor.kill_ring.peek(), Some("beta"));
+
+    editor.delete_word_backward(KillContinuation::Continue);
+    assert_eq!(editor.get_text(), "");
+    assert_eq!(editor.kill_ring.peek(), Some("alpha beta"));
+}
+
+#[test]
+fn test_new_kill_sequence_starts_a_fresh_kill_ring_entry() {
+    let mut editor = Editor::new();
+    editor.set_text("alpha");
+    editor.kill_to_end(KillContinuation::NewEntry);
+
+    editor.set_text("beta");
+    editor.kill_to_end(KillContinuation::NewEntry);
+
+    assert_eq!(editor.kill_ring.len(), 2);
+    assert_eq!(editor.kill_ring.peek(), Some("beta"));
 }
