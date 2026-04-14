@@ -139,11 +139,13 @@ impl TuiController {
             self.session_setup.thinking_level = level.as_str().to_string();
             self.runtime_host.session_mut().set_thinking_level(level);
         }
-        self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
-            provider: model.provider.clone(),
-            id: model.id.clone(),
-            context_window: model.context_window as usize,
-        });
+        self.runtime_host
+            .runtime_mut()
+            .set_model(Some(RuntimeModelRef {
+                provider: model.provider.clone(),
+                id: model.id.clone(),
+                context_window: model.context_window as usize,
+            }));
         self.session_setup.model = model;
         self.session_setup.provider = new_provider;
         self.session_setup.api_key = api_key;

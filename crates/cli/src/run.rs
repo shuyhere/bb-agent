@@ -193,7 +193,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         }
 
         if let Some(text) = input.text {
-            let expanded_text = runtime_handle.session.expand_input_text(text);
+            let expanded_text = runtime_handle.session().expand_input_text(text);
             let expanded = crate::input_files::expand_at_file_references(&expanded_text, &cwd);
             for warning in expanded.warnings {
                 eprintln!("Warning: {warning}");

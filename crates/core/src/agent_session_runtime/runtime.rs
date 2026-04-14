@@ -9,18 +9,29 @@ use super::types::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AgentSessionRuntime {
-    pub model: Option<RuntimeModelRef>,
-    pub messages: Vec<RuntimeMessage>,
-    pub session_tree: SessionTreeState,
-    pub compaction_state: CompactionState,
-    pub retry_state: RetryState,
-    pub bash_state: BashExecutionState,
-    pub tree_state: TreeNavigationState,
-    pub queued_continue_requested: bool,
-    pub emitted_events: Vec<RuntimeEvent>,
+    pub(in crate::agent_session_runtime) model: Option<RuntimeModelRef>,
+    pub(in crate::agent_session_runtime) messages: Vec<RuntimeMessage>,
+    pub(in crate::agent_session_runtime) session_tree: SessionTreeState,
+    pub(in crate::agent_session_runtime) compaction_state: CompactionState,
+    pub(in crate::agent_session_runtime) retry_state: RetryState,
+    pub(in crate::agent_session_runtime) bash_state: BashExecutionState,
+    pub(in crate::agent_session_runtime) tree_state: TreeNavigationState,
+    pub(in crate::agent_session_runtime) queued_continue_requested: bool,
+    pub(in crate::agent_session_runtime) emitted_events: Vec<RuntimeEvent>,
 }
 
 impl AgentSessionRuntime {
+    pub(in crate::agent_session_runtime) fn with_model(model: Option<RuntimeModelRef>) -> Self {
+        Self {
+            model,
+            ..Self::default()
+        }
+    }
+
+    pub fn set_model(&mut self, model: Option<RuntimeModelRef>) {
+        self.model = model;
+    }
+
     fn emit(&mut self, event: RuntimeEvent) {
         self.emitted_events.push(event);
     }
@@ -77,7 +88,10 @@ mod tests {
         )
     }
 
-    fn assistant_message(stop_reason: AssistantStopReason, total_context_tokens: usize) -> AssistantMessage {
+    fn assistant_message(
+        stop_reason: AssistantStopReason,
+        total_context_tokens: usize,
+    ) -> AssistantMessage {
         AssistantMessage {
             content: vec![MessagePart::Text {
                 text: "assistant".to_string(),
@@ -94,6 +108,16 @@ mod tests {
             error_message: None,
             provider: Some("test".to_string()),
             model: Some("demo".to_string()),
+        }
+    }
+
+    fn assistant_error_message(
+        error_message: &str,
+        total_context_tokens: usize,
+    ) -> AssistantMessage {
+        AssistantMessage {
+            error_message: Some(error_message.to_string()),
+            ..assistant_message(AssistantStopReason::Error, total_context_tokens)
         }
     }
 
@@ -239,11 +263,7 @@ mod tests {
         runtime.compaction_state.auto_in_progress = true;
         runtime.compaction_state.abort_requested = true;
 
-        runtime.fail_compaction(
-            CompactionReason::Manual,
-            "cancelled".to_string(),
-            true,
-        );
+        runtime.fail_compaction(CompactionReason::Manual, "cancelled".to_string(), true);
 
         assert_eq!(
             runtime.compaction_state,
@@ -264,5 +284,231 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn is_retryable_error_distinguishes_transient_failures_from_context_overflow() {
+        let runtime = runtime_with_model(100);
+        assert!(
+            runtime
+                .is_retryable_error(&assistant_error_message("provider returned error 503", 40,))
+        );
+        assert!(!runtime.is_retryable_error(&assistant_error_message(
+            "maximum context length exceeded",
+            100,
+        )));
+    }
+
+    #[test]
+    fn handle_retryable_error_schedules_retry_and_removes_last_assistant_message() {
+        let mut runtime = runtime_with_model(8_192);
+        runtime.messages.push(user_message("before retry"));
+        let assistant = assistant_error_message("provider returned error 503", 512);
+        runtime
+            .messages
+            .push(RuntimeMessage::Assistant(assistant.clone()));
+
+        let action = runtime.handle_retryable_error(
+            &assistant,
+            &RetrySettings {
+                enabled: true,
+                max_retries: 3,
+                base_delay_ms: 250,
+            },
+        );
+
+        assert_eq!(
+            action,
+            RetryAction::Scheduled {
+                attempt: 1,
+                delay_ms: 250,
+            }
+        );
+        assert_eq!(runtime.retry_state.attempt, 1);
+        assert!(runtime.retry_state.in_progress);
+        assert!(matches!(
+            runtime.messages.last(),
+            Some(RuntimeMessage::User { .. })
+        ));
+        assert!(matches!(
+            runtime.emitted_events.last(),
+            Some(RuntimeEvent::AutoRetryStart {
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 250,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn complete_retry_cycle_clears_retry_state_and_emits_failure_details() {
+        let mut runtime = AgentSessionRuntime::default();
+        runtime.retry_state.attempt = 2;
+        runtime.retry_state.in_progress = true;
+        runtime.retry_state.abort_requested = true;
+
+        runtime.complete_retry_cycle(RetryCompletion::Failed {
+            final_error: Some("still overloaded".to_string()),
+        });
+
+        assert_eq!(runtime.retry_state, RetryState::default());
+        assert!(matches!(
+            runtime.emitted_events.last(),
+            Some(RuntimeEvent::AutoRetryEnd {
+                success: false,
+                attempt: 2,
+                final_error: Some(error),
+            }) if error == "still overloaded"
+        ));
+    }
+
+    #[test]
+    fn streamed_bash_results_are_buffered_until_flush() {
+        let mut runtime = AgentSessionRuntime::default();
+        let prepared = runtime.prepare_bash_command(
+            "echo hi",
+            "/tmp/demo",
+            Some("set -e"),
+            BashContextPolicy::Exclude,
+        );
+
+        assert_eq!(prepared.resolved_command, "set -e\necho hi");
+        assert_eq!(prepared.cwd, "/tmp/demo");
+        assert!(runtime.is_bash_running());
+
+        runtime.record_bash_result(
+            prepared,
+            BashResult {
+                output: "hi".to_string(),
+                exit_code: 0,
+                cancelled: false,
+                truncated: false,
+                full_output_path: None,
+            },
+            BashMessageDelivery::StreamPending,
+        );
+
+        assert!(!runtime.is_bash_running());
+        assert!(runtime.has_pending_bash_messages());
+        assert!(runtime.messages.is_empty());
+
+        runtime.flush_pending_bash_messages();
+
+        match runtime.messages.last() {
+            Some(RuntimeMessage::BashExecution(message)) => {
+                assert_eq!(message.command, "echo hi");
+                assert_eq!(message.output, "hi");
+                assert!(message.exclude_from_context);
+            }
+            other => panic!("expected buffered bash execution message, got {other:?}"),
+        }
+        assert!(!runtime.has_pending_bash_messages());
+    }
+
+    #[test]
+    fn compact_manual_reports_missing_model_and_already_compacted_states() {
+        let mut no_model = AgentSessionRuntime::default();
+        assert!(matches!(
+            no_model.compact_manual(&compaction_settings(), None),
+            Err(AgentSessionRuntimeError::NoModelSelected)
+        ));
+
+        let mut already_compacted = runtime_with_model(100);
+        append_user_entry(&mut already_compacted, "first");
+        append_user_entry(&mut already_compacted, "second");
+        already_compacted.messages = already_compacted
+            .session_tree
+            .build_session_context_messages();
+        already_compacted.finish_compaction(
+            CompactionReason::Manual,
+            CompactionResult {
+                summary: "summary".to_string(),
+                first_kept_entry_id: "entry-2".to_string(),
+                tokens_before: 10,
+                details: None,
+            },
+            RuntimeEntrySource::Runtime,
+        );
+
+        assert!(matches!(
+            already_compacted.compact_manual(
+                &CompactionSettings {
+                    min_entries: 10,
+                    ..compaction_settings()
+                },
+                None,
+            ),
+            Err(AgentSessionRuntimeError::AlreadyCompacted)
+        ));
+    }
+
+    #[test]
+    fn compact_manual_reports_nothing_to_compact_for_short_branch() {
+        let mut runtime = runtime_with_model(100);
+        append_user_entry(&mut runtime, "only one entry");
+        runtime.messages = runtime.session_tree.build_session_context_messages();
+
+        assert!(matches!(
+            runtime.compact_manual(&compaction_settings(), None),
+            Err(AgentSessionRuntimeError::NothingToCompact)
+        ));
+    }
+
+    #[test]
+    fn abort_helpers_update_retry_bash_and_tree_state() {
+        let mut runtime = AgentSessionRuntime::default();
+        runtime.retry_state.attempt = 2;
+        runtime.retry_state.in_progress = true;
+        runtime.abort_retry();
+        assert_eq!(
+            runtime.retry_state,
+            RetryState {
+                attempt: 0,
+                in_progress: false,
+                abort_requested: true,
+            }
+        );
+        assert!(matches!(
+            runtime.emitted_events.last(),
+            Some(RuntimeEvent::AutoRetryEnd {
+                success: false,
+                attempt: 2,
+                final_error: Some(error),
+            }) if error == "Retry cancelled"
+        ));
+
+        runtime.abort_bash();
+        assert!(runtime.bash_state.abort_requested);
+
+        runtime.abort_compaction();
+        assert!(runtime.compaction_state.abort_requested);
+
+        runtime.abort_branch_summary();
+        assert!(runtime.tree_state.abort_requested);
+    }
+
+    #[test]
+    fn reset_overflow_recovery_and_collect_user_messages_for_forking() {
+        let mut runtime = runtime_with_model(100);
+        append_user_entry(&mut runtime, "first");
+        runtime.session_tree.append_entry(
+            runtime.session_tree.leaf_id().map(ToOwned::to_owned),
+            SessionTreeEntryKind::Message(user_message("")),
+        );
+        runtime.session_tree.append_entry(
+            runtime.session_tree.leaf_id().map(ToOwned::to_owned),
+            custom_message("custom"),
+        );
+        append_user_entry(&mut runtime, "second");
+
+        let user_messages = runtime.get_user_messages_for_forking();
+        assert_eq!(user_messages.len(), 2);
+        assert_eq!(user_messages[0].1, "first");
+        assert_eq!(user_messages[1].1, "second");
+
+        runtime.compaction_state.overflow_recovery_attempted = true;
+        runtime.reset_overflow_recovery();
+        assert!(!runtime.compaction_state.overflow_recovery_attempted);
     }
 }

@@ -348,7 +348,7 @@ pub(crate) async fn prepare_session_runtime(
     let runtime =
         create_agent_session_runtime(&bootstrap, CreateAgentSessionRuntimeOptions::new(cwd));
     let mut runtime_host = AgentSessionRuntimeHost::new(bootstrap, runtime);
-    runtime_host.runtime_mut().model = Some(runtime_model);
+    runtime_host.runtime_mut().set_model(Some(runtime_model));
 
     Ok((runtime_host, options, setup))
 }

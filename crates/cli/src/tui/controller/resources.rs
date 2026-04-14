@@ -608,11 +608,13 @@ impl TuiController {
         );
 
         self.runtime_host.reload_resources(session_resources);
-        self.runtime_host.runtime_mut().model = Some(RuntimeModelRef {
-            provider: self.session_setup.model.provider.clone(),
-            id: self.session_setup.model.id.clone(),
-            context_window: self.session_setup.model.context_window as usize,
-        });
+        self.runtime_host
+            .runtime_mut()
+            .set_model(Some(RuntimeModelRef {
+                provider: self.session_setup.model.provider.clone(),
+                id: self.session_setup.model.id.clone(),
+                context_window: self.session_setup.model.context_window as usize,
+            }));
         self.resource_watch = ResourceWatchState::capture(&self.session_setup.tool_ctx.cwd);
         self.send_command(TuiCommand::SetExtraSlashItems(
             build_dynamic_slash_items(&self.runtime_host),
