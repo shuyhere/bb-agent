@@ -5,6 +5,13 @@ All notable changes to BB-Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Improved
+
+- npm install now prefers compressed `.gz` GitHub release assets when available, falling back to the legacy uncompressed binaries for older releases
+- release builds now strip debug info before publishing, substantially reducing native binary download size for npm installs and updates
+
 ## [0.0.15] - 2026-04-12
 
 ### Fixed

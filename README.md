@@ -17,7 +17,7 @@ npm install -g @shuyhere/bb-agent
 npm install downloads a small wrapper package first, then fetches the matching native BB-Agent binary from the GitHub release for your platform.
 
 What to expect:
-- first install can take a bit because npm downloads and verifies the native binary
+- first install can take a bit because npm downloads a compressed native binary, expands it locally, and verifies it
 - the installer now prints progress and retry information while downloading
 - after install, run `bb`
 

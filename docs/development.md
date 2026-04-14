@@ -305,7 +305,8 @@ git push origin master --tags
 # 5. Build release binary
 cargo build --release
 
-# 6. Upload binary to GitHub release
+# 6. Upload stripped/compressed binaries to the GitHub release
+# (the release workflow also does this automatically for tagged pushes)
 gh release create v0.x.x target/release/bb --title "v0.x.x"
 
 # 7. Update package.json version, publish to npm
