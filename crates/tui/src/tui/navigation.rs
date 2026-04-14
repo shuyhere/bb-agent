@@ -77,7 +77,7 @@ impl TuiState {
 
     pub(super) fn focusable_blocks(&self) -> Vec<BlockId> {
         self.projection
-            .rows
+            .rows()
             .iter()
             .filter(|row| self.focus_row_for_block(row.block_id) == Some(row.index))
             .filter(|row| {

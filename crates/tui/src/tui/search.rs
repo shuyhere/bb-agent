@@ -55,7 +55,7 @@ impl TuiState {
             return;
         }
 
-        let blocks: Vec<_> = self.projection.rows.iter().map(|row| row.block_id).fold(
+        let blocks: Vec<_> = self.projection.rows().iter().map(|row| row.block_id).fold(
             Vec::new(),
             |mut blocks, block_id| {
                 if !blocks.contains(&block_id) {

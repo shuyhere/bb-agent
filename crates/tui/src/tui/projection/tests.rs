@@ -18,7 +18,7 @@ fn projects_collapsed_children_out_of_view() {
 
     let mut projector = TranscriptProjector::new();
     let projection = projector.project(&mut transcript, 40, &std::collections::HashSet::new());
-    assert_eq!(projection.total_rows, 1);
+    assert_eq!(projection.total_rows(), 1);
 }
 
 #[test]
@@ -46,12 +46,12 @@ fn reuses_cached_rows_for_clean_blocks() {
     let updated = projector.project(&mut transcript, 40, &std::collections::HashSet::new());
 
     assert_eq!(
-        &updated.rows[initial_first.all_rows.clone()],
-        &initial.rows[initial_first.all_rows]
+        &updated.rows()[initial_first.all_rows.clone()],
+        &initial.rows()[initial_first.all_rows]
     );
     assert_ne!(
-        &updated.rows[initial_second.all_rows.clone()],
-        &initial.rows[initial_second.all_rows]
+        &updated.rows()[initial_second.all_rows.clone()],
+        &initial.rows()[initial_second.all_rows]
     );
 }
 
@@ -67,7 +67,7 @@ fn width_change_rewraps_existing_cached_blocks() {
     let wide = projector.project(&mut transcript, 40, &std::collections::HashSet::new());
     let narrow = projector.project(&mut transcript, 18, &std::collections::HashSet::new());
 
-    assert!(narrow.total_rows > wide.total_rows);
+    assert!(narrow.total_rows() > wide.total_rows());
 }
 
 #[test]
@@ -97,21 +97,21 @@ fn projection_uses_uniform_spacers_instead_of_inner_padding() {
     let projection = projector.project(&mut transcript, 80, &std::collections::HashSet::new());
 
     let user_span = projection.rows_for_block(user).expect("user span");
-    let user_rows = &projection.rows[user_span.content_rows.clone()];
+    let user_rows = &projection.rows()[user_span.content_rows.clone()];
     assert!(user_span.header_rows.is_empty());
     assert_eq!(user_rows.len(), 1);
     assert!(user_rows[0].text.contains("hello"));
     assert_eq!(
-        projection.rows[user_span.all_rows.end].kind,
+        projection.rows()[user_span.all_rows.end].kind,
         ProjectedRowKind::Spacer
     );
 
     let tool_span = projection.rows_for_block(tool).expect("tool span");
     assert_eq!(tool_span.header_rows.len(), 1);
-    let tool_header = &projection.rows[tool_span.header_rows.start];
+    let tool_header = &projection.rows()[tool_span.header_rows.start];
     assert!(tool_header.text.contains("bash"));
     assert!(!tool_header.text.contains("tool bash"));
-    let tool_rows = &projection.rows[tool_span.content_rows.clone()];
+    let tool_rows = &projection.rows()[tool_span.content_rows.clone()];
     assert!(
         !tool_rows
             .first()
@@ -129,7 +129,7 @@ fn projection_uses_uniform_spacers_instead_of_inner_padding() {
     let projection = projector.project(&mut transcript, 80, &std::collections::HashSet::new());
     let result_span = projection.rows_for_block(result).expect("result span");
     assert!(result_span.header_rows.is_empty());
-    let result_rows = &projection.rows[result_span.content_rows.clone()];
+    let result_rows = &projection.rows()[result_span.content_rows.clone()];
     assert_eq!(result_rows.len(), 1);
     assert!(result_rows[0].text.contains("done"));
 }
@@ -152,14 +152,14 @@ fn collapsed_compaction_shows_compact_context_preview_and_expand_hint() {
         .rows_for_block(compaction)
         .expect("compaction span");
 
-    let header_rows = &projection.rows[span.header_rows.clone()];
+    let header_rows = &projection.rows()[span.header_rows.clone()];
     assert!(
         header_rows
             .iter()
             .any(|row| row.text.contains("[Compact Context]"))
     );
 
-    let content_rows = &projection.rows[span.content_rows.clone()];
+    let content_rows = &projection.rows()[span.content_rows.clone()];
     let content_text = content_rows
         .iter()
         .map(|row| row.text.as_str())
@@ -203,11 +203,14 @@ fn projection_inserts_spacer_after_nested_group_when_returning_to_parent_level()
     let note_span = projection.rows_for_block(note).expect("note span");
 
     assert_eq!(
-        projection.rows[result_span.all_rows.end].kind,
+        projection.rows()[result_span.all_rows.end].kind,
         ProjectedRowKind::Spacer
     );
-    assert_eq!(projection.rows[result_span.all_rows.end + 1].block_id, note);
-    assert_eq!(projection.rows[note_span.all_rows.start].block_id, note);
+    assert_eq!(
+        projection.rows()[result_span.all_rows.end + 1].block_id,
+        note
+    );
+    assert_eq!(projection.rows()[note_span.all_rows.start].block_id, note);
 }
 
 #[test]
@@ -222,7 +225,7 @@ fn assistant_blocks_use_markdown_renderer() {
     let span = projection
         .rows_for_block(assistant)
         .expect("assistant span");
-    let rows = &projection.rows[span.content_rows.clone()];
+    let rows = &projection.rows()[span.content_rows.clone()];
 
     assert!(rows.iter().any(|row| row.text.contains("\x1b[")));
     assert!(
@@ -240,7 +243,7 @@ fn user_slash_commands_remain_visible_in_content_rows() {
     let mut projector = TranscriptProjector::new();
     let projection = projector.project(&mut transcript, 80, &std::collections::HashSet::new());
     let span = projection.rows_for_block(user).expect("user span");
-    let rows = &projection.rows[span.content_rows.clone()];
+    let rows = &projection.rows()[span.content_rows.clone()];
 
     assert!(rows.iter().any(|row| row.text.contains("/help")));
 }
@@ -259,7 +262,7 @@ fn assistant_table_rows_remain_separate_in_projection() {
     let span = projection
         .rows_for_block(assistant)
         .expect("assistant span");
-    let rows = &projection.rows[span.content_rows.clone()];
+    let rows = &projection.rows()[span.content_rows.clone()];
 
     assert!(rows.iter().any(|row| {
         let plain = crate::utils::strip_ansi(&row.text);
@@ -318,10 +321,10 @@ fn projection_keeps_consecutive_same_type_tools_visible() {
     let tool_span2 = projection.rows_for_block(read2).expect("read2 span");
     let result_span1 = projection.rows_for_block(result1).expect("result1 span");
     let result_span2 = projection.rows_for_block(result2).expect("result2 span");
-    let header1 = &projection.rows[tool_span1.header_rows.start];
-    let header2 = &projection.rows[tool_span2.header_rows.start];
-    let rows1 = &projection.rows[result_span1.content_rows.clone()];
-    let rows2 = &projection.rows[result_span2.content_rows.clone()];
+    let header1 = &projection.rows()[tool_span1.header_rows.start];
+    let header2 = &projection.rows()[tool_span2.header_rows.start];
+    let rows1 = &projection.rows()[result_span1.content_rows.clone()];
+    let rows2 = &projection.rows()[result_span2.content_rows.clone()];
 
     assert!(header1.text.contains("Read(/tmp/a.txt)"));
     assert!(header2.text.contains("Read(/tmp/b.txt)"));
