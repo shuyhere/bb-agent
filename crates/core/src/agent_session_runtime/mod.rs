@@ -12,6 +12,6 @@ pub use host::{AgentSessionRuntimeHandle, AgentSessionRuntimeHost, create_agent_
 pub use runtime::AgentSessionRuntime;
 pub use session_tree::SessionTreeState;
 pub use types::{
-    AgentSessionRuntimeBootstrap, CreateAgentSessionRuntimeOptions, RuntimeEntrySource,
-    RuntimeModelRef,
+    AbortedMessageBehavior, AgentSessionRuntimeBootstrap, CompactionCheckOptions,
+    CreateAgentSessionRuntimeOptions, RuntimeEntrySource, RuntimeModelRef,
 };

@@ -88,17 +88,24 @@ impl AgentSessionRuntime {
         self.compaction_state.abort_requested = true;
     }
 
+    /// Evaluates whether the current assistant message should trigger an automatic compaction.
+    ///
+    /// By default aborted assistant messages are ignored because they do not represent a stable
+    /// provider-side context reading. Tests and future recovery flows can opt into considering
+    /// aborted messages explicitly through `CompactionCheckOptions`.
     pub fn check_compaction(
         &mut self,
         assistant_message: &AssistantMessage,
         settings: &CompactionSettings,
-        skip_aborted_check: bool,
+        options: CompactionCheckOptions,
     ) -> CompactionAction {
         if !settings.enabled {
             return CompactionAction::None;
         }
 
-        if skip_aborted_check && assistant_message.stop_reason == AssistantStopReason::Aborted {
+        if options.should_ignore_aborted_message()
+            && assistant_message.stop_reason == AssistantStopReason::Aborted
+        {
             return CompactionAction::None;
         }
 

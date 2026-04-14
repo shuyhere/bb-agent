@@ -332,6 +332,25 @@ pub enum CompactionAction {
     OverflowRecoveryFailed { message: String },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AbortedMessageBehavior {
+    #[default]
+    Ignore,
+    Consider,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CompactionCheckOptions {
+    pub aborted_message_behavior: AbortedMessageBehavior,
+}
+
+impl CompactionCheckOptions {
+    pub fn should_ignore_aborted_message(self) -> bool {
+        matches!(self.aborted_message_behavior, AbortedMessageBehavior::Ignore)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RetryAction {
     None,
