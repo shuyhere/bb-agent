@@ -26,6 +26,7 @@ mod command_results;
 mod discovery;
 mod packages;
 mod plugin_runtime;
+mod runtime_support;
 mod ui;
 
 const EXTENSION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -36,9 +37,10 @@ use command_results::{
     parse_command_activate_agent_result, parse_command_dispatch_result, parse_command_invocation,
     parse_command_menu_result, parse_command_prompt_result, render_command_result,
 };
+use discovery::discover_runtime_resources;
 #[cfg(test)]
 use discovery::{discover_package_resources, filter_matches, normalize_path, parse_frontmatter};
-use discovery::{discover_runtime_resources, resolve_input_path};
+use packages::resolve_package_directories;
 #[cfg(test)]
 use packages::{
     PackageSource, classify_package_source, npm_package_name, package_install_root,
@@ -48,28 +50,10 @@ pub(crate) use packages::{
     SettingsScope, auto_install_missing_packages, install_package, list_packages, remove_package,
     update_packages,
 };
-use packages::{is_package_source, resolve_package_directories};
-use plugin_runtime::build_plugin_runtime;
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ExtensionBootstrap {
-    pub paths: Vec<PathBuf>,
-    pub package_sources: Vec<String>,
-}
-
-impl ExtensionBootstrap {
-    pub(crate) fn from_cli_values(cwd: &Path, values: &[String]) -> Self {
-        let mut bootstrap = Self::default();
-        for value in values {
-            if is_package_source(value) {
-                bootstrap.package_sources.push(value.clone());
-            } else {
-                bootstrap.paths.push(resolve_input_path(cwd, value));
-            }
-        }
-        bootstrap
-    }
-}
+pub(crate) use runtime_support::{
+    ExtensionBootstrap, RuntimeExtensionSupport, build_skill_system_prompt_section,
+    load_runtime_extension_support, load_runtime_extension_support_with_ui,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InputHookOutcome {
@@ -274,93 +258,6 @@ impl ExtensionCommandRegistry {
             output,
         })
     }
-}
-
-#[derive(Default)]
-pub(crate) struct RuntimeExtensionSupport {
-    pub session_resources: SessionResourceBootstrap,
-    pub tools: Vec<Box<dyn Tool>>,
-    pub commands: ExtensionCommandRegistry,
-}
-
-pub(crate) fn build_skill_system_prompt_section(resources: &SessionResourceBootstrap) -> String {
-    let mut sections = Vec::new();
-
-    if !resources.skills.is_empty() {
-        let mut skill_lines = Vec::new();
-        skill_lines.push("<available_skills>".to_string());
-        for skill in &resources.skills {
-            skill_lines.push("  <skill>".to_string());
-            skill_lines.push(format!("    <name>{}</name>", skill.info.name));
-            skill_lines.push(format!(
-                "    <description>{}</description>",
-                skill.info.description
-            ));
-            skill_lines.push(format!(
-                "    <location>{}</location>",
-                skill.info.source_info.path
-            ));
-            skill_lines.push("  </skill>".to_string());
-        }
-        skill_lines.push("</available_skills>".to_string());
-        sections.push(skill_lines.join("\n"));
-    }
-
-    if !resources.prompts.is_empty() {
-        let prompt_list: Vec<String> = resources
-            .prompts
-            .iter()
-            .map(|prompt| format!("- /{}: {}", prompt.info.name, prompt.info.description))
-            .collect();
-        sections.push(format!(
-            "Available prompt templates (invoke with /name):\n{}",
-            prompt_list.join("\n")
-        ));
-    }
-
-    if sections.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n{}", sections.join("\n\n"))
-    }
-}
-
-pub(crate) async fn load_runtime_extension_support(
-    cwd: &Path,
-    settings: &Settings,
-    bootstrap: &ExtensionBootstrap,
-) -> Result<RuntimeExtensionSupport> {
-    load_runtime_extension_support_with_ui(cwd, settings, bootstrap, false).await
-}
-
-pub(crate) async fn load_runtime_extension_support_with_ui(
-    cwd: &Path,
-    settings: &Settings,
-    bootstrap: &ExtensionBootstrap,
-    has_ui: bool,
-) -> Result<RuntimeExtensionSupport> {
-    let package_dirs = resolve_package_directories(cwd, settings, bootstrap)?;
-    let discovered = discover_runtime_resources(cwd, settings, bootstrap, &package_dirs)?;
-
-    let mut session_resources = SessionResourceBootstrap {
-        skills: if settings.enable_skill_commands {
-            discovered.skills
-        } else {
-            Vec::new()
-        },
-        prompts: discovered.prompts,
-        ..SessionResourceBootstrap::default()
-    };
-
-    let (tools, commands, extensions) =
-        build_plugin_runtime(cwd, has_ui, &discovered.extension_files).await?;
-    session_resources.extensions = extensions;
-
-    Ok(RuntimeExtensionSupport {
-        session_resources,
-        tools,
-        commands,
-    })
 }
 
 fn build_labels_map(entries: &[Value]) -> BTreeMap<String, String> {
