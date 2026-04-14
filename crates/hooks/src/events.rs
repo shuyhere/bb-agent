@@ -1,8 +1,12 @@
-use bb_core::types::AgentMessage;
+use bb_core::types::{AgentMessage, ContentBlock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// All hook event types.
+/// Hook events emitted by BB-Agent.
+///
+/// The variants in this enum are the stable entry points extensions can subscribe to.
+/// Payload-bearing variants use dedicated structs so event-specific data can evolve
+/// behind accessor methods instead of exposing every field directly.
 #[derive(Clone, Debug)]
 pub enum Event {
     SessionStart,
@@ -37,6 +41,8 @@ pub enum Event {
 }
 
 impl Event {
+    /// Return the wire-level event type string exposed to extensions.
+    #[must_use]
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::SessionStart => "session_start",
@@ -58,44 +64,216 @@ impl Event {
     }
 }
 
+/// Compaction preparation details.
+///
+/// `first_kept_entry_id` identifies the first session entry that will remain after
+/// compaction. `tokens_before` captures the estimated context size immediately before
+/// the compaction starts.
 #[derive(Clone, Debug)]
 pub struct CompactPrep {
-    pub first_kept_entry_id: String,
-    pub tokens_before: u64,
+    first_kept_entry_id: String,
+    tokens_before: u64,
 }
 
+impl CompactPrep {
+    #[must_use]
+    pub fn new(first_kept_entry_id: impl Into<String>, tokens_before: u64) -> Self {
+        Self {
+            first_kept_entry_id: first_kept_entry_id.into(),
+            tokens_before,
+        }
+    }
+
+    #[must_use]
+    pub fn first_kept_entry_id(&self) -> &str {
+        &self.first_kept_entry_id
+    }
+
+    #[must_use]
+    pub fn tokens_before(&self) -> u64 {
+        self.tokens_before
+    }
+}
+
+/// Tree-switch preparation details.
 #[derive(Clone, Debug)]
 pub struct TreePrep {
-    pub target_id: String,
-    pub old_leaf_id: Option<String>,
+    target_id: String,
+    old_leaf_id: Option<String>,
 }
 
+impl TreePrep {
+    #[must_use]
+    pub fn new(target_id: impl Into<String>, old_leaf_id: Option<String>) -> Self {
+        Self {
+            target_id: target_id.into(),
+            old_leaf_id,
+        }
+    }
+
+    #[must_use]
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    #[must_use]
+    pub fn old_leaf_id(&self) -> Option<&str> {
+        self.old_leaf_id.as_deref()
+    }
+}
+
+/// Tool-call event payload.
 #[derive(Clone, Debug)]
 pub struct ToolCallEvent {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub input: Value,
+    tool_call_id: String,
+    tool_name: String,
+    input: Value,
 }
 
+impl ToolCallEvent {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
+
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Value {
+        &self.input
+    }
+}
+
+/// Tool-result event payload.
 #[derive(Clone, Debug)]
 pub struct ToolResultEvent {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub input: Value,
-    pub content: Vec<bb_core::types::ContentBlock>,
-    pub details: Option<Value>,
-    pub is_error: bool,
+    tool_call_id: String,
+    tool_name: String,
+    input: Value,
+    content: Vec<ContentBlock>,
+    details: Option<Value>,
+    is_error: bool,
 }
 
+impl ToolResultEvent {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+        content: Vec<ContentBlock>,
+        details: Option<Value>,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+            content,
+            details,
+            is_error,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
+
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Value {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn content(&self) -> &[ContentBlock] {
+        &self.content
+    }
+
+    #[must_use]
+    pub fn details(&self) -> Option<&Value> {
+        self.details.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+}
+
+/// Conversation context snapshot sent to context hooks.
+///
+/// The payload contains the full message list BB-Agent is about to send into the
+/// provider pipeline. Extensions that replace `HookResult::messages` should preserve
+/// the order and JSON shape expected by `AgentMessage` deserialization.
 #[derive(Clone, Debug)]
 pub struct ContextEvent {
-    pub messages: Vec<AgentMessage>,
+    messages: Vec<AgentMessage>,
 }
 
+impl ContextEvent {
+    #[must_use]
+    pub fn new(messages: Vec<AgentMessage>) -> Self {
+        Self { messages }
+    }
+
+    #[must_use]
+    pub fn messages(&self) -> &[AgentMessage] {
+        &self.messages
+    }
+
+    #[must_use]
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+}
+
+/// User-input payload sent through input hooks.
 #[derive(Clone, Debug)]
 pub struct InputEvent {
-    pub text: String,
-    pub source: String,
+    text: String,
+    source: String,
+}
+
+impl InputEvent {
+    #[must_use]
+    pub fn new(text: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            source: source.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
 }
 
 /// Result returned by a hook handler.
@@ -140,4 +318,120 @@ pub struct HookResult {
     /// Generic payload for custom compaction/summary overrides
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
+}
+
+impl HookResult {
+    /// Returns `true` when the result does not request any change.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.block.is_none()
+            && self.reason.is_none()
+            && self.cancel.is_none()
+            && self.messages.is_none()
+            && self.system_prompt.is_none()
+            && self.message.is_none()
+            && self.content.is_none()
+            && self.details.is_none()
+            && self.is_error.is_none()
+            && self.input.is_none()
+            && self.action.is_none()
+            && self.text.is_none()
+            && self.payload.is_none()
+    }
+
+    /// Merge a newer hook result into this one.
+    ///
+    /// For each field, the last non-`None` value wins.
+    pub fn merge_from(&mut self, newer: HookResult) {
+        if newer.block.is_some() {
+            self.block = newer.block;
+        }
+        if newer.reason.is_some() {
+            self.reason = newer.reason;
+        }
+        if newer.cancel.is_some() {
+            self.cancel = newer.cancel;
+        }
+        if newer.messages.is_some() {
+            self.messages = newer.messages;
+        }
+        if newer.system_prompt.is_some() {
+            self.system_prompt = newer.system_prompt;
+        }
+        if newer.message.is_some() {
+            self.message = newer.message;
+        }
+        if newer.content.is_some() {
+            self.content = newer.content;
+        }
+        if newer.details.is_some() {
+            self.details = newer.details;
+        }
+        if newer.is_error.is_some() {
+            self.is_error = newer.is_error;
+        }
+        if newer.input.is_some() {
+            self.input = newer.input;
+        }
+        if newer.action.is_some() {
+            self.action = newer.action;
+        }
+        if newer.text.is_some() {
+            self.text = newer.text;
+        }
+        if newer.payload.is_some() {
+            self.payload = newer.payload;
+        }
+    }
+
+    /// Returns `true` when dispatch should stop after this result.
+    #[must_use]
+    pub fn stops_dispatch(&self) -> bool {
+        self.block == Some(true) || self.cancel == Some(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn hook_result_merge_prefers_last_non_none_values() {
+        let mut merged = HookResult {
+            action: Some("handled".into()),
+            text: Some("before".into()),
+            ..Default::default()
+        };
+
+        merged.merge_from(HookResult {
+            text: Some("after".into()),
+            payload: Some(json!({"ok": true})),
+            ..Default::default()
+        });
+
+        assert_eq!(merged.action.as_deref(), Some("handled"));
+        assert_eq!(merged.text.as_deref(), Some("after"));
+        assert_eq!(merged.payload, Some(json!({"ok": true})));
+    }
+
+    #[test]
+    fn payload_accessors_preserve_values() {
+        let tool_call = ToolCallEvent::new("call-1", "bash", json!({"command": "pwd"}));
+        assert_eq!(tool_call.tool_call_id(), "call-1");
+        assert_eq!(tool_call.tool_name(), "bash");
+        assert_eq!(tool_call.input(), &json!({"command": "pwd"}));
+
+        let input = InputEvent::new("hello", "tui");
+        assert_eq!(input.text(), "hello");
+        assert_eq!(input.source(), "tui");
+
+        let compact = CompactPrep::new("entry-1", 42);
+        assert_eq!(compact.first_kept_entry_id(), "entry-1");
+        assert_eq!(compact.tokens_before(), 42);
+
+        let tree = TreePrep::new("leaf-2", Some("leaf-1".into()));
+        assert_eq!(tree.target_id(), "leaf-2");
+        assert_eq!(tree.old_leaf_id(), Some("leaf-1"));
+    }
 }

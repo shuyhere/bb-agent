@@ -49,7 +49,8 @@ impl PluginHost {
             Ok(Ok(Some(result))) => match serde_json::from_value::<bb_hooks::HookResult>(result) {
                 Ok(hr) => {
                     if matches!(event, bb_hooks::Event::ToolCall(tool_call)
-                        if hr.block.is_none()
+                        if hr.input.as_ref() == Some(tool_call.input())
+                            && hr.block.is_none()
                             && hr.cancel.is_none()
                             && hr.reason.is_none()
                             && hr.messages.is_none()
@@ -60,30 +61,12 @@ impl PluginHost {
                             && hr.is_error.is_none()
                             && hr.action.is_none()
                             && hr.text.is_none()
-                            && hr.payload.is_none()
-                            && hr.input.as_ref() == Some(&tool_call.input))
+                            && hr.payload.is_none())
                     {
                         return None;
                     }
 
-                    if hr.block.is_some()
-                        || hr.cancel.is_some()
-                        || hr.reason.is_some()
-                        || hr.messages.is_some()
-                        || hr.system_prompt.is_some()
-                        || hr.message.is_some()
-                        || hr.content.is_some()
-                        || hr.details.is_some()
-                        || hr.is_error.is_some()
-                        || hr.input.is_some()
-                        || hr.action.is_some()
-                        || hr.text.is_some()
-                        || hr.payload.is_some()
-                    {
-                        Some(hr)
-                    } else {
-                        None
-                    }
+                    if hr.is_empty() { None } else { Some(hr) }
                 }
                 Err(_) => None,
             },

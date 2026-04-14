@@ -240,10 +240,9 @@ impl ExtensionCommandRegistry {
         source: &str,
     ) -> Result<InputHookOutcome> {
         let Some(result) = self
-            .send_event(&bb_hooks::Event::Input(bb_hooks::events::InputEvent {
-                text: text.to_string(),
-                source: source.to_string(),
-            }))
+            .send_event(&bb_hooks::Event::Input(bb_hooks::events::InputEvent::new(
+                text, source,
+            )))
             .await
         else {
             return Ok(InputHookOutcome {
