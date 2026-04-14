@@ -154,7 +154,7 @@ pub fn provider_has_auth(provider: &str) -> bool {
 
 pub fn authenticated_providers() -> Vec<String> {
     let mut out = Vec::new();
-    for provider in KNOWN_PROVIDERS.iter().map(|(name, _, _)| *name) {
+    for provider in known_providers().iter().map(|(name, _, _)| *name) {
         if !provider_has_auth(provider) {
             continue;
         }
