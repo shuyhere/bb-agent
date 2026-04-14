@@ -1,4 +1,4 @@
-use super::{runtime, simple_cost, text_model};
+use super::{ReasoningCapability, runtime, simple_cost, text_model};
 use crate::registry::{ApiType, Model};
 
 pub(super) fn builtin_models() -> Vec<Model> {
