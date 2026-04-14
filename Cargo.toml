@@ -50,3 +50,6 @@ bb-provider = { version = "0.0.15", path = "crates/provider" }
 bb-hooks = { version = "0.0.15", path = "crates/hooks" }
 bb-plugin-host = { version = "0.0.15", path = "crates/plugin-host" }
 bb-tui = { version = "0.0.15", path = "crates/tui" }
+
+[profile.release]
+strip = "debuginfo"

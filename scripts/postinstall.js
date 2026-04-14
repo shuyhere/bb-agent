@@ -8,6 +8,7 @@ const path = require("path");
 const os = require("os");
 const https = require("https");
 const http = require("http");
+const zlib = require("zlib");
 
 const packageJson = require("../package.json");
 const BINARY_RELEASE_TAG = `v${packageJson.version}`;
@@ -49,6 +50,20 @@ function getTarget() {
 
 function assetNameForTarget(target) {
   return isWindows() ? `bb-${target}.exe` : `bb-${target}`;
+}
+
+function assetCandidatesForTarget(target) {
+  const assetName = assetNameForTarget(target);
+  return [
+    {
+      assetName: `${assetName}.gz`,
+      compressed: true,
+    },
+    {
+      assetName,
+      compressed: false,
+    },
+  ];
 }
 
 function logLine(message = "") {
@@ -387,9 +402,16 @@ function verifyBinary(binaryPath) {
   return { ok: true, version };
 }
 
+function expandCompressedBinary(src, dest) {
+  logLine("Decompressing downloaded BB-Agent binary...");
+  ensureParentDir(dest);
+  const expanded = zlib.gunzipSync(fs.readFileSync(src));
+  fs.writeFileSync(dest, expanded);
+  removeIfExists(src);
+}
+
 async function tryDownloadPrebuilt(target) {
-  const assetName = assetNameForTarget(target);
-  const url = `https://github.com/${REPO}/releases/download/${BINARY_RELEASE_TAG}/${assetName}`;
+  const assetCandidates = assetCandidatesForTarget(target);
 
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
   const dest = nativeBinaryPath();
@@ -412,37 +434,67 @@ async function tryDownloadPrebuilt(target) {
         `Downloading BB-Agent ${BINARY_RELEASE_TAG} for ${target} (attempt ${attempt}/${MAX_DOWNLOAD_ATTEMPTS})...`
       );
       logLine("This may take a little while on first install because npm downloads the native binary from the GitHub release.");
-      removeIfExists(tmpDest);
-      await requestBinary(url, tmpDest, 0);
-      if (!isWindows()) {
-        fs.chmodSync(tmpDest, 0o755);
-      }
 
-      const verified = verifyBinary(tmpDest);
-      if (!verified.ok) {
+      let missingCompressedAsset = false;
+      for (const asset of assetCandidates) {
+        const url = `https://github.com/${REPO}/releases/download/${BINARY_RELEASE_TAG}/${asset.assetName}`;
+        const downloadDest = asset.compressed ? `${tmpDest}.gz` : tmpDest;
+
         removeIfExists(tmpDest);
-        return {
-          ok: false,
-          kind: "verify",
-          message: `Downloaded binary could not run: ${verified.message}`,
-        };
-      }
+        removeIfExists(`${tmpDest}.gz`);
 
-      fs.renameSync(tmpDest, dest);
-      refreshCacheFromExistingBinary(target, dest);
-      logLine("Cached verified BB-Agent binary for future installs.");
-      logLine("✓ BB-Agent binary installed successfully.");
-      return { ok: true, source: "download" };
+        try {
+          if (asset.compressed) {
+            logLine(`Trying compressed release asset ${asset.assetName} first for a faster download.`);
+          }
+          await requestBinary(url, downloadDest, 0);
+          if (asset.compressed) {
+            expandCompressedBinary(downloadDest, tmpDest);
+          }
+          if (!isWindows()) {
+            fs.chmodSync(tmpDest, 0o755);
+          }
+
+          const verified = verifyBinary(tmpDest);
+          if (!verified.ok) {
+            removeIfExists(tmpDest);
+            return {
+              ok: false,
+              kind: "verify",
+              message: `Downloaded binary could not run: ${verified.message}`,
+            };
+          }
+
+          fs.renameSync(tmpDest, dest);
+          refreshCacheFromExistingBinary(target, dest);
+          logLine("Cached verified BB-Agent binary for future installs.");
+          logLine("✓ BB-Agent binary installed successfully.");
+          return { ok: true, source: "download" };
+        } catch (err) {
+          lastError = err;
+          removeIfExists(tmpDest);
+          removeIfExists(`${tmpDest}.gz`);
+          if (err.kind === "not-found") {
+            if (asset.compressed) {
+              missingCompressedAsset = true;
+              logLine(`Compressed asset ${asset.assetName} not found; falling back to the uncompressed release binary.`);
+              continue;
+            }
+            return {
+              ok: false,
+              kind: "not-found",
+              message: missingCompressedAsset
+                ? `No release asset named ${asset.assetName} or ${assetCandidates[0].assetName} was found for ${BINARY_RELEASE_TAG}.`
+                : `No release asset named ${asset.assetName} was found for ${BINARY_RELEASE_TAG}.`,
+            };
+          }
+          throw err;
+        }
+      }
     } catch (err) {
       lastError = err;
       removeIfExists(tmpDest);
-      if (err.kind === "not-found") {
-        return {
-          ok: false,
-          kind: "not-found",
-          message: `No release asset named ${assetName} was found for ${BINARY_RELEASE_TAG}.`,
-        };
-      }
+      removeIfExists(`${tmpDest}.gz`);
       if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
         logLine(`Download failed (${err.message}). Retrying...`);
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));

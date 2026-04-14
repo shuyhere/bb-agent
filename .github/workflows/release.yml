@@ -68,12 +68,17 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
+      - name: Prepare release assets
         shell: bash
-        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
+          gzip -9 -c "${{ matrix.asset }}" > "${{ matrix.asset }}.gz"
+          ls -lh "${{ matrix.asset }}" "${{ matrix.asset }}.gz"
 
       - name: Upload to release
         shell: bash
-        run: gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}.gz" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
