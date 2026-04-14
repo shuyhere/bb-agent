@@ -17,7 +17,7 @@ impl PluginHost {
         };
 
         let is_fire_and_forget = matches!(
-            request.method.as_str(),
+            request.method(),
             "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text"
         );
 
@@ -38,9 +38,9 @@ impl PluginHost {
         }
 
         if is_fire_and_forget {
-            debug!("Handled fire-and-forget UI request: {}", request.method);
+            debug!("Handled fire-and-forget UI request: {}", request.method());
         } else {
-            debug!("Handled dialog UI request: {}", request.method);
+            debug!("Handled dialog UI request: {}", request.method());
         }
     }
 }

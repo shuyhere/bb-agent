@@ -238,7 +238,7 @@ impl PluginHost {
                     if let Some(params) = msg.get("params")
                         && let Ok(tool) = serde_json::from_value::<RegisteredTool>(params.clone())
                     {
-                        info!("Plugin registered tool (late): {}", tool.name);
+                        info!("Plugin registered tool (late): {}", tool.name());
                         self.registered_tools.push(tool);
                     }
                 }
@@ -246,7 +246,7 @@ impl PluginHost {
                     if let Some(params) = msg.get("params")
                         && let Ok(cmd) = serde_json::from_value::<RegisteredCommand>(params.clone())
                     {
-                        info!("Plugin registered command (late): {}", cmd.name);
+                        info!("Plugin registered command (late): {}", cmd.name());
                         self.registered_commands.push(cmd);
                     }
                 }

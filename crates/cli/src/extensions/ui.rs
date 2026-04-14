@@ -14,15 +14,15 @@ impl UiHandler for PrintUiHandler {
         request: UiRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = UiResponse> + Send + '_>> {
         Box::pin(async move {
-            match request.method.as_str() {
+            match request.method() {
                 "notify" => {
                     let msg = request
-                        .params
+                        .params()
                         .get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let kind = request
-                        .params
+                        .params()
                         .get("notifyType")
                         .and_then(|v| v.as_str())
                         .unwrap_or("info");
@@ -92,16 +92,16 @@ impl UiHandler for ExtensionUiHandler {
         let notifications = self.notifications.clone();
         let statuses = self.statuses.clone();
         Box::pin(async move {
-            match request.method.as_str() {
+            match request.method() {
                 "notify" => {
                     let msg = request
-                        .params
+                        .params()
                         .get("message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let kind = request
-                        .params
+                        .params()
                         .get("notifyType")
                         .and_then(|v| v.as_str())
                         .unwrap_or("info")
@@ -113,13 +113,13 @@ impl UiHandler for ExtensionUiHandler {
                 }
                 "setStatus" => {
                     let key = request
-                        .params
+                        .params()
                         .get("statusKey")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let text = request
-                        .params
+                        .params()
                         .get("statusText")
                         .and_then(|v| v.as_str())
                         .map(ToString::to_string);
@@ -130,7 +130,7 @@ impl UiHandler for ExtensionUiHandler {
                     // Fall back to the default canned response behavior.
                 }
                 "setWidget" | "setTitle" | "set_editor_text" => {
-                    tracing::debug!("Extension UI event: {}", request.method);
+                    tracing::debug!("Extension UI event: {}", request.method());
                 }
                 _ => {}
             }

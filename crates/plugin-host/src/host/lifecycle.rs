@@ -104,13 +104,13 @@ impl PluginHost {
             match method {
                 "tool_registered" => {
                     if let Ok(tool) = serde_json::from_value::<RegisteredTool>(params) {
-                        info!("Plugin registered tool: {}", tool.name);
+                        info!("Plugin registered tool: {}", tool.name());
                         self.registered_tools.push(tool);
                     }
                 }
                 "command_registered" => {
                     if let Ok(cmd) = serde_json::from_value::<RegisteredCommand>(params) {
-                        info!("Plugin registered command: {}", cmd.name);
+                        info!("Plugin registered command: {}", cmd.name());
                         self.registered_commands.push(cmd);
                     }
                 }
