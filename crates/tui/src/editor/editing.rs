@@ -111,8 +111,8 @@ impl Editor {
     pub(super) fn kill_to_start(&mut self, continuation: KillContinuation) {
         let line = &self.state.lines[self.state.cursor_line];
         let killed = line[..self.state.cursor_col].to_string();
-        self.record_kill(&killed, continuation, KillDirection::Backward);
         let rest = line[self.state.cursor_col..].to_string();
+        self.record_kill(&killed, continuation, KillDirection::Backward);
         self.state.lines[self.state.cursor_line] = rest;
         self.state.cursor_col = 0;
     }
@@ -133,9 +133,8 @@ impl Editor {
         }
         let new_col: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
         let killed = line[new_col..self.state.cursor_col].to_string();
+        let new_line = format!("{}{}", &line[..new_col], &line[self.state.cursor_col..]);
         self.record_kill(&killed, continuation, KillDirection::Backward);
-        let rest = &line[self.state.cursor_col..];
-        let new_line = format!("{}{}", &line[..new_col], rest);
         self.state.lines[self.state.cursor_line] = new_line;
         self.state.cursor_col = new_col;
     }
