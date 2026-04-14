@@ -26,6 +26,20 @@ pub enum AgentSessionRuntimeError {
     NoModelForSummarization,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEntrySource {
+    #[default]
+    Runtime,
+    Extension,
+}
+
+impl RuntimeEntrySource {
+    pub fn is_extension(self) -> bool {
+        matches!(self, Self::Extension)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RuntimeEvent {
     CompactionStart {
@@ -53,7 +67,7 @@ pub enum RuntimeEvent {
         new_leaf_id: Option<String>,
         old_leaf_id: Option<String>,
         summary_entry_id: Option<String>,
-        from_extension: Option<bool>,
+        summary_source: Option<RuntimeEntrySource>,
     },
 }
 
@@ -211,11 +225,31 @@ pub struct StoredCompactionEntry {
     pub from_extension: bool,
 }
 
+impl StoredCompactionEntry {
+    pub fn source(&self) -> RuntimeEntrySource {
+        if self.from_extension {
+            RuntimeEntrySource::Extension
+        } else {
+            RuntimeEntrySource::Runtime
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BranchSummaryEntry {
     pub summary: String,
     pub details: Option<Value>,
     pub from_extension: bool,
+}
+
+impl BranchSummaryEntry {
+    pub fn source(&self) -> RuntimeEntrySource {
+        if self.from_extension {
+            RuntimeEntrySource::Extension
+        } else {
+            RuntimeEntrySource::Runtime
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
