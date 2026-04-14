@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use bb_core::types::ContentBlock;
 
 use crate::ui_hints::{
-    image_placeholder, NO_TEXT_OUTPUT, TOOL_COLLAPSE_HINT, TOOL_EXPAND_HINT,
-    TOOL_FAILED_NO_TEXT_OUTPUT,
+    NO_TEXT_OUTPUT, TOOL_COLLAPSE_HINT, TOOL_EXPAND_HINT, TOOL_FAILED_NO_TEXT_OUTPUT,
+    image_placeholder,
 };
 
 use super::{
@@ -62,6 +62,7 @@ pub(super) struct ToolCallState {
 }
 
 const TOOL_TIMER_TICK_MS: u64 = 80;
+const LOCAL_ACTION_MIN_ELAPSED_MS: u64 = 100;
 const LIVE_TOOL_OUTPUT_MAX_BYTES: usize = 16 * 1024;
 const LIVE_BASH_PREVIEW_VISUAL_LINES: usize = 5;
 
@@ -375,11 +376,13 @@ impl TuiState {
         if base.is_empty() {
             return None;
         }
-        let elapsed = self
-            .local_action_elapsed_ms()
-            .map(format_elapsed_ms)
-            .unwrap_or_else(|| "0.0s".to_string());
-        Some(format!("{base} • {elapsed}"))
+        let Some(elapsed_ms) = self.local_action_elapsed_ms() else {
+            return Some(base.to_string());
+        };
+        if elapsed_ms < LOCAL_ACTION_MIN_ELAPSED_MS {
+            return Some(base.to_string());
+        }
+        Some(format!("{base} • {}", format_elapsed_ms(elapsed_ms)))
     }
 
     fn active_turn_elapsed_ms(&self) -> Option<u64> {

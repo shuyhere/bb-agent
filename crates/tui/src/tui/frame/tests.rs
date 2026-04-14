@@ -33,7 +33,7 @@ fn active_turn_status_uses_elapsed_progress_instead_of_static_status_line() {
 }
 
 #[test]
-fn local_action_status_uses_animated_spinner_with_elapsed_time() {
+fn local_action_status_hides_zero_ms_then_shows_elapsed_time() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),
         Size {
@@ -46,9 +46,14 @@ fn local_action_status_uses_animated_spinner_with_elapsed_time() {
         "Compacting session... (Esc to cancel)".to_string(),
     ));
 
+    state.local_action_started_at = None;
+    state.local_action_started_tick = Some(state.tick_count);
+
     let first = render_status(&state, 80);
     let plain_first = crate::utils::strip_ansi(&first);
-    assert!(plain_first.contains("Compacting session... (Esc to cancel) • "));
+    assert!(plain_first.contains("Compacting session... (Esc to cancel)"));
+    assert!(!plain_first.contains("0ms"));
+    assert!(!plain_first.contains("0.0s"));
     assert!(first.contains("\x1b[38;2;"));
 
     for _ in 0..3 {
@@ -57,6 +62,51 @@ fn local_action_status_uses_animated_spinner_with_elapsed_time() {
     let later = render_status(&state, 80);
     let plain_later = crate::utils::strip_ansi(&later);
     assert!(plain_later.contains("Compacting session... (Esc to cancel) • "));
+}
+
+#[test]
+fn local_action_status_does_not_show_zero_ms_for_fast_resume() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 120,
+            height: 20,
+        },
+    );
+    let _ = state.apply_command(TuiCommand::SetLocalActionActive(true));
+    let _ = state.apply_command(TuiCommand::SetStatusLine("Resuming session...".to_string()));
+    state.local_action_started_at = None;
+    state.local_action_started_tick = Some(state.tick_count);
+
+    let rendered = render_status(&state, 120);
+    let plain = crate::utils::strip_ansi(&rendered);
+    assert!(plain.contains("Resuming session..."));
+    assert!(!plain.contains("0ms"));
+    assert!(!plain.contains("0.0s"));
+}
+
+#[test]
+fn local_action_status_includes_queued_preview_without_hiding_compaction() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 200,
+            height: 20,
+        },
+    );
+    let _ = state.apply_command(TuiCommand::SetLocalActionActive(true));
+    let _ = state.apply_command(TuiCommand::SetStatusLine(
+        "Compacting session... • 1 queued".to_string(),
+    ));
+    state
+        .queued_submission_previews
+        .push_back("hello there from queue".to_string());
+
+    let rendered = render_status(&state, 200);
+    let plain = crate::utils::strip_ansi(&rendered);
+    assert!(plain.contains("Compacting session... • 1 queued • "));
+    assert!(plain.contains("Steering: hello there from queue"));
+    assert!(plain.contains("Alt/Option+↑ edit queued"));
 }
 
 #[test]
@@ -248,7 +298,10 @@ fn transcript_blank_line_rhythm_matches_user_tool_text_flow() {
     let summary_idx = lines
         .iter()
         .position(|line| {
-            line.contains(&format!("Ran 1 command ({})", crate::ui_hints::TOOL_EXPAND_HINT))
+            line.contains(&format!(
+                "Ran 1 command ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            ))
         })
         .expect("summary line");
     let text_idx = lines
@@ -505,7 +558,8 @@ fn bash_tool_call_body_renders_as_raw_fenced_lines_without_tool_prefixes() {
     });
     let _ = state.apply_command(TuiCommand::ToolCallDelta {
         id: "tool-1".into(),
-        args: serde_json::json!({"command":"./native/bb-dev --help\necho \"bash is working\""}).to_string(),
+        args: serde_json::json!({"command":"./native/bb-dev --help\necho \"bash is working\""})
+            .to_string(),
     });
     let _ = state.apply_command(TuiCommand::ToolExecuting {
         id: "tool-1".into(),
