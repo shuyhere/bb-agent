@@ -7,7 +7,7 @@ use bb_tui::tui::{TuiCommand, TuiFooterData};
 
 use crate::session_info::{collect_session_info_summary, permission_posture_badge};
 
-use super::{TuiController, PendingImage, QueuedPrompt};
+use super::{PendingImage, QueuedPrompt, TuiController};
 use crate::tui::{format_tokens, shorten_home_path};
 
 fn cleanup_managed_clipboard_temp_image(path: &Path) {
@@ -200,10 +200,10 @@ impl TuiController {
             .as_ref()
             .and_then(|rows| rows.last())
             .is_some_and(|row| row.entry_type == "compaction");
-        let runtime_usage = if self.manual_compaction_in_progress
+        let suppress_runtime_usage = self.manual_compaction_in_progress
             || self.auto_compaction_in_progress
-            || latest_entry_is_compaction
-        {
+            || latest_entry_is_compaction;
+        let runtime_usage = if suppress_runtime_usage {
             None
         } else {
             self.runtime_host.runtime().get_context_usage()
@@ -218,32 +218,24 @@ impl TuiController {
                 .compaction
                 .enabled;
         let auto_suffix = compaction_auto_suffix(compaction_enabled);
+        let active_path_tokens = if suppress_runtime_usage {
+            None
+        } else {
+            active_path
+                .as_deref()
+                .and_then(estimate_active_path_context_tokens)
+        };
 
-        if let Some(usage) = runtime_usage {
-            if let Some(tokens) = usage.tokens {
-                return format_context_from_tokens(tokens as u64, context_window, auto_suffix);
-            }
-            if let Some(percent) = usage.percent {
-                return format_context_percent(percent as f64, context_window, auto_suffix);
-            }
-            return format_unknown_context(context_window, auto_suffix);
-        }
-
-        if self.manual_compaction_in_progress
-            || self.auto_compaction_in_progress
-            || latest_entry_is_compaction
-        {
-            return format_unknown_context(context_window, auto_suffix);
-        }
-
-        if let Some(tokens) = active_path
-            .as_deref()
-            .and_then(estimate_active_path_context_tokens)
-        {
-            return format_context_from_tokens(tokens, context_window, auto_suffix);
-        }
-
-        format_unknown_context(context_window, auto_suffix)
+        resolve_context_footer_text(
+            runtime_usage
+                .as_ref()
+                .map(|usage| (usage.tokens.map(|tokens| tokens as u64), usage.percent)),
+            active_path.as_deref(),
+            active_path_tokens,
+            context_window,
+            auto_suffix,
+            suppress_runtime_usage,
+        )
     }
 
     fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
@@ -384,6 +376,65 @@ fn format_unknown_context(context_window: u64, auto_suffix: &str) -> String {
     format!("?/{}{}", format_tokens(context_window), auto_suffix)
 }
 
+fn resolve_context_footer_text(
+    runtime_usage: Option<(Option<u64>, Option<u8>)>,
+    active_path: Option<&[bb_session::store::EntryRow]>,
+    active_path_tokens: Option<u64>,
+    context_window: u64,
+    auto_suffix: &str,
+    suppress_runtime_usage: bool,
+) -> String {
+    if suppress_runtime_usage {
+        return format_unknown_context(context_window, auto_suffix);
+    }
+
+    let has_contextful_active_path = active_path.is_some_and(active_path_has_contextful_entries);
+
+    if let Some((runtime_tokens_opt, runtime_percent_opt)) = runtime_usage {
+        if let Some(runtime_tokens) = runtime_tokens_opt {
+            if runtime_tokens == 0 {
+                if let Some(estimated_tokens) = active_path_tokens.filter(|tokens| *tokens > 0) {
+                    return format_context_from_tokens(
+                        estimated_tokens,
+                        context_window,
+                        auto_suffix,
+                    );
+                }
+                if has_contextful_active_path && active_path_tokens.is_none() {
+                    return format_unknown_context(context_window, auto_suffix);
+                }
+            }
+            return format_context_from_tokens(runtime_tokens, context_window, auto_suffix);
+        }
+        if let Some(percent) = runtime_percent_opt {
+            if percent == 0 {
+                if let Some(estimated_tokens) = active_path_tokens.filter(|tokens| *tokens > 0) {
+                    return format_context_from_tokens(
+                        estimated_tokens,
+                        context_window,
+                        auto_suffix,
+                    );
+                }
+                if has_contextful_active_path && active_path_tokens.is_none() {
+                    return format_unknown_context(context_window, auto_suffix);
+                }
+            }
+            return format_context_percent(percent as f64, context_window, auto_suffix);
+        }
+        return format_unknown_context(context_window, auto_suffix);
+    }
+
+    if let Some(tokens) = active_path_tokens {
+        return format_context_from_tokens(tokens, context_window, auto_suffix);
+    }
+
+    format_unknown_context(context_window, auto_suffix)
+}
+
+fn active_path_has_contextful_entries(path: &[bb_session::store::EntryRow]) -> bool {
+    path.iter().any(|row| row.entry_type == "message")
+}
+
 // Keep footer context reporting aligned with compaction/runtime estimation.
 // In particular, do not reuse stale pre-compaction assistant usage after the
 // latest compaction boundary; treat context usage as unknown until a fresh
@@ -424,7 +475,7 @@ mod tests {
     use super::{
         QueuedPrompt, build_status_line, compaction_auto_suffix,
         estimate_active_path_context_tokens, format_context_from_tokens, format_context_percent,
-        format_unknown_context, permission_posture_badge,
+        format_unknown_context, permission_posture_badge, resolve_context_footer_text,
     };
     use bb_core::types::{
         AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
@@ -516,6 +567,116 @@ mod tests {
         );
         assert_eq!(format_context_percent(0.0, 272_000, ""), "0.0%/272k");
         assert_eq!(format_unknown_context(272_000, " (auto)"), "?/272k (auto)");
+    }
+
+    #[test]
+    fn footer_prefers_active_path_estimate_over_zero_runtime_usage() {
+        let conn = store::open_memory().expect("memory db");
+        let session_id = store::create_session(&conn, "/tmp").expect("session");
+        let assistant = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: None,
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::Assistant(AssistantMessage {
+                content: vec![AssistantContent::Text {
+                    text: "tiny text".to_string(),
+                }],
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+                usage: Usage {
+                    total_tokens: 120_000,
+                    ..Default::default()
+                },
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
+
+        let path = tree::active_path(&conn, &session_id).expect("active path");
+        let text = resolve_context_footer_text(
+            Some((Some(0), Some(0))),
+            Some(&path),
+            estimate_active_path_context_tokens(&path),
+            272_000,
+            " (auto)",
+            false,
+        );
+
+        assert_eq!(text, "44.1%/272k (auto)");
+    }
+
+    #[test]
+    fn footer_shows_unknown_for_zero_runtime_usage_when_active_path_estimate_is_unavailable() {
+        let conn = store::open_memory().expect("memory db");
+        let session_id = store::create_session(&conn, "/tmp").expect("session");
+
+        let assistant = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: None,
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::Assistant(AssistantMessage {
+                content: vec![AssistantContent::Text {
+                    text: "before compact".to_string(),
+                }],
+                provider: "openai".to_string(),
+                model: "gpt-5.4".to_string(),
+                usage: Usage {
+                    total_tokens: 240_000,
+                    ..Default::default()
+                },
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
+
+        let compaction = SessionEntry::Compaction {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: Some(assistant.base().id.clone()),
+                timestamp: Utc::now(),
+            },
+            summary: "summary".to_string(),
+            first_kept_entry_id: assistant.base().id.clone(),
+            tokens_before: 240_000,
+            details: None,
+            from_plugin: false,
+        };
+        store::append_entry(&conn, &session_id, &compaction).expect("append compaction");
+
+        let user = SessionEntry::Message {
+            base: EntryBase {
+                id: EntryId::generate(),
+                parent_id: Some(compaction.base().id.clone()),
+                timestamp: Utc::now(),
+            },
+            message: AgentMessage::User(bb_core::types::UserMessage {
+                content: vec![bb_core::types::ContentBlock::Text {
+                    text: "12345678".to_string(),
+                }],
+                timestamp: Utc::now().timestamp_millis(),
+            }),
+        };
+        store::append_entry(&conn, &session_id, &user).expect("append user");
+
+        let path = tree::active_path(&conn, &session_id).expect("active path");
+        let text = resolve_context_footer_text(
+            Some((Some(0), Some(0))),
+            Some(&path),
+            estimate_active_path_context_tokens(&path),
+            272_000,
+            " (auto)",
+            false,
+        );
+
+        assert_eq!(text, "?/272k (auto)");
     }
 
     #[test]

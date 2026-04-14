@@ -155,8 +155,7 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     };
     store::append_entry(&conn, &session_id, &tool_result_entry).expect("append result");
 
-    let (transcript, tool_states) =
-        build_tui_transcript(&conn, &session_id).expect("transcript");
+    let (transcript, tool_states) = build_tui_transcript(&conn, &session_id).expect("transcript");
     let assistant_root = *transcript
         .root_blocks()
         .iter()
@@ -169,7 +168,9 @@ fn rebuild_transcript_uses_shared_collapsed_tool_formatting() {
     let tool_use_id = transcript.block(assistant_root).unwrap().children[0];
     let tool_use = transcript.block(tool_use_id).unwrap();
     assert_eq!(tool_use.title, "Bash(echo one timeout=5s)");
-    assert!(tool_use.content.is_empty());
+    assert!(tool_use.content.starts_with("```bash\n"));
+    assert!(tool_use.content.contains("echo one"));
+    assert!(!tool_use.content.contains("\"command\""));
 
     let tool_result_id = tool_use.children[0];
     let tool_result = transcript.block(tool_result_id).unwrap();
