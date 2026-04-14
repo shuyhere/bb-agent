@@ -10,6 +10,8 @@ use super::command_results::{
     parse_command_activate_agent_result, parse_command_dispatch_result, parse_command_invocation,
     parse_command_menu_result, parse_command_prompt_result, render_command_result,
 };
+use super::plugin_runtime::{build_plugin_runtime, map_tool_result};
+use super::ui::ExtensionUiHandler;
 use super::*;
 
 fn node_available() -> bool {
@@ -168,6 +170,57 @@ fn command_outcome_into_text_formats_non_tui_fallbacks() {
     .into_text()
     .unwrap();
     assert_eq!(dispatch_text, "Queued\nRun build");
+}
+
+#[test]
+fn plugin_tool_result_mapping_preserves_blocks_and_flags() {
+    let mapped = map_tool_result(serde_json::json!({
+        "content": [
+            { "type": "text", "text": "hello" },
+            { "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" }
+        ],
+        "details": { "exitCode": 0 },
+        "is_error": true
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        mapped.content.first(),
+        Some(bb_core::types::ContentBlock::Text { text }) if text == "hello"
+    ));
+    assert!(matches!(
+        mapped.content.get(1),
+        Some(bb_core::types::ContentBlock::Image { mime_type, .. }) if mime_type == "image/png"
+    ));
+    assert_eq!(mapped.details, Some(serde_json::json!({ "exitCode": 0 })));
+    assert!(mapped.is_error);
+    assert_eq!(mapped.artifact_path, None);
+}
+
+#[test]
+fn plugin_tool_result_mapping_falls_back_to_pretty_json_when_needed() {
+    let mapped = map_tool_result(serde_json::json!({
+        "details": { "status": "ok" },
+        "unexpected": true
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        mapped.content.first(),
+        Some(bb_core::types::ContentBlock::Text { text }) if text.contains("\"unexpected\": true")
+    ));
+}
+
+#[tokio::test]
+async fn empty_plugin_runtime_returns_defaults() {
+    let cwd = tempdir().unwrap();
+    let (tools, commands, extensions) = build_plugin_runtime(cwd.path(), false, &[]).await.unwrap();
+
+    assert!(tools.is_empty());
+    assert!(!commands.is_registered("/anything"));
+    assert!(extensions.extensions.is_empty());
+    assert!(extensions.registered_commands.is_empty());
+    assert!(extensions.registered_tools.is_empty());
 }
 
 #[test]
