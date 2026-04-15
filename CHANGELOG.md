@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-15
+
+### Added
+
+- added `bb setup browser`, including platform-specific guidance and optional shell-profile persistence for configuring `BB_BROWSER`
+- added a dedicated release-notes draft for `v0.0.16` under `docs/release-notes-0.0.16.md`
+
+### Changed
+
+- user-facing terminology now consistently uses **TUI** instead of legacy `fullscreen` wording, including CLI/help/docs text and internal module/type naming
+- markdown code blocks and bash tool previews in the TUI now render as raw fenced blocks for easier copying and pasting
+- tool availability, advertised schemas, transcript validation, and tool execution now follow a shared architecture with a single CLI `ToolRegistry`, centralized provider transcript repair, explicit tool lifecycle phases, lifecycle hook events, and mutation-aware scheduling for real tool execution
+- release builds and npm installs now prefer stripped/compressed native binaries, reducing download size and improving install/update behavior
+
+### Fixed
+
+- `browser_fetch` now gives actionable missing-browser diagnostics and setup guidance instead of failing opaquely when no local browser is installed
+- TUI footer context usage no longer gets stuck at misleading values like `0.0%/272k (auto)` after resume/rebuild/fork paths
+- queued prompt previews no longer hide compaction/local-action status, and fast local actions no longer flash meaningless `0ms` / `0.0s` timing
+- failed or interrupted tool calls no longer wedge later prompts with provider-side `No tool output found ...` errors; transcript repair and lifecycle finalization now guarantee a valid follow-up turn state
+- join-timeout warnings no longer make an active TUI turn look finished before the runner actually completes
+- clean `bb-cli` builds no longer emit dead-code warnings from the new tool registry surface, and secret-bearing auth/token structs now redact sensitive fields in debug output instead of exposing raw credentials
+
 ### Improved
 
+- ongoing Rust audit cleanup significantly reduced boolean-heavy APIs, overexposed state, and hotspot modules across `bb-cli`, `bb-core`, `bb-tools`, `bb-session`, `bb-tui`, `bb-provider`, `bb-plugin-host`, and `bb-hooks`, with expanded focused regression coverage throughout
 - npm install now prefers compressed `.gz` GitHub release assets when available, falling back to the legacy uncompressed binaries for older releases
 - release builds now strip debug info before publishing, substantially reducing native binary download size for npm installs and updates
 
@@ -150,6 +174,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.16]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.16
+[0.0.15]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.15
 [0.0.14]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.14
 [0.0.13]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.13
 [0.0.12]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.12
