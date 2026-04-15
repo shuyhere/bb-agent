@@ -9,6 +9,7 @@ members = [
     "crates/plugin-host",
     "crates/tui",
     "crates/cli",
+    "crates/bb-monitor",
 ]
 
 [workspace.package]
@@ -50,6 +51,7 @@ bb-provider = { version = "0.0.16", path = "crates/provider" }
 bb-hooks = { version = "0.0.16", path = "crates/hooks" }
 bb-plugin-host = { version = "0.0.16", path = "crates/plugin-host" }
 bb-tui = { version = "0.0.16", path = "crates/tui" }
+bb-monitor = { version = "0.0.16", path = "crates/bb-monitor" }
 
 [profile.release]
 strip = "debuginfo"

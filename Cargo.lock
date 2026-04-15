@@ -174,6 +174,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bb-monitor"
+version = "0.0.16"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "bb-plugin-host"
 version = "0.0.16"
 dependencies = [
