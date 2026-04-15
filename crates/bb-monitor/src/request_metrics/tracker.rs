@@ -428,12 +428,88 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheMetricsSource, PreparedRequestMetrics, RequestMetricsIdentity, RequestMetricsSnapshot,
-        RequestMetricsState, RequestMetricsTiming, RequestMetricsTracker, RequestMutationFlags,
-        ResponseUsage, build_final_request_metrics, hydrate_request_metrics_state,
-        prepare_request_metrics, resolve_cache_usage,
+        CacheMetricsSource, PreparedRequestMetrics, RequestCacheMetrics, RequestMetricsIdentity,
+        RequestMetricsSnapshot, RequestMetricsState, RequestMetricsTiming, RequestMetricsTracker,
+        RequestMutationFlags, ResponseUsage, build_final_request_metrics,
+        hydrate_request_metrics_state, prepare_request_metrics, resolve_cache_usage,
     };
     use bb_core::types::{AgentMessage, ContentBlock, UserMessage};
+    use serde_json::json;
+
+    fn parity_test_snapshot(
+        provider_messages: Vec<serde_json::Value>,
+        tool_definitions: Vec<serde_json::Value>,
+    ) -> RequestMetricsSnapshot {
+        RequestMetricsSnapshot {
+            system_prompt: "system prompt with stable cacheable instructions".to_string(),
+            provider_messages,
+            tool_definitions,
+            extra_tool_definitions: vec![],
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: Some(512),
+            stream: true,
+            thinking: None,
+        }
+    }
+
+    fn response_usage_with_source(
+        prompt_token_total: u64,
+        cache_read_tokens: u64,
+        output_tokens: u64,
+        cache_metrics_source: CacheMetricsSource,
+    ) -> ResponseUsage {
+        ResponseUsage {
+            input_tokens: prompt_token_total.saturating_sub(cache_read_tokens),
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens: 0,
+            cache_metrics_source,
+        }
+    }
+
+    fn assert_estimate_close_to_official(
+        estimated: &RequestCacheMetrics,
+        official: &RequestCacheMetrics,
+        max_token_delta: u64,
+        max_rate_delta_pct: f64,
+    ) {
+        assert_eq!(estimated.prompt_token_total, official.prompt_token_total);
+        assert_eq!(estimated.output_tokens, official.output_tokens);
+        assert_eq!(estimated.cache_write_tokens, 0);
+        assert_eq!(official.cache_write_tokens, 0);
+
+        let token_delta = estimated
+            .cache_read_tokens
+            .abs_diff(official.cache_read_tokens);
+        assert!(
+            token_delta <= max_token_delta,
+            "cache read token delta {token_delta} exceeded tolerance {max_token_delta} (estimated={}, official={})",
+            estimated.cache_read_tokens,
+            official.cache_read_tokens,
+        );
+
+        let estimated_hit_rate = estimated
+            .cache_read_hit_rate_pct
+            .expect("estimated hit rate");
+        let official_hit_rate = official.cache_read_hit_rate_pct.expect("official hit rate");
+        let hit_rate_delta = (estimated_hit_rate - official_hit_rate).abs();
+        assert!(
+            hit_rate_delta <= max_rate_delta_pct,
+            "cache hit rate delta {hit_rate_delta:.3} exceeded tolerance {max_rate_delta_pct:.3} (estimated={estimated_hit_rate:.3}, official={official_hit_rate:.3})",
+        );
+
+        let estimated_util = estimated
+            .cache_effective_utilization_pct
+            .expect("estimated utilization");
+        let official_util = official
+            .cache_effective_utilization_pct
+            .expect("official utilization");
+        let util_delta = (estimated_util - official_util).abs();
+        assert!(
+            util_delta <= max_rate_delta_pct,
+            "cache utilization delta {util_delta:.3} exceeded tolerance {max_rate_delta_pct:.3} (estimated={estimated_util:.3}, official={official_util:.3})",
+        );
+    }
 
     #[test]
     fn resolve_cache_usage_prefers_provider_values_for_official_metrics() {
@@ -610,6 +686,199 @@ mod tests {
             Some(prepared.cacheable_prompt_bytes)
         );
         assert!(prepared.reused_prefix_bytes_estimate.unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn estimated_metrics_stay_close_to_official_for_repeated_identical_request() {
+        let session_messages = vec![AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "summarize the cache warmup plan".to_string(),
+            }],
+            timestamp: 0,
+        })];
+        let snapshot = parity_test_snapshot(
+            bb_core::agent_session::messages_to_provider(&session_messages),
+            vec![],
+        );
+        let mut state = RequestMetricsState::default();
+        hydrate_request_metrics_state(&mut state, &snapshot).expect("seed state");
+
+        let prepared =
+            prepare_request_metrics(&state, &snapshot).expect("prepare repeated request");
+        let estimated_read = prepared
+            .reused_prefix_tokens_estimate
+            .expect("estimated reused prefix tokens");
+        assert!(estimated_read > 0);
+
+        let official_read = estimated_read.saturating_sub(4);
+        let prompt_token_total = estimated_read + 120;
+        let official_usage = resolve_cache_usage(
+            &prepared,
+            &response_usage_with_source(
+                prompt_token_total,
+                official_read,
+                24,
+                CacheMetricsSource::Official,
+            ),
+        );
+        let estimated_usage = resolve_cache_usage(
+            &prepared,
+            &response_usage_with_source(
+                prompt_token_total,
+                official_read,
+                24,
+                CacheMetricsSource::Estimated,
+            ),
+        );
+
+        let identity = RequestMetricsIdentity {
+            session_id: "session".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            turn_index: 2,
+        };
+        let timing = RequestMetricsTiming {
+            request_started_at_ms: 0,
+            first_stream_event_at_ms: Some(10),
+            first_text_delta_at_ms: Some(20),
+            finished_at_ms: 40,
+            total_latency_ms: 40,
+            tool_wait_ms: 0,
+            resume_latency_ms: None,
+        };
+        let official_metrics = build_final_request_metrics(
+            prepared.clone(),
+            &identity,
+            &RequestMutationFlags::default(),
+            &timing,
+            &official_usage,
+        );
+        let estimated_metrics = build_final_request_metrics(
+            prepared,
+            &identity,
+            &RequestMutationFlags::default(),
+            &timing,
+            &estimated_usage,
+        );
+
+        assert_eq!(
+            official_metrics.cache_metrics_source,
+            CacheMetricsSource::Official
+        );
+        assert_eq!(
+            estimated_metrics.cache_metrics_source,
+            CacheMetricsSource::Estimated
+        );
+        assert_eq!(official_metrics.estimated_cache_read_tokens, None);
+        assert_eq!(
+            estimated_metrics.provider_cache_read_tokens,
+            Some(official_read)
+        );
+        assert_eq!(
+            estimated_metrics.estimated_cache_read_tokens,
+            Some(estimated_read)
+        );
+        assert_estimate_close_to_official(&estimated_metrics, &official_metrics, 4, 2.5);
+    }
+
+    #[test]
+    fn estimated_metrics_stay_close_to_official_with_tools_and_history() {
+        let snapshot = parity_test_snapshot(
+            vec![
+                json!({"role": "user", "content": "fetch repo data"}),
+                json!({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_fetch",
+                            "arguments": "{\"url\":\"https://example.com\"}"
+                        }
+                    }]
+                }),
+                json!({
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "{\"ok\":true,\"stars\":42}"
+                }),
+                json!({"role": "user", "content": "now explain the result concisely"}),
+            ],
+            vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "web_fetch",
+                    "description": "Fetch a URL",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"url": {"type": "string"}},
+                        "required": ["url"]
+                    }
+                }
+            })],
+        );
+        let mut state = RequestMetricsState::default();
+        hydrate_request_metrics_state(&mut state, &snapshot).expect("seed state");
+
+        let prepared =
+            prepare_request_metrics(&state, &snapshot).expect("prepare repeated request");
+        let estimated_read = prepared
+            .reused_prefix_tokens_estimate
+            .expect("estimated reused prefix tokens");
+        assert!(estimated_read > 0);
+
+        let official_read = estimated_read.saturating_sub(8);
+        let prompt_token_total = estimated_read + 180;
+        let official_usage = resolve_cache_usage(
+            &prepared,
+            &response_usage_with_source(
+                prompt_token_total,
+                official_read,
+                31,
+                CacheMetricsSource::Official,
+            ),
+        );
+        let estimated_usage = resolve_cache_usage(
+            &prepared,
+            &response_usage_with_source(
+                prompt_token_total,
+                official_read,
+                31,
+                CacheMetricsSource::Estimated,
+            ),
+        );
+
+        let identity = RequestMetricsIdentity {
+            session_id: "session".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            turn_index: 3,
+        };
+        let timing = RequestMetricsTiming {
+            request_started_at_ms: 0,
+            first_stream_event_at_ms: Some(12),
+            first_text_delta_at_ms: Some(22),
+            finished_at_ms: 48,
+            total_latency_ms: 48,
+            tool_wait_ms: 0,
+            resume_latency_ms: None,
+        };
+        let official_metrics = build_final_request_metrics(
+            prepared.clone(),
+            &identity,
+            &RequestMutationFlags::default(),
+            &timing,
+            &official_usage,
+        );
+        let estimated_metrics = build_final_request_metrics(
+            prepared,
+            &identity,
+            &RequestMutationFlags::default(),
+            &timing,
+            &estimated_usage,
+        );
+
+        assert_estimate_close_to_official(&estimated_metrics, &official_metrics, 8, 2.5);
     }
 
     #[test]

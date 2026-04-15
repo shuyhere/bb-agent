@@ -1,5 +1,8 @@
 use anyhow::Result;
-use bb_monitor::{SessionMetricsSummary, format_u64_with_commas};
+use bb_monitor::{
+    SessionCacheMetricsSource, SessionMetricsSummary, format_u64_with_commas,
+    render_cache_metrics_source,
+};
 use bb_session::store;
 use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
@@ -31,6 +34,9 @@ pub(crate) struct SessionInfoSummary {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    pub cache_metrics_source: Option<SessionCacheMetricsSource>,
+    pub cache_read_hit_rate_pct: Option<f64>,
+    pub cache_effective_utilization_pct: Option<f64>,
     pub total_tokens: u64,
     pub total_cost: f64,
 }
@@ -91,6 +97,9 @@ pub(crate) fn collect_session_info_summary(
     summary.output_tokens = metrics.usage.output_tokens;
     summary.cache_read_tokens = metrics.usage.cache_read_tokens;
     summary.cache_write_tokens = metrics.usage.cache_write_tokens;
+    summary.cache_read_hit_rate_pct = metrics.cache_read_hit_rate_pct();
+    summary.cache_effective_utilization_pct = metrics.cache_effective_utilization_pct();
+    summary.cache_metrics_source = metrics.cache_metrics_source.clone();
     summary.total_tokens = metrics.usage.effective_total_tokens();
     summary.total_cost = metrics.usage.total_cost;
 
@@ -178,6 +187,18 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
             format_u64_with_commas(summary.cache_write_tokens)
         ));
     }
+    if let Some(read_hit_rate) = summary.cache_read_hit_rate_pct {
+        out.push_str(&format!("Cache Read Hit Rate: {:.2}%\n", read_hit_rate));
+    }
+    if let Some(utilization) = summary.cache_effective_utilization_pct {
+        out.push_str(&format!("Cache Utilization: {:.2}%\n", utilization));
+    }
+    if let Some(source) = &summary.cache_metrics_source {
+        out.push_str(&format!(
+            "Cache Metrics Source: {}\n",
+            render_cache_metrics_source(source)
+        ));
+    }
     out.push_str(&format!(
         "Total: {}\n",
         format_u64_with_commas(summary.total_tokens)
@@ -215,8 +236,8 @@ fn format_timestamp(timestamp_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionInfoSummary, collect_session_info_summary, permission_posture_badge,
-        render_session_info_text,
+        SessionCacheMetricsSource, SessionInfoSummary, collect_session_info_summary,
+        permission_posture_badge, render_session_info_text,
     };
     use bb_core::types::{
         AgentMessage, AssistantMessage, Cost, EntryBase, EntryId, SessionEntry, StopReason, Usage,
@@ -297,5 +318,16 @@ mod tests {
             permission_posture_badge(ExecutionPolicy::Safety),
             "mode safety/project-only"
         );
+    }
+
+    #[test]
+    fn session_summary_renders_cache_metrics_source() {
+        let summary = SessionInfoSummary {
+            cache_metrics_source: Some(SessionCacheMetricsSource::Estimated),
+            ..SessionInfoSummary::default()
+        };
+
+        let rendered = render_session_info_text(&summary);
+        assert!(rendered.contains("Cache Metrics Source: estimated"));
     }
 }

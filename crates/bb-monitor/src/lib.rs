@@ -29,5 +29,8 @@ pub use request_metrics::{
     hydrate_request_metrics_state, prepare_request_metrics, resolve_cache_usage,
     write_request_metrics_jsonl,
 };
-pub use session::{SessionMetricsSummary, collect_session_metrics};
+pub use session::{
+    SessionCacheMetricsSource, SessionMetricsSummary, collect_session_metrics,
+    render_cache_metrics_source,
+};
 pub use usage::{ContextWindowStatus, UsageTotals};
