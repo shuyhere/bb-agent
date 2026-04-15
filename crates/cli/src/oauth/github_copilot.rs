@@ -19,7 +19,7 @@ struct DeviceCodeResponse {
     interval: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AccessTokenResponse {
     access_token: Option<String>,
     refresh_token: Option<String>,
@@ -36,7 +36,7 @@ struct UserInfoResponse {
     login: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CopilotTokenEnvelope {
     token: String,
     expires_at: i64,
@@ -62,7 +62,7 @@ pub(crate) struct CopilotEndpoints {
     proxy: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct CopilotRuntimeSession {
     pub(crate) login: Option<String>,
     pub(crate) copilot_token: String,
@@ -73,6 +73,57 @@ pub(crate) struct CopilotRuntimeSession {
     pub(crate) organization_list: Vec<String>,
     pub(crate) enterprise_list: Vec<String>,
     pub(crate) sku: Option<String>,
+}
+
+impl std::fmt::Debug for AccessTokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessTokenResponse")
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("refresh_token_expires_in", &self.refresh_token_expires_in)
+            .field("scope", &self.scope)
+            .field("token_type", &self.token_type)
+            .field("error", &self.error)
+            .field("error_description", &self.error_description)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CopilotTokenEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CopilotTokenEnvelope")
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("refresh_in", &self.refresh_in)
+            .field("organization_list", &self.organization_list)
+            .field("enterprise_list", &self.enterprise_list)
+            .field("sku", &self.sku)
+            .field("endpoints", &self.endpoints)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CopilotRuntimeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CopilotRuntimeSession")
+            .field("login", &self.login)
+            .field("copilot_token", &"[REDACTED]")
+            .field("copilot_expires_at_ms", &self.copilot_expires_at_ms)
+            .field("api_base_url", &self.api_base_url)
+            .field("models", &self.models)
+            .field("raw_endpoints", &self.raw_endpoints)
+            .field("organization_list", &self.organization_list)
+            .field("enterprise_list", &self.enterprise_list)
+            .field("sku", &self.sku)
+            .finish()
+    }
 }
 
 pub(crate) async fn login_github_copilot(
@@ -554,8 +605,9 @@ pub(crate) fn github_copilot_runtime_headers() -> std::collections::HashMap<Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        API_VERSION, dotcom_api_url_for_authority, github_copilot_runtime_headers,
-        normalize_authority, server_url_for_authority,
+        API_VERSION, AccessTokenResponse, CopilotRuntimeSession, CopilotTokenEnvelope,
+        dotcom_api_url_for_authority, github_copilot_runtime_headers, normalize_authority,
+        server_url_for_authority,
     };
 
     #[test]
@@ -629,5 +681,51 @@ mod tests {
             headers.get("X-GitHub-Api-Version").map(String::as_str),
             Some(API_VERSION)
         );
+    }
+
+    #[test]
+    fn debug_output_redacts_github_and_copilot_tokens() {
+        let access = AccessTokenResponse {
+            access_token: Some("gh-access-secret".to_string()),
+            refresh_token: Some("gh-refresh-secret".to_string()),
+            expires_in: Some(60),
+            refresh_token_expires_in: Some(120),
+            scope: Some("repo".to_string()),
+            token_type: Some("bearer".to_string()),
+            error: None,
+            error_description: None,
+        };
+        let access_debug = format!("{access:?}");
+        assert!(access_debug.contains("[REDACTED]"));
+        assert!(!access_debug.contains("gh-access-secret"));
+        assert!(!access_debug.contains("gh-refresh-secret"));
+
+        let envelope = CopilotTokenEnvelope {
+            token: "copilot-envelope-secret".to_string(),
+            expires_at: 456,
+            refresh_in: 60,
+            organization_list: vec!["org".to_string()],
+            enterprise_list: vec!["ent".to_string()],
+            sku: Some("business".to_string()),
+            endpoints: None,
+        };
+        let envelope_debug = format!("{envelope:?}");
+        assert!(envelope_debug.contains("[REDACTED]"));
+        assert!(!envelope_debug.contains("copilot-envelope-secret"));
+
+        let runtime = CopilotRuntimeSession {
+            login: Some("octocat".to_string()),
+            copilot_token: "copilot-runtime-secret".to_string(),
+            copilot_expires_at_ms: 123,
+            api_base_url: "https://api.githubcopilot.com".to_string(),
+            models: vec!["gpt-4.1".to_string()],
+            raw_endpoints: None,
+            organization_list: vec!["org".to_string()],
+            enterprise_list: vec!["ent".to_string()],
+            sku: Some("business".to_string()),
+        };
+        let runtime_debug = format!("{runtime:?}");
+        assert!(runtime_debug.contains("[REDACTED]"));
+        assert!(!runtime_debug.contains("copilot-runtime-secret"));
     }
 }
