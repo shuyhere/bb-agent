@@ -17,8 +17,8 @@ pub use cache_metrics::{
 pub use context::{ContextResolutionInput, RuntimeContextUsage, resolve_context_window_status};
 pub use formatting::{
     format_compact_tokens, format_context_from_tokens, format_context_percent,
-    format_u64_with_commas, format_unknown_context, render_context_window_status,
-    render_footer_usage_text,
+    format_u64_with_commas, format_unknown_context, render_cache_monitor_text,
+    render_context_window_status, render_footer_usage_text,
 };
 pub use request_metrics::{
     PreparedRequestMetrics, RequestCacheMetrics, RequestMetricsIdentity, RequestMetricsSnapshot,
