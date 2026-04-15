@@ -44,6 +44,6 @@ pub mod events;
 pub use bus::{EventBus, SharedEventBus};
 pub use error::{HookError, Result};
 pub use events::{
-    CompactPrep, ContextEvent, Event, HookResult, InputEvent, ToolCallEvent, ToolResultEvent,
-    TreePrep,
+    CompactPrep, ContextEvent, Event, HookResult, InputEvent, ToolCallEvent, ToolExecutionEndEvent,
+    ToolExecutionStartEvent, ToolExecutionUpdateEvent, ToolResultEvent, TreePrep,
 };

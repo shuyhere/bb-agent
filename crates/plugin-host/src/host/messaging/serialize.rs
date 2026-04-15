@@ -13,6 +13,19 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
         Event::TurnEnd { turn_index } => {
             serde_json::json!({ "type": event_type, "turn_index": turn_index })
         }
+        Event::ToolExecutionStart(start) => serde_json::json!({
+            "type": event_type,
+            "tool_call_id": start.tool_call_id(),
+            "tool_name": start.tool_name(),
+            "input": start.input(),
+        }),
+        Event::ToolExecutionUpdate(update) => serde_json::json!({
+            "type": event_type,
+            "tool_call_id": update.tool_call_id(),
+            "tool_name": update.tool_name(),
+            "input": update.input(),
+            "partial_result": update.partial_result(),
+        }),
         Event::ToolCall(tc) => serde_json::json!({
             "type": event_type,
             "tool_call_id": tc.tool_call_id(),
@@ -27,6 +40,15 @@ pub(super) fn serialize_event(event: &bb_hooks::Event) -> serde_json::Value {
             "content": tr.content(),
             "details": tr.details(),
             "is_error": tr.is_error(),
+        }),
+        Event::ToolExecutionEnd(end) => serde_json::json!({
+            "type": event_type,
+            "tool_call_id": end.tool_call_id(),
+            "tool_name": end.tool_name(),
+            "input": end.input(),
+            "content": end.content(),
+            "details": end.details(),
+            "is_error": end.is_error(),
         }),
         Event::BeforeAgentStart {
             prompt,
@@ -95,5 +117,40 @@ mod tests {
         assert_eq!(json["type"], "tool_call");
         assert_eq!(json["tool_name"], "bash");
         assert_eq!(json["input"]["command"], "ls");
+    }
+
+    #[test]
+    fn test_serialize_event_tool_execution_update() {
+        let event = bb_hooks::Event::ToolExecutionUpdate(bb_hooks::ToolExecutionUpdateEvent::new(
+            "tc1",
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            serde_json::json!({
+                "details": {"schedulerState": "queued"}
+            }),
+        ));
+        let json = serialize_event(&event);
+        assert_eq!(json["type"], "tool_execution_update");
+        assert_eq!(json["tool_name"], "bash");
+        assert_eq!(
+            json["partial_result"]["details"]["schedulerState"],
+            "queued"
+        );
+    }
+
+    #[test]
+    fn test_serialize_event_tool_execution_end() {
+        let event = bb_hooks::Event::ToolExecutionEnd(bb_hooks::ToolExecutionEndEvent::new(
+            "tc1",
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            vec![bb_core::types::ContentBlock::Text { text: "ok".into() }],
+            Some(serde_json::json!({"durationMs": 1})),
+            false,
+        ));
+        let json = serialize_event(&event);
+        assert_eq!(json["type"], "tool_execution_end");
+        assert_eq!(json["tool_name"], "bash");
+        assert_eq!(json["details"]["durationMs"], 1);
     }
 }

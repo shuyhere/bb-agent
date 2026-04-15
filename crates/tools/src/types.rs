@@ -5,6 +5,19 @@ use serde_json::Value;
 use std::{collections::HashMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolScheduling {
+    ReadOnly,
+    MutatingPaths(Vec<PathBuf>),
+    MutatingUnknown,
+}
+
+impl ToolScheduling {
+    pub fn single_mutating_path(path: PathBuf) -> Self {
+        Self::MutatingPaths(vec![path])
+    }
+}
+
 /// Result from a tool execution.
 #[derive(Clone, Debug)]
 pub struct ToolResult {
@@ -122,6 +135,15 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
+
+    /// Classify whether this call is read-only or may mutate files.
+    ///
+    /// Mutating tools should override this to return either concrete file paths
+    /// for per-file serialization or `MutatingUnknown` when the touched files
+    /// cannot be determined up front.
+    fn scheduling(&self, _params: &Value, _ctx: &ToolContext) -> ToolScheduling {
+        ToolScheduling::ReadOnly
+    }
 
     async fn execute(
         &self,

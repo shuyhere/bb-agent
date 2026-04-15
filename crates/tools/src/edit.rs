@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Tool, ToolContext, ToolResult, diff,
+    Tool, ToolContext, ToolResult, ToolScheduling, diff,
     path::{ensure_write_allowed, resolve_path},
 };
 
@@ -53,6 +53,14 @@ impl Tool for EditTool {
             },
             "required": ["path", "edits"]
         })
+    }
+
+    fn scheduling(&self, params: &Value, ctx: &ToolContext) -> ToolScheduling {
+        params
+            .get("path")
+            .and_then(|value| value.as_str())
+            .map(|path| ToolScheduling::single_mutating_path(resolve_path(&ctx.cwd, path)))
+            .unwrap_or(ToolScheduling::MutatingUnknown)
     }
 
     async fn execute(

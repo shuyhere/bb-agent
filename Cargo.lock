@@ -235,6 +235,7 @@ dependencies = [
  "base64",
  "bb-core",
  "bb-provider",
+ "futures",
  "libc",
  "regex",
  "reqwest",

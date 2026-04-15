@@ -13,6 +13,7 @@ pub(crate) mod path;
 pub mod read;
 mod registry;
 pub(crate) mod sandbox;
+pub mod scheduler;
 pub(crate) mod support;
 pub(crate) mod text;
 mod types;
@@ -22,7 +23,12 @@ pub mod web_search;
 pub mod write;
 
 pub use registry::builtin_tools;
+pub use scheduler::{
+    FileQueue, FileQueueReservation, execute_reserved_tool_call, execute_tool_call,
+    execute_tool_calls,
+};
 pub use types::{
     ExecutionPolicy, RequestToolApprovalFn, Tool, ToolApprovalDecision, ToolApprovalOutcome,
-    ToolApprovalRequest, ToolContext, ToolExecutionMode, ToolResult, WebSearchRuntime,
+    ToolApprovalRequest, ToolContext, ToolExecutionMode, ToolResult, ToolScheduling,
+    WebSearchRuntime,
 };
