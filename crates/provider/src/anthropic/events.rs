@@ -1,3 +1,4 @@
+use bb_core::types::CacheMetricsSource;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -46,6 +47,7 @@ fn usage_info(usage: &Value) -> UsageInfo {
             .get("cache_creation_input_tokens")
             .and_then(|value| value.as_u64())
             .unwrap_or(0),
+        cache_metrics_source: CacheMetricsSource::Official,
     }
 }
 

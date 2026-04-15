@@ -11,9 +11,11 @@
 use crate::extensions::ExtensionCommandRegistry;
 use crate::tool_registry::ToolRegistry;
 use bb_core::types::ContentBlock;
+use bb_monitor::RequestMetricsTracker;
 use bb_provider::Provider;
 use bb_provider::registry::Model;
 use bb_tools::ToolContext;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +39,8 @@ pub(crate) struct TurnConfig {
     pub retry_max_delay_ms: u64,
     pub cancel: CancellationToken,
     pub extensions: ExtensionCommandRegistry,
+    pub request_metrics_tracker: Arc<Mutex<RequestMetricsTracker>>,
+    pub request_metrics_log_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]

@@ -209,6 +209,7 @@ impl OpenAiProvider {
                                 output_tokens: output,
                                 cache_read_tokens: cached,
                                 cache_write_tokens: 0,
+                                cache_metrics_source: bb_core::types::CacheMetricsSource::Official,
                             }));
                         }
                         let _ = tx.send(StreamEvent::Done);

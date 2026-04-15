@@ -1,5 +1,7 @@
 use super::*;
 
+use bb_core::types::CacheMetricsSource;
+
 use crate::UsageInfo;
 
 pub(super) fn process_openai_sse(
@@ -53,6 +55,7 @@ pub(super) fn process_openai_sse(
             output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
             cache_read_tokens: cached,
             cache_write_tokens: 0,
+            cache_metrics_source: CacheMetricsSource::Official,
         }));
     }
 }

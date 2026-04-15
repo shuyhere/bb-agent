@@ -4,7 +4,7 @@ mod session;
 
 pub use content::{AssistantContent, ContentBlock};
 pub use messages::{
-    AgentMessage, AssistantMessage, BashExecutionMessage, BranchSummaryMessage,
+    AgentMessage, AssistantMessage, BashExecutionMessage, BranchSummaryMessage, CacheMetricsSource,
     CompactionSummaryMessage, Cost, CustomMessage, StopReason, ToolResultMessage, Usage,
     UserMessage,
 };

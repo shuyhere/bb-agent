@@ -1,17 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-/// Provider-reported cache attribution quality.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CacheMetricsSource {
-    /// The provider did not expose enough cache information to classify the request.
-    #[default]
-    Unknown,
-    /// Cache read/write numbers came directly from provider usage events.
-    Official,
-    /// Cache read/write numbers were estimated from prompt-prefix reuse heuristics.
-    Estimated,
-}
+pub use bb_core::types::CacheMetricsSource;
 
 pub fn cache_read_hit_rate_pct(input_tokens: u64, cache_read_tokens: u64) -> Option<f64> {
     let total = input_tokens + cache_read_tokens;

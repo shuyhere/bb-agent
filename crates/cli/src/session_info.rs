@@ -261,6 +261,7 @@ mod tests {
                         cache_write: 18.75,
                         total: 110.25,
                     },
+                    cache_metrics_source: None,
                 },
                 stop_reason: StopReason::Stop,
                 error_message: None,

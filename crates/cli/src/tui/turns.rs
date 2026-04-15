@@ -195,6 +195,8 @@ impl TuiController {
             retry_max_delay_ms: self.session_setup.retry_max_delay_ms,
             cancel: self.abort_token.clone(),
             extensions: self.session_setup.extension_commands.clone(),
+            request_metrics_tracker: self.session_setup.request_metrics_tracker.clone(),
+            request_metrics_log_path: self.session_setup.request_metrics_log_path.clone(),
         })
     }
 
