@@ -1,4 +1,5 @@
 use super::provider::messages_to_provider;
+use super::transcript_validation::validate_and_repair_messages_for_provider;
 use crate::types::{
     AgentMessage, AssistantContent, AssistantMessage, ContentBlock, StopReason, ToolResultMessage,
     Usage,
@@ -147,6 +148,66 @@ fn interrupted_tool_call_does_not_poison_later_turns_with_real_tool_results() {
     );
     assert_eq!(provider_messages[5]["role"], "user");
     assert_eq!(provider_messages[5]["content"], "what happened?");
+}
+
+#[test]
+fn orphan_and_duplicate_tool_results_are_repaired_deterministically() {
+    let messages = vec![
+        AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: "orphan".to_string(),
+            tool_name: "read".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "orphan should be dropped".to_string(),
+            }],
+            details: None,
+            is_error: true,
+            timestamp: 0,
+        }),
+        AgentMessage::Assistant(AssistantMessage {
+            content: vec![AssistantContent::ToolCall {
+                id: "call_1|normalized".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "pwd"}),
+            }],
+            provider: "openai".to_string(),
+            model: "gpt".to_string(),
+            usage: Usage::default(),
+            stop_reason: StopReason::ToolUse,
+            error_message: None,
+            timestamp: 1,
+        }),
+        AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: "call_1".to_string(),
+            tool_name: "bash".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "first result".to_string(),
+            }],
+            details: None,
+            is_error: false,
+            timestamp: 2,
+        }),
+        AgentMessage::ToolResult(ToolResultMessage {
+            tool_call_id: "call_1".to_string(),
+            tool_name: "bash".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "duplicate result".to_string(),
+            }],
+            details: None,
+            is_error: false,
+            timestamp: 3,
+        }),
+    ];
+
+    let repaired = validate_and_repair_messages_for_provider(&messages);
+    assert_eq!(repaired.summary.dropped_orphan_tool_results, 1);
+    assert_eq!(repaired.summary.dropped_duplicate_tool_results, 1);
+    assert_eq!(repaired.summary.synthetic_tool_results, 0);
+
+    assert_eq!(repaired.messages.len(), 2);
+    assert_eq!(repaired.messages[0]["role"], "assistant");
+    assert_eq!(repaired.messages[1]["role"], "tool");
+    assert_eq!(repaired.messages[1]["tool_call_id"], "call_1|normalized");
+    assert_eq!(repaired.messages[1]["content"], "first result");
 }
 
 #[test]
