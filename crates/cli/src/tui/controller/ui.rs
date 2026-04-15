@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
+use bb_monitor::{
+    ContextResolutionInput, RuntimeContextUsage, UsageTotals, render_footer_usage_text,
+    resolve_context_window_status,
+};
 use bb_session::store;
 use bb_tui::footer::detect_git_branch;
 use bb_tui::tui::{TuiCommand, TuiFooterData};
@@ -8,7 +12,7 @@ use bb_tui::tui::{TuiCommand, TuiFooterData};
 use crate::session_info::{collect_session_info_summary, permission_posture_badge};
 
 use super::{PendingImage, QueuedPrompt, TuiController};
-use crate::tui::{format_tokens, shorten_home_path};
+use crate::tui::shorten_home_path;
 
 fn cleanup_managed_clipboard_temp_image(path: &Path) {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -156,17 +160,8 @@ impl TuiController {
             };
         }
 
-        let (input_tokens, output_tokens, cache_read, cache_write, cost) =
-            self.footer_usage_totals();
-        let mut left_parts = Vec::new();
-        push_usage_part(&mut left_parts, input_tokens, "↑");
-        push_usage_part(&mut left_parts, output_tokens, "↓");
-        push_usage_part(&mut left_parts, cache_read, "R");
-        push_usage_part(&mut left_parts, cache_write, "W");
-        if cost > 0.0 {
-            left_parts.push(format!("${cost:.3}"));
-        }
-        left_parts.push(self.current_context_footer_text());
+        let usage = self.footer_usage_totals();
+        let context = self.current_context_status();
 
         let right = if self.session_setup.thinking_level == "off" {
             format!(
@@ -187,12 +182,12 @@ impl TuiController {
 
         TuiFooterData {
             line1,
-            line2_left: left_parts.join(" "),
+            line2_left: render_footer_usage_text(&usage, false, &context),
             line2_right: right,
         }
     }
 
-    fn current_context_footer_text(&self) -> String {
+    fn current_context_status(&self) -> bb_monitor::ContextWindowStatus {
         let active_path =
             bb_session::tree::active_path(&self.session_setup.conn, &self.session_setup.session_id)
                 .ok();
@@ -217,7 +212,6 @@ impl TuiController {
             bb_core::settings::Settings::load_merged(&self.session_setup.tool_ctx.cwd)
                 .compaction
                 .enabled;
-        let auto_suffix = compaction_auto_suffix(compaction_enabled);
         let active_path_tokens = if suppress_runtime_usage {
             None
         } else {
@@ -226,19 +220,22 @@ impl TuiController {
                 .and_then(estimate_active_path_context_tokens)
         };
 
-        resolve_context_footer_text(
-            runtime_usage
-                .as_ref()
-                .map(|usage| (usage.tokens.map(|tokens| tokens as u64), usage.percent)),
-            active_path.as_deref(),
+        resolve_context_window_status(&ContextResolutionInput {
+            runtime_usage: runtime_usage.as_ref().map(|usage| RuntimeContextUsage {
+                tokens: usage.tokens.map(|tokens| tokens as u64),
+                percent: usage.percent,
+            }),
             active_path_tokens,
+            has_contextful_active_path: active_path
+                .as_deref()
+                .is_some_and(active_path_has_contextful_entries),
             context_window,
-            auto_suffix,
+            auto_compaction: compaction_enabled,
             suppress_runtime_usage,
-        )
+        })
     }
 
-    fn footer_usage_totals(&self) -> (u64, u64, u64, u64, f64) {
+    fn footer_usage_totals(&self) -> UsageTotals {
         collect_session_info_summary(
             &self.session_setup.conn,
             &self.session_setup.session_id,
@@ -247,16 +244,15 @@ impl TuiController {
             &self.session_setup.thinking_level,
             self.session_setup.tool_ctx.execution_policy,
         )
-        .map(|summary| {
-            (
-                summary.input_tokens,
-                summary.output_tokens,
-                summary.cache_read_tokens,
-                summary.cache_write_tokens,
-                summary.total_cost,
-            )
+        .map(|summary| UsageTotals {
+            input_tokens: summary.input_tokens,
+            output_tokens: summary.output_tokens,
+            cache_read_tokens: summary.cache_read_tokens,
+            cache_write_tokens: summary.cache_write_tokens,
+            total_tokens: summary.total_tokens,
+            total_cost: summary.total_cost,
         })
-        .unwrap_or((0, 0, 0, 0, 0.0))
+        .unwrap_or_default()
     }
 }
 
@@ -294,10 +290,6 @@ fn queued_prompt_status_line(queued_prompts: &VecDeque<QueuedPrompt>) -> Option<
     let preview = last.replace('\n', " ⏎ ");
     let preview: String = preview.chars().take(80).collect();
     Some(format!("Steering: {preview}"))
-}
-
-fn compaction_auto_suffix(enabled: bool) -> &'static str {
-    if enabled { " (auto)" } else { "" }
 }
 
 fn image_mime_type(path: &std::path::Path) -> Option<&'static str> {
@@ -347,90 +339,6 @@ fn footer_line1(cwd: &str, conn: &rusqlite::Connection, session_id: &str) -> Str
     line1
 }
 
-fn push_usage_part(parts: &mut Vec<String>, tokens: u64, prefix: &str) {
-    if tokens > 0 {
-        parts.push(format!("{prefix}{}", format_tokens(tokens)));
-    }
-}
-
-fn format_context_percent(percent: f64, context_window: u64, auto_suffix: &str) -> String {
-    format!(
-        "{percent:.1}%/{}{}",
-        format_tokens(context_window),
-        auto_suffix
-    )
-}
-
-fn format_context_from_tokens(tokens: u64, context_window: u64, auto_suffix: &str) -> String {
-    if context_window == 0 {
-        return format_unknown_context(context_window, auto_suffix);
-    }
-    format_context_percent(
-        (tokens as f64 / context_window as f64) * 100.0,
-        context_window,
-        auto_suffix,
-    )
-}
-
-fn format_unknown_context(context_window: u64, auto_suffix: &str) -> String {
-    format!("?/{}{}", format_tokens(context_window), auto_suffix)
-}
-
-fn resolve_context_footer_text(
-    runtime_usage: Option<(Option<u64>, Option<u8>)>,
-    active_path: Option<&[bb_session::store::EntryRow]>,
-    active_path_tokens: Option<u64>,
-    context_window: u64,
-    auto_suffix: &str,
-    suppress_runtime_usage: bool,
-) -> String {
-    if suppress_runtime_usage {
-        return format_unknown_context(context_window, auto_suffix);
-    }
-
-    let has_contextful_active_path = active_path.is_some_and(active_path_has_contextful_entries);
-
-    if let Some((runtime_tokens_opt, runtime_percent_opt)) = runtime_usage {
-        if let Some(runtime_tokens) = runtime_tokens_opt {
-            if runtime_tokens == 0 {
-                if let Some(estimated_tokens) = active_path_tokens.filter(|tokens| *tokens > 0) {
-                    return format_context_from_tokens(
-                        estimated_tokens,
-                        context_window,
-                        auto_suffix,
-                    );
-                }
-                if has_contextful_active_path && active_path_tokens.is_none() {
-                    return format_unknown_context(context_window, auto_suffix);
-                }
-            }
-            return format_context_from_tokens(runtime_tokens, context_window, auto_suffix);
-        }
-        if let Some(percent) = runtime_percent_opt {
-            if percent == 0 {
-                if let Some(estimated_tokens) = active_path_tokens.filter(|tokens| *tokens > 0) {
-                    return format_context_from_tokens(
-                        estimated_tokens,
-                        context_window,
-                        auto_suffix,
-                    );
-                }
-                if has_contextful_active_path && active_path_tokens.is_none() {
-                    return format_unknown_context(context_window, auto_suffix);
-                }
-            }
-            return format_context_percent(percent as f64, context_window, auto_suffix);
-        }
-        return format_unknown_context(context_window, auto_suffix);
-    }
-
-    if let Some(tokens) = active_path_tokens {
-        return format_context_from_tokens(tokens, context_window, auto_suffix);
-    }
-
-    format_unknown_context(context_window, auto_suffix)
-}
-
 fn active_path_has_contextful_entries(path: &[bb_session::store::EntryRow]) -> bool {
     path.iter().any(|row| row.entry_type == "message")
 }
@@ -473,13 +381,17 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        QueuedPrompt, build_status_line, compaction_auto_suffix,
-        estimate_active_path_context_tokens, format_context_from_tokens, format_context_percent,
-        format_unknown_context, permission_posture_badge, resolve_context_footer_text,
+        QueuedPrompt, active_path_has_contextful_entries, build_status_line,
+        estimate_active_path_context_tokens, permission_posture_badge,
     };
     use bb_core::types::{
         AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
         StopReason, Usage,
+    };
+    use bb_monitor::{
+        ContextResolutionInput, RuntimeContextUsage, format_context_from_tokens,
+        format_context_percent, format_unknown_context, render_context_window_status,
+        resolve_context_window_status,
     };
     use bb_session::{store, tree};
     use bb_tools::ExecutionPolicy;
@@ -495,12 +407,6 @@ mod tests {
             permission_posture_badge(ExecutionPolicy::Yolo),
             "mode yolo/full-access"
         );
-    }
-
-    #[test]
-    fn compaction_auto_suffix_reflects_real_enabled_state() {
-        assert_eq!(compaction_auto_suffix(true), " (auto)");
-        assert_eq!(compaction_auto_suffix(false), "");
     }
 
     #[test]
@@ -597,16 +503,19 @@ mod tests {
         store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
 
         let path = tree::active_path(&conn, &session_id).expect("active path");
-        let text = resolve_context_footer_text(
-            Some((Some(0), Some(0))),
-            Some(&path),
-            estimate_active_path_context_tokens(&path),
-            272_000,
-            " (auto)",
-            false,
-        );
+        let status = resolve_context_window_status(&ContextResolutionInput {
+            runtime_usage: Some(RuntimeContextUsage {
+                tokens: Some(0),
+                percent: Some(0),
+            }),
+            active_path_tokens: estimate_active_path_context_tokens(&path),
+            has_contextful_active_path: active_path_has_contextful_entries(&path),
+            context_window: 272_000,
+            auto_compaction: true,
+            suppress_runtime_usage: false,
+        });
 
-        assert_eq!(text, "44.1%/272k (auto)");
+        assert_eq!(render_context_window_status(&status), "44.1%/272k (auto)");
     }
 
     #[test]
@@ -667,16 +576,19 @@ mod tests {
         store::append_entry(&conn, &session_id, &user).expect("append user");
 
         let path = tree::active_path(&conn, &session_id).expect("active path");
-        let text = resolve_context_footer_text(
-            Some((Some(0), Some(0))),
-            Some(&path),
-            estimate_active_path_context_tokens(&path),
-            272_000,
-            " (auto)",
-            false,
-        );
+        let status = resolve_context_window_status(&ContextResolutionInput {
+            runtime_usage: Some(RuntimeContextUsage {
+                tokens: Some(0),
+                percent: Some(0),
+            }),
+            active_path_tokens: estimate_active_path_context_tokens(&path),
+            has_contextful_active_path: active_path_has_contextful_entries(&path),
+            context_window: 272_000,
+            auto_compaction: true,
+            suppress_runtime_usage: false,
+        });
 
-        assert_eq!(text, "?/272k (auto)");
+        assert_eq!(render_context_window_status(&status), "?/272k (auto)");
     }
 
     #[test]

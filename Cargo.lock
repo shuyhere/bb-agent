@@ -120,6 +120,7 @@ dependencies = [
  "base64",
  "bb-core",
  "bb-hooks",
+ "bb-monitor",
  "bb-plugin-host",
  "bb-provider",
  "bb-session",
@@ -177,6 +178,8 @@ dependencies = [
 name = "bb-monitor"
 version = "0.0.16"
 dependencies = [
+ "bb-core",
+ "chrono",
  "serde",
  "serde_json",
  "uuid",

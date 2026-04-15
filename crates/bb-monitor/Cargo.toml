@@ -11,6 +11,10 @@ readme.workspace = true
 description = "Shared monitoring, usage, and cache-metrics helpers for BB-Agent backends"
 
 [dependencies]
+bb-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
