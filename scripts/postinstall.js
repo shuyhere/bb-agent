@@ -9,6 +9,7 @@ const os = require("os");
 const https = require("https");
 const http = require("http");
 const zlib = require("zlib");
+const { pipeline } = require("stream/promises");
 
 const packageJson = require("../package.json");
 const BINARY_RELEASE_TAG = `v${packageJson.version}`;
@@ -204,8 +205,14 @@ function copyBinary(src, dest) {
 function installFromVerifiedCache(target) {
   const cached = cacheBinaryPath(target);
   const meta = loadCacheMetadata(target);
-  if (!fs.existsSync(cached) || !meta) return false;
-  if (meta.version !== packageJson.version || meta.target !== target) return false;
+  if (!fs.existsSync(cached) || !meta) {
+    logLine(`No verified cached BB-Agent binary found for ${target} yet.`);
+    return false;
+  }
+  if (meta.version !== packageJson.version || meta.target !== target) {
+    logLine(`Ignoring stale cache metadata for ${target}; expected ${packageJson.version}.`);
+    return false;
+  }
 
   let stat;
   try {
@@ -214,9 +221,13 @@ function installFromVerifiedCache(target) {
     return false;
   }
   if (!stat.isFile() || stat.size <= 0) return false;
-  if (meta.size && stat.size !== meta.size) return false;
+  if (meta.size && stat.size !== meta.size) {
+    logLine(`Cached BB-Agent binary for ${target} changed size; re-validating it.`);
+    return false;
+  }
 
   logLine(`Using cached BB-Agent binary for ${target} (${formatBytes(stat.size)}).`);
+  logLine(`Installing cached binary to ${nativeBinaryPath()}.`);
   copyBinary(cached, nativeBinaryPath());
   return true;
 }
@@ -245,8 +256,9 @@ function maybeRepairCache(target) {
     }
   }
 
-  logLine(`Checking cached BB-Agent binary for ${target}...`);
+  logLine(`Checking cached BB-Agent binary for ${target} at ${cached}...`);
   if (!binaryMatchesCurrentVersion(cached)) {
+    logLine(`Cached binary for ${target} is stale or invalid; removing cached copy.`);
     removeIfExists(cached);
     removeIfExists(cacheMetadataPath(target));
     return false;
@@ -385,7 +397,7 @@ function requestBinary(url, dest, redirects = 0) {
 }
 
 function verifyBinary(binaryPath) {
-  logLine("Verifying downloaded binary...");
+  logLine(`Verifying downloaded binary at ${binaryPath}...`);
   const version = binaryVersion(binaryPath);
   if (!version) {
     return {
@@ -402,12 +414,19 @@ function verifyBinary(binaryPath) {
   return { ok: true, version };
 }
 
-function expandCompressedBinary(src, dest) {
-  logLine("Decompressing downloaded BB-Agent binary...");
+async function expandCompressedBinary(src, dest) {
+  logLine(`Decompressing downloaded BB-Agent binary from ${path.basename(src)}...`);
   ensureParentDir(dest);
-  const expanded = zlib.gunzipSync(fs.readFileSync(src));
-  fs.writeFileSync(dest, expanded);
-  removeIfExists(src);
+  try {
+    await pipeline(fs.createReadStream(src), zlib.createGunzip(), fs.createWriteStream(dest));
+    const stat = fs.statSync(dest);
+    logLine(`Expanded compressed asset to ${formatBytes(stat.size)}.`);
+  } catch (err) {
+    removeIfExists(dest);
+    throw makeDownloadError("decompress", `Failed to decompress ${path.basename(src)}: ${err.message}`);
+  } finally {
+    removeIfExists(src);
+  }
 }
 
 async function tryDownloadPrebuilt(target) {
@@ -416,6 +435,10 @@ async function tryDownloadPrebuilt(target) {
   fs.mkdirSync(NATIVE_DIR, { recursive: true });
   const dest = nativeBinaryPath();
   const tmpDest = `${dest}.tmp`;
+  const cachePath = cacheBinaryPath(target);
+
+  logLine(`Native binary destination: ${dest}`);
+  logLine(`Binary cache path: ${cachePath}`);
 
   if (installFromVerifiedCache(target)) {
     logLine("✓ BB-Agent binary installed successfully from cache.");
@@ -446,10 +469,12 @@ async function tryDownloadPrebuilt(target) {
         try {
           if (asset.compressed) {
             logLine(`Trying compressed release asset ${asset.assetName} first for a faster download.`);
+          } else {
+            logLine(`Trying uncompressed release asset ${asset.assetName}.`);
           }
           await requestBinary(url, downloadDest, 0);
           if (asset.compressed) {
-            expandCompressedBinary(downloadDest, tmpDest);
+            await expandCompressedBinary(downloadDest, tmpDest);
           }
           if (!isWindows()) {
             fs.chmodSync(tmpDest, 0o755);
@@ -466,8 +491,9 @@ async function tryDownloadPrebuilt(target) {
           }
 
           fs.renameSync(tmpDest, dest);
+          logLine(`Installed BB-Agent binary to ${dest}.`);
           refreshCacheFromExistingBinary(target, dest);
-          logLine("Cached verified BB-Agent binary for future installs.");
+          logLine(`Cached verified BB-Agent binary for future installs at ${cachePath}.`);
           logLine("✓ BB-Agent binary installed successfully.");
           return { ok: true, source: "download" };
         } catch (err) {
@@ -553,7 +579,9 @@ async function main() {
   const target = getTarget();
   const platform = `${os.platform()}-${os.arch()}`;
 
+  logLine(`Resolved install platform: ${platform}.`);
   if (target) {
+    logLine(`Resolved native target: ${target}.`);
     const result = await tryDownloadPrebuilt(target);
     if (result.ok) {
       return;
