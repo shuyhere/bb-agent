@@ -9,7 +9,7 @@ pub(crate) use github_copilot::login_github_copilot;
 pub use openai_codex::login_openai_codex;
 
 /// Credentials returned from a successful OAuth flow.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OAuthCredentials {
     /// The access / bearer token.
     pub access: String,
@@ -40,4 +40,37 @@ pub struct OAuthCallbacks {
     pub on_manual_input: Option<tokio::sync::oneshot::Receiver<String>>,
     /// Optional progress updates (e.g. "Waiting for browser…").
     pub on_progress: Option<Box<dyn Fn(String) + Send>>,
+}
+
+impl std::fmt::Debug for OAuthCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthCredentials")
+            .field("access", &"[REDACTED]")
+            .field("refresh", &"[REDACTED]")
+            .field("expires", &self.expires)
+            .field("extra", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OAuthCredentials;
+    use serde_json::json;
+
+    #[test]
+    fn oauth_credentials_debug_redacts_tokens() {
+        let creds = OAuthCredentials {
+            access: "access-secret".to_string(),
+            refresh: "refresh-secret".to_string(),
+            expires: 123,
+            extra: json!({"copilot_token": "runtime-secret"}),
+        };
+
+        let rendered = format!("{creds:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains("access-secret"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("runtime-secret"));
+    }
 }

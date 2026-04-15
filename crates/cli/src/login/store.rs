@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default)]
 pub(super) struct AuthStore {
     #[serde(default)]
     pub(super) last_provider: Option<String>,
@@ -8,7 +8,7 @@ pub(super) struct AuthStore {
     pub(super) providers: HashMap<String, AuthEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(super) enum AuthEntry {
     #[serde(rename = "api_key")]
@@ -76,6 +76,40 @@ pub(super) fn load_auth() -> AuthStore {
         }
     } else {
         AuthStore::default()
+    }
+}
+
+impl std::fmt::Debug for AuthStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let provider_names = self.providers.keys().cloned().collect::<Vec<_>>();
+        f.debug_struct("AuthStore")
+            .field("last_provider", &self.last_provider)
+            .field("providers", &provider_names)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for AuthEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey { .. } => f
+                .debug_struct("ApiKey")
+                .field("key", &"[REDACTED]")
+                .finish(),
+            Self::OAuth {
+                expires, extra: _, ..
+            } => f
+                .debug_struct("OAuth")
+                .field("access", &"[REDACTED]")
+                .field("refresh", &"[REDACTED]")
+                .field("expires", expires)
+                .field("extra", &"[REDACTED]")
+                .finish(),
+            Self::ProviderConfig { domain } => f
+                .debug_struct("ProviderConfig")
+                .field("domain", domain)
+                .finish(),
+        }
     }
 }
 
@@ -234,4 +268,46 @@ pub(crate) fn configured_providers() -> Vec<String> {
     let mut providers = store.providers.keys().cloned().collect::<Vec<_>>();
     providers.sort();
     providers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthEntry, AuthStore};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn auth_entry_debug_redacts_secret_fields() {
+        let entry = AuthEntry::OAuth {
+            access: "access-secret".to_string(),
+            refresh: "refresh-secret".to_string(),
+            expires: 123,
+            extra: json!({"copilot_token": "runtime-secret"}),
+        };
+
+        let rendered = format!("{entry:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains("access-secret"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("runtime-secret"));
+    }
+
+    #[test]
+    fn auth_store_debug_lists_provider_names_without_values() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai".to_string(),
+            AuthEntry::ApiKey {
+                key: "api-secret".to_string(),
+            },
+        );
+        let store = AuthStore {
+            last_provider: Some("openai".to_string()),
+            providers,
+        };
+
+        let rendered = format!("{store:?}");
+        assert!(rendered.contains("openai"));
+        assert!(!rendered.contains("api-secret"));
+    }
 }
