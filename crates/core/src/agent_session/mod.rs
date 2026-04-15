@@ -11,6 +11,7 @@ mod provider;
 mod runtime;
 mod session;
 mod state;
+mod transcript_validation;
 
 #[cfg(test)]
 mod provider_tests;
