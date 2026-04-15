@@ -91,6 +91,7 @@ mod tests {
                     total: 1.25,
                     ..Default::default()
                 },
+                cache_metrics_source: None,
             },
             stop_reason: StopReason::Stop,
             error_message: None,

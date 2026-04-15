@@ -1,5 +1,7 @@
 use super::*;
 
+use bb_core::types::CacheMetricsSource;
+
 use crate::UsageInfo;
 
 fn usage_info(usage: &Value) -> UsageInfo {
@@ -20,6 +22,7 @@ fn usage_info(usage: &Value) -> UsageInfo {
         output_tokens: output,
         cache_read_tokens: cache_read,
         cache_write_tokens: 0,
+        cache_metrics_source: CacheMetricsSource::Official,
     }
 }
 

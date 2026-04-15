@@ -4,9 +4,11 @@ use crate::turn_runner::{TurnConfig, TurnEvent, run_turn, wrap_conn};
 use async_trait::async_trait;
 use bb_core::error::BbResult;
 use bb_core::types::{
-    AgentMessage, ContentBlock, EntryBase, SessionEntry, StopReason, UserMessage,
+    AgentMessage, CacheMetricsSource, ContentBlock, EntryBase, SessionEntry, StopReason,
+    UserMessage,
 };
-use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
+use bb_monitor::RequestMetricsTracker;
+use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent, UsageInfo};
 use bb_session::store;
 use bb_tools::{Tool, ToolResult, ToolScheduling};
 use chrono::Utc;
@@ -218,6 +220,43 @@ impl Provider for OverflowProvider {
         let _ = tx.send(StreamEvent::Error {
             message: "HTTP 400: context_length_exceeded".to_string(),
         });
+        Ok(())
+    }
+}
+
+struct MetricsProvider;
+
+#[async_trait]
+impl Provider for MetricsProvider {
+    fn name(&self) -> &str {
+        "metrics-provider"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let _ = tx.send(StreamEvent::Usage(UsageInfo {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_tokens: 40,
+            cache_write_tokens: 0,
+            cache_metrics_source: CacheMetricsSource::Official,
+        }));
+        let _ = tx.send(StreamEvent::TextDelta {
+            text: "done".to_string(),
+        });
+        let _ = tx.send(StreamEvent::Done);
         Ok(())
     }
 }
@@ -448,6 +487,10 @@ fn test_model(context_window: u64) -> bb_provider::registry::Model {
     }
 }
 
+fn test_request_metrics_tracker() -> Arc<tokio::sync::Mutex<RequestMetricsTracker>> {
+    Arc::new(tokio::sync::Mutex::new(RequestMetricsTracker::new()))
+}
+
 fn test_tool_context() -> bb_tools::ToolContext {
     bb_tools::ToolContext {
         cwd: "/tmp".into(),
@@ -487,6 +530,8 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -561,6 +606,8 @@ async fn run_turn_normalizes_builtin_tool_aliases_before_lookup() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -628,6 +675,8 @@ async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
         retry_max_delay_ms: 10,
         cancel,
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -730,6 +779,8 @@ async fn read_only_tool_calls_can_overlap_in_real_turn_execution() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -793,6 +844,8 @@ async fn same_file_mutations_stay_serialized_in_real_turn_execution() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
@@ -887,6 +940,8 @@ async fn overflow_recovery_compacts_only_active_path_context() {
         retry_max_delay_ms: 10,
         cancel: CancellationToken::new(),
         extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: None,
     };
 
     let (_returned_config, result) =
@@ -921,4 +976,45 @@ async fn overflow_recovery_compacts_only_active_path_context() {
     assert_eq!(path[0].entry_id, "root0001");
     assert_eq!(path[1].entry_id, "actv0003");
     assert_eq!(path[2].entry_type, "compaction");
+}
+
+#[tokio::test]
+async fn run_turn_writes_request_metrics_log_when_path_is_configured() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("request-metrics.jsonl");
+
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(MetricsProvider),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tool_registry: ToolRegistry::default(),
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+        request_metrics_tracker: test_request_metrics_tracker(),
+        request_metrics_log_path: Some(log_path.clone()),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("turn should succeed and write request metrics");
+
+    let written = std::fs::read_to_string(&log_path).expect("request metrics log");
+    assert!(written.contains("\"provider\":\"metrics-provider\""));
+    assert!(written.contains("\"model\":\"dummy-model\""));
+    assert!(written.contains("\"cache_metrics_source\":\"official\""));
+    assert!(written.contains("\"cache_read_tokens\":40"));
 }

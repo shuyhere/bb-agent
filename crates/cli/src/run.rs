@@ -29,6 +29,7 @@ use crate::extensions::{
 use crate::login;
 use crate::tool_registry::{ToolRegistry, ToolSelection, ToolSelectionPreference};
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
+use bb_monitor::RequestMetricsTracker;
 
 #[derive(Debug, Clone)]
 struct PreparedPrintPrompt {
@@ -235,6 +236,8 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         retry_max_delay_ms: settings.retry.max_delay_ms,
         cancel: CancellationToken::new(),
         extensions: commands.clone(),
+        request_metrics_tracker: Arc::new(tokio::sync::Mutex::new(RequestMetricsTracker::new())),
+        request_metrics_log_path: Some(global_dir.join("request-metrics.jsonl")),
     };
 
     let mut last_result = None;

@@ -26,6 +26,7 @@ use crate::extensions::{
 };
 use crate::login;
 use crate::tool_registry::{ToolRegistry, ToolSelection, ToolSelectionPreference};
+use bb_monitor::RequestMetricsTracker;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SessionBootstrapOptions {
@@ -115,6 +116,8 @@ pub(crate) struct SessionRuntimeSetup {
     pub sibling_conn: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
     pub extension_commands: ExtensionCommandRegistry,
     pub extension_bootstrap: ExtensionBootstrap,
+    pub request_metrics_tracker: std::sync::Arc<tokio::sync::Mutex<RequestMetricsTracker>>,
+    pub request_metrics_log_path: Option<std::path::PathBuf>,
 }
 
 fn prompt_label_for_cli(cli: &crate::Cli) -> String {
@@ -351,6 +354,10 @@ pub(crate) async fn prepare_session_runtime(
         sibling_conn: Some(sibling_conn),
         extension_commands: commands,
         extension_bootstrap,
+        request_metrics_tracker: std::sync::Arc::new(tokio::sync::Mutex::new(
+            RequestMetricsTracker::new(),
+        )),
+        request_metrics_log_path: Some(global_dir.join("request-metrics.jsonl")),
     };
 
     let bootstrap = AgentSessionRuntimeBootstrap {

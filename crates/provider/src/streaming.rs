@@ -1,4 +1,6 @@
 /// Utility: collect streaming events into final text + tool calls.
+use bb_core::types::CacheMetricsSource;
+
 use crate::StreamEvent;
 
 pub struct CollectedResponse {
@@ -9,6 +11,7 @@ pub struct CollectedResponse {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    pub cache_metrics_source: CacheMetricsSource,
 }
 
 pub struct CollectedToolCall {
@@ -26,6 +29,7 @@ impl CollectedResponse {
         let mut output_tokens = 0u64;
         let mut cache_read_tokens = 0u64;
         let mut cache_write_tokens = 0u64;
+        let mut cache_metrics_source = CacheMetricsSource::Unknown;
 
         for event in events {
             match event {
@@ -51,6 +55,7 @@ impl CollectedResponse {
                     output_tokens = u.output_tokens;
                     cache_read_tokens = u.cache_read_tokens;
                     cache_write_tokens = u.cache_write_tokens;
+                    cache_metrics_source = u.cache_metrics_source.clone();
                 }
                 _ => {}
             }
@@ -64,6 +69,7 @@ impl CollectedResponse {
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
+            cache_metrics_source,
         }
     }
 }

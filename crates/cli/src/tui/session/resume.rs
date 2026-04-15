@@ -285,6 +285,10 @@ mod tests {
             retry_base_delay_ms: 100,
             retry_max_delay_ms: 1_000,
             session_created: true,
+            request_metrics_tracker: Arc::new(tokio::sync::Mutex::new(
+                bb_monitor::RequestMetricsTracker::new(),
+            )),
+            request_metrics_log_path: None,
             sibling_conn: None,
             extension_commands: ExtensionCommandRegistry::default(),
             extension_bootstrap: ExtensionBootstrap::default(),
