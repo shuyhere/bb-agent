@@ -15,6 +15,16 @@ pub enum SessionCacheMetricsSource {
     Mixed,
 }
 
+impl SessionCacheMetricsSource {
+    pub fn from_cache_metrics_source(source: Option<&CacheMetricsSource>) -> Self {
+        match source {
+            Some(CacheMetricsSource::Official) => SessionCacheMetricsSource::Official,
+            Some(CacheMetricsSource::Estimated) => SessionCacheMetricsSource::Estimated,
+            Some(CacheMetricsSource::Unknown) | None => SessionCacheMetricsSource::Unknown,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetricsSummary {
     pub user_messages: u64,
@@ -75,11 +85,7 @@ impl SessionMetricsSummary {
     }
 
     fn merge_cache_metrics_source(&mut self, source: Option<&CacheMetricsSource>) {
-        let next = match source {
-            Some(CacheMetricsSource::Official) => SessionCacheMetricsSource::Official,
-            Some(CacheMetricsSource::Estimated) => SessionCacheMetricsSource::Estimated,
-            Some(CacheMetricsSource::Unknown) | None => SessionCacheMetricsSource::Unknown,
-        };
+        let next = SessionCacheMetricsSource::from_cache_metrics_source(source);
 
         match &mut self.cache_metrics_source {
             None => self.cache_metrics_source = Some(next),
