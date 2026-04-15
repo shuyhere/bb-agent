@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bb_core::types::{AgentMessage, AssistantContent, AssistantMessage, SessionEntry};
+use bb_monitor::{SessionMetricsSummary, format_u64_with_commas};
 use bb_session::store;
 use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
@@ -33,10 +33,6 @@ pub(crate) struct SessionInfoSummary {
     pub cache_write_tokens: u64,
     pub total_tokens: u64,
     pub total_cost: f64,
-}
-
-fn assistant_message_cost(message: &AssistantMessage) -> f64 {
-    message.usage.cost.total
 }
 
 /// Build a reusable summary for session-info rendering.
@@ -77,38 +73,26 @@ pub(crate) fn collect_session_info_summary(
         summary.copilot_runtime_expires_at = copilot.copilot_expires_at;
     }
 
+    let mut metrics = SessionMetricsSummary::default();
     let rows = store::get_entries(conn, session_id)?;
     for row in rows {
         let Ok(entry) = store::parse_entry(&row) else {
             continue;
         };
-        if let SessionEntry::Message { message, .. } = entry {
-            summary.total_messages += 1;
-            match message {
-                AgentMessage::User(_) => summary.user_messages += 1,
-                AgentMessage::Assistant(message) => {
-                    summary.assistant_messages += 1;
-                    summary.tool_calls += message
-                        .content
-                        .iter()
-                        .filter(|content| matches!(content, AssistantContent::ToolCall { .. }))
-                        .count() as u64;
-                    summary.input_tokens += message.usage.input;
-                    summary.output_tokens += message.usage.output;
-                    summary.cache_read_tokens += message.usage.cache_read;
-                    summary.cache_write_tokens += message.usage.cache_write;
-                    summary.total_cost += assistant_message_cost(&message);
-                }
-                AgentMessage::ToolResult(_) => summary.tool_results += 1,
-                _ => {}
-            }
-        }
+        metrics.observe_entry(&entry);
     }
 
-    summary.total_tokens = summary.input_tokens
-        + summary.output_tokens
-        + summary.cache_read_tokens
-        + summary.cache_write_tokens;
+    summary.user_messages = metrics.user_messages;
+    summary.assistant_messages = metrics.assistant_messages;
+    summary.tool_calls = metrics.tool_calls;
+    summary.tool_results = metrics.tool_results;
+    summary.total_messages = metrics.total_messages;
+    summary.input_tokens = metrics.usage.input_tokens;
+    summary.output_tokens = metrics.usage.output_tokens;
+    summary.cache_read_tokens = metrics.usage.cache_read_tokens;
+    summary.cache_write_tokens = metrics.usage.cache_write_tokens;
+    summary.total_tokens = metrics.usage.effective_total_tokens();
+    summary.total_cost = metrics.usage.total_cost;
 
     Ok(summary)
 }
@@ -152,37 +136,52 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
     out.push('\n');
 
     out.push_str("Messages\n");
-    out.push_str(&format!("User: {}\n", format_u64(summary.user_messages)));
+    out.push_str(&format!(
+        "User: {}\n",
+        format_u64_with_commas(summary.user_messages)
+    ));
     out.push_str(&format!(
         "Assistant: {}\n",
-        format_u64(summary.assistant_messages)
+        format_u64_with_commas(summary.assistant_messages)
     ));
-    out.push_str(&format!("Tool Calls: {}\n", format_u64(summary.tool_calls)));
+    out.push_str(&format!(
+        "Tool Calls: {}\n",
+        format_u64_with_commas(summary.tool_calls)
+    ));
     out.push_str(&format!(
         "Tool Results: {}\n",
-        format_u64(summary.tool_results)
+        format_u64_with_commas(summary.tool_results)
     ));
     out.push_str(&format!(
         "Total: {}\n\n",
-        format_u64(summary.total_messages)
+        format_u64_with_commas(summary.total_messages)
     ));
 
     out.push_str("Tokens\n");
-    out.push_str(&format!("Input: {}\n", format_u64(summary.input_tokens)));
-    out.push_str(&format!("Output: {}\n", format_u64(summary.output_tokens)));
+    out.push_str(&format!(
+        "Input: {}\n",
+        format_u64_with_commas(summary.input_tokens)
+    ));
+    out.push_str(&format!(
+        "Output: {}\n",
+        format_u64_with_commas(summary.output_tokens)
+    ));
     if summary.cache_read_tokens > 0 {
         out.push_str(&format!(
             "Cache Read: {}\n",
-            format_u64(summary.cache_read_tokens)
+            format_u64_with_commas(summary.cache_read_tokens)
         ));
     }
     if summary.cache_write_tokens > 0 {
         out.push_str(&format!(
             "Cache Write: {}\n",
-            format_u64(summary.cache_write_tokens)
+            format_u64_with_commas(summary.cache_write_tokens)
         ));
     }
-    out.push_str(&format!("Total: {}\n", format_u64(summary.total_tokens)));
+    out.push_str(&format!(
+        "Total: {}\n",
+        format_u64_with_commas(summary.total_tokens)
+    ));
 
     if summary.total_cost > 0.0 {
         out.push_str("\nCost\n");
@@ -213,37 +212,26 @@ fn format_timestamp(timestamp_ms: i64) -> String {
         .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
-fn format_u64(value: u64) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (idx, ch) in digits.chars().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionInfoSummary, collect_session_info_summary, format_u64, permission_posture_badge,
+        SessionInfoSummary, collect_session_info_summary, permission_posture_badge,
         render_session_info_text,
     };
     use bb_core::types::{
         AgentMessage, AssistantMessage, Cost, EntryBase, EntryId, SessionEntry, StopReason, Usage,
     };
+    use bb_monitor::format_u64_with_commas;
     use bb_session::store;
     use bb_tools::ExecutionPolicy;
     use chrono::Utc;
 
     #[test]
     fn format_u64_inserts_commas() {
-        assert_eq!(format_u64(0), "0");
-        assert_eq!(format_u64(12), "12");
-        assert_eq!(format_u64(1234), "1,234");
-        assert_eq!(format_u64(27064604), "27,064,604");
+        assert_eq!(format_u64_with_commas(0), "0");
+        assert_eq!(format_u64_with_commas(12), "12");
+        assert_eq!(format_u64_with_commas(1234), "1,234");
+        assert_eq!(format_u64_with_commas(27064604), "27,064,604");
     }
 
     #[test]
