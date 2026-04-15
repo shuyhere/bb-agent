@@ -120,6 +120,7 @@ dependencies = [
  "base64",
  "bb-core",
  "bb-hooks",
+ "bb-monitor",
  "bb-plugin-host",
  "bb-provider",
  "bb-session",
@@ -171,6 +172,20 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bb-monitor"
+version = "0.0.15"
+dependencies = [
+ "anyhow",
+ "bb-core",
+ "bb-provider",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

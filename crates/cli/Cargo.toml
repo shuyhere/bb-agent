@@ -22,6 +22,7 @@ bb-provider.workspace = true
 bb-hooks.workspace = true
 bb-plugin-host.workspace = true
 bb-tui.workspace = true
+bb-monitor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }

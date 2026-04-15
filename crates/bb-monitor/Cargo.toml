@@ -1,0 +1,21 @@
+[package]
+name = "bb-monitor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Shared monitoring and request-metrics helpers for BB-Agent."
+publish = false
+
+[dependencies]
+bb-core.workspace = true
+bb-provider.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+anyhow.workspace = true
+sha2.workspace = true
+uuid.workspace = true
