@@ -56,7 +56,10 @@ pub enum AgentLoopEvent {
     },
 }
 
-/// Legacy context usage information still used by existing BB-Agent layers.
+/// Legacy context usage information still retained for compatibility re-exports.
+///
+/// Prefer `bb_core::agent_session_runtime::ContextUsage` for the canonical
+/// runtime context-usage surface used by current BB-Agent layers.
 #[derive(Clone, Debug)]
 pub struct ContextUsage {
     pub tokens: u64,

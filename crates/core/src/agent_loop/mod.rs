@@ -20,4 +20,5 @@ pub use runner::{agent_loop, agent_loop_continue};
 pub(crate) use types::MessageQueue;
 #[doc(hidden)]
 pub use types::{AgentEventStream, AgentStream};
+#[doc(hidden)]
 pub use types::{AgentLoopEvent, ContextUsage};

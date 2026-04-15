@@ -2,168 +2,143 @@
 
 ## Goal
 
-Create a new backend-focused crate, `bb-monitor`, that centralizes BB-Agent monitoring and metric logic without moving TUI rendering itself.
+`crates/bb-monitor` is the reusable backend home for BB-Agent monitoring logic that should not live in CLI/TUI controller code.
 
-This crate should own the data model and pure helpers for:
-- token / cost / cache usage summaries
-- context-window status and formatting
-- KV-cache Phase 1 request metrics
-  - cache-hit metrics
-  - prefix divergence
-  - warm/cold request classification
-  - latency / TTFT / resume-latency accounting
-- provider cache-signal attribution (`official` vs `estimated` vs `unknown`)
+It should own:
+- derived usage/token/cost/cache summaries
+- compact formatting helpers for monitor-oriented output
+- context-window resolution/status helpers
+- KV-cache Phase 1 request-metrics logic
+- request-metrics sinks/logging helpers
 
-The TUI should keep rendering, but it should stop owning monitor math/string logic directly.
+It should **not** own:
+- TUI widgets/layout/styling
+- DB access
+- auth/account display logic
+- provider protocol parsing
+- persisted transcript/message schema
 
-## Current audit: where monitor logic lives today
+## Dependency rule
 
-### 1. Provider usage producers
-Current producer paths on `master`:
-- `crates/provider/src/anthropic/events.rs`
-- `crates/provider/src/google/events.rs`
-- `crates/provider/src/openai/sse.rs`
-- `crates/provider/src/openai/codex.rs`
-- `crates/provider/src/streaming.rs`
+- `bb-monitor` **may depend on** `bb-core`
+- `bb-core` must **not depend on** `bb-monitor`
 
-What they already produce:
-- `input_tokens`
-- `output_tokens`
-- `cache_read_tokens`
-- `cache_write_tokens`
+That means:
+- persisted/shared schema stays in `bb-core`
+- provider-native parsing stays in `bb-provider`
+- derived monitor logic lives in `bb-monitor`
 
-What is still missing on clean `master`:
-- explicit cache-metric source provenance (`official` / `estimated` / `unknown`)
+## Ownership split
 
-### 2. Persisted usage + cost model
-Current persisted usage/cost types:
-- `crates/core/src/types/messages.rs`
-  - `Cost`
-  - `Usage`
+### `bb-core`
+Owns:
+- canonical persisted message/usage/cost schema
+- minimal shared enums needed across persisted/runtime/provider surfaces
+- session/runtime base data
 
-Related legacy duplicate shape still exists in:
-- `crates/core/src/agent/data.rs`
-- `crates/core/src/agent_loop/types.rs`
+### `bb-provider`
+Owns:
+- provider-native stream/event parsing
+- raw provider usage extraction
+- provider-specific usage signals
 
-This is one reason the agent/runtime layers still feel noisy: monitor/state vocabulary is duplicated across core and legacy loop types.
+### `bb-monitor`
+Owns:
+- derived usage totals and summaries
+- token/cost/cache formatting helpers
+- context-window resolution logic
+- request metrics snapshot/tracker/finalization logic
+- divergence/reuse estimation
+- request metrics sinks (for example JSONL)
 
-### 3. Session-wide summaries
-Current aggregation lives in:
-- `crates/cli/src/session_info.rs`
+### `bb-cli` / `bb-tui`
+Own:
+- DB/runtime/auth input gathering
+- command routing
+- TUI rendering/layout
+- final user-facing assembly of monitor text into views/commands
 
-That file currently owns backend logic for:
-- summing input/output/cache read/cache write tokens
-- summing total cost
-- formatting large counts for human-readable display
-- deciding which cache/cost fields appear in `/session` output
+## Implemented so far in the current stack
 
-This belongs in `bb-monitor`, not in CLI.
+### Phase 0 — scaffold
+Landed in scaffold PR #118:
+- `crates/bb-monitor`
+- initial shared crate exports
+- issue/plan alignment for #119
 
-### 4. Context-window / footer monitor logic
-Current backend-ish logic is mixed into UI controller code:
-- `crates/cli/src/tui/controller/ui.rs`
+### Phase 1 — formatting/session/context isolation
+Landed in PR #120:
+- `bb-monitor::formatting`
+- `bb-monitor::session`
+- `bb-monitor::context`
+- CLI `/info` and footer/controller code now call reusable `bb-monitor` helpers instead of owning the pure monitor math directly
 
-That file currently owns:
-- footer usage totals lookup
-- context-window estimation fallback rules
-- `?/272k (auto)` vs `75.9%/272k (auto)` formatting
-- compact usage-text assembly like:
-  - `↑13M ↓754k R275M $112.751 (sub) 75.9%/272k (auto)`
+### Phase 2 — request-metrics engine extraction
+Landed in PR #121:
+- `bb-monitor::request_metrics::canonical`
+- `bb-monitor::request_metrics::divergence`
+- `bb-monitor::request_metrics::tracker`
+- `bb-monitor::request_metrics::sink`
+- provider-agnostic request snapshot/state/timing/usage types
 
-Even without changing TUI widgets, these pure functions should move into `bb-monitor`.
+### Phase 3 — runtime wiring
+Landed in PR #122:
+- turn-runner prepare/finalize flow wired to `bb-monitor`
+- shared `CacheMetricsSource` moved into `bb-core`
+- provider usage events and collected responses retain cache provenance
+- assistant persistence now uses resolved cache usage
+- request metrics JSONL emission is wired through explicit configured paths
 
-### 5. Existing KV-cache Phase 1 prototype
-Your strongest prototype already exists in:
-- `/home/shuyhere/bb-cache-metrics-clean/crates/cli/src/cache_metrics.rs`
+## Current crate layout
 
-It already defines a useful Phase 1 model:
-- request hash / stable-prefix hash
-- previous request hash
-- first divergence byte / token estimate
-- reused prefix byte / token estimate
-- prompt bytes / message count / tool count
-- cache metrics source
-- provider vs estimated cache read/write tokens
-- warm request classification
-- TTFT / total latency / tool wait / resume latency
-- request mutation flags
-- JSONL logging of request metrics
+```text
+crates/bb-monitor/
+  src/
+    lib.rs
+    cache_metrics.rs
+    formatting.rs
+    usage.rs
+    session.rs
+    context.rs
+    request_metrics/
+      mod.rs
+      canonical.rs
+      divergence.rs
+      sink.rs
+      tracker.rs
+```
 
-This prototype is the correct source material for `bb-monitor`.
+## Remaining cleanup work
 
-## What `bb-monitor` should own
+### 1. Legacy compatibility surface cleanup in `bb-core`
+Still remaining:
+- reduce or further isolate duplicate legacy monitor vocabulary in:
+  - `crates/core/src/agent/data.rs`
+  - `crates/core/src/agent_loop/types.rs`
+- keep those surfaces compatibility-focused and avoid growing new monitor logic there
+- prefer `bb-monitor` / `agent_session_runtime` for all new work
 
-### Phase 0: crate scaffold (started)
-- new crate: `crates/bb-monitor`
-- pure backend modules:
-  - `usage`
-  - `cache_metrics`
-- no TUI rendering dependency
+### 2. Docs/comments/examples alignment
+Still remaining:
+- point future contributors toward `bb-monitor` as the canonical derived-monitor home
+- keep issue #119 as the live implementation tracker/checklist
 
-### Phase 1: pure monitor vocabulary
-Move or define in `bb-monitor`:
-- `UsageTotals`
-- `ContextWindowStatus`
-- compact token formatting
-- context usage formatting
-- footer-usage text assembly
-- cache rate helpers:
-  - `cache_read_hit_rate_pct`
-  - `cache_effective_utilization_pct`
-- `CacheMetricsSource`
-- request metric structs:
-  - `PreparedRequestMetrics`
-  - `ResolvedCacheUsage`
-  - `RequestCacheMetrics`
-  - `RequestMutationFlags`
+## Non-goals
 
-### Phase 2: backend aggregation extraction
-Move pure aggregation out of CLI files into `bb-monitor`:
-- from `crates/cli/src/session_info.rs`
-  - usage/cost/cache totals aggregation
-  - cache-metric source rollups
-  - numeric/text formatting helpers
-- from `crates/cli/src/tui/controller/ui.rs`
-  - footer-usage text assembly helpers
-  - context-window footer formatting helpers
-
-Important: keep TUI command/rendering code in CLI/TUI crates; only move monitor math/text construction.
-
-### Phase 3: provider + persistence wiring
-Port the useful pieces from `bb-cache-metrics-clean` into `bb-monitor` and then wire them through:
-- `bb-provider`
-  - add cache-metric source provenance to usage events
-- `bb-core`
-  - extend persisted `Usage` with `cache_metrics_source`
-- `bb-cli`
-  - request preparation/finalization hooks call `bb-monitor`
-  - request metrics logger writes JSONL via `bb-monitor`
-
-### Phase 4: legacy cleanup
-Once the new path is live:
-- reduce legacy duplicates in `crates/core/src/agent/data.rs`
-- reduce legacy monitor/context shapes in `crates/core/src/agent_loop/types.rs`
-- make `bb-monitor` the canonical backend monitor vocabulary
-
-## Proposed implementation order
-
-1. **Scaffold `bb-monitor`** with shared pure helpers and tests. ✅ started here
-2. Migrate session summary aggregation from `crates/cli/src/session_info.rs`
-3. Migrate footer usage/context text helpers from `crates/cli/src/tui/controller/ui.rs`
-4. Introduce `CacheMetricsSource` into persisted usage types
-5. Move/port the `bb-cache-metrics-clean` request-metrics implementation into `bb-monitor`
-6. Wire request metrics into the turn runner and provider event collection
-7. Only after backend is stable, decide whether TUI-specific render code should call more `bb-monitor` helpers directly
-
-## Non-goals for this pass
-
-- no TUI widget/layout changes
-- no redesign of footer visuals
-- no frontend-specific color/styling logic in `bb-monitor`
+- no TUI visual redesign here
+- no frontend color/styling logic in `bb-monitor`
+- no provider event parsing move into `bb-monitor`
+- no DB access move into `bb-monitor`
 
 ## Success criteria
 
-- backend monitor/state vocabulary is no longer scattered across CLI/TUI/controller files
-- `bb-monitor` owns the reusable token/cost/cache/context helpers
-- KV-cache Phase 1 request metrics live in a crate that can be reused by CLI, session summaries, and future non-TUI reporting paths
-- core agent loop code gets clearer because monitor bookkeeping moves out into a dedicated crate
+This work is successful when:
+- monitor computation is no longer primarily CLI-controller-owned
+- `bb-monitor` is the reusable backend home for derived monitor logic
+- `bb-core` still owns persisted canonical data types
+- provider parsing stays in `bb-provider`
+- future monitor/cache work naturally lands in `bb-monitor` instead of new CLI helper files
+
+## Tracking
+
+Use issue #119 as the live implementation checklist and PR tracker.
