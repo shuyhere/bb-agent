@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Tool, ToolContext, ToolResult,
+    Tool, ToolContext, ToolResult, ToolScheduling,
     path::{ensure_write_allowed, resolve_path},
     support::text_result,
 };
@@ -34,6 +34,14 @@ impl Tool for WriteTool {
             },
             "required": ["path", "content"]
         })
+    }
+
+    fn scheduling(&self, params: &Value, ctx: &ToolContext) -> ToolScheduling {
+        params
+            .get("path")
+            .and_then(|value| value.as_str())
+            .map(|path| ToolScheduling::single_mutating_path(resolve_path(&ctx.cwd, path)))
+            .unwrap_or(ToolScheduling::MutatingUnknown)
     }
 
     async fn execute(

@@ -8,12 +8,13 @@ use bb_core::types::{
 };
 use bb_provider::{CompletionRequest, Provider, RequestOptions, StreamEvent};
 use bb_session::store;
-use bb_tools::{Tool, ToolResult};
+use bb_tools::{Tool, ToolResult, ToolScheduling};
 use chrono::Utc;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
 struct DummyProvider {
@@ -247,6 +248,188 @@ impl Tool for PanicTool {
         _cancel: CancellationToken,
     ) -> BbResult<ToolResult> {
         panic!("panic containment test marker");
+    }
+}
+
+struct MultiToolProvider {
+    tool_name: &'static str,
+    first_args: &'static str,
+    second_args: &'static str,
+    call_count: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for MultiToolProvider {
+    fn name(&self) -> &str {
+        "multi-tool"
+    }
+
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+    ) -> BbResult<Vec<StreamEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _options: RequestOptions,
+        tx: mpsc::UnboundedSender<StreamEvent>,
+    ) -> BbResult<()> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+        if call_index == 0 {
+            let _ = tx.send(StreamEvent::ToolCallStart {
+                id: "tool-a".to_string(),
+                name: self.tool_name.to_string(),
+            });
+            let _ = tx.send(StreamEvent::ToolCallDelta {
+                id: "tool-a".to_string(),
+                arguments_delta: self.first_args.to_string(),
+            });
+            let _ = tx.send(StreamEvent::ToolCallStart {
+                id: "tool-b".to_string(),
+                name: self.tool_name.to_string(),
+            });
+            let _ = tx.send(StreamEvent::ToolCallDelta {
+                id: "tool-b".to_string(),
+                arguments_delta: self.second_args.to_string(),
+            });
+        } else {
+            let _ = tx.send(StreamEvent::TextDelta {
+                text: "done".to_string(),
+            });
+        }
+        let _ = tx.send(StreamEvent::Done);
+        Ok(())
+    }
+}
+
+struct OverlapProbeTool {
+    entered: Arc<AtomicUsize>,
+    notify: Arc<Notify>,
+}
+
+#[async_trait]
+impl Tool for OverlapProbeTool {
+    fn name(&self) -> &str {
+        "overlap-probe"
+    }
+
+    fn description(&self) -> &str {
+        "verifies read-only tool calls can overlap"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+        _ctx: &bb_tools::ToolContext,
+        _cancel: CancellationToken,
+    ) -> BbResult<ToolResult> {
+        let entered = self.entered.fetch_add(1, Ordering::SeqCst) + 1;
+        if entered < 2 {
+            timeout(Duration::from_millis(200), async {
+                while self.entered.load(Ordering::SeqCst) < 2 {
+                    self.notify.notified().await;
+                }
+            })
+            .await
+            .map_err(|_| bb_core::error::BbError::Tool("tool calls did not overlap".into()))?;
+        } else {
+            self.notify.notify_waiters();
+        }
+
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: "overlap ok".to_string(),
+            }],
+            details: None,
+            is_error: false,
+            artifact_path: None,
+        })
+    }
+}
+
+struct SameFileMutationProbeTool {
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for SameFileMutationProbeTool {
+    fn name(&self) -> &str {
+        "same-file-mutation-probe"
+    }
+
+    fn description(&self) -> &str {
+        "verifies same-file mutation windows are serialized"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn scheduling(
+        &self,
+        params: &serde_json::Value,
+        ctx: &bb_tools::ToolContext,
+    ) -> ToolScheduling {
+        let path = params
+            .get("path")
+            .and_then(|value| value.as_str())
+            .map(std::path::Path::new)
+            .map(|path| {
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    ctx.cwd.join(path)
+                }
+            })
+            .unwrap_or_else(|| ctx.cwd.join("unknown"));
+        ToolScheduling::single_mutating_path(path)
+    }
+
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+        _ctx: &bb_tools::ToolContext,
+        _cancel: CancellationToken,
+    ) -> BbResult<ToolResult> {
+        let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut observed = self.max_active.load(Ordering::SeqCst);
+        while current > observed {
+            match self.max_active.compare_exchange(
+                observed,
+                current,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(next) => observed = next,
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text {
+                text: "mutation ok".to_string(),
+            }],
+            details: None,
+            is_error: false,
+            artifact_path: None,
+        })
     }
 }
 
@@ -510,6 +693,120 @@ async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
                 && tool_result.is_error
                 && tool_result.details.as_ref().and_then(|value| value.get("cancelled")).and_then(|value| value.as_bool()) == Some(true)
     ));
+}
+
+#[tokio::test]
+async fn read_only_tool_calls_can_overlap_in_real_turn_execution() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let entered = Arc::new(AtomicUsize::new(0));
+    let notify = Arc::new(Notify::new());
+
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(MultiToolProvider {
+            tool_name: "overlap-probe",
+            first_args: "{}",
+            second_args: "{}",
+            call_count: AtomicUsize::new(0),
+        }),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tool_registry: ToolRegistry::from_tools(vec![Box::new(OverlapProbeTool {
+            entered,
+            notify,
+        })]),
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("read-only tool calls should be allowed to overlap");
+
+    let mut saw_error = false;
+    let mut saw_done = false;
+    while let Ok(event) = event_rx.try_recv() {
+        match event {
+            TurnEvent::ToolResult { is_error, .. } => saw_error |= is_error,
+            TurnEvent::Done { text } => {
+                saw_done = true;
+                assert_eq!(text, "done");
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        !saw_error,
+        "parallel read-only execution should not time out"
+    );
+    assert!(
+        saw_done,
+        "turn should complete after overlapping tool calls"
+    );
+}
+
+#[tokio::test]
+async fn same_file_mutations_stay_serialized_in_real_turn_execution() {
+    let conn = store::open_memory().expect("memory db");
+    let session_id = store::create_session(&conn, "/tmp").expect("session");
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+
+    let config = TurnConfig {
+        conn: wrap_conn(conn),
+        session_id,
+        system_prompt: "system".to_string(),
+        model: test_model(128_000),
+        provider: Arc::new(MultiToolProvider {
+            tool_name: "same-file-mutation-probe",
+            first_args: r#"{"path":"shared.txt"}"#,
+            second_args: r#"{"path":"shared.txt"}"#,
+            call_count: AtomicUsize::new(0),
+        }),
+        api_key: "dummy".to_string(),
+        base_url: "http://dummy.invalid".to_string(),
+        headers: std::collections::HashMap::new(),
+        compaction_settings: bb_core::types::CompactionSettings::default(),
+        tool_registry: ToolRegistry::from_tools(vec![Box::new(SameFileMutationProbeTool {
+            active,
+            max_active: max_active.clone(),
+        })]),
+        tool_ctx: test_tool_context(),
+        thinking: None,
+        retry_enabled: false,
+        retry_max_retries: 1,
+        retry_base_delay_ms: 10,
+        retry_max_delay_ms: 10,
+        cancel: CancellationToken::new(),
+        extensions: ExtensionCommandRegistry::default(),
+    };
+
+    let (_returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
+    result.expect("same-file mutations should serialize safely");
+    assert_eq!(max_active.load(Ordering::SeqCst), 1);
+
+    let mut saw_done = false;
+    while let Ok(event) = event_rx.try_recv() {
+        if let TurnEvent::Done { text } = event {
+            saw_done = true;
+            assert_eq!(text, "done");
+        }
+    }
+    assert!(saw_done, "turn should complete after serialized mutations");
 }
 
 #[tokio::test]

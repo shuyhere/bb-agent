@@ -9,10 +9,10 @@ use std::future;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::bash_policy::classify_bash_command;
+use crate::bash_policy::{BashSafetyDisposition, classify_bash_command};
 use crate::sandbox;
 use crate::support::text_result_with;
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{Tool, ToolContext, ToolResult, ToolScheduling};
 
 #[cfg(test)]
 use crate::ToolExecutionMode;
@@ -49,6 +49,17 @@ impl Tool for BashTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn scheduling(&self, params: &Value, _ctx: &ToolContext) -> ToolScheduling {
+        let Some(command) = params.get("command").and_then(|value| value.as_str()) else {
+            return ToolScheduling::MutatingUnknown;
+        };
+
+        match classify_bash_command(command).disposition {
+            BashSafetyDisposition::Safe => ToolScheduling::ReadOnly,
+            BashSafetyDisposition::ApprovalRequired => ToolScheduling::MutatingUnknown,
+        }
     }
 
     async fn execute(

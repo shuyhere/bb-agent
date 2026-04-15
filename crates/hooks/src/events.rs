@@ -31,8 +31,11 @@ pub enum Event {
     TurnEnd {
         turn_index: u32,
     },
+    ToolExecutionStart(ToolExecutionStartEvent),
+    ToolExecutionUpdate(ToolExecutionUpdateEvent),
     ToolCall(ToolCallEvent),
     ToolResult(ToolResultEvent),
+    ToolExecutionEnd(ToolExecutionEndEvent),
     Context(ContextEvent),
     BeforeProviderRequest {
         payload: Value,
@@ -55,8 +58,11 @@ impl Event {
             Self::AgentEnd => "agent_end",
             Self::TurnStart { .. } => "turn_start",
             Self::TurnEnd { .. } => "turn_end",
+            Self::ToolExecutionStart(_) => "tool_execution_start",
+            Self::ToolExecutionUpdate(_) => "tool_execution_update",
             Self::ToolCall(_) => "tool_call",
             Self::ToolResult(_) => "tool_result",
+            Self::ToolExecutionEnd(_) => "tool_execution_end",
             Self::Context(_) => "context",
             Self::BeforeProviderRequest { .. } => "before_provider_request",
             Self::Input(_) => "input",
@@ -122,6 +128,90 @@ impl TreePrep {
     }
 }
 
+/// Tool-execution start payload.
+#[derive(Clone, Debug)]
+pub struct ToolExecutionStartEvent {
+    tool_call_id: String,
+    tool_name: String,
+    input: Value,
+}
+
+impl ToolExecutionStartEvent {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
+
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Value {
+        &self.input
+    }
+}
+
+/// Tool-execution update payload.
+#[derive(Clone, Debug)]
+pub struct ToolExecutionUpdateEvent {
+    tool_call_id: String,
+    tool_name: String,
+    input: Value,
+    partial_result: Value,
+}
+
+impl ToolExecutionUpdateEvent {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+        partial_result: Value,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+            partial_result,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
+
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Value {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn partial_result(&self) -> &Value {
+        &self.partial_result
+    }
+}
+
 /// Tool-call event payload.
 #[derive(Clone, Debug)]
 pub struct ToolCallEvent {
@@ -172,6 +262,68 @@ pub struct ToolResultEvent {
 }
 
 impl ToolResultEvent {
+    #[must_use]
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        input: Value,
+        content: Vec<ContentBlock>,
+        details: Option<Value>,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            input,
+            content,
+            details,
+            is_error,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> &str {
+        &self.tool_call_id
+    }
+
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Value {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn content(&self) -> &[ContentBlock] {
+        &self.content
+    }
+
+    #[must_use]
+    pub fn details(&self) -> Option<&Value> {
+        self.details.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+}
+
+/// Tool-execution end payload.
+#[derive(Clone, Debug)]
+pub struct ToolExecutionEndEvent {
+    tool_call_id: String,
+    tool_name: String,
+    input: Value,
+    content: Vec<ContentBlock>,
+    details: Option<Value>,
+    is_error: bool,
+}
+
+impl ToolExecutionEndEvent {
     #[must_use]
     pub fn new(
         tool_call_id: impl Into<String>,
@@ -417,10 +569,40 @@ mod tests {
 
     #[test]
     fn payload_accessors_preserve_values() {
+        let execution_start =
+            ToolExecutionStartEvent::new("call-1", "bash", json!({"command": "pwd"}));
+        assert_eq!(execution_start.tool_call_id(), "call-1");
+        assert_eq!(execution_start.tool_name(), "bash");
+        assert_eq!(execution_start.input(), &json!({"command": "pwd"}));
+
+        let execution_update = ToolExecutionUpdateEvent::new(
+            "call-1",
+            "bash",
+            json!({"command": "pwd"}),
+            json!({"details": {"schedulerState": "queued"}}),
+        );
+        assert_eq!(execution_update.tool_call_id(), "call-1");
+        assert_eq!(
+            execution_update.partial_result()["details"]["schedulerState"],
+            "queued"
+        );
+
         let tool_call = ToolCallEvent::new("call-1", "bash", json!({"command": "pwd"}));
         assert_eq!(tool_call.tool_call_id(), "call-1");
         assert_eq!(tool_call.tool_name(), "bash");
         assert_eq!(tool_call.input(), &json!({"command": "pwd"}));
+
+        let execution_end = ToolExecutionEndEvent::new(
+            "call-1",
+            "bash",
+            json!({"command": "pwd"}),
+            vec![ContentBlock::Text { text: "ok".into() }],
+            Some(json!({"durationMs": 1})),
+            false,
+        );
+        assert_eq!(execution_end.tool_call_id(), "call-1");
+        assert_eq!(execution_end.details(), Some(&json!({"durationMs": 1})));
+        assert!(!execution_end.is_error());
 
         let input = InputEvent::new("hello", "tui");
         assert_eq!(input.text(), "hello");

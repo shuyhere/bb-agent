@@ -208,9 +208,10 @@ async fn test_extension_ui_plumbing() {
 
 #[tokio::test]
 async fn test_load_plugins_rejects_empty_plugin_list() {
-    let err = PluginHost::load_plugins(&[])
-        .await
-        .expect_err("empty plugin list should fail");
+    let err = match PluginHost::load_plugins(&[]).await {
+        Ok(_) => panic!("empty plugin list should fail"),
+        Err(err) => err,
+    };
     assert!(matches!(err, types::PluginHostError::NoPlugins));
 }
 
