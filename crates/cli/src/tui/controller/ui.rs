@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use bb_monitor::{
-    ContextResolutionInput, RuntimeContextUsage, UsageTotals, render_footer_usage_text,
-    resolve_context_window_status,
+    ContextResolutionInput, RuntimeContextUsage, UsageTotals, render_cache_monitor_text,
+    render_footer_usage_text, resolve_context_window_status,
 };
 use bb_session::store;
 use bb_tui::footer::detect_git_branch;
@@ -121,6 +121,9 @@ impl TuiController {
 
     pub(crate) fn publish_footer(&mut self) {
         self.send_command(TuiCommand::SetFooter(self.current_footer_data()));
+        self.send_command(TuiCommand::SetInputMonitor(
+            self.current_input_monitor_text(),
+        ));
     }
 
     pub(crate) fn mark_local_settings_saved(&mut self) {
@@ -185,6 +188,10 @@ impl TuiController {
             line2_left: render_footer_usage_text(&usage, false, &context),
             line2_right: right,
         }
+    }
+
+    fn current_input_monitor_text(&self) -> Option<String> {
+        render_cache_monitor_text(&self.footer_usage_totals())
     }
 
     fn current_context_status(&self) -> bb_monitor::ContextWindowStatus {

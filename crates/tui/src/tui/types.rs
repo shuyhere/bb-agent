@@ -172,6 +172,7 @@ pub enum TuiCommand {
         level: TuiNoteLevel,
         text: String,
     },
+    SetInputMonitor(Option<String>),
     TurnStart {
         turn_index: u32,
     },

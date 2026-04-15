@@ -1,3 +1,4 @@
+use crate::cache_metrics::{cache_effective_utilization_pct, cache_read_hit_rate_pct};
 use crate::usage::{ContextWindowStatus, UsageTotals};
 
 pub fn format_compact_tokens(count: u64) -> String {
@@ -62,6 +63,47 @@ pub fn render_context_window_status(context: &ContextWindowStatus) -> String {
     }
 }
 
+pub fn render_cache_monitor_text(usage: &UsageTotals) -> Option<String> {
+    let hit_rate = cache_read_hit_rate_pct(usage.input_tokens, usage.cache_read_tokens);
+    let effective_utilization = cache_effective_utilization_pct(
+        usage.input_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+    );
+
+    if hit_rate.is_none()
+        && effective_utilization.is_none()
+        && usage.cache_read_tokens == 0
+        && usage.cache_write_tokens == 0
+    {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if let Some(hit_rate) = hit_rate {
+        parts.push(format!("cache hit {:.1}%", hit_rate));
+    } else {
+        parts.push("cache hit —".to_string());
+    }
+    if let Some(effective_utilization) = effective_utilization {
+        parts.push(format!("effective {:.1}%", effective_utilization));
+    }
+    if usage.cache_read_tokens > 0 {
+        parts.push(format!(
+            "R{}",
+            format_compact_tokens(usage.cache_read_tokens)
+        ));
+    }
+    if usage.cache_write_tokens > 0 {
+        parts.push(format!(
+            "W{}",
+            format_compact_tokens(usage.cache_write_tokens)
+        ));
+    }
+
+    Some(parts.join(" • "))
+}
+
 /// Render the compact usage text currently used in BB-Agent footers and other
 /// monitor surfaces, without depending on TUI rendering code.
 pub fn render_footer_usage_text(
@@ -101,8 +143,8 @@ pub fn render_footer_usage_text(
 mod tests {
     use super::{
         format_compact_tokens, format_context_from_tokens, format_context_percent,
-        format_u64_with_commas, format_unknown_context, render_context_window_status,
-        render_footer_usage_text,
+        format_u64_with_commas, format_unknown_context, render_cache_monitor_text,
+        render_context_window_status, render_footer_usage_text,
     };
     use crate::usage::{ContextWindowStatus, UsageTotals};
 
@@ -144,6 +186,29 @@ mod tests {
             auto_compaction: true,
         };
         assert_eq!(render_context_window_status(&context), "75.9%/272k (auto)");
+    }
+
+    #[test]
+    fn renders_cache_monitor_text() {
+        let usage = UsageTotals {
+            input_tokens: 70,
+            output_tokens: 15,
+            cache_read_tokens: 20,
+            cache_write_tokens: 10,
+            total_tokens: 115,
+            total_cost: 0.0,
+        };
+
+        assert_eq!(
+            render_cache_monitor_text(&usage).as_deref(),
+            Some("cache hit 22.2% • effective 20.0% • R20 • W10")
+        );
+    }
+
+    #[test]
+    fn hides_cache_monitor_text_without_cache_activity() {
+        let usage = UsageTotals::default();
+        assert_eq!(render_cache_monitor_text(&usage), None);
     }
 
     #[test]

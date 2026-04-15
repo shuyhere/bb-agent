@@ -2,13 +2,9 @@ use super::*;
 use crate::tui::streaming::{
     ActiveTurnState, ToolCallState, format_bash_visual_result_content, format_elapsed_ms,
 };
-use crate::tui::types::{
-    TuiCommand, TuiMode, TuiNoteLevel, TuiSearchState,
-};
+use crate::tui::types::{TuiCommand, TuiMode, TuiNoteLevel, TuiSearchState};
 use crate::tui::{BlockKind, NewBlock};
-use crate::tui::{
-    format_tool_call_content, format_tool_call_title, format_tool_result_content,
-};
+use crate::tui::{format_tool_call_content, format_tool_call_title, format_tool_result_content};
 
 impl TuiState {
     pub fn apply_command(&mut self, command: TuiCommand) -> RenderIntent {
@@ -20,6 +16,11 @@ impl TuiState {
             }
             TuiCommand::SetFooter(footer) => {
                 self.footer = footer;
+                self.dirty = true;
+                RenderIntent::Render
+            }
+            TuiCommand::SetInputMonitor(text) => {
+                self.input_monitor = text;
                 self.dirty = true;
                 RenderIntent::Render
             }
@@ -91,8 +92,7 @@ impl TuiState {
                 self.dirty = true;
                 RenderIntent::Render
             }
-            TuiCommand::OpenAuthDialog(dialog)
-            | TuiCommand::UpdateAuthDialog(dialog) => {
+            TuiCommand::OpenAuthDialog(dialog) | TuiCommand::UpdateAuthDialog(dialog) => {
                 self.approval_dialog = None;
                 self.auth_dialog = Some(dialog);
                 self.dirty = true;
@@ -430,6 +430,7 @@ impl TuiState {
                 + measure_input(&visible_input, visible_cursor, input_inner_width)
                     .lines
                     .len()
+                + usize::from(self.input_monitor.is_some())
         };
         compute_layout_with_footer(
             self.size,

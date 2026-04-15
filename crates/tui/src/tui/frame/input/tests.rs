@@ -64,6 +64,50 @@ fn measure_input_tracks_cursor_after_wrapping() {
 }
 
 #[test]
+fn input_monitor_renders_below_input_border() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 48,
+            height: 12,
+        },
+    );
+    state.input = "hello".to_string();
+    state.cursor = state.input.len();
+    state.input_monitor = Some("cache hit 80.0% • effective 66.7% • R12k".to_string());
+
+    let wrap = measure_input(&state.input, state.cursor, 48);
+    let (lines, cursor) = render_input(&state, 2, 48, 4, wrap);
+    let plain = lines
+        .iter()
+        .map(|line| crate::utils::strip_ansi(line))
+        .collect::<Vec<_>>();
+
+    assert!(plain[1].contains("hello"));
+    assert!(plain[2].contains("─"));
+    assert!(plain[3].contains("cache hit 80.0%"));
+    assert!(cursor.is_some());
+}
+
+#[test]
+fn current_layout_reserves_extra_row_for_input_monitor_when_space_allows() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 60,
+            height: 20,
+        },
+    );
+    state.input = "hello".to_string();
+    let base_height = state.current_layout().input.height;
+
+    state.input_monitor = Some("cache hit 50.0%".to_string());
+    let monitored_height = state.current_layout().input.height;
+
+    assert_eq!(monitored_height, base_height + 1);
+}
+
+#[test]
 fn auth_dialog_scrolls_to_keep_input_visible() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),
