@@ -1,3 +1,5 @@
+mod session;
+
 use bb_core::config;
 use bb_core::types::AgentMessage;
 use bb_provider::{CacheMetricsSource, CollectedResponse, CompletionRequest};
@@ -11,6 +13,11 @@ use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+pub use session::{
+    SessionCacheMetricsSource, SessionMetricsSummary, collect_session_metrics,
+    render_cache_metrics_source,
+};
 
 static REQUEST_METRICS_FILE_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 

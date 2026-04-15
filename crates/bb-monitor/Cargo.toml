@@ -12,10 +12,13 @@ publish = false
 
 [dependencies]
 bb-core.workspace = true
+bb-session.workspace = true
 bb-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+chrono.workspace = true
 anyhow.workspace = true
+rusqlite.workspace = true
 sha2.workspace = true
 uuid.workspace = true

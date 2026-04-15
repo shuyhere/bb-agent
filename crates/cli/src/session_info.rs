@@ -1,23 +1,7 @@
 use anyhow::Result;
-use bb_core::settings::Settings;
-use bb_core::types::{
-    AgentMessage, AssistantContent, AssistantMessage, CacheMetricsSource, SessionEntry, Usage,
-};
-use bb_provider::registry::{CostConfig, ModelRegistry};
-use bb_session::store;
+use bb_monitor::{SessionCacheMetricsSource, collect_session_metrics, render_cache_metrics_source};
 use bb_tools::ExecutionPolicy;
 use rusqlite::Connection;
-use std::path::Path;
-
-use crate::cache_metrics::{cache_effective_utilization_pct, cache_read_hit_rate_pct};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SessionCacheMetricsSource {
-    Official,
-    Estimated,
-    Mixed,
-    Unknown,
-}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionInfoSummary {
@@ -47,66 +31,6 @@ pub(crate) struct SessionInfoSummary {
     pub cache_effective_utilization_pct: Option<f64>,
     pub total_tokens: u64,
     pub total_cost: f64,
-}
-
-fn cache_metrics_source_state(source: Option<&CacheMetricsSource>) -> SessionCacheMetricsSource {
-    match source {
-        Some(CacheMetricsSource::Official) => SessionCacheMetricsSource::Official,
-        Some(CacheMetricsSource::Estimated) => SessionCacheMetricsSource::Estimated,
-        Some(CacheMetricsSource::Unknown) | None => SessionCacheMetricsSource::Unknown,
-    }
-}
-
-fn merge_cache_metrics_source(
-    current: &mut Option<SessionCacheMetricsSource>,
-    source: Option<&CacheMetricsSource>,
-) {
-    let next = cache_metrics_source_state(source);
-    match current {
-        None => *current = Some(next),
-        Some(existing) if *existing == next => {}
-        Some(SessionCacheMetricsSource::Unknown) | Some(SessionCacheMetricsSource::Mixed) => {}
-        Some(existing) => {
-            *existing = if matches!(next, SessionCacheMetricsSource::Unknown) {
-                SessionCacheMetricsSource::Unknown
-            } else {
-                SessionCacheMetricsSource::Mixed
-            };
-        }
-    }
-}
-
-fn render_cache_metrics_source(source: &SessionCacheMetricsSource) -> &'static str {
-    match source {
-        SessionCacheMetricsSource::Official => "official",
-        SessionCacheMetricsSource::Estimated => "estimated",
-        SessionCacheMetricsSource::Mixed => "mixed",
-        SessionCacheMetricsSource::Unknown => "unknown",
-    }
-}
-
-fn load_session_model_registry(conn: &Connection, session_id: &str) -> ModelRegistry {
-    let mut registry = ModelRegistry::new();
-    if let Ok(Some(row)) = store::get_session(conn, session_id) {
-        registry.load_custom_models(&Settings::load_merged(Path::new(&row.cwd)));
-    }
-    registry
-}
-
-fn calculate_usage_total_cost(usage: &Usage, model_cost: &CostConfig) -> f64 {
-    (model_cost.input / 1_000_000.0) * usage.input as f64
-        + (model_cost.output / 1_000_000.0) * usage.output as f64
-        + (model_cost.cache_read / 1_000_000.0) * usage.cache_read as f64
-        + (model_cost.cache_write / 1_000_000.0) * usage.cache_write as f64
-}
-
-fn recompute_assistant_message_cost(message: &AssistantMessage, registry: &ModelRegistry) -> f64 {
-    registry
-        .find(&message.provider, &message.model)
-        .or_else(|| registry.find_fuzzy(&message.model, Some(&message.provider)))
-        .or_else(|| registry.find_fuzzy(&message.model, None))
-        .map(|model| calculate_usage_total_cost(&message.usage, &model.cost))
-        .unwrap_or(message.usage.cost.total)
 }
 
 pub(crate) fn collect_session_info_summary(
@@ -142,50 +66,21 @@ pub(crate) fn collect_session_info_summary(
         summary.copilot_runtime_expires_at = copilot.copilot_expires_at;
     }
 
-    let registry = load_session_model_registry(conn, session_id);
-    let rows = store::get_entries(conn, session_id)?;
-    for row in rows {
-        let Ok(entry) = store::parse_entry(&row) else {
-            continue;
-        };
-        if let SessionEntry::Message { message, .. } = entry {
-            summary.total_messages += 1;
-            match message {
-                AgentMessage::User(_) => summary.user_messages += 1,
-                AgentMessage::Assistant(message) => {
-                    summary.assistant_messages += 1;
-                    summary.tool_calls += message
-                        .content
-                        .iter()
-                        .filter(|content| matches!(content, AssistantContent::ToolCall { .. }))
-                        .count() as u64;
-                    summary.input_tokens += message.usage.input;
-                    summary.output_tokens += message.usage.output;
-                    summary.cache_read_tokens += message.usage.cache_read;
-                    summary.cache_write_tokens += message.usage.cache_write;
-                    merge_cache_metrics_source(
-                        &mut summary.cache_metrics_source,
-                        message.usage.cache_metrics_source.as_ref(),
-                    );
-                    summary.total_cost += recompute_assistant_message_cost(&message, &registry);
-                }
-                AgentMessage::ToolResult(_) => summary.tool_results += 1,
-                _ => {}
-            }
-        }
-    }
-
-    summary.total_tokens = summary.input_tokens
-        + summary.output_tokens
-        + summary.cache_read_tokens
-        + summary.cache_write_tokens;
-    summary.cache_read_hit_rate_pct =
-        cache_read_hit_rate_pct(summary.input_tokens, summary.cache_read_tokens);
-    summary.cache_effective_utilization_pct = cache_effective_utilization_pct(
-        summary.input_tokens,
-        summary.cache_read_tokens,
-        summary.cache_write_tokens,
-    );
+    let metrics = collect_session_metrics(conn, session_id)?;
+    summary.user_messages = metrics.user_messages;
+    summary.assistant_messages = metrics.assistant_messages;
+    summary.tool_calls = metrics.tool_calls;
+    summary.tool_results = metrics.tool_results;
+    summary.total_messages = metrics.total_messages;
+    summary.input_tokens = metrics.input_tokens;
+    summary.output_tokens = metrics.output_tokens;
+    summary.cache_read_tokens = metrics.cache_read_tokens;
+    summary.cache_write_tokens = metrics.cache_write_tokens;
+    summary.cache_metrics_source = metrics.cache_metrics_source;
+    summary.cache_read_hit_rate_pct = metrics.cache_read_hit_rate_pct;
+    summary.cache_effective_utilization_pct = metrics.cache_effective_utilization_pct;
+    summary.total_tokens = metrics.total_tokens;
+    summary.total_cost = metrics.total_cost;
 
     Ok(summary)
 }
@@ -316,16 +211,10 @@ fn format_u64(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionCacheMetricsSource, SessionInfoSummary, collect_session_info_summary, format_u64,
-        permission_posture_badge, render_session_info_text,
+        SessionCacheMetricsSource, SessionInfoSummary, format_u64, permission_posture_badge,
+        render_session_info_text,
     };
-    use bb_core::types::{
-        AgentMessage, AssistantMessage, CacheMetricsSource, Cost, EntryBase, EntryId, SessionEntry,
-        StopReason, Usage,
-    };
-    use bb_session::store;
     use bb_tools::ExecutionPolicy;
-    use chrono::Utc;
 
     #[test]
     fn format_u64_inserts_commas() {
@@ -333,66 +222,6 @@ mod tests {
         assert_eq!(format_u64(12), "12");
         assert_eq!(format_u64(1234), "1,234");
         assert_eq!(format_u64(27064604), "27,064,604");
-    }
-
-    #[test]
-    fn session_summary_recomputes_cost_from_model_registry() {
-        let conn = store::open_memory().expect("memory db");
-        let session_id = store::create_session(&conn, "/tmp").expect("session");
-        let assistant = SessionEntry::Message {
-            base: EntryBase {
-                id: EntryId::generate(),
-                parent_id: None,
-                timestamp: Utc::now(),
-            },
-            message: AgentMessage::Assistant(AssistantMessage {
-                content: Vec::new(),
-                provider: "anthropic".to_string(),
-                model: "claude-opus-4-6".to_string(),
-                usage: Usage {
-                    input: 1_000_000,
-                    output: 1_000_000,
-                    cache_read: 1_000_000,
-                    cache_write: 1_000_000,
-                    total_tokens: 4_000_000,
-                    cost: Cost {
-                        input: 15.0,
-                        output: 75.0,
-                        cache_read: 1.5,
-                        cache_write: 18.75,
-                        total: 110.25,
-                    },
-                    cache_metrics_source: Some(CacheMetricsSource::Official),
-                },
-                stop_reason: StopReason::Stop,
-                error_message: None,
-                timestamp: Utc::now().timestamp_millis(),
-            }),
-        };
-        store::append_entry(&conn, &session_id, &assistant).expect("append assistant");
-
-        let summary = collect_session_info_summary(
-            &conn,
-            &session_id,
-            "anthropic",
-            "claude-opus-4-6",
-            "medium",
-            ExecutionPolicy::Safety,
-        )
-        .expect("summary");
-
-        assert!((summary.total_cost - 36.75).abs() < 1e-9);
-        assert_eq!(summary.execution_mode, ExecutionPolicy::Safety);
-        assert_eq!(
-            summary.cache_metrics_source,
-            Some(SessionCacheMetricsSource::Official)
-        );
-        assert_eq!(summary.cache_read_hit_rate_pct, Some(50.0));
-        assert!(
-            (summary.cache_effective_utilization_pct.unwrap_or_default() - 33.333333333333336)
-                .abs()
-                < 1e-9
-        );
     }
 
     #[test]
