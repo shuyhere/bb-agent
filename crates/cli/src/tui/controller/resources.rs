@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use bb_core::agent_session_runtime::RuntimeModelRef;
 use bb_core::settings::Settings;
-use bb_tools::builtin_tools;
 use bb_tui::tui::{TuiCommand, TuiNoteLevel};
 
 use crate::agents_md::load_agents_md;
@@ -9,17 +8,17 @@ use crate::extensions::{
     ExtensionCommandOutcome, RuntimeExtensionSupport, SettingsScope, auto_install_missing_packages,
     build_skill_system_prompt_section, install_package, load_runtime_extension_support_with_ui,
 };
-use crate::tui::build_dynamic_slash_items;
-use crate::tui::controller::QueuedPrompt;
-use crate::session_bootstrap::build_tool_defs;
 use crate::slash::{
     InstallSlashAction, SkillAdminAction, dispatch_local_slash_command, install_help_text,
     parse_install_command, skill_help_text,
 };
+use crate::tool_registry::ToolRegistry;
+use crate::tui::build_dynamic_slash_items;
+use crate::tui::controller::QueuedPrompt;
 use crate::turn_runner;
 use crate::update_check::{self, UpdateCheckOutcome};
 
-use super::{TuiController, ResourceWatchState};
+use super::{ResourceWatchState, TuiController};
 
 impl TuiController {
     pub(crate) async fn handle_local_submission(&mut self, text: &str) -> Result<bool> {
@@ -150,9 +149,7 @@ impl TuiController {
         } else {
             SettingsScope::Global
         };
-        self.send_command(TuiCommand::SetStatusLine(format!(
-            "Installing {source}..."
-        )));
+        self.send_command(TuiCommand::SetStatusLine(format!("Installing {source}...")));
 
         let source_for_install = source.clone();
         tokio::task::spawn_blocking(move || install_package(&source_for_install, scope, &cwd))
@@ -371,17 +368,15 @@ impl TuiController {
         self.pending_extension_prompt = Some(prompt.clone());
         self.send_command(TuiCommand::SetLocalActionActive(true));
         self.send_command(TuiCommand::CloseSelectMenu);
-        self.send_command(TuiCommand::OpenAuthDialog(
-            bb_tui::tui::TuiAuthDialog {
-                title: prompt.title,
-                status: None,
-                steps: Vec::new(),
-                url: None,
-                lines: prompt.lines,
-                input_label: prompt.input_label,
-                input_placeholder: prompt.input_placeholder,
-            },
-        ));
+        self.send_command(TuiCommand::OpenAuthDialog(bb_tui::tui::TuiAuthDialog {
+            title: prompt.title,
+            status: None,
+            steps: Vec::new(),
+            url: None,
+            lines: prompt.lines,
+            input_label: prompt.input_label,
+            input_placeholder: prompt.input_placeholder,
+        }));
         self.send_command(TuiCommand::SetInput(String::new()));
     }
 
@@ -576,7 +571,7 @@ impl TuiController {
 
         let RuntimeExtensionSupport {
             session_resources,
-            mut tools,
+            tools,
             mut commands,
         } = load_runtime_extension_support_with_ui(
             &cwd,
@@ -596,10 +591,10 @@ impl TuiController {
         commands.bind_session_context(sibling_conn, self.session_setup.session_id.clone(), None);
         let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
 
-        let mut all_tools = builtin_tools();
-        all_tools.append(&mut tools);
-        self.session_setup.tool_defs = build_tool_defs(&all_tools);
-        self.session_setup.tools = all_tools;
+        self.session_setup.tool_registry = ToolRegistry::from_builtin_and_extensions(
+            tools,
+            self.session_setup.tool_selection.clone(),
+        );
         self.session_setup.extension_commands = commands;
         self.session_setup.system_prompt = format!(
             "{}{}",
@@ -616,9 +611,9 @@ impl TuiController {
                 context_window: self.session_setup.model.context_window as usize,
             }));
         self.resource_watch = ResourceWatchState::capture(&self.session_setup.tool_ctx.cwd);
-        self.send_command(TuiCommand::SetExtraSlashItems(
-            build_dynamic_slash_items(&self.runtime_host),
-        ));
+        self.send_command(TuiCommand::SetExtraSlashItems(build_dynamic_slash_items(
+            &self.runtime_host,
+        )));
         self.publish_footer();
         Ok(())
     }

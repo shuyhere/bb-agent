@@ -8,7 +8,7 @@ use crate::turn_runner::{self, TurnConfig, TurnEvent};
 
 const TURN_RUNNER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-use super::controller::{TuiController, QueuedPrompt};
+use super::controller::{QueuedPrompt, TuiController};
 
 fn is_auto_compaction_status(message: &str) -> bool {
     message.starts_with("Auto-compacted session:")
@@ -158,7 +158,7 @@ impl TuiController {
             self.session_setup.sibling_conn = Some(conn.clone());
             conn
         };
-        let tools = std::mem::take(&mut self.session_setup.tools);
+        let tool_registry = std::mem::take(&mut self.session_setup.tool_registry);
 
         Ok(TurnConfig {
             conn: sibling_conn,
@@ -174,8 +174,7 @@ impl TuiController {
                 reserve_tokens: self.session_setup.compaction_reserve_tokens,
                 keep_recent_tokens: self.session_setup.compaction_keep_recent_tokens,
             },
-            tools,
-            tool_defs: self.session_setup.tool_defs.clone(),
+            tool_registry,
             tool_ctx: bb_tools::ToolContext {
                 cwd: self.session_setup.tool_ctx.cwd.clone(),
                 artifacts_dir: self.session_setup.tool_ctx.artifacts_dir.clone(),
@@ -340,7 +339,7 @@ impl TuiController {
         saw_context_overflow: bool,
     ) {
         if let Some(config) = returned_config {
-            self.session_setup.tools = config.tools;
+            self.session_setup.tool_registry = config.tool_registry;
         }
 
         if saw_context_overflow {

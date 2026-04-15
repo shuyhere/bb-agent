@@ -5,7 +5,6 @@ mod agents_md;
 mod compaction_exec;
 mod extensions;
 
-mod tui;
 mod input_files;
 mod login;
 mod models;
@@ -15,6 +14,8 @@ mod session_bootstrap;
 mod session_info;
 mod session_navigation;
 mod slash;
+mod tool_registry;
+mod tui;
 mod turn_runner;
 mod update_check;
 
@@ -390,8 +391,7 @@ async fn main() -> Result<()> {
     if cli.print {
         run::run_print_mode(cli).await
     } else {
-        tui::run_tui_entry(session_bootstrap::SessionBootstrapOptions::from(&cli))
-            .await
+        tui::run_tui_entry(session_bootstrap::SessionBootstrapOptions::from(&cli)).await
     }
 }
 

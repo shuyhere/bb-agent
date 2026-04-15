@@ -1,4 +1,5 @@
 use crate::extensions::ExtensionCommandRegistry;
+use crate::tool_registry::ToolRegistry;
 use crate::turn_runner::{TurnConfig, TurnEvent, run_turn, wrap_conn};
 use async_trait::async_trait;
 use bb_core::error::BbResult;
@@ -294,15 +295,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
         base_url: "http://dummy.invalid".to_string(),
         headers: std::collections::HashMap::new(),
         compaction_settings: bb_core::types::CompactionSettings::default(),
-        tools: vec![Box::new(PanicTool)],
-        tool_defs: vec![json!({
-            "type": "function",
-            "function": {
-                "name": "panic-tool",
-                "description": "panic test tool",
-                "parameters": {"type": "object", "properties": {}}
-            }
-        })],
+        tool_registry: ToolRegistry::from_tools(vec![Box::new(PanicTool)]),
         tool_ctx: test_tool_context(),
         thinking: None,
         retry_enabled: false,
@@ -315,7 +308,7 @@ async fn run_turn_contains_tool_panics_without_aborting_the_turn() {
 
     let (returned_config, result) = run_turn(config, event_tx, "hi".to_string()).await;
     result.expect("tool panic should be contained without aborting the turn");
-    assert_eq!(returned_config.tools.len(), 1);
+    assert_eq!(returned_config.tool_registry.len(), 1);
 
     let mut saw_tool_panic_error = false;
     let mut saw_done = false;
@@ -374,23 +367,9 @@ async fn run_turn_normalizes_builtin_tool_aliases_before_lookup() {
         base_url: "http://dummy.invalid".to_string(),
         headers: std::collections::HashMap::new(),
         compaction_settings: bb_core::types::CompactionSettings::default(),
-        tools: vec![Box::new(EchoTool {
+        tool_registry: ToolRegistry::from_tools(vec![Box::new(EchoTool {
             invocations: invocations.clone(),
-        })],
-        tool_defs: vec![json!({
-            "type": "function",
-            "function": {
-                "name": "bash",
-                "description": "records normalized bash invocations",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"}
-                    },
-                    "required": ["command"]
-                }
-            }
-        })],
+        })]),
         tool_ctx: test_tool_context(),
         thinking: None,
         retry_enabled: false,
@@ -457,15 +436,7 @@ async fn cancelled_turn_with_tool_calls_persists_cancelled_tool_results() {
         base_url: "http://dummy.invalid".to_string(),
         headers: std::collections::HashMap::new(),
         compaction_settings: bb_core::types::CompactionSettings::default(),
-        tools: vec![Box::new(PanicTool)],
-        tool_defs: vec![json!({
-            "type": "function",
-            "function": {
-                "name": "panic-tool",
-                "description": "panic test tool",
-                "parameters": {"type": "object", "properties": {}}
-            }
-        })],
+        tool_registry: ToolRegistry::from_tools(vec![Box::new(PanicTool)]),
         tool_ctx: test_tool_context(),
         thinking: None,
         retry_enabled: false,
@@ -610,8 +581,7 @@ async fn overflow_recovery_compacts_only_active_path_context() {
             reserve_tokens: 0,
             keep_recent_tokens: 1,
         },
-        tools: vec![],
-        tool_defs: vec![],
+        tool_registry: ToolRegistry::default(),
         tool_ctx: test_tool_context(),
         thinking: None,
         retry_enabled: false,
