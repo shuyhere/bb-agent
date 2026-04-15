@@ -16,7 +16,7 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
-use bb_tools::{ExecutionPolicy, Tool, ToolContext, builtin_tools};
+use bb_tools::{ExecutionPolicy, ToolContext};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +27,7 @@ use crate::extensions::{
     build_skill_system_prompt_section, load_runtime_extension_support,
 };
 use crate::login;
+use crate::tool_registry::{ToolRegistry, ToolSelection, ToolSelectionPreference};
 use crate::turn_runner::{self, TurnConfig, TurnEvent, wrap_conn};
 
 #[derive(Debug, Clone)]
@@ -122,7 +123,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &cli.extensions);
     let RuntimeExtensionSupport {
         session_resources,
-        mut tools,
+        tools,
         mut commands,
     } = load_runtime_extension_support(&cwd, &settings, &extension_bootstrap).await?;
     commands.bind_session_context(
@@ -131,9 +132,8 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         None,
     );
     let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
-    let mut builtin_tools = select_tools(&cli);
-    builtin_tools.append(&mut tools);
-    let tool_defs = build_tool_defs(&builtin_tools);
+    let tool_selection = tool_selection_from_cli_and_settings(&cli, &settings);
+    let tool_registry = ToolRegistry::from_builtin_and_extensions(tools, tool_selection);
     let skill_section = build_skill_system_prompt_section(&session_resources);
     let system_prompt = format!("{system_prompt}{skill_section}");
 
@@ -226,8 +226,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             reserve_tokens: settings.compaction.reserve_tokens,
             keep_recent_tokens: settings.compaction.keep_recent_tokens,
         },
-        tools: builtin_tools,
-        tool_defs,
+        tool_registry,
         tool_ctx,
         thinking: None,
         retry_enabled: settings.retry.enabled,
@@ -290,34 +289,23 @@ fn resolve_session_id(
     store::create_session(conn, cwd_str)
 }
 
-fn select_tools(cli: &Cli) -> Vec<Box<dyn Tool>> {
-    if cli.no_tools {
-        Vec::new()
-    } else if let Some(tools_str) = &cli.tools {
-        let names: Vec<&str> = tools_str.split(',').map(|s| s.trim()).collect();
-        builtin_tools()
-            .into_iter()
-            .filter(|t| names.contains(&t.name()))
-            .collect()
+fn tool_selection_from_cli_and_settings(cli: &Cli, settings: &Settings) -> ToolSelection {
+    let preference = if cli.no_tools {
+        ToolSelectionPreference::None
+    } else if let Some(tools) = &cli.tools {
+        ToolSelectionPreference::Only(
+            tools
+                .split(',')
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .map(|name| name.to_string())
+                .collect(),
+        )
     } else {
-        builtin_tools()
-    }
-}
+        ToolSelectionPreference::UseSettings
+    };
 
-fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
-    tools
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name(),
-                    "description": t.description(),
-                    "parameters": t.parameters_schema(),
-                }
-            })
-        })
-        .collect()
+    preference.resolve(settings.tools.as_deref())
 }
 
 fn load_images_from_paths(paths: &[std::path::PathBuf]) -> Result<Vec<ImageContent>> {

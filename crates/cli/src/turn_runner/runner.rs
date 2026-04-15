@@ -183,7 +183,7 @@ pub(crate) async fn run_turn_inner(
                 ToolExecutionEnv {
                     conn: &config.conn,
                     session_id: &config.session_id,
-                    tools: &config.tools,
+                    tools: config.tool_registry.active_tools(),
                     tool_ctx: &config.tool_ctx,
                     cancel: &config.cancel,
                     extensions: &config.extensions,
@@ -214,7 +214,7 @@ pub(crate) async fn run_turn_inner(
             ToolExecutionEnv {
                 conn: &config.conn,
                 session_id: &config.session_id,
-                tools: &config.tools,
+                tools: config.tool_registry.active_tools(),
                 tool_ctx: &config.tool_ctx,
                 cancel: &config.cancel,
                 extensions: &config.extensions,
@@ -246,7 +246,7 @@ async fn build_request(
     let mut request = CompletionRequest {
         system_prompt: system_prompt.to_string(),
         messages: provider_messages,
-        tools: config.tool_defs.clone(),
+        tools: config.tool_registry.tool_defs().to_vec(),
         extra_tool_schemas: vec![],
         model: config.model.id.clone(),
         max_tokens: Some(config.model.max_tokens as u32),

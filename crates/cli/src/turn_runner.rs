@@ -9,10 +9,11 @@
 //! - Looping for multi-turn tool use
 
 use crate::extensions::ExtensionCommandRegistry;
+use crate::tool_registry::ToolRegistry;
 use bb_core::types::ContentBlock;
 use bb_provider::Provider;
 use bb_provider::registry::Model;
-use bb_tools::{Tool, ToolContext};
+use bb_tools::ToolContext;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -27,8 +28,7 @@ pub(crate) struct TurnConfig {
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,
     pub compaction_settings: bb_core::types::CompactionSettings,
-    pub tools: Vec<Box<dyn Tool>>,
-    pub tool_defs: Vec<serde_json::Value>,
+    pub tool_registry: ToolRegistry,
     pub tool_ctx: ToolContext,
     pub thinking: Option<String>,
     pub retry_enabled: bool,

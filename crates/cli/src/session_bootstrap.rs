@@ -16,7 +16,7 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, ModelRegistry};
 use bb_session::store;
-use bb_tools::{ExecutionPolicy, Tool, ToolContext, builtin_tools};
+use bb_tools::{ExecutionPolicy, ToolContext};
 use std::sync::Arc;
 
 use crate::extensions::{
@@ -25,6 +25,7 @@ use crate::extensions::{
     load_runtime_extension_support_with_ui,
 };
 use crate::login;
+use crate::tool_registry::{ToolRegistry, ToolSelection, ToolSelectionPreference};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SessionBootstrapOptions {
@@ -35,6 +36,7 @@ pub(crate) struct SessionBootstrapOptions {
     pub system_prompt: Option<String>,
     pub append_system_prompt: Option<String>,
     pub extensions: Vec<String>,
+    pub tool_selection: ToolSelectionPreference,
     pub session: Option<String>,
     pub continue_session: bool,
     pub resume: bool,
@@ -53,6 +55,20 @@ impl From<&crate::Cli> for SessionBootstrapOptions {
             system_prompt: cli.system_prompt.clone(),
             append_system_prompt: cli.append_system_prompt.clone(),
             extensions: cli.extensions.clone(),
+            tool_selection: if cli.no_tools {
+                ToolSelectionPreference::None
+            } else if let Some(tools) = &cli.tools {
+                ToolSelectionPreference::Only(
+                    tools
+                        .split(',')
+                        .map(|name| name.trim())
+                        .filter(|name| !name.is_empty())
+                        .map(|name| name.to_string())
+                        .collect(),
+                )
+            } else {
+                ToolSelectionPreference::UseSettings
+            },
             session: cli.session.clone(),
             continue_session: cli.r#continue,
             resume: cli.resume,
@@ -80,8 +96,8 @@ pub(crate) struct SessionRuntimeSetup {
     pub api_key: String,
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,
-    pub tools: Vec<Box<dyn Tool>>,
-    pub tool_defs: Vec<serde_json::Value>,
+    pub tool_registry: ToolRegistry,
+    pub tool_selection: ToolSelection,
     pub tool_ctx: ToolContext,
     pub system_prompt: String,
     pub base_system_prompt: String,
@@ -258,15 +274,14 @@ pub(crate) async fn prepare_session_runtime(
     let extension_bootstrap = ExtensionBootstrap::from_cli_values(&cwd, &entry.extensions);
     let RuntimeExtensionSupport {
         session_resources,
-        mut tools,
+        tools,
         mut commands,
     } = load_runtime_extension_support_with_ui(&cwd, &settings, &extension_bootstrap, true).await?;
     let sibling_conn = crate::turn_runner::open_sibling_conn(&conn)?;
     commands.bind_session_context(sibling_conn.clone(), session_id.clone(), None);
     let _ = commands.send_event(&bb_hooks::Event::SessionStart).await;
-    let mut builtin_tools = builtin_tools();
-    builtin_tools.append(&mut tools);
-    let tool_defs = build_tool_defs(&builtin_tools);
+    let tool_selection = entry.tool_selection.resolve(settings.tools.as_deref());
+    let tool_registry = ToolRegistry::from_builtin_and_extensions(tools, tool_selection.clone());
     let skill_section = build_skill_system_prompt_section(&session_resources);
     let system_prompt = format!("{base_system_prompt}{skill_section}");
 
@@ -319,8 +334,8 @@ pub(crate) async fn prepare_session_runtime(
         api_key,
         base_url,
         headers,
-        tools: builtin_tools,
-        tool_defs,
+        tool_registry,
+        tool_selection,
         tool_ctx,
         system_prompt,
         base_system_prompt,
@@ -383,28 +398,13 @@ fn resolve_startup_session_id(
     Ok((uuid::Uuid::new_v4().to_string(), false))
 }
 
-pub(crate) fn build_tool_defs(tools: &[Box<dyn Tool>]) -> Vec<serde_json::Value> {
-    tools
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name(),
-                    "description": t.description(),
-                    "parameters": t.parameters_schema(),
-                }
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionBootstrapOptions, build_tool_defs, prompt_label_for_cli, resolve_startup_session_id,
+        SessionBootstrapOptions, prompt_label_for_cli, resolve_startup_session_id,
         resolve_thinking_level,
     };
+    use crate::tool_registry::{ToolSelectionPreference, build_tool_defs};
     use async_trait::async_trait;
     use bb_core::agent_session::ThinkingLevel;
     use bb_core::error::BbResult;
@@ -537,6 +537,7 @@ mod tests {
         assert!(options.resume);
         assert_eq!(options.messages, vec!["hello", "world"]);
         assert_eq!(options.prompt_label, "default+append");
+        assert_eq!(options.tool_selection, ToolSelectionPreference::UseSettings);
     }
 
     #[test]
