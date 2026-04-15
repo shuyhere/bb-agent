@@ -178,10 +178,12 @@ dependencies = [
 name = "bb-monitor"
 version = "0.0.16"
 dependencies = [
+ "anyhow",
  "bb-core",
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
