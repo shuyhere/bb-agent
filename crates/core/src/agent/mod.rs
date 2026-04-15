@@ -16,8 +16,10 @@ pub use data::{
     AfterToolCallContext, AfterToolCallResult, AgentConfig, AgentContextSnapshot, AgentLoopConfig,
     AgentMessage, AgentMessageContent, AgentMessageRole, AgentModel, AgentTool,
     BeforeToolCallContext, BeforeToolCallResult, ThinkingBudgets, ThinkingLevel, ToolExecutionMode,
-    Transport, Usage, UsageCost,
+    Transport,
 };
+#[doc(hidden)]
+pub use data::{Usage, UsageCost};
 pub use events::{AgentEvent, AgentEventSink, RuntimeAgentEvent};
 pub use helpers::{DEFAULT_SYSTEM_PROMPT, build_system_prompt, extract_text};
 pub use queue::{PendingMessageQueue, QueueMode};
