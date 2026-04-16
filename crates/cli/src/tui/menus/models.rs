@@ -82,15 +82,27 @@ impl TuiController {
                         (
                             crate::login::ProviderAuthMethod::ApiKey,
                             crate::login::AuthSource::EnvVar,
-                        ) => "API key (env)".to_string(),
+                        ) => option
+                            .account_label
+                            .as_ref()
+                            .map(|label| format!("API key (env) • {label}"))
+                            .unwrap_or_else(|| "API key (env)".to_string()),
                         (
                             crate::login::ProviderAuthMethod::ApiKey,
                             crate::login::AuthSource::BbAuth,
-                        ) => "API key".to_string(),
+                        ) => option
+                            .account_label
+                            .as_ref()
+                            .map(|label| format!("API key • {label}"))
+                            .unwrap_or_else(|| "API key".to_string()),
                         (
                             crate::login::ProviderAuthMethod::OAuth,
                             crate::login::AuthSource::EnvVar,
-                        ) => "OAuth (env)".to_string(),
+                        ) => option
+                            .account_label
+                            .as_ref()
+                            .map(|label| format!("OAuth (env) • {label}"))
+                            .unwrap_or_else(|| "OAuth (env)".to_string()),
                         (
                             crate::login::ProviderAuthMethod::OAuth,
                             crate::login::AuthSource::BbAuth,
@@ -658,6 +670,64 @@ mod tests {
         );
         assert_eq!(menu.2[1].label, "API key (env)");
         assert!(menu.2[1].value.starts_with("env:api-key"));
+    }
+
+    #[test]
+    fn model_auth_menu_distinguishes_multiple_saved_api_keys() {
+        let _lock = env_lock().lock().unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\n",
+        )
+        .expect("cargo toml");
+        let _home = EnvVarGuard::set_path("HOME", tempdir.path());
+
+        crate::login::save_api_key("openrouter", "key-1111".to_string())
+            .expect("save first key");
+        crate::login::save_api_key("openrouter", "key-2222".to_string())
+            .expect("save second key");
+
+        Settings {
+            models: Some(vec![ModelOverride {
+                id: "gpt-test".to_string(),
+                name: Some("gpt-test".to_string()),
+                provider: "openrouter".to_string(),
+                api: Some("openai-completions".to_string()),
+                base_url: Some("https://openrouter.ai/api/v1".to_string()),
+                context_window: Some(128_000),
+                max_tokens: Some(16_384),
+                reasoning: Some(false),
+                input: Some(vec!["text".to_string()]),
+            }]),
+            ..Settings::default()
+        }
+        .save_project(tempdir.path())
+        .expect("save project settings");
+
+        let (mut controller, mut command_rx) = build_test_controller(tempdir.path().to_path_buf());
+        controller
+            .handle_model_selection_command(Some("openrouter:gpt-test"))
+            .expect("handle model selection");
+
+        let commands = drain_commands(&mut command_rx);
+        let menu = commands
+            .into_iter()
+            .find_map(|command| match command {
+                TuiCommand::OpenSelectMenu {
+                    menu_id,
+                    title,
+                    items,
+                    ..
+                } => Some((menu_id, title, items)),
+                _ => None,
+            })
+            .expect("auth chooser menu");
+
+        assert_eq!(menu.0, MODEL_AUTH_MENU_ID);
+        assert_eq!(menu.1, "Select auth for OpenRouter");
+        assert!(menu.2.iter().any(|item| item.label == "API key • ending in 2222"));
+        assert!(menu.2.iter().any(|item| item.label == "API key • ending in 1111"));
     }
 
     #[test]

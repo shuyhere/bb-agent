@@ -385,4 +385,21 @@ mod tests {
         crate::login::save_api_key("openai", "saved-key".to_string()).expect("save api key");
         assert_eq!(auth_source("openai"), Some(AuthSource::BbAuth));
     }
+
+    #[test]
+    fn provider_auth_option_summaries_distinguish_multiple_saved_api_keys() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().expect("home tempdir");
+        let _home = EnvVarGuard::set_path("HOME", home.path());
+
+        crate::login::save_api_key("openrouter", "key-1111".to_string()).expect("save first");
+        crate::login::save_api_key("openrouter", "key-2222".to_string()).expect("save second");
+
+        let summaries = provider_auth_option_summaries("openrouter");
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].account_label.as_deref(), Some("ending in 2222"));
+        assert!(summaries[0].active);
+        assert_eq!(summaries[1].account_label.as_deref(), Some("ending in 1111"));
+        assert!(!summaries[1].active);
+    }
 }

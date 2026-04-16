@@ -22,12 +22,16 @@ fn format_timestamp(timestamp_ms: Option<i64>) -> Option<String> {
 
 fn auth_option_label(option: &crate::login::ProviderAuthOptionSummary) -> String {
     match (option.method, option.source) {
-        (crate::login::ProviderAuthMethod::ApiKey, crate::login::AuthSource::EnvVar) => {
-            "API key (env)".to_string()
-        }
-        (crate::login::ProviderAuthMethod::ApiKey, crate::login::AuthSource::BbAuth) => {
-            "Saved API key".to_string()
-        }
+        (crate::login::ProviderAuthMethod::ApiKey, crate::login::AuthSource::EnvVar) => option
+            .account_label
+            .as_ref()
+            .map(|label| format!("API key (env) • {label}"))
+            .unwrap_or_else(|| "API key (env)".to_string()),
+        (crate::login::ProviderAuthMethod::ApiKey, crate::login::AuthSource::BbAuth) => option
+            .account_label
+            .as_ref()
+            .map(|label| format!("Saved API key • {label}"))
+            .unwrap_or_else(|| "Saved API key".to_string()),
         (crate::login::ProviderAuthMethod::OAuth, crate::login::AuthSource::EnvVar) => option
             .account_label
             .as_ref()
@@ -568,6 +572,54 @@ mod tests {
             menu.2
                 .iter()
                 .any(|item| item.label == "Sign in another account")
+        );
+    }
+
+    #[test]
+    fn login_auth_option_menu_distinguishes_multiple_saved_api_keys() {
+        let _lock = env_lock().lock().unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set_path("HOME", tempdir.path());
+
+        crate::login::save_api_key("openrouter", "key-1111".to_string()).expect("save first");
+        crate::login::save_api_key("openrouter", "key-2222".to_string()).expect("save second");
+
+        let (mut controller, mut command_rx) = build_test_controller(tempdir.path().to_path_buf());
+        assert!(controller.maybe_open_login_auth_option_menu(
+            "openrouter",
+            crate::login::ProviderAuthMethod::ApiKey,
+        ));
+
+        let commands = drain_commands(&mut command_rx);
+        let menu = commands
+            .into_iter()
+            .find_map(|command| match command {
+                TuiCommand::OpenSelectMenu {
+                    menu_id,
+                    title,
+                    items,
+                    ..
+                } => Some((menu_id, title, items)),
+                _ => None,
+            })
+            .expect("auth option menu");
+
+        assert_eq!(menu.0, LOGIN_AUTH_OPTION_MENU_ID);
+        assert_eq!(menu.1, "Use OpenRouter API key");
+        assert!(
+            menu.2
+                .iter()
+                .any(|item| item.label == "Saved API key • ending in 2222")
+        );
+        assert!(
+            menu.2
+                .iter()
+                .any(|item| item.label == "Saved API key • ending in 1111")
+        );
+        assert!(
+            menu.2
+                .iter()
+                .any(|item| item.label == "Paste a new API key")
         );
     }
 }
