@@ -134,6 +134,12 @@ pub(super) struct PendingModelAuthSelection {
     pub thinking_override: Option<bb_core::agent_session::ThinkingLevel>,
 }
 
+#[derive(Clone)]
+pub(super) struct PendingLoginAuthSelection {
+    pub provider: String,
+    pub method: crate::login::ProviderAuthMethod,
+}
+
 pub(super) struct TuiController {
     pub(super) runtime_host: AgentSessionRuntimeHost,
     pub(super) session_setup: SessionRuntimeSetup,
@@ -147,6 +153,7 @@ pub(super) struct TuiController {
     pub(super) pending_tree_custom_prompt_target: Option<String>,
     pub(super) pending_model_provider_search: Option<String>,
     pub(super) pending_model_auth_selection: Option<PendingModelAuthSelection>,
+    pub(super) pending_login_auth_selection: Option<PendingLoginAuthSelection>,
     pub(super) pending_login_api_key_provider: Option<String>,
     pub(super) pending_login_copilot_enterprise: bool,
     pub(super) pending_images: Vec<PendingImage>,
@@ -206,6 +213,7 @@ impl TuiController {
             pending_tree_custom_prompt_target: None,
             pending_model_provider_search: None,
             pending_model_auth_selection: None,
+            pending_login_auth_selection: None,
             pending_login_api_key_provider: None,
             pending_login_copilot_enterprise: false,
             pending_images: Vec::new(),

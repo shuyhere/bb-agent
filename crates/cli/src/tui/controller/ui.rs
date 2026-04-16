@@ -205,6 +205,7 @@ impl TuiController {
             &self.session_setup.model.id,
             &self.session_setup.thinking_level,
             self.session_setup.tool_ctx.execution_policy,
+            self.session_setup.auth.as_ref(),
         )
         .ok()?;
 
@@ -292,6 +293,7 @@ impl TuiController {
             &self.session_setup.model.id,
             &self.session_setup.thinking_level,
             self.session_setup.tool_ctx.execution_policy,
+            self.session_setup.auth.as_ref(),
         )
         .map(|summary| UsageTotals {
             input_tokens: summary.input_tokens,

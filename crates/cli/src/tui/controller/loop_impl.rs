@@ -163,6 +163,10 @@ impl TuiController {
                     self.send_command(TuiCommand::SetStatusLine(
                         "Authentication cancelled".to_string(),
                     ));
+                } else if self.pending_login_auth_selection.take().is_some() {
+                    self.send_command(TuiCommand::SetStatusLine(
+                        "Authentication selection cancelled".to_string(),
+                    ));
                 } else if let Some(prompt) = self.pending_extension_prompt.take() {
                     self.send_command(TuiCommand::SetLocalActionActive(false));
                     self.send_command(TuiCommand::CloseAuthDialog);

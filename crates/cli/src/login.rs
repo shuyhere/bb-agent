@@ -27,8 +27,8 @@ pub(crate) use providers::{
     provider_login_hint, provider_meta, provider_oauth_variant,
 };
 pub(crate) use resolver::{
-    AuthSource, ResolvedProviderAuth, add_cached_github_copilot_models, auth_source,
-    authenticated_model_candidates, available_model_for_provider,
+    AuthSource, ProviderAuthOptionSummary, ResolvedProviderAuth, add_cached_github_copilot_models,
+    auth_source, authenticated_model_candidates, available_model_for_provider,
     preferred_available_model_for_provider, preferred_startup_provider_and_model,
     provider_auth_option_summaries, provider_auth_status_summary, provider_model_selection_detail,
     resolve_provider_auth, resolve_provider_auth_choice,
@@ -40,8 +40,7 @@ pub(crate) use store::{
     active_auth_method, auth_path, configured_providers, github_copilot_api_base_url,
     github_copilot_cached_models, github_copilot_domain, github_copilot_runtime_headers,
     github_copilot_status, normalize_github_domain, remove_auth, save_api_key,
-    save_github_copilot_config, set_active_auth_method, set_active_auth_profile,
-    stored_auth_methods, stored_auth_profiles,
+    save_github_copilot_config, set_active_auth_profile, stored_auth_methods, stored_auth_profiles,
 };
 
 #[cfg(test)]

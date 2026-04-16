@@ -21,6 +21,7 @@ use controller::{PendingApprovalRequest, TuiController};
 
 const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGIN_METHOD_MENU_ID: &str = "login-method";
+const LOGIN_AUTH_OPTION_MENU_ID: &str = "login-auth-option";
 const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
 const MODEL_PROVIDER_MENU_ID: &str = "model-provider";
 const MODEL_AUTH_MENU_ID: &str = "model-auth";
