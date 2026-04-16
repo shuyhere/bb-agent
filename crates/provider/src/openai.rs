@@ -1,4 +1,5 @@
 mod codex;
+mod responses;
 mod sse;
 
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use tokio::sync::mpsc;
 use crate::retry::with_retry;
 use crate::transforms::{convert_messages_for_openai, strip_thinking_blocks};
 use crate::{CompletionRequest, Provider, ProviderAuthMode, RequestOptions, StreamEvent};
+use responses::should_use_responses_api;
 use sse::process_openai_sse;
 
 /// OpenAI-compatible provider (works with OpenAI, Groq, Ollama, etc.)
@@ -126,6 +128,12 @@ impl Provider for OpenAiProvider {
             messages.push(json!({"role": "system", "content": request.system_prompt}));
         }
         messages.extend(converted);
+
+        if should_use_responses_api(&request, &options) {
+            return self
+                .stream_responses_api(request, options, messages, tx)
+                .await;
+        }
 
         let mut body = json!({
             "model": request.model,
