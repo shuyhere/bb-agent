@@ -24,6 +24,7 @@ impl TuiController {
         self.queued_prompts.clear();
         self.pending_tree_summary_target = None;
         self.pending_tree_custom_prompt_target = None;
+        self.pending_model_provider_search = None;
         self.pending_images.clear();
         self.retry_status = None;
         self.manual_compaction_in_progress = false;
@@ -78,6 +79,7 @@ impl TuiController {
         // Clear stale state from previous session's tree interactions.
         self.pending_tree_summary_target = None;
         self.pending_tree_custom_prompt_target = None;
+        self.pending_model_provider_search = None;
         self.pending_images.clear();
         self.queued_prompts.clear();
         self.streaming = false;

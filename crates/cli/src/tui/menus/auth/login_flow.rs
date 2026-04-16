@@ -6,6 +6,63 @@ use super::dialogs::{
 use super::*;
 
 impl TuiController {
+    pub(crate) fn switch_active_auth_method(
+        &mut self,
+        provider: &str,
+        method: crate::login::ProviderAuthMethod,
+    ) -> Result<bool> {
+        if !crate::login::set_active_auth_method(provider, method)? {
+            return Ok(false);
+        }
+
+        let target_provider = match provider {
+            "openai-codex" => "openai",
+            other => other,
+        };
+        if self.session_setup.model.provider == target_provider {
+            let auth = crate::login::resolve_provider_auth(target_provider);
+            let api_key = auth
+                .as_ref()
+                .map(|auth| auth.credential.clone())
+                .unwrap_or_default();
+            let base_url = if target_provider == "github-copilot" {
+                crate::login::github_copilot_api_base_url()
+            } else {
+                self.session_setup
+                    .model
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| match self.session_setup.model.api {
+                        ApiType::AnthropicMessages => "https://api.anthropic.com".to_string(),
+                        ApiType::GoogleGenerative => {
+                            "https://generativelanguage.googleapis.com".to_string()
+                        }
+                        _ => "https://api.openai.com/v1".to_string(),
+                    })
+            };
+            let headers = if target_provider == "github-copilot" {
+                crate::login::github_copilot_runtime_headers()
+            } else {
+                std::collections::HashMap::new()
+            };
+            self.session_setup.auth = auth;
+            self.session_setup.api_key = api_key;
+            self.session_setup.base_url = base_url;
+            self.session_setup.headers = headers.clone();
+            self.session_setup.tool_ctx.web_search = Some(bb_tools::WebSearchRuntime {
+                provider: self.session_setup.provider.clone(),
+                model: self.session_setup.model.clone(),
+                api_key: self.session_setup.api_key.clone(),
+                base_url: self.session_setup.base_url.clone(),
+                headers,
+                enabled: true,
+            });
+            self.publish_footer();
+        }
+
+        Ok(true)
+    }
+
     pub(crate) async fn begin_oauth_login(
         &mut self,
         provider: &str,

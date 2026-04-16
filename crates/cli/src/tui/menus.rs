@@ -8,11 +8,8 @@ use bb_provider::google::GoogleProvider;
 use bb_provider::openai::OpenAiProvider;
 use bb_provider::registry::{ApiType, Model, ModelRegistry};
 use bb_session::{context, store};
-use bb_tui::tui::{
-    TuiAuthDialog, TuiAuthStep, TuiAuthStepState, TuiCommand,
-    TuiNoteLevel,
-};
 use bb_tui::select_list::SelectItem;
+use bb_tui::tui::{TuiAuthDialog, TuiAuthStep, TuiAuthStepState, TuiCommand, TuiNoteLevel};
 
 use crate::slash::LocalSlashCommandHost;
 
@@ -20,8 +17,8 @@ use super::controller::TuiController;
 use super::formatting::format_assistant_text;
 use super::{
     FORK_ENTRY_MENU_ID, LOGIN_METHOD_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS,
-    LOGOUT_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID,
-    copy_text_to_clipboard,
+    LOGOUT_PROVIDER_MENU_ID, MODEL_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID,
+    TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
 };
 
 mod auth;
@@ -33,9 +30,7 @@ impl TuiController {
         &mut self,
         menu_id: &str,
         value: &str,
-        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
-            bb_tui::tui::TuiSubmission,
-        >,
+        submission_rx: &mut tokio::sync::mpsc::UnboundedReceiver<bb_tui::tui::TuiSubmission>,
     ) -> Result<()> {
         match menu_id {
             "model" => {
@@ -58,11 +53,64 @@ impl TuiController {
             LOGIN_PROVIDER_MENU_ID => {
                 self.open_login_method_menu(value);
             }
+            MODEL_PROVIDER_MENU_ID => {
+                if let Some(search) = self.pending_model_provider_search.take() {
+                    if let Some((model, thinking)) =
+                        self.find_exact_model_match(&format!("{value}:{search}"))
+                    {
+                        self.apply_model_selection(model, thinking);
+                    } else if let Some((model, thinking)) =
+                        self.find_unique_model_match(&format!("{value}:{search}"))
+                    {
+                        self.apply_model_selection(model, thinking);
+                    } else {
+                        self.open_model_menu(&search, Some(value))?;
+                    }
+                } else {
+                    self.send_command(TuiCommand::SetStatusLine(
+                        "No pending model-provider selection".to_string(),
+                    ));
+                }
+            }
             LOGIN_METHOD_MENU_ID => {
                 if let Some(provider) = value.strip_prefix("oauth:") {
-                    self.begin_oauth_login(provider, submission_rx).await?;
+                    let active_provider = match provider {
+                        "openai-codex" => "openai",
+                        other => other,
+                    };
+                    if self.switch_active_auth_method(
+                        provider,
+                        crate::login::ProviderAuthMethod::OAuth,
+                    )? {
+                        self.send_command(TuiCommand::SetStatusLine(format!(
+                            "Using {} OAuth{}",
+                            crate::login::provider_display_name(provider),
+                            if self.session_setup.model.provider == active_provider {
+                                " for current model"
+                            } else {
+                                ""
+                            }
+                        )));
+                    } else {
+                        self.begin_oauth_login(provider, submission_rx).await?;
+                    }
                 } else if let Some(provider) = value.strip_prefix("api_key:") {
-                    self.begin_api_key_login(provider);
+                    if self.switch_active_auth_method(
+                        provider,
+                        crate::login::ProviderAuthMethod::ApiKey,
+                    )? {
+                        self.send_command(TuiCommand::SetStatusLine(format!(
+                            "Using {} API key{}",
+                            crate::login::provider_display_name(provider),
+                            if self.session_setup.model.provider == provider {
+                                " for current model"
+                            } else {
+                                ""
+                            }
+                        )));
+                    } else {
+                        self.begin_api_key_login(provider);
+                    }
                 } else if value == "copilot:github" {
                     self.finish_copilot_host_setup("github.com")?;
                     self.begin_oauth_login("github-copilot", submission_rx)
@@ -78,9 +126,7 @@ impl TuiController {
             }
             LOGOUT_PROVIDER_MENU_ID => {
                 if crate::login::remove_auth(value)? {
-                    self.send_command(TuiCommand::SetStatusLine(format!(
-                        "Logged out of {value}"
-                    )));
+                    self.send_command(TuiCommand::SetStatusLine(format!("Logged out of {value}")));
                 } else {
                     self.send_command(TuiCommand::SetStatusLine(format!(
                         "No saved credentials for {value}"
@@ -138,9 +184,7 @@ impl LocalSlashCommandHost for TuiController {
     fn slash_compact(&mut self, _instructions: Option<&str>) -> Result<()> {
         // `/compact` is handled asynchronously in `handle_local_submission`
         // before shared local slash dispatch runs.
-        self.send_command(TuiCommand::SetStatusLine(
-            "Running /compact...".to_string(),
-        ));
+        self.send_command(TuiCommand::SetStatusLine("Running /compact...".to_string()));
         Ok(())
     }
 
@@ -180,9 +224,7 @@ impl LocalSlashCommandHost for TuiController {
                     Some(name),
                 )?;
                 self.publish_footer();
-                self.send_command(TuiCommand::SetStatusLine(format!(
-                    "Session name: {name}"
-                )));
+                self.send_command(TuiCommand::SetStatusLine(format!("Session name: {name}")));
             }
             None => {
                 self.send_command(TuiCommand::SetStatusLine(

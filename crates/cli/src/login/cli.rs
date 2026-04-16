@@ -219,18 +219,14 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
 }
 
 fn prompt_for_provider_logout() -> Result<Option<String>> {
-    let store = load_auth();
-    if store.providers.is_empty() {
+    let providers = configured_providers();
+    if providers.is_empty() {
         println!("No providers logged in.");
         return Ok(None);
     }
 
     println!("Logged-in providers:");
-    let provider_names = store
-        .providers
-        .keys()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
+    let provider_names = providers.iter().map(String::as_str).collect::<Vec<_>>();
     for (i, name) in provider_names.iter().enumerate() {
         println!("  {}. {}", i + 1, name);
     }

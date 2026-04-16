@@ -2,32 +2,13 @@ use super::*;
 
 fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
     let store = load_auth();
-    let mut has_oauth = false;
-    let mut has_api_key = false;
+    let mut has_oauth =
+        stored_auth_entry_for_method(&store, provider, ProviderAuthMethod::OAuth).is_some();
+    let mut has_api_key =
+        stored_auth_entry_for_method(&store, provider, ProviderAuthMethod::ApiKey).is_some();
 
-    let mut inspect_store_entry = |key: &str| {
-        if let Some(entry) = store.providers.get(key) {
-            match entry {
-                AuthEntry::ApiKey { key } if !key.trim().is_empty() => has_api_key = true,
-                AuthEntry::OAuth { access, .. } if !access.trim().is_empty() => has_oauth = true,
-                _ => {}
-            }
-        }
-    };
-
-    match provider {
-        "openai" => {
-            inspect_store_entry("openai");
-            inspect_store_entry("openai-codex");
-            if std::env::var("OPENAI_API_KEY")
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-            {
-                has_api_key = true;
-            }
-        }
+    match normalize_provider_for_model_selection(provider).as_str() {
         "anthropic" => {
-            inspect_store_entry("anthropic");
             if std::env::var("ANTHROPIC_API_KEY")
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false)
@@ -35,8 +16,15 @@ fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
                 has_api_key = true;
             }
         }
+        "openai" | "openai-codex" => {
+            if std::env::var("OPENAI_API_KEY")
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            {
+                has_api_key = true;
+            }
+        }
         "github-copilot" => {
-            inspect_store_entry("github-copilot");
             for key in ["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"] {
                 if std::env::var(key)
                     .map(|value| !value.trim().is_empty())
@@ -46,11 +34,7 @@ fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
                 }
             }
         }
-        "openai-codex" => {
-            inspect_store_entry("openai-codex");
-        }
         other => {
-            inspect_store_entry(other);
             let env_keys: &[&str] = match other {
                 "google" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
                 "groq" => &["GROQ_API_KEY"],
@@ -74,7 +58,8 @@ fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
 
 pub(crate) fn provider_auth_status_summary(provider: &str) -> String {
     let (has_oauth, has_api_key) = auth_methods_for_provider(provider);
-    if has_oauth && has_api_key {
+    let active = active_auth_method(provider);
+    let base = if has_oauth && has_api_key {
         "[OAuth + API key configured]".to_string()
     } else if has_oauth {
         "[OAuth configured]".to_string()
@@ -82,6 +67,13 @@ pub(crate) fn provider_auth_status_summary(provider: &str) -> String {
         "[API key configured]".to_string()
     } else {
         "[not authenticated]".to_string()
+    };
+
+    match active {
+        Some(method) if has_oauth && has_api_key => {
+            format!("{base} • active: {}", method.label())
+        }
+        _ => base,
     }
 }
 
@@ -121,17 +113,10 @@ impl AuthSource {
 
 pub fn auth_source(provider: &str) -> Option<AuthSource> {
     let store = load_auth();
-    if let Some(entry) = store.providers.get(provider) {
-        let has = match entry {
-            AuthEntry::ApiKey { key } => !key.trim().is_empty(),
-            AuthEntry::OAuth { access, .. } => !access.trim().is_empty(),
-            AuthEntry::ProviderConfig { .. } => false,
-        };
-        if has {
-            return Some(AuthSource::BbAuth);
-        }
+    if !stored_auth_methods_for_store(&store, provider).is_empty() {
+        return Some(AuthSource::BbAuth);
     }
-    let env_keys: &[&str] = match provider {
+    let env_keys: &[&str] = match normalize_provider_for_model_selection(provider).as_str() {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" | "openai-codex" => &["OPENAI_API_KEY"],
         "github-copilot" => &["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"],
