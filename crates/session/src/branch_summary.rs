@@ -210,6 +210,8 @@ pub async fn generate_branch_summary(
 
     let options = RequestOptions {
         api_key: api_key.to_string(),
+        auth_mode: bb_provider::ProviderAuthMode::ApiKey,
+        auth_account_id: None,
         base_url: base_url.to_string(),
         headers: std::collections::HashMap::new(),
         cancel,

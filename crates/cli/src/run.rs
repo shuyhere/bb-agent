@@ -101,9 +101,17 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
             cost: Default::default(),
         });
 
+    let auth = if cli.api_key.is_some() {
+        None
+    } else {
+        login::resolve_provider_auth(&provider_name)
+    };
     let api_key = match &cli.api_key {
         Some(key) => key.clone(),
-        None => login::resolve_api_key(&provider_name).unwrap_or_default(),
+        None => auth
+            .as_ref()
+            .map(|auth| auth.credential.clone())
+            .unwrap_or_default(),
     };
     let base_url = if provider_name == "github-copilot" {
         login::github_copilot_api_base_url()
@@ -219,6 +227,7 @@ pub async fn run_print_mode(cli: Cli) -> Result<()> {
         system_prompt,
         model,
         provider,
+        auth,
         api_key,
         base_url,
         headers,

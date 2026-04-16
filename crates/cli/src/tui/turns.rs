@@ -166,6 +166,7 @@ impl TuiController {
             system_prompt: self.session_setup.system_prompt.clone(),
             model: self.session_setup.model.clone(),
             provider: self.session_setup.provider.clone(),
+            auth: self.session_setup.auth.clone(),
             api_key: self.session_setup.api_key.clone(),
             base_url: self.session_setup.base_url.clone(),
             headers: self.session_setup.headers.clone(),

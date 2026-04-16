@@ -9,9 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::retry::with_retry;
 use crate::transforms::{convert_messages_for_openai, strip_thinking_blocks};
-use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent};
-
-use codex::extract_openai_account_id;
+use crate::{CompletionRequest, Provider, ProviderAuthMode, RequestOptions, StreamEvent};
 use sse::process_openai_sse;
 
 /// OpenAI-compatible provider (works with OpenAI, Groq, Ollama, etc.)
@@ -107,7 +105,9 @@ impl Provider for OpenAiProvider {
         options: RequestOptions,
         tx: mpsc::UnboundedSender<StreamEvent>,
     ) -> BbResult<()> {
-        if let Some(account_id) = extract_openai_account_id(&options.api_key) {
+        if matches!(options.auth_mode, ProviderAuthMode::OAuth)
+            && let Some(account_id) = options.auth_account_id.clone()
+        {
             return self
                 .stream_codex_oauth(request, options, account_id, tx)
                 .await;

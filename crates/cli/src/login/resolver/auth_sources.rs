@@ -1,13 +1,5 @@
 use super::*;
 
-pub(crate) fn auth_source_label(provider: &str) -> &'static str {
-    match auth_source(provider) {
-        Some(AuthSource::BbAuth) => "bb auth.json",
-        Some(AuthSource::EnvVar) => "environment",
-        None => "not configured",
-    }
-}
-
 fn auth_methods_for_provider(provider: &str) -> (bool, bool) {
     let store = load_auth();
     let mut has_oauth = false;
@@ -116,6 +108,15 @@ pub(crate) fn add_cached_github_copilot_models(registry: &mut ModelRegistry) {
 pub enum AuthSource {
     BbAuth,
     EnvVar,
+}
+
+impl AuthSource {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            AuthSource::BbAuth => "bb auth.json",
+            AuthSource::EnvVar => "environment",
+        }
+    }
 }
 
 pub fn auth_source(provider: &str) -> Option<AuthSource> {

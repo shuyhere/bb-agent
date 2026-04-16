@@ -19,6 +19,9 @@ pub(crate) struct SessionInfoSummary {
     pub thinking: String,
     pub execution_mode: ExecutionPolicy,
     pub auth_source: String,
+    pub auth_method: String,
+    pub auth_account: Option<String>,
+    pub auth_authority: Option<String>,
     pub copilot_authority: Option<String>,
     pub copilot_login: Option<String>,
     pub copilot_api_base_url: Option<String>,
@@ -65,9 +68,17 @@ pub(crate) fn collect_session_info_summary(
         model: format!("{model_provider}/{model_id}"),
         thinking: thinking.to_string(),
         execution_mode: execution_policy,
-        auth_source: crate::login::auth_source_label(model_provider).to_string(),
+        auth_source: "not configured".to_string(),
+        auth_method: "not configured".to_string(),
         ..SessionInfoSummary::default()
     };
+
+    if let Some(auth) = crate::login::resolve_provider_auth(model_provider) {
+        summary.auth_source = auth.source.label().to_string();
+        summary.auth_method = auth.method.label().to_string();
+        summary.auth_account = auth.account_label.or(auth.account_id);
+        summary.auth_authority = auth.authority;
+    }
 
     if model_provider == "github-copilot" {
         let copilot = crate::login::github_copilot_status();
@@ -117,7 +128,14 @@ pub(crate) fn render_session_info_text(summary: &SessionInfoSummary) -> String {
         "Permissions: {}\n",
         permission_posture_detail(summary.execution_mode)
     ));
-    out.push_str(&format!("Auth: {}\n", summary.auth_source));
+    out.push_str(&format!("Auth Source: {}\n", summary.auth_source));
+    out.push_str(&format!("Auth Method: {}\n", summary.auth_method));
+    if let Some(account) = &summary.auth_account {
+        out.push_str(&format!("Auth Account: {}\n", account));
+    }
+    if let Some(authority) = &summary.auth_authority {
+        out.push_str(&format!("Auth Authority: {}\n", authority));
+    }
     if let Some(authority) = &summary.copilot_authority {
         out.push_str(&format!("Copilot Authority: {}\n", authority));
     }
@@ -329,5 +347,22 @@ mod tests {
 
         let rendered = render_session_info_text(&summary);
         assert!(rendered.contains("Cache Metrics Source: estimated"));
+    }
+
+    #[test]
+    fn session_summary_renders_explicit_auth_details() {
+        let summary = SessionInfoSummary {
+            auth_source: "bb auth.json".to_string(),
+            auth_method: "OAuth".to_string(),
+            auth_account: Some("acct_test123".to_string()),
+            auth_authority: Some("github.com".to_string()),
+            ..SessionInfoSummary::default()
+        };
+
+        let rendered = render_session_info_text(&summary);
+        assert!(rendered.contains("Auth Source: bb auth.json"));
+        assert!(rendered.contains("Auth Method: OAuth"));
+        assert!(rendered.contains("Auth Account: acct_test123"));
+        assert!(rendered.contains("Auth Authority: github.com"));
     }
 }

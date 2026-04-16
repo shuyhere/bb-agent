@@ -9,8 +9,8 @@ use bb_monitor::{
     prepare_request_metrics, resolve_cache_usage,
 };
 use bb_provider::{
-    CollectedResponse, CompletionRequest, ProviderRetryEvent, RequestOptions, RetryCallback,
-    StreamEvent,
+    CollectedResponse, CompletionRequest, ProviderAuthMode, ProviderRetryEvent, RequestOptions,
+    RetryCallback, StreamEvent,
 };
 use bb_session::context;
 use chrono::Utc;
@@ -494,8 +494,23 @@ fn build_request_options(
         let _ = event_tx.send(turn_event);
     });
 
+    let auth_mode = config
+        .auth
+        .as_ref()
+        .map(|auth| match auth.method {
+            crate::login::ProviderAuthMethod::OAuth => ProviderAuthMode::OAuth,
+            crate::login::ProviderAuthMethod::ApiKey => ProviderAuthMode::ApiKey,
+        })
+        .unwrap_or(ProviderAuthMode::ApiKey);
+    let auth_account_id = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.account_id.clone());
+
     RequestOptions {
         api_key: config.api_key.clone(),
+        auth_mode,
+        auth_account_id,
         base_url: config.base_url.clone(),
         headers: config.headers.clone(),
         cancel: config.cancel.clone(),

@@ -106,7 +106,11 @@ impl TuiController {
         model: Model,
         thinking_override: Option<ThinkingLevel>,
     ) {
-        let api_key = crate::login::resolve_api_key(&model.provider).unwrap_or_default();
+        let auth = crate::login::resolve_provider_auth(&model.provider);
+        let api_key = auth
+            .as_ref()
+            .map(|auth| auth.credential.clone())
+            .unwrap_or_default();
         let base_url = if model.provider == "github-copilot" {
             crate::login::github_copilot_api_base_url()
         } else {
@@ -148,6 +152,7 @@ impl TuiController {
             }));
         self.session_setup.model = model;
         self.session_setup.provider = new_provider;
+        self.session_setup.auth = auth;
         self.session_setup.api_key = api_key;
         self.session_setup.base_url = base_url;
         self.session_setup.headers = headers.clone();

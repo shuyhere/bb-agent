@@ -119,6 +119,8 @@ pub async fn compact(request: CompactionRequest<'_>) -> anyhow::Result<Compactio
 
     let options = RequestOptions {
         api_key: api_key.to_string(),
+        auth_mode: bb_provider::ProviderAuthMode::ApiKey,
+        auth_account_id: None,
         base_url: base_url.to_string(),
         headers: headers.clone(),
         cancel,

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::retry::with_retry;
 use crate::transforms::convert_messages_for_anthropic;
-use crate::{CompletionRequest, Provider, RequestOptions, StreamEvent};
+use crate::{CompletionRequest, Provider, ProviderAuthMode, RequestOptions, StreamEvent};
 
 use events::process_sse_event;
 
@@ -59,7 +59,7 @@ impl Provider for AnthropicProvider {
         tx: mpsc::UnboundedSender<StreamEvent>,
     ) -> BbResult<()> {
         let url = format!("{}/v1/messages", options.base_url.trim_end_matches('/'));
-        let is_oauth = is_anthropic_oauth_token(&options.api_key);
+        let is_oauth = matches!(options.auth_mode, ProviderAuthMode::OAuth);
 
         let messages = convert_messages_for_anthropic(&request.messages);
 
@@ -226,10 +226,6 @@ impl Provider for AnthropicProvider {
         let _ = tx.send(StreamEvent::Done);
         Ok(())
     }
-}
-
-fn is_anthropic_oauth_token(api_key: &str) -> bool {
-    api_key.contains("sk-ant-oat")
 }
 
 fn supports_adaptive_thinking(model: &str) -> bool {

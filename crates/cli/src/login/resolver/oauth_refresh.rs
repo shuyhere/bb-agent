@@ -1,6 +1,27 @@
 use super::store::{save_auth, save_oauth_state};
 use super::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedProviderAuth {
+    pub source: AuthSource,
+    pub credential_provider: String,
+    pub method: ProviderAuthMethod,
+    pub credential: String,
+    pub account_id: Option<String>,
+    pub account_label: Option<String>,
+    pub authority: Option<String>,
+}
+
+impl ResolvedProviderAuth {
+    pub(crate) fn footer_badge(&self, provider: &str) -> String {
+        let method = self.method.footer_label();
+        match self.source {
+            AuthSource::BbAuth => format!("{provider}/{method}"),
+            AuthSource::EnvVar => format!("{provider}/{method}(env)"),
+        }
+    }
+}
+
 pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Result<()> {
     let mut store = load_auth();
     store.providers.insert(
@@ -16,9 +37,9 @@ pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Resul
     save_auth(&store)
 }
 
-pub fn resolve_api_key(provider: &str) -> Option<String> {
+pub fn resolve_provider_auth(provider: &str) -> Option<ResolvedProviderAuth> {
     if provider == "github-copilot" {
-        return resolve_github_copilot_api_key();
+        return resolve_github_copilot_auth();
     }
 
     let store_keys: &[&str] = match provider {
@@ -29,28 +50,50 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
 
     let store = load_auth();
     for &key_name in store_keys {
-        if let Some(entry) = store.providers.get(key_name) {
-            match entry {
-                AuthEntry::ApiKey { key } => return Some(key.clone()),
-                AuthEntry::OAuth {
-                    access,
-                    refresh,
-                    expires,
-                    ..
-                } => {
-                    let now_ms = chrono::Utc::now().timestamp_millis();
-                    if *expires > now_ms + 60_000 {
-                        return Some(access.clone());
-                    }
-                    if !refresh.is_empty()
-                        && let Some(creds) = try_refresh_sync(key_name, refresh)
-                    {
-                        return Some(creds);
-                    }
-                    return Some(access.clone());
-                }
-                AuthEntry::ProviderConfig { .. } => {}
+        let Some(entry) = store.providers.get(key_name) else {
+            continue;
+        };
+        match entry {
+            AuthEntry::ApiKey { key } if !key.trim().is_empty() => {
+                return Some(ResolvedProviderAuth {
+                    source: AuthSource::BbAuth,
+                    credential_provider: key_name.to_string(),
+                    method: ProviderAuthMethod::ApiKey,
+                    credential: key.clone(),
+                    account_id: None,
+                    account_label: None,
+                    authority: None,
+                });
             }
+            AuthEntry::OAuth {
+                access,
+                refresh,
+                expires,
+                extra,
+            } if !access.trim().is_empty() => {
+                let account_id = extra
+                    .get("accountId")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let credential = if *expires > now_ms + 60_000 {
+                    access.clone()
+                } else if !refresh.is_empty() {
+                    try_refresh_sync(key_name, refresh).unwrap_or_else(|| access.clone())
+                } else {
+                    access.clone()
+                };
+                return Some(ResolvedProviderAuth {
+                    source: AuthSource::BbAuth,
+                    credential_provider: key_name.to_string(),
+                    method: ProviderAuthMethod::OAuth,
+                    credential,
+                    account_id: account_id.clone(),
+                    account_label: account_id,
+                    authority: None,
+                });
+            }
+            _ => {}
         }
     }
 
@@ -68,19 +111,35 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         if let Ok(val) = std::env::var(key)
             && !val.is_empty()
         {
-            return Some(val);
+            return Some(ResolvedProviderAuth {
+                source: AuthSource::EnvVar,
+                credential_provider: provider.to_string(),
+                method: ProviderAuthMethod::ApiKey,
+                credential: val,
+                account_id: None,
+                account_label: None,
+                authority: None,
+            });
         }
     }
 
     None
 }
 
-fn resolve_github_copilot_api_key() -> Option<String> {
+fn resolve_github_copilot_auth() -> Option<ResolvedProviderAuth> {
     for key in ["GH_COPILOT_TOKEN", "GITHUB_COPILOT_TOKEN"] {
         if let Ok(val) = std::env::var(key)
             && !val.trim().is_empty()
         {
-            return Some(val);
+            return Some(ResolvedProviderAuth {
+                source: AuthSource::EnvVar,
+                credential_provider: "github-copilot".to_string(),
+                method: ProviderAuthMethod::OAuth,
+                credential: val,
+                account_id: None,
+                account_label: None,
+                authority: None,
+            });
         }
     }
 
@@ -102,6 +161,10 @@ fn resolve_github_copilot_api_key() -> Option<String> {
         .map(ToString::to_string)
         .or_else(github_copilot_domain)
         .unwrap_or_else(|| "github.com".to_string());
+    let account_label = extra
+        .get("login")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     if let Some(token) = extra.get("copilot_token").and_then(|value| value.as_str())
@@ -111,14 +174,30 @@ fn resolve_github_copilot_api_key() -> Option<String> {
         && expires_at > now_ms + 300_000
         && !token.trim().is_empty()
     {
-        return Some(token.to_string());
+        return Some(ResolvedProviderAuth {
+            source: AuthSource::BbAuth,
+            credential_provider: "github-copilot".to_string(),
+            method: ProviderAuthMethod::OAuth,
+            credential: token.to_string(),
+            account_id: None,
+            account_label,
+            authority: Some(authority),
+        });
     }
 
     if expires <= now_ms + 60_000
         && !refresh.trim().is_empty()
-        && let Some(creds) = try_refresh_sync("github-copilot", &refresh)
+        && let Some(token) = try_refresh_sync("github-copilot", &refresh)
     {
-        return Some(creds);
+        return Some(ResolvedProviderAuth {
+            source: AuthSource::BbAuth,
+            credential_provider: "github-copilot".to_string(),
+            method: ProviderAuthMethod::OAuth,
+            credential: token,
+            account_id: None,
+            account_label,
+            authority: Some(authority),
+        });
     }
 
     if access.trim().is_empty() {
@@ -129,7 +208,15 @@ fn resolve_github_copilot_api_key() -> Option<String> {
     let mut extra = extra;
     merge_github_copilot_runtime_extra(&mut extra, &authority, &refreshed);
     let _ = save_oauth_state("github-copilot", access, refresh, expires, extra);
-    Some(refreshed.copilot_token)
+    Some(ResolvedProviderAuth {
+        source: AuthSource::BbAuth,
+        credential_provider: "github-copilot".to_string(),
+        method: ProviderAuthMethod::OAuth,
+        credential: refreshed.copilot_token,
+        account_id: None,
+        account_label: refreshed.login.clone(),
+        authority: Some(authority),
+    })
 }
 
 fn merge_github_copilot_runtime_extra(
@@ -291,5 +378,79 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
             .or(Some(creds.access))
     } else {
         Some(creds.access)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResolvedProviderAuth, resolve_provider_auth};
+    use crate::login::ProviderAuthMethod;
+    use crate::login::store::{AuthEntry, AuthStore, save_auth};
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let old = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old {
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    #[test]
+    fn resolves_openai_provider_to_codex_oauth_when_only_oauth_is_configured() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().expect("home tempdir");
+        let _home = EnvVarGuard::set("HOME", home.path());
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai-codex".to_string(),
+            AuthEntry::OAuth {
+                access: "oauth-access".to_string(),
+                refresh: String::new(),
+                expires: i64::MAX,
+                extra: serde_json::json!({"accountId": "acct_test123"}),
+            },
+        );
+        save_auth(&AuthStore {
+            last_provider: Some("openai".to_string()),
+            providers,
+        })
+        .expect("save auth");
+
+        let resolved = resolve_provider_auth("openai").expect("resolved auth");
+        assert_eq!(
+            resolved,
+            ResolvedProviderAuth {
+                source: crate::login::resolver::AuthSource::BbAuth,
+                credential_provider: "openai-codex".to_string(),
+                method: ProviderAuthMethod::OAuth,
+                credential: "oauth-access".to_string(),
+                account_id: Some("acct_test123".to_string()),
+                account_label: Some("acct_test123".to_string()),
+                authority: None,
+            }
+        );
     }
 }
