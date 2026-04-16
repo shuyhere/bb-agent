@@ -16,9 +16,9 @@ pub use cache_metrics::{
 };
 pub use context::{ContextResolutionInput, RuntimeContextUsage, resolve_context_window_status};
 pub use formatting::{
-    format_compact_tokens, format_context_from_tokens, format_context_percent,
-    format_u64_with_commas, format_unknown_context, render_cache_monitor_text,
-    render_context_window_status, render_footer_usage_text,
+    CacheMonitorTextInput, format_compact_tokens, format_context_from_tokens,
+    format_context_percent, format_u64_with_commas, format_unknown_context,
+    render_cache_monitor_text, render_context_window_status, render_footer_usage_text,
 };
 pub use request_metrics::{
     PreparedRequestMetrics, RequestCacheMetrics, RequestMetricsIdentity, RequestMetricsSnapshot,
@@ -26,8 +26,8 @@ pub use request_metrics::{
     ResolvedCacheUsage, ResponseUsage, append_request_metrics_jsonl, build_final_request_metrics,
     canonical_cacheable_prompt, canonical_json_from_serializable, canonical_json_from_value,
     commit_request_metrics_state, diff_prefix, estimate_tokens_from_bytes_for_model,
-    hydrate_request_metrics_state, prepare_request_metrics, resolve_cache_usage,
-    write_request_metrics_jsonl,
+    hydrate_request_metrics_state, latest_request_metrics_for_session, prepare_request_metrics,
+    resolve_cache_usage, write_request_metrics_jsonl,
 };
 pub use session::{
     SessionCacheMetricsSource, SessionMetricsSummary, collect_session_metrics,

@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use bb_monitor::{
-    ContextResolutionInput, RuntimeContextUsage, UsageTotals, render_cache_monitor_text,
+    CacheMonitorTextInput, ContextResolutionInput, RuntimeContextUsage, SessionCacheMetricsSource,
+    UsageTotals, latest_request_metrics_for_session, render_cache_monitor_text,
     render_footer_usage_text, resolve_context_window_status,
 };
 use bb_session::store;
@@ -191,7 +192,42 @@ impl TuiController {
     }
 
     fn current_input_monitor_text(&self) -> Option<String> {
-        render_cache_monitor_text(&self.footer_usage_totals())
+        let summary = collect_session_info_summary(
+            &self.session_setup.conn,
+            &self.session_setup.session_id,
+            &self.session_setup.model.provider,
+            &self.session_setup.model.id,
+            &self.session_setup.thinking_level,
+            self.session_setup.tool_ctx.execution_policy,
+        )
+        .ok()?;
+
+        let latest_request = self
+            .session_setup
+            .request_metrics_log_path
+            .as_ref()
+            .and_then(|path| {
+                latest_request_metrics_for_session(path, &self.session_setup.session_id)
+                    .ok()
+                    .flatten()
+            });
+        let source = latest_request.as_ref().map_or_else(
+            || summary.cache_metrics_source.clone(),
+            |metrics| {
+                Some(SessionCacheMetricsSource::from_cache_metrics_source(Some(
+                    &metrics.cache_metrics_source,
+                )))
+            },
+        );
+
+        render_cache_monitor_text(&CacheMonitorTextInput {
+            source,
+            average_hit_rate_pct: summary.cache_read_hit_rate_pct,
+            latest_hit_rate_pct: latest_request.and_then(|metrics| metrics.cache_read_hit_rate_pct),
+            has_cache_activity: summary.cache_read_tokens > 0
+                || summary.cache_write_tokens > 0
+                || summary.input_tokens > 0,
+        })
     }
 
     fn current_context_status(&self) -> bb_monitor::ContextWindowStatus {
