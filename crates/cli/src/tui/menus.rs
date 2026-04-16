@@ -17,8 +17,8 @@ use super::controller::TuiController;
 use super::formatting::format_assistant_text;
 use super::{
     FORK_ENTRY_MENU_ID, LOGIN_METHOD_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS,
-    LOGOUT_PROVIDER_MENU_ID, MODEL_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID,
-    TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
+    LOGOUT_PROVIDER_MENU_ID, MODEL_AUTH_MENU_ID, MODEL_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID,
+    TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
 };
 
 mod auth;
@@ -35,7 +35,7 @@ impl TuiController {
         match menu_id {
             "model" => {
                 if let Some((model, thinking)) = self.find_exact_model_match(value) {
-                    self.apply_model_selection(model, thinking);
+                    self.select_model_with_auth(model, thinking)?;
                 } else {
                     self.send_command(TuiCommand::SetStatusLine(format!(
                         "Model not found: {value}"
@@ -58,17 +58,44 @@ impl TuiController {
                     if let Some((model, thinking)) =
                         self.find_exact_model_match(&format!("{value}:{search}"))
                     {
-                        self.apply_model_selection(model, thinking);
+                        self.select_model_with_auth(model, thinking)?;
                     } else if let Some((model, thinking)) =
                         self.find_unique_model_match(&format!("{value}:{search}"))
                     {
-                        self.apply_model_selection(model, thinking);
+                        self.select_model_with_auth(model, thinking)?;
                     } else {
                         self.open_model_menu(&search, Some(value))?;
                     }
                 } else {
                     self.send_command(TuiCommand::SetStatusLine(
                         "No pending model-provider selection".to_string(),
+                    ));
+                }
+            }
+            MODEL_AUTH_MENU_ID => {
+                if let Some(pending) = self.pending_model_auth_selection.take() {
+                    if let Some(profile_id) = value.strip_prefix("profile:") {
+                        let _ = crate::login::set_active_auth_profile(
+                            &pending.model.provider,
+                            profile_id,
+                        )?;
+                    }
+                    if let Some(auth) =
+                        crate::login::resolve_provider_auth_choice(&pending.model.provider, value)
+                    {
+                        self.apply_model_selection_with_auth(
+                            pending.model,
+                            pending.thinking_override,
+                            Some(auth),
+                        );
+                    } else {
+                        self.send_command(TuiCommand::SetStatusLine(format!(
+                            "Auth option not found: {value}"
+                        )));
+                    }
+                } else {
+                    self.send_command(TuiCommand::SetStatusLine(
+                        "No pending model-auth selection".to_string(),
                     ));
                 }
             }

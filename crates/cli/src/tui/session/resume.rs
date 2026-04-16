@@ -25,6 +25,7 @@ impl TuiController {
         self.pending_tree_summary_target = None;
         self.pending_tree_custom_prompt_target = None;
         self.pending_model_provider_search = None;
+        self.pending_model_auth_selection = None;
         self.pending_images.clear();
         self.retry_status = None;
         self.manual_compaction_in_progress = false;
@@ -80,6 +81,7 @@ impl TuiController {
         self.pending_tree_summary_target = None;
         self.pending_tree_custom_prompt_target = None;
         self.pending_model_provider_search = None;
+        self.pending_model_auth_selection = None;
         self.pending_images.clear();
         self.queued_prompts.clear();
         self.streaming = false;

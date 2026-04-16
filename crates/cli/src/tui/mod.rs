@@ -23,6 +23,7 @@ const LOGIN_PROVIDER_MENU_ID: &str = "login-provider";
 const LOGIN_METHOD_MENU_ID: &str = "login-method";
 const LOGOUT_PROVIDER_MENU_ID: &str = "logout-provider";
 const MODEL_PROVIDER_MENU_ID: &str = "model-provider";
+const MODEL_AUTH_MENU_ID: &str = "model-auth";
 const RESUME_SESSION_MENU_ID: &str = "resume-session";
 const TREE_ENTRY_MENU_ID: &str = "tree-entry";
 const TREE_SUMMARY_MENU_ID: &str = "tree-summary";

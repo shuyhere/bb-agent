@@ -22,7 +22,7 @@ impl TuiController {
                         .into_iter()
                         .map(|provider| SelectItem {
                             label: crate::login::provider_display_name(&provider).into_owned(),
-                            detail: Some(crate::login::provider_auth_status_summary(&provider)),
+                            detail: Some(crate::login::provider_model_selection_detail(&provider)),
                             value: provider,
                         })
                         .collect(),
@@ -33,15 +33,99 @@ impl TuiController {
         }
 
         if let Some((model, thinking)) = self.find_exact_model_match(search_term) {
-            self.apply_model_selection(model, thinking);
-            return Ok(());
+            return self.select_model_with_auth(model, thinking);
         }
         if let Some((model, thinking)) = self.find_unique_model_match(search_term) {
-            self.apply_model_selection(model, thinking);
-            return Ok(());
+            return self.select_model_with_auth(model, thinking);
         }
 
         self.open_model_menu(search_term, normalized.provider_filter.as_deref())
+    }
+
+    pub(super) fn select_model_with_auth(
+        &mut self,
+        model: Model,
+        thinking_override: Option<ThinkingLevel>,
+    ) -> Result<()> {
+        if self.maybe_open_model_auth_menu(model.clone(), thinking_override)? {
+            return Ok(());
+        }
+        self.apply_model_selection(model, thinking_override);
+        Ok(())
+    }
+
+    fn maybe_open_model_auth_menu(
+        &mut self,
+        model: Model,
+        thinking_override: Option<ThinkingLevel>,
+    ) -> Result<bool> {
+        let options = crate::login::provider_auth_option_summaries(&model.provider);
+        if options.len() <= 1 {
+            return Ok(false);
+        }
+
+        self.pending_model_auth_selection =
+            Some(crate::tui::controller::PendingModelAuthSelection {
+                model: model.clone(),
+                thinking_override,
+            });
+        self.send_command(TuiCommand::OpenSelectMenu {
+            menu_id: super::MODEL_AUTH_MENU_ID.to_string(),
+            title: format!(
+                "Select auth for {}",
+                crate::login::provider_display_name(&model.provider)
+            ),
+            items: options
+                .into_iter()
+                .map(|option| {
+                    let label = match (option.method, option.source) {
+                        (
+                            crate::login::ProviderAuthMethod::ApiKey,
+                            crate::login::AuthSource::EnvVar,
+                        ) => "API key (env)".to_string(),
+                        (
+                            crate::login::ProviderAuthMethod::ApiKey,
+                            crate::login::AuthSource::BbAuth,
+                        ) => "API key".to_string(),
+                        (
+                            crate::login::ProviderAuthMethod::OAuth,
+                            crate::login::AuthSource::EnvVar,
+                        ) => "OAuth (env)".to_string(),
+                        (
+                            crate::login::ProviderAuthMethod::OAuth,
+                            crate::login::AuthSource::BbAuth,
+                        ) => option
+                            .account_label
+                            .as_ref()
+                            .map(|label| format!("OAuth • {label}"))
+                            .unwrap_or_else(|| "OAuth".to_string()),
+                    };
+                    let mut detail_parts = Vec::new();
+                    if option.active {
+                        detail_parts.push("currently active".to_string());
+                    }
+                    if let Some(authority) = option.authority {
+                        detail_parts.push(authority);
+                    }
+                    if let Some(timestamp_ms) = option.configured_at_ms.or(option.updated_at_ms)
+                        && let Some(dt) =
+                            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
+                    {
+                        detail_parts.push(format!("saved {}", dt.format("%Y-%m-%d %H:%M UTC")));
+                    }
+                    SelectItem {
+                        label,
+                        detail: (!detail_parts.is_empty()).then_some(detail_parts.join(" • ")),
+                        value: option
+                            .profile_id
+                            .map(|profile_id| format!("profile:{profile_id}"))
+                            .unwrap_or_else(|| format!("env:{}", option.method.footer_label())),
+                    }
+                })
+                .collect(),
+            selected_value: None,
+        });
+        Ok(true)
     }
 
     pub(super) fn open_model_menu(
@@ -146,6 +230,15 @@ impl TuiController {
         thinking_override: Option<ThinkingLevel>,
     ) {
         let auth = crate::login::resolve_provider_auth(&model.provider);
+        self.apply_model_selection_with_auth(model, thinking_override, auth);
+    }
+
+    pub(super) fn apply_model_selection_with_auth(
+        &mut self,
+        model: Model,
+        thinking_override: Option<ThinkingLevel>,
+        auth: Option<crate::login::ResolvedProviderAuth>,
+    ) {
         let api_key = auth
             .as_ref()
             .map(|auth| auth.credential.clone())
@@ -376,7 +469,7 @@ impl TuiController {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
 
     use bb_core::agent_session_runtime::{AgentSessionRuntimeBootstrap, AgentSessionRuntimeHost};
     use bb_core::settings::{ModelOverride, Settings};
@@ -389,12 +482,11 @@ mod tests {
 
     use crate::extensions::{ExtensionBootstrap, ExtensionCommandRegistry};
     use crate::session_bootstrap::{SessionRuntimeSetup, SessionUiOptions};
-    use crate::tui::MODEL_PROVIDER_MENU_ID;
     use crate::tui::controller::TuiController;
+    use crate::tui::{MODEL_AUTH_MENU_ID, MODEL_PROVIDER_MENU_ID};
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::login::auth_test_env_lock()
     }
 
     struct EnvVarGuard {
@@ -515,6 +607,60 @@ mod tests {
     }
 
     #[test]
+    fn exact_model_match_with_multiple_auth_sources_prompts_for_auth_selection() {
+        let _lock = env_lock().lock().unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\n",
+        )
+        .expect("cargo toml");
+        let _home = EnvVarGuard::set_path("HOME", tempdir.path());
+        let _openai = EnvVarGuard::set_value("OPENAI_API_KEY", "openai-test-key");
+        crate::login::save_oauth_credentials(
+            "openai-codex",
+            &crate::oauth::OAuthCredentials {
+                access: "oauth-access".to_string(),
+                refresh: "refresh-token".to_string(),
+                expires: i64::MAX,
+                extra: serde_json::json!({"accountId": "acct_primary"}),
+            },
+        )
+        .expect("save openai oauth");
+
+        let (mut controller, mut command_rx) = build_test_controller(tempdir.path().to_path_buf());
+        controller
+            .handle_model_selection_command(Some("gpt-4o"))
+            .expect("handle model selection");
+
+        let commands = drain_commands(&mut command_rx);
+        let menu = commands
+            .into_iter()
+            .find_map(|command| match command {
+                TuiCommand::OpenSelectMenu {
+                    menu_id,
+                    title,
+                    items,
+                    ..
+                } => Some((menu_id, title, items)),
+                _ => None,
+            })
+            .expect("auth chooser menu");
+
+        assert_eq!(menu.0, MODEL_AUTH_MENU_ID);
+        assert_eq!(menu.1, "Select auth for OpenAI");
+        assert_eq!(menu.2.len(), 2);
+        assert_eq!(menu.2[0].label, "OAuth • acct_primary");
+        assert!(
+            menu.2[0].detail.as_deref().is_some_and(
+                |detail| detail.contains("currently active") && detail.contains("saved ")
+            )
+        );
+        assert_eq!(menu.2[1].label, "API key (env)");
+        assert!(menu.2[1].value.starts_with("env:api-key"));
+    }
+
+    #[test]
     fn ambiguous_exact_model_match_prompts_for_provider_selection() {
         let _lock = env_lock().lock().unwrap();
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -525,7 +671,18 @@ mod tests {
         .expect("cargo toml");
         let _home = EnvVarGuard::set_path("HOME", tempdir.path());
         let _openai = EnvVarGuard::set_value("OPENAI_API_KEY", "openai-test-key");
-        let _openrouter = EnvVarGuard::set_value("OPENROUTER_API_KEY", "openrouter-test-key");
+        crate::login::save_api_key("openrouter", "openrouter-saved-key".to_string())
+            .expect("save openrouter key");
+        crate::login::save_oauth_credentials(
+            "openai-codex",
+            &crate::oauth::OAuthCredentials {
+                access: "oauth-access".to_string(),
+                refresh: "refresh-token".to_string(),
+                expires: i64::MAX,
+                extra: serde_json::json!({"accountId": "acct_primary"}),
+            },
+        )
+        .expect("save openai oauth");
 
         Settings {
             models: Some(vec![ModelOverride {
@@ -586,6 +743,18 @@ mod tests {
                 .map(|item| item.label.as_str())
                 .collect::<Vec<_>>(),
             vec!["OpenAI", "OpenRouter"]
+        );
+        assert!(
+            menu.2[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("active: OAuth • acct_primary • saved "))
+        );
+        assert!(
+            menu.2[1]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("active: API key • saved "))
         );
     }
 }
