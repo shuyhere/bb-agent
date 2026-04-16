@@ -1,4 +1,3 @@
-mod auth;
 mod request;
 
 #[cfg(test)]
@@ -9,8 +8,6 @@ use futures::StreamExt;
 use std::collections::HashSet;
 
 use crate::UsageInfo;
-
-pub(super) use auth::extract_openai_account_id;
 use request::{
     codex_reasoning_effort, convert_messages_for_codex, convert_tools_for_codex, resolve_codex_url,
 };

@@ -167,17 +167,23 @@ impl TuiController {
         let usage = self.footer_usage_totals();
         let context = self.current_context_status();
 
+        let auth_badge = self
+            .session_setup
+            .auth
+            .as_ref()
+            .map(|auth| auth.footer_badge(&self.session_setup.model.provider))
+            .unwrap_or_else(|| format!("{}/unauth", self.session_setup.model.provider));
         let right = if self.session_setup.thinking_level == "off" {
             format!(
                 "({}) {} • thinking off • {}",
-                self.session_setup.model.provider,
+                auth_badge,
                 self.session_setup.model.id,
                 permission_posture_badge(self.session_setup.tool_ctx.execution_policy)
             )
         } else {
             format!(
                 "({}) {} • {} • {}",
-                self.session_setup.model.provider,
+                auth_badge,
                 self.session_setup.model.id,
                 self.session_setup.thinking_level,
                 permission_posture_badge(self.session_setup.tool_ctx.execution_policy)

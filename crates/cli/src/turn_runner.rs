@@ -9,6 +9,7 @@
 //! - Looping for multi-turn tool use
 
 use crate::extensions::ExtensionCommandRegistry;
+use crate::login::ResolvedProviderAuth;
 use crate::tool_registry::ToolRegistry;
 use bb_core::types::ContentBlock;
 use bb_monitor::RequestMetricsTracker;
@@ -26,6 +27,7 @@ pub(crate) struct TurnConfig {
     pub system_prompt: String,
     pub model: Model,
     pub provider: Arc<dyn Provider>,
+    pub auth: Option<ResolvedProviderAuth>,
     pub api_key: String,
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,

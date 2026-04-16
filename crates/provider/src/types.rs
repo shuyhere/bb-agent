@@ -36,9 +36,17 @@ pub enum ProviderRetryEvent {
 
 pub type RetryCallback = Arc<dyn Fn(ProviderRetryEvent) + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderAuthMode {
+    ApiKey,
+    OAuth,
+}
+
 /// Options for a provider request.
 pub struct RequestOptions {
     pub api_key: String,
+    pub auth_mode: ProviderAuthMode,
+    pub auth_account_id: Option<String>,
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,
     pub cancel: CancellationToken,

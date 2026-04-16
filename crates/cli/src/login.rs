@@ -21,14 +21,14 @@ use store::{AuthEntry, load_auth};
 
 pub(crate) use cli::{handle_login, handle_logout, run_oauth_login, try_open_browser};
 pub(crate) use providers::{
-    provider_api_key_variant, provider_auth_method, provider_display_name, provider_login_hint,
-    provider_meta, provider_oauth_variant,
+    ProviderAuthMethod, provider_api_key_variant, provider_auth_method, provider_display_name,
+    provider_login_hint, provider_meta, provider_oauth_variant,
 };
 pub(crate) use resolver::{
-    add_cached_github_copilot_models, auth_source, auth_source_label,
+    ResolvedProviderAuth, add_cached_github_copilot_models, auth_source,
     authenticated_model_candidates, available_model_for_provider,
     preferred_available_model_for_provider, preferred_startup_provider_and_model,
-    provider_auth_status_summary, resolve_api_key,
+    provider_auth_status_summary, resolve_provider_auth,
 };
 pub(crate) use store::{
     auth_path, configured_providers, github_copilot_api_base_url, github_copilot_cached_models,

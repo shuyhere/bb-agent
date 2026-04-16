@@ -94,6 +94,7 @@ pub(crate) struct SessionRuntimeSetup {
     pub session_id: String,
     pub provider: Arc<dyn Provider>,
     pub model: bb_provider::registry::Model,
+    pub auth: Option<crate::login::ResolvedProviderAuth>,
     pub api_key: String,
     pub base_url: String,
     pub headers: std::collections::HashMap<String, String>,
@@ -251,7 +252,11 @@ pub(crate) async fn prepare_session_runtime(
             cost: Default::default(),
         });
 
-    let api_key = login::resolve_api_key(&provider_name).unwrap_or_default();
+    let auth = login::resolve_provider_auth(&provider_name);
+    let api_key = auth
+        .as_ref()
+        .map(|auth| auth.credential.clone())
+        .unwrap_or_default();
     let base_url = if provider_name == "github-copilot" {
         crate::login::github_copilot_api_base_url()
     } else {
@@ -334,6 +339,7 @@ pub(crate) async fn prepare_session_runtime(
         session_id,
         provider,
         model,
+        auth,
         api_key,
         base_url,
         headers,

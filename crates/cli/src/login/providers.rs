@@ -93,6 +93,13 @@ impl ProviderAuthMethod {
             Self::ApiKey => "API key",
         }
     }
+
+    pub(crate) fn footer_label(self) -> &'static str {
+        match self {
+            Self::OAuth => "oauth",
+            Self::ApiKey => "api-key",
+        }
+    }
 }
 
 /// Return the login method used for a provider so callers can format their own

@@ -177,9 +177,14 @@ fn build_footer_data(session_setup: &SessionRuntimeSetup) -> TuiFooterData {
         "?/{ctx} (auto)",
         ctx = format_tokens(session_setup.model.context_window)
     );
+    let auth_badge = session_setup
+        .auth
+        .as_ref()
+        .map(|auth| auth.footer_badge(&session_setup.model.provider))
+        .unwrap_or_else(|| format!("{}/unauth", session_setup.model.provider));
     let line2_right = format!(
         "({}) {}{} • {}",
-        session_setup.model.provider,
+        auth_badge,
         session_setup.model.id,
         if session_setup.thinking_level == "off" {
             " • thinking off".to_string()

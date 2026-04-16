@@ -16,5 +16,6 @@ pub use error::{ProviderError, Result};
 pub use streaming::{CollectedResponse, CollectedToolCall};
 pub use traits::Provider;
 pub use types::{
-    CompletionRequest, ProviderRetryEvent, RequestOptions, RetryCallback, StreamEvent, UsageInfo,
+    CompletionRequest, ProviderAuthMode, ProviderRetryEvent, RequestOptions, RetryCallback,
+    StreamEvent, UsageInfo,
 };
