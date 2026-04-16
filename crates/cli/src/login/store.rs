@@ -372,34 +372,6 @@ pub(crate) fn active_auth_method(provider: &str) -> Option<ProviderAuthMethod> {
     methods.first().copied()
 }
 
-pub(crate) fn set_active_auth_method(provider: &str, method: ProviderAuthMethod) -> Result<bool> {
-    let mut store = load_auth();
-    let normalized = normalized_auth_provider(provider);
-    let profile_id = store.profiles.get(&normalized).and_then(|profiles| {
-        best_profile_index_for_method(
-            profiles,
-            method,
-            store
-                .active_auth_profiles
-                .get(&normalized)
-                .map(String::as_str),
-        )
-        .and_then(|idx| profiles.get(idx))
-        .map(|profile| profile.id.clone())
-    });
-    let Some(profile_id) = profile_id else {
-        return Ok(false);
-    };
-
-    store.active_auth_methods.insert(normalized.clone(), method);
-    store
-        .active_auth_profiles
-        .insert(normalized.clone(), profile_id);
-    store.last_provider = Some(normalized);
-    save_auth(&store)?;
-    Ok(true)
-}
-
 pub(crate) fn set_active_auth_profile(provider: &str, profile_id: &str) -> Result<bool> {
     let mut store = load_auth();
     let normalized = normalized_auth_provider(provider);

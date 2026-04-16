@@ -16,9 +16,9 @@ use crate::slash::LocalSlashCommandHost;
 use super::controller::TuiController;
 use super::formatting::format_assistant_text;
 use super::{
-    FORK_ENTRY_MENU_ID, LOGIN_METHOD_MENU_ID, LOGIN_PROVIDER_MENU_ID, LOGIN_PROVIDERS,
-    LOGOUT_PROVIDER_MENU_ID, MODEL_AUTH_MENU_ID, MODEL_PROVIDER_MENU_ID, RESUME_SESSION_MENU_ID,
-    TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
+    FORK_ENTRY_MENU_ID, LOGIN_AUTH_OPTION_MENU_ID, LOGIN_METHOD_MENU_ID, LOGIN_PROVIDER_MENU_ID,
+    LOGIN_PROVIDERS, LOGOUT_PROVIDER_MENU_ID, MODEL_AUTH_MENU_ID, MODEL_PROVIDER_MENU_ID,
+    RESUME_SESSION_MENU_ID, TREE_ENTRY_MENU_ID, TREE_SUMMARY_MENU_ID, copy_text_to_clipboard,
 };
 
 mod auth;
@@ -101,41 +101,17 @@ impl TuiController {
             }
             LOGIN_METHOD_MENU_ID => {
                 if let Some(provider) = value.strip_prefix("oauth:") {
-                    let active_provider = match provider {
-                        "openai-codex" => "openai",
-                        other => other,
-                    };
-                    if self.switch_active_auth_method(
+                    if !self.maybe_open_login_auth_option_menu(
                         provider,
                         crate::login::ProviderAuthMethod::OAuth,
-                    )? {
-                        self.send_command(TuiCommand::SetStatusLine(format!(
-                            "Using {} OAuth{}",
-                            crate::login::provider_display_name(provider),
-                            if self.session_setup.model.provider == active_provider {
-                                " for current model"
-                            } else {
-                                ""
-                            }
-                        )));
-                    } else {
+                    ) {
                         self.begin_oauth_login(provider, submission_rx).await?;
                     }
                 } else if let Some(provider) = value.strip_prefix("api_key:") {
-                    if self.switch_active_auth_method(
+                    if !self.maybe_open_login_auth_option_menu(
                         provider,
                         crate::login::ProviderAuthMethod::ApiKey,
-                    )? {
-                        self.send_command(TuiCommand::SetStatusLine(format!(
-                            "Using {} API key{}",
-                            crate::login::provider_display_name(provider),
-                            if self.session_setup.model.provider == provider {
-                                " for current model"
-                            } else {
-                                ""
-                            }
-                        )));
-                    } else {
+                    ) {
                         self.begin_api_key_login(provider);
                     }
                 } else if value == "copilot:github" {
@@ -149,6 +125,65 @@ impl TuiController {
                         level: TuiNoteLevel::Error,
                         text: format!("Unknown login method selection: {value}"),
                     });
+                }
+            }
+            LOGIN_AUTH_OPTION_MENU_ID => {
+                if let Some(pending) = self.pending_login_auth_selection.take() {
+                    match value {
+                        "action:login-new" => match pending.method {
+                            crate::login::ProviderAuthMethod::OAuth => {
+                                self.begin_oauth_login(&pending.provider, submission_rx)
+                                    .await?;
+                            }
+                            crate::login::ProviderAuthMethod::ApiKey => {
+                                self.begin_api_key_login(&pending.provider);
+                            }
+                        },
+                        "action:copilot-github" => {
+                            self.finish_copilot_host_setup("github.com")?;
+                            self.begin_oauth_login("github-copilot", submission_rx)
+                                .await?;
+                        }
+                        "action:copilot-enterprise" => {
+                            self.begin_copilot_enterprise_login();
+                        }
+                        _ => {
+                            if let Some(profile_id) = value.strip_prefix("profile:") {
+                                let _ = crate::login::set_active_auth_profile(
+                                    &pending.provider,
+                                    profile_id,
+                                )?;
+                            }
+                            if let Some(auth) =
+                                crate::login::resolve_provider_auth_choice(&pending.provider, value)
+                            {
+                                let label = auth.footer_badge(&pending.provider);
+                                let applied = self.apply_selected_auth_to_current_session(
+                                    &pending.provider,
+                                    auth,
+                                );
+                                let saved_profile = value.starts_with("profile:");
+                                self.send_command(TuiCommand::SetStatusLine(if applied {
+                                    format!("Using {label} for current model")
+                                } else if saved_profile {
+                                    format!("Selected {label} as the active saved auth")
+                                } else {
+                                    format!(
+                                        "Selected {label} for this session only • use /model on a {} model to apply it",
+                                        crate::login::provider_display_name(&pending.provider)
+                                    )
+                                }));
+                            } else {
+                                self.send_command(TuiCommand::SetStatusLine(format!(
+                                    "Auth option not found: {value}"
+                                )));
+                            }
+                        }
+                    }
+                } else {
+                    self.send_command(TuiCommand::SetStatusLine(
+                        "No pending login-auth selection".to_string(),
+                    ));
                 }
             }
             LOGOUT_PROVIDER_MENU_ID => {
@@ -270,6 +305,7 @@ impl LocalSlashCommandHost for TuiController {
             &self.session_setup.model.id,
             &self.session_setup.thinking_level,
             self.session_setup.tool_ctx.execution_policy,
+            self.session_setup.auth.as_ref(),
         )?;
         self.send_command(TuiCommand::PushNote {
             level: TuiNoteLevel::Status,

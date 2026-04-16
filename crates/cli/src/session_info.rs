@@ -56,6 +56,7 @@ pub(crate) fn collect_session_info_summary(
     model_id: &str,
     thinking: &str,
     execution_policy: ExecutionPolicy,
+    current_auth: Option<&crate::login::ResolvedProviderAuth>,
 ) -> Result<SessionInfoSummary> {
     let file = conn
         .path()
@@ -73,7 +74,10 @@ pub(crate) fn collect_session_info_summary(
         ..SessionInfoSummary::default()
     };
 
-    if let Some(auth) = crate::login::resolve_provider_auth(model_provider) {
+    if let Some(auth) = current_auth
+        .cloned()
+        .or_else(|| crate::login::resolve_provider_auth(model_provider))
+    {
         summary.auth_source = auth.source.label().to_string();
         summary.auth_method = auth.method.label().to_string();
         summary.auth_account = auth.account_label.or(auth.account_id);
@@ -265,6 +269,8 @@ mod tests {
     use bb_tools::ExecutionPolicy;
     use chrono::Utc;
 
+    use crate::login::{AuthSource, ProviderAuthMethod, ResolvedProviderAuth};
+
     #[test]
     fn format_u64_inserts_commas() {
         assert_eq!(format_u64_with_commas(0), "0");
@@ -316,6 +322,7 @@ mod tests {
             "claude-opus-4-6",
             "medium",
             ExecutionPolicy::Safety,
+            None,
         )
         .expect("summary");
 
@@ -364,5 +371,34 @@ mod tests {
         assert!(rendered.contains("Auth Method: OAuth"));
         assert!(rendered.contains("Auth Account: acct_test123"));
         assert!(rendered.contains("Auth Authority: github.com"));
+    }
+
+    #[test]
+    fn session_summary_prefers_explicit_session_auth_over_default_resolution() {
+        let conn = store::open_memory().expect("memory db");
+        let session_id = store::create_session(&conn, "/tmp").expect("session");
+        let explicit_auth = ResolvedProviderAuth {
+            source: AuthSource::EnvVar,
+            credential_provider: "openai".to_string(),
+            method: ProviderAuthMethod::ApiKey,
+            credential: "env-openai-key".to_string(),
+            account_id: None,
+            account_label: None,
+            authority: None,
+        };
+
+        let summary = collect_session_info_summary(
+            &conn,
+            &session_id,
+            "openai",
+            "gpt-5",
+            "medium",
+            ExecutionPolicy::Safety,
+            Some(&explicit_auth),
+        )
+        .expect("summary");
+
+        assert_eq!(summary.auth_source, "environment");
+        assert_eq!(summary.auth_method, "API key");
     }
 }
