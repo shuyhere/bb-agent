@@ -128,6 +128,12 @@ pub(super) enum QueuedPrompt {
     Hidden(String),
 }
 
+#[derive(Clone)]
+pub(super) struct PendingModelAuthSelection {
+    pub model: bb_provider::registry::Model,
+    pub thinking_override: Option<bb_core::agent_session::ThinkingLevel>,
+}
+
 pub(super) struct TuiController {
     pub(super) runtime_host: AgentSessionRuntimeHost,
     pub(super) session_setup: SessionRuntimeSetup,
@@ -140,6 +146,7 @@ pub(super) struct TuiController {
     pub(super) pending_tree_summary_target: Option<String>,
     pub(super) pending_tree_custom_prompt_target: Option<String>,
     pub(super) pending_model_provider_search: Option<String>,
+    pub(super) pending_model_auth_selection: Option<PendingModelAuthSelection>,
     pub(super) pending_login_api_key_provider: Option<String>,
     pub(super) pending_login_copilot_enterprise: bool,
     pub(super) pending_images: Vec<PendingImage>,
@@ -198,6 +205,7 @@ impl TuiController {
             pending_tree_summary_target: None,
             pending_tree_custom_prompt_target: None,
             pending_model_provider_search: None,
+            pending_model_auth_selection: None,
             pending_login_api_key_provider: None,
             pending_login_copilot_enterprise: false,
             pending_images: Vec::new(),

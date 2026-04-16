@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderAuthOptionSummary {
+    pub profile_id: Option<String>,
     pub method: ProviderAuthMethod,
     pub source: AuthSource,
     pub account_label: Option<String>,
@@ -63,6 +64,7 @@ pub(crate) fn provider_auth_option_summaries(provider: &str) -> Vec<ProviderAuth
     let mut options = stored_auth_profiles(&normalized)
         .into_iter()
         .map(|profile| ProviderAuthOptionSummary {
+            profile_id: Some(profile.profile_id),
             method: profile.method,
             source: AuthSource::BbAuth,
             account_label: profile.account_label,
@@ -77,6 +79,7 @@ pub(crate) fn provider_auth_option_summaries(provider: &str) -> Vec<ProviderAuth
     for method in env_auth_methods_for_provider(&normalized) {
         let active = stored_methods.is_empty() && active_method == Some(method);
         options.push(ProviderAuthOptionSummary {
+            profile_id: None,
             method,
             source: AuthSource::EnvVar,
             account_label: None,

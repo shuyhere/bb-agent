@@ -330,6 +330,18 @@ pub(crate) fn stored_auth_profiles(provider: &str) -> Vec<StoredAuthProfileSumma
     stored_auth_profiles_for_store(&store, provider)
 }
 
+pub(super) fn stored_auth_profile_by_id<'a>(
+    store: &'a AuthStore,
+    provider: &str,
+    profile_id: &str,
+) -> Option<&'a AuthProfile> {
+    let normalized = normalized_auth_provider(provider);
+    store
+        .profiles
+        .get(&normalized)
+        .and_then(|profiles| profiles.iter().find(|profile| profile.id == profile_id))
+}
+
 pub(crate) fn active_auth_method(provider: &str) -> Option<ProviderAuthMethod> {
     let store = load_auth();
     let normalized = normalized_auth_provider(provider);
@@ -383,6 +395,26 @@ pub(crate) fn set_active_auth_method(provider: &str, method: ProviderAuthMethod)
     store
         .active_auth_profiles
         .insert(normalized.clone(), profile_id);
+    store.last_provider = Some(normalized);
+    save_auth(&store)?;
+    Ok(true)
+}
+
+pub(crate) fn set_active_auth_profile(provider: &str, profile_id: &str) -> Result<bool> {
+    let mut store = load_auth();
+    let normalized = normalized_auth_provider(provider);
+    let Some(profile) = stored_auth_profile_by_id(&store, &normalized, profile_id).cloned() else {
+        return Ok(false);
+    };
+    if !auth_profile_matches(&profile) {
+        return Ok(false);
+    }
+    store
+        .active_auth_profiles
+        .insert(normalized.clone(), profile.id.clone());
+    store
+        .active_auth_methods
+        .insert(normalized.clone(), profile.method);
     store.last_provider = Some(normalized);
     save_auth(&store)?;
     Ok(true)
