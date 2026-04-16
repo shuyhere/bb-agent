@@ -1,4 +1,4 @@
-use super::store::{save_auth, save_oauth_state};
+use super::store::save_oauth_state;
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,81 +23,80 @@ impl ResolvedProviderAuth {
 }
 
 pub fn save_oauth_credentials(provider: &str, creds: &OAuthCredentials) -> Result<()> {
-    let mut store = load_auth();
-    store.providers.insert(
-        provider.to_string(),
-        AuthEntry::OAuth {
-            access: creds.access.clone(),
-            refresh: creds.refresh.clone(),
-            expires: creds.expires,
-            extra: creds.extra.clone(),
-        },
-    );
-    store.last_provider = Some(normalize_provider_for_model_selection(provider));
-    save_auth(&store)
+    save_oauth_state(
+        provider,
+        creds.access.clone(),
+        creds.refresh.clone(),
+        creds.expires,
+        creds.extra.clone(),
+    )
 }
 
 pub fn resolve_provider_auth(provider: &str) -> Option<ResolvedProviderAuth> {
-    if provider == "github-copilot" {
+    let normalized = normalize_provider_for_model_selection(provider);
+    if normalized == "github-copilot" {
         return resolve_github_copilot_auth();
     }
 
-    let store_keys: &[&str] = match provider {
-        "openai" => &["openai", "openai-codex"],
-        "openai-codex" => &["openai-codex", "openai"],
-        _ => &[provider],
+    let store = load_auth();
+    let preferred_methods = match active_auth_method(&normalized) {
+        Some(active) => match active {
+            ProviderAuthMethod::OAuth => [ProviderAuthMethod::OAuth, ProviderAuthMethod::ApiKey],
+            ProviderAuthMethod::ApiKey => [ProviderAuthMethod::ApiKey, ProviderAuthMethod::OAuth],
+        },
+        None => [ProviderAuthMethod::ApiKey, ProviderAuthMethod::OAuth],
     };
 
-    let store = load_auth();
-    for &key_name in store_keys {
-        let Some(entry) = store.providers.get(key_name) else {
-            continue;
-        };
-        match entry {
-            AuthEntry::ApiKey { key } if !key.trim().is_empty() => {
-                return Some(ResolvedProviderAuth {
-                    source: AuthSource::BbAuth,
-                    credential_provider: key_name.to_string(),
-                    method: ProviderAuthMethod::ApiKey,
-                    credential: key.clone(),
-                    account_id: None,
-                    account_label: None,
-                    authority: None,
-                });
+    for method in preferred_methods {
+        if let Some(entry) = stored_auth_entry_for_method(&store, &normalized, method) {
+            match entry {
+                AuthEntry::ApiKey { key } => {
+                    return Some(ResolvedProviderAuth {
+                        source: AuthSource::BbAuth,
+                        credential_provider: provider_storage_key(&normalized, method),
+                        method,
+                        credential: key.clone(),
+                        account_id: None,
+                        account_label: None,
+                        authority: None,
+                    });
+                }
+                AuthEntry::OAuth {
+                    access,
+                    refresh,
+                    expires,
+                    extra,
+                } => {
+                    let account_id = extra
+                        .get("accountId")
+                        .and_then(|value| value.as_str())
+                        .map(ToString::to_string);
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let credential_provider = provider_storage_key(&normalized, method);
+                    let credential = if *expires > now_ms + 60_000 {
+                        access.clone()
+                    } else if !refresh.is_empty() {
+                        try_refresh_sync(&credential_provider, refresh)
+                            .unwrap_or_else(|| access.clone())
+                    } else {
+                        access.clone()
+                    };
+                    return Some(ResolvedProviderAuth {
+                        source: AuthSource::BbAuth,
+                        credential_provider,
+                        method,
+                        credential,
+                        account_id: account_id.clone(),
+                        account_label: account_id,
+                        authority: None,
+                    });
+                }
+                AuthEntry::ProviderConfig { .. } => {}
             }
-            AuthEntry::OAuth {
-                access,
-                refresh,
-                expires,
-                extra,
-            } if !access.trim().is_empty() => {
-                let account_id = extra
-                    .get("accountId")
-                    .and_then(|value| value.as_str())
-                    .map(ToString::to_string);
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let credential = if *expires > now_ms + 60_000 {
-                    access.clone()
-                } else if !refresh.is_empty() {
-                    try_refresh_sync(key_name, refresh).unwrap_or_else(|| access.clone())
-                } else {
-                    access.clone()
-                };
-                return Some(ResolvedProviderAuth {
-                    source: AuthSource::BbAuth,
-                    credential_provider: key_name.to_string(),
-                    method: ProviderAuthMethod::OAuth,
-                    credential,
-                    account_id: account_id.clone(),
-                    account_label: account_id,
-                    authority: None,
-                });
-            }
-            _ => {}
         }
     }
 
-    let env_keys: &[&str] = match provider {
+    let env_keys: &[&str] = match normalized.as_str() {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "openai" | "openai-codex" => &["OPENAI_API_KEY"],
         "google" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
@@ -113,7 +112,7 @@ pub fn resolve_provider_auth(provider: &str) -> Option<ResolvedProviderAuth> {
         {
             return Some(ResolvedProviderAuth {
                 source: AuthSource::EnvVar,
-                credential_provider: provider.to_string(),
+                credential_provider: normalized.clone(),
                 method: ProviderAuthMethod::ApiKey,
                 credential: val,
                 account_id: None,
@@ -352,6 +351,11 @@ fn try_refresh_sync(provider: &str, refresh_token: &str) -> Option<String> {
 async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
     use crate::oauth;
 
+    let provider = match provider {
+        "anthropic-oauth" => "anthropic",
+        other => other,
+    };
+
     let creds = match provider {
         "anthropic" => oauth::anthropic::refresh_anthropic_token(refresh_token)
             .await
@@ -435,6 +439,7 @@ mod tests {
         );
         save_auth(&AuthStore {
             last_provider: Some("openai".to_string()),
+            active_auth_methods: HashMap::new(),
             providers,
         })
         .expect("save auth");
@@ -452,5 +457,43 @@ mod tests {
                 authority: None,
             }
         );
+    }
+
+    #[test]
+    fn resolves_anthropic_to_active_api_key_when_both_methods_are_saved() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().expect("home tempdir");
+        let _home = EnvVarGuard::set("HOME", home.path());
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "anthropic".to_string(),
+            AuthEntry::ApiKey {
+                key: "api-key-secret".to_string(),
+            },
+        );
+        providers.insert(
+            "anthropic-oauth".to_string(),
+            AuthEntry::OAuth {
+                access: "oauth-access".to_string(),
+                refresh: String::new(),
+                expires: i64::MAX,
+                extra: serde_json::json!({}),
+            },
+        );
+        save_auth(&AuthStore {
+            last_provider: Some("anthropic".to_string()),
+            active_auth_methods: HashMap::from([(
+                "anthropic".to_string(),
+                ProviderAuthMethod::ApiKey,
+            )]),
+            providers,
+        })
+        .expect("save auth");
+
+        let resolved = resolve_provider_auth("anthropic").expect("resolved auth");
+        assert_eq!(resolved.method, ProviderAuthMethod::ApiKey);
+        assert_eq!(resolved.credential, "api-key-secret");
+        assert_eq!(resolved.credential_provider, "anthropic");
     }
 }

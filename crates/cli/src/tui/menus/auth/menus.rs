@@ -1,6 +1,20 @@
 use super::dialogs::{tui_auth_display_name, tui_auth_status_detail};
 use super::*;
 
+fn auth_method_detail(
+    provider: &str,
+    method: crate::login::ProviderAuthMethod,
+    base: &str,
+) -> String {
+    let configured = crate::login::stored_auth_methods(provider).contains(&method);
+    let active = crate::login::active_auth_method(provider) == Some(method);
+    match (configured, active) {
+        (true, true) => format!("{base} • configured • active"),
+        (true, false) => format!("{base} • configured"),
+        (false, _) => base.to_string(),
+    }
+}
+
 impl TuiController {
     pub(crate) fn open_login_provider_menu(&mut self) {
         self.send_command(TuiCommand::OpenSelectMenu {
@@ -25,10 +39,7 @@ impl TuiController {
                             "openrouter" => "OpenRouter".to_string(),
                             _ => (*provider).to_string(),
                         },
-                        detail: Some(format!(
-                            "{methods} • {}",
-                            tui_auth_status_detail(provider)
-                        )),
+                        detail: Some(format!("{methods} • {}", tui_auth_status_detail(provider))),
                         value: (*provider).to_string(),
                     }
                 })
@@ -43,24 +54,40 @@ impl TuiController {
             "anthropic" => {
                 items.push(SelectItem {
                     label: "Claude Pro/Max".to_string(),
-                    detail: Some("OAuth subscription login".to_string()),
+                    detail: Some(auth_method_detail(
+                        "anthropic",
+                        crate::login::ProviderAuthMethod::OAuth,
+                        "OAuth subscription login",
+                    )),
                     value: "oauth:anthropic".to_string(),
                 });
                 items.push(SelectItem {
                     label: "Anthropic API key".to_string(),
-                    detail: Some("Use ANTHROPIC_API_KEY or paste a key".to_string()),
+                    detail: Some(auth_method_detail(
+                        "anthropic",
+                        crate::login::ProviderAuthMethod::ApiKey,
+                        "Use ANTHROPIC_API_KEY or paste a key",
+                    )),
                     value: "api_key:anthropic".to_string(),
                 });
             }
             "openai" => {
                 items.push(SelectItem {
                     label: "ChatGPT Plus/Pro (Codex)".to_string(),
-                    detail: Some("OAuth subscription login".to_string()),
+                    detail: Some(auth_method_detail(
+                        "openai",
+                        crate::login::ProviderAuthMethod::OAuth,
+                        "OAuth subscription login",
+                    )),
                     value: "oauth:openai-codex".to_string(),
                 });
                 items.push(SelectItem {
                     label: "OpenAI API key".to_string(),
-                    detail: Some("Use OPENAI_API_KEY or paste a key".to_string()),
+                    detail: Some(auth_method_detail(
+                        "openai",
+                        crate::login::ProviderAuthMethod::ApiKey,
+                        "Use OPENAI_API_KEY or paste a key",
+                    )),
                     value: "api_key:openai".to_string(),
                 });
             }

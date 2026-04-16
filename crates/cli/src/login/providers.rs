@@ -80,7 +80,8 @@ pub(crate) fn provider_display_name(provider: &str) -> Cow<'_, str> {
 }
 
 /// Authentication mechanism shown in login menus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderAuthMethod {
     OAuth,
     ApiKey,
@@ -165,13 +166,8 @@ pub(crate) fn provider_api_key_variant(provider: &str) -> Option<&'static str> {
 }
 
 pub(super) fn get_provider_status(name: &str) -> &'static str {
-    let store = load_auth();
-    if let Some(entry) = store.providers.get(name) {
-        return match entry {
-            AuthEntry::ApiKey { key } if !key.trim().is_empty() => "✓",
-            AuthEntry::OAuth { access, .. } if !access.trim().is_empty() => "✓",
-            _ => "✗",
-        };
+    if !stored_auth_methods(name).is_empty() {
+        return "✓";
     }
 
     match auth_source(name) {
