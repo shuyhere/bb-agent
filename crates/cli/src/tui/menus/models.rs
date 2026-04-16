@@ -22,7 +22,7 @@ impl TuiController {
                         .into_iter()
                         .map(|provider| SelectItem {
                             label: crate::login::provider_display_name(&provider).into_owned(),
-                            detail: Some(crate::login::provider_auth_status_summary(&provider)),
+                            detail: Some(crate::login::provider_model_selection_detail(&provider)),
                             value: provider,
                         })
                         .collect(),
@@ -376,7 +376,7 @@ impl TuiController {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
 
     use bb_core::agent_session_runtime::{AgentSessionRuntimeBootstrap, AgentSessionRuntimeHost};
     use bb_core::settings::{ModelOverride, Settings};
@@ -393,8 +393,7 @@ mod tests {
     use crate::tui::controller::TuiController;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::login::auth_test_env_lock()
     }
 
     struct EnvVarGuard {
@@ -525,7 +524,18 @@ mod tests {
         .expect("cargo toml");
         let _home = EnvVarGuard::set_path("HOME", tempdir.path());
         let _openai = EnvVarGuard::set_value("OPENAI_API_KEY", "openai-test-key");
-        let _openrouter = EnvVarGuard::set_value("OPENROUTER_API_KEY", "openrouter-test-key");
+        crate::login::save_api_key("openrouter", "openrouter-saved-key".to_string())
+            .expect("save openrouter key");
+        crate::login::save_oauth_credentials(
+            "openai-codex",
+            &crate::oauth::OAuthCredentials {
+                access: "oauth-access".to_string(),
+                refresh: "refresh-token".to_string(),
+                expires: i64::MAX,
+                extra: serde_json::json!({"accountId": "acct_primary"}),
+            },
+        )
+        .expect("save openai oauth");
 
         Settings {
             models: Some(vec![ModelOverride {
@@ -586,6 +596,18 @@ mod tests {
                 .map(|item| item.label.as_str())
                 .collect::<Vec<_>>(),
             vec!["OpenAI", "OpenRouter"]
+        );
+        assert!(
+            menu.2[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("active: OAuth • acct_primary • saved "))
+        );
+        assert!(
+            menu.2[1]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("active: API key • saved "))
         );
     }
 }

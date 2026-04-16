@@ -48,8 +48,8 @@ pub fn resolve_provider_auth(provider: &str) -> Option<ResolvedProviderAuth> {
     };
 
     for method in preferred_methods {
-        if let Some(entry) = stored_auth_entry_for_method(&store, &normalized, method) {
-            match entry {
+        if let Some(profile) = stored_auth_profile_for_method(&store, &normalized, method) {
+            match &profile.entry {
                 AuthEntry::ApiKey { key } => {
                     return Some(ResolvedProviderAuth {
                         source: AuthSource::BbAuth,
@@ -143,13 +143,14 @@ fn resolve_github_copilot_auth() -> Option<ResolvedProviderAuth> {
     }
 
     let store = load_auth();
-    let entry = store.providers.get("github-copilot")?.clone();
+    let profile =
+        stored_auth_profile_for_method(&store, "github-copilot", ProviderAuthMethod::OAuth)?;
     let AuthEntry::OAuth {
         access,
         refresh,
         expires,
         extra,
-    } = entry
+    } = profile.entry.clone()
     else {
         return None;
     };
@@ -391,11 +392,10 @@ mod tests {
     use crate::login::ProviderAuthMethod;
     use crate::login::store::{AuthEntry, AuthStore, save_auth};
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::login::auth_test_env_lock()
     }
 
     struct EnvVarGuard {
@@ -441,6 +441,7 @@ mod tests {
             last_provider: Some("openai".to_string()),
             active_auth_methods: HashMap::new(),
             providers,
+            ..AuthStore::default()
         })
         .expect("save auth");
 
@@ -488,6 +489,7 @@ mod tests {
                 ProviderAuthMethod::ApiKey,
             )]),
             providers,
+            ..AuthStore::default()
         })
         .expect("save auth");
 
