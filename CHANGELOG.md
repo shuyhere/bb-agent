@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-04-17
+
+### Added
+
+- added the reusable `bb-monitor` backend crate and wired request metrics, session usage summaries, and cache provenance tracking through it
+- added a dedicated under-input TUI cache monitor that shows cache source plus average and latest request hit rate
+- added a profile-aware auth store with saved timestamps, active-profile tracking, and richer provider auth summaries in `/model`
+
+### Changed
+
+- `/model` now supports choosing auth source/profile as part of model selection when a provider has multiple usable auth options
+- `/login` now exposes concrete auth-option choosers instead of only coarse method picks, including switching among saved/env-backed auth and starting new provider logins from the same flow
+- providers that support it can now keep multiple saved OAuth profiles and multiple saved API-key profiles side-by-side for the same provider, with safe labels to distinguish saved keys
+
+### Fixed
+
+- OpenAI GPT-5 API-key requests now use the Responses API when tools/reasoning are involved instead of failing against chat completions with `reasoning_effort` errors
+- `/session` now reports the live session auth override when auth was explicitly selected in-session instead of falling back to default provider resolution
+- auth/profile menus now disambiguate saved API-key profiles even when labels would otherwise look too similar
+
+### Improved
+
+- footer, `/session`, `/login`, and `/model` now present provider auth state more consistently, including explicit auth method/source/account details and safer saved-profile switching flows
+- cache monitor visibility and provider-metric provenance are clearer across session summaries, request tracking, and the TUI monitor line
+
 ## [0.0.16] - 2026-04-15
 
 ### Added
@@ -174,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.17]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.17
 [0.0.16]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.16
 [0.0.15]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.15
 [0.0.14]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.14
