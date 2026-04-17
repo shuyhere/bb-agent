@@ -143,6 +143,20 @@ fn render_auth_option_summary(summary: &ProviderAuthOptionSummary) -> String {
     if let Some(account_label) = &summary.account_label {
         parts.push(account_label.clone());
     }
+    if matches!(summary.source, AuthSource::BbAuth)
+        && matches!(summary.method, ProviderAuthMethod::ApiKey)
+        && let Some(profile_id) = &summary.profile_id
+    {
+        let suffix = profile_id
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<String>();
+        parts.push(format!("profile {suffix}"));
+    }
     if let Some(authority) = &summary.authority {
         parts.push(authority.clone());
     }
@@ -397,9 +411,15 @@ mod tests {
 
         let summaries = provider_auth_option_summaries("openrouter");
         assert_eq!(summaries.len(), 2);
-        assert_eq!(summaries[0].account_label.as_deref(), Some("ending in 2222"));
+        assert_eq!(
+            summaries[0].account_label.as_deref(),
+            Some("ending in 2222")
+        );
         assert!(summaries[0].active);
-        assert_eq!(summaries[1].account_label.as_deref(), Some("ending in 1111"));
+        assert_eq!(
+            summaries[1].account_label.as_deref(),
+            Some("ending in 1111")
+        );
         assert!(!summaries[1].active);
     }
 }

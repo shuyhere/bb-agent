@@ -116,6 +116,20 @@ impl TuiController {
                     if option.active {
                         detail_parts.push("currently active".to_string());
                     }
+                    if matches!(option.source, crate::login::AuthSource::BbAuth)
+                        && matches!(option.method, crate::login::ProviderAuthMethod::ApiKey)
+                        && let Some(profile_id) = option.profile_id.as_ref()
+                    {
+                        let suffix = profile_id
+                            .chars()
+                            .rev()
+                            .take(6)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<String>();
+                        detail_parts.push(format!("profile {suffix}"));
+                    }
                     if let Some(authority) = option.authority {
                         detail_parts.push(authority);
                     }
@@ -726,8 +740,18 @@ mod tests {
 
         assert_eq!(menu.0, MODEL_AUTH_MENU_ID);
         assert_eq!(menu.1, "Select auth for OpenRouter");
-        assert!(menu.2.iter().any(|item| item.label == "API key • ending in 2222"));
-        assert!(menu.2.iter().any(|item| item.label == "API key • ending in 1111"));
+        let key_2222 = menu
+            .2
+            .iter()
+            .find(|item| item.label == "API key • ending in 2222")
+            .expect("saved key 2222 option");
+        let key_1111 = menu
+            .2
+            .iter()
+            .find(|item| item.label == "API key • ending in 1111")
+            .expect("saved key 1111 option");
+        assert!(key_2222.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
+        assert!(key_1111.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
     }
 
     #[test]

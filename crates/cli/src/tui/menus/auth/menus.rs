@@ -45,10 +45,32 @@ fn auth_option_label(option: &crate::login::ProviderAuthOptionSummary) -> String
     }
 }
 
+fn short_profile_suffix(profile_id: &str) -> String {
+    let suffix = profile_id
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    if suffix.is_empty() {
+        profile_id.to_string()
+    } else {
+        suffix
+    }
+}
+
 fn auth_option_detail(option: &crate::login::ProviderAuthOptionSummary) -> Option<String> {
     let mut parts = Vec::new();
     if option.active {
         parts.push("currently active".to_string());
+    }
+    if matches!(option.source, crate::login::AuthSource::BbAuth)
+        && matches!(option.method, crate::login::ProviderAuthMethod::ApiKey)
+        && let Some(profile_id) = &option.profile_id
+    {
+        parts.push(format!("profile {}", short_profile_suffix(profile_id)));
     }
     if let Some(authority) = &option.authority {
         parts.push(authority.clone());
@@ -606,16 +628,18 @@ mod tests {
 
         assert_eq!(menu.0, LOGIN_AUTH_OPTION_MENU_ID);
         assert_eq!(menu.1, "Use OpenRouter API key");
-        assert!(
-            menu.2
-                .iter()
-                .any(|item| item.label == "Saved API key • ending in 2222")
-        );
-        assert!(
-            menu.2
-                .iter()
-                .any(|item| item.label == "Saved API key • ending in 1111")
-        );
+        let key_2222 = menu
+            .2
+            .iter()
+            .find(|item| item.label == "Saved API key • ending in 2222")
+            .expect("saved key 2222 option");
+        let key_1111 = menu
+            .2
+            .iter()
+            .find(|item| item.label == "Saved API key • ending in 1111")
+            .expect("saved key 1111 option");
+        assert!(key_2222.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
+        assert!(key_1111.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
         assert!(
             menu.2
                 .iter()
