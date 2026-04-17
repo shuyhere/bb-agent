@@ -127,9 +127,30 @@ fn profile_sort_key(profile: &AuthProfile) -> i64 {
         .unwrap_or_default()
 }
 
+fn api_key_profile_label(key: &str) -> Option<String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let suffix = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(format!("ending in {suffix}"))
+    }
+}
+
 fn auth_entry_account_label(provider: &str, entry: &AuthEntry) -> Option<String> {
     let normalized = normalized_auth_provider(provider);
     match entry {
+        AuthEntry::ApiKey { key } => api_key_profile_label(key),
         AuthEntry::OAuth { extra, .. } => match normalized.as_str() {
             "github-copilot" => extra
                 .get("login")
@@ -630,17 +651,12 @@ pub(super) fn save_auth(store: &AuthStore) -> Result<()> {
 
 fn upsert_api_key_profile(store: &mut AuthStore, provider: &str, key: String) -> String {
     let normalized = normalized_auth_provider(provider);
-    let active_profile_id = store.active_auth_profiles.get(&normalized).cloned();
     let profiles = store.profiles.entry(normalized.clone()).or_default();
-    let idx = best_profile_index_for_method(
-        profiles,
-        ProviderAuthMethod::ApiKey,
-        active_profile_id.as_deref(),
-    );
     let timestamp = now_ms();
-    if let Some(idx) = idx {
-        let profile = &mut profiles[idx];
-        profile.entry = AuthEntry::ApiKey { key };
+    if let Some(profile) = profiles.iter_mut().find(|profile| {
+        profile.method == ProviderAuthMethod::ApiKey
+            && matches!(&profile.entry, AuthEntry::ApiKey { key: existing } if existing == &key)
+    }) {
         profile.updated_at_ms = Some(timestamp);
         return profile.id.clone();
     }
@@ -1095,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn save_api_key_reuses_existing_profile_and_updates_timestamp() {
+    fn save_api_key_reuses_existing_matching_profile_and_updates_timestamp() {
         let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().expect("home tempdir");
         let _home = EnvVarGuard::set_path("HOME", home.path());
@@ -1105,11 +1121,28 @@ mod tests {
         assert_eq!(first.len(), 1);
         let first_profile_id = first[0].profile_id.clone();
 
-        save_api_key("openrouter", "key-2".to_string()).expect("save second key");
+        save_api_key("openrouter", "key-1".to_string()).expect("save second key");
         let second = stored_auth_profiles("openrouter");
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].profile_id, first_profile_id);
         assert!(second[0].updated_at_ms.is_some());
+    }
+
+    #[test]
+    fn save_api_key_keeps_distinct_profiles_for_distinct_keys() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().expect("home tempdir");
+        let _home = EnvVarGuard::set_path("HOME", home.path());
+
+        save_api_key("openrouter", "key-1111".to_string()).expect("save first key");
+        save_api_key("openrouter", "key-2222".to_string()).expect("save second key");
+
+        let profiles = stored_auth_profiles("openrouter");
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].account_label.as_deref(), Some("ending in 2222"));
+        assert!(profiles[0].active);
+        assert_eq!(profiles[1].account_label.as_deref(), Some("ending in 1111"));
+        assert!(!profiles[1].active);
     }
 
     #[test]
