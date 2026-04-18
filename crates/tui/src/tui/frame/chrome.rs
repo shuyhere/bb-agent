@@ -201,16 +201,37 @@ pub(crate) fn render_footer(state: &TuiState, width: usize, height: usize) -> Ve
 
     let t = theme();
     let mut lines = Vec::with_capacity(height);
-    let line1 = if state.footer.line1.is_empty() {
-        String::new()
+    let line1 = if state.footer.line1_right.is_empty() {
+        if state.footer.line1.is_empty() {
+            String::new()
+        } else {
+            let safe_line1 = sanitize_terminal_text(&state.footer.line1);
+            format!(
+                "{}{}{}",
+                t.dim,
+                truncate_to_width(&safe_line1, width),
+                t.reset
+            )
+        }
     } else {
-        let safe_line1 = sanitize_terminal_text(&state.footer.line1);
-        format!(
-            "{}{}{}",
-            t.dim,
-            truncate_to_width(&safe_line1, width),
-            t.reset
-        )
+        let left_plain = truncate_to_width(&sanitize_terminal_text(&state.footer.line1), width);
+        let right_plain =
+            truncate_to_width(&sanitize_terminal_text(&state.footer.line1_right), width);
+        let used = visible_width(&left_plain) + visible_width(&right_plain);
+        if used + 2 <= width {
+            let gap = " ".repeat(width - used);
+            format!(
+                "{}{}{}",
+                style_footer_left(&left_plain),
+                gap,
+                style_footer_right(&right_plain)
+            )
+        } else {
+            style_footer_left(&truncate_to_width(
+                &format!("{left_plain}  {right_plain}"),
+                width,
+            ))
+        }
     };
     lines.push(pad_to_width(&line1, width));
 

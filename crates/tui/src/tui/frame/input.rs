@@ -40,9 +40,7 @@ pub(crate) fn render_input(
     } = input_wrap;
 
     let inner_width = width.max(1);
-    let show_input_monitor = state.input_monitor.is_some() && height >= 4;
-    let monitor_lines = usize::from(show_input_monitor);
-    let inner_height = height.saturating_sub(2 + monitor_lines);
+    let inner_height = height.saturating_sub(2);
 
     let mut display_lines = render_attachment_lines(state, inner_width);
     let attachment_rows = display_lines.len();
@@ -77,22 +75,6 @@ pub(crate) fn render_input(
     }
 
     lines.push(format_border_bottom(width, lines_below, &border_color));
-
-    if let Some(input_monitor) = state
-        .input_monitor
-        .as_deref()
-        .filter(|_| show_input_monitor)
-    {
-        lines.push(pad_to_width(
-            &format!(
-                "{}{}{}",
-                theme().dim,
-                truncate_to_width(input_monitor, width),
-                theme().reset
-            ),
-            width,
-        ));
-    }
 
     let cursor = if state.mode != TuiMode::Normal {
         None

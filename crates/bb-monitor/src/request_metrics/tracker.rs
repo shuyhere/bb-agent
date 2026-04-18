@@ -43,6 +43,12 @@ impl RequestMetricsTracker {
         self.state.context_epoch = self.state.context_epoch.saturating_add(1);
     }
 
+    pub fn reset_history(&mut self) {
+        self.state.last_request_hash = None;
+        self.state.last_cacheable_prompt = None;
+        self.increment_context_epoch();
+    }
+
     pub fn hydrate(&mut self, snapshot: &RequestMetricsSnapshot) -> Result<()> {
         hydrate_request_metrics_state(&mut self.state, snapshot)
     }
@@ -306,7 +312,8 @@ pub fn resolve_cache_usage(
             warm_request: usage.cache_read_tokens > 0,
         },
         CacheMetricsSource::Estimated => {
-            let estimated_cache_read = prepared.reused_prefix_tokens_estimate.unwrap_or(0);
+            let estimated_cache_read =
+                normalized_estimated_cache_read_tokens(prepared, provider_prompt_token_total);
             let estimated_cache_write = 0;
             let effective_input_tokens = provider_prompt_token_total
                 .saturating_sub(estimated_cache_read + estimated_cache_write);
@@ -338,6 +345,31 @@ pub fn resolve_cache_usage(
             estimated_cache_write_tokens: None,
             warm_request: usage.cache_read_tokens > 0,
         },
+    }
+}
+
+fn normalized_estimated_cache_read_tokens(
+    prepared: &PreparedRequestMetrics,
+    prompt_token_total: u64,
+) -> u64 {
+    if prompt_token_total == 0 {
+        return 0;
+    }
+
+    let reused_prefix_bytes = prepared.reused_prefix_bytes_estimate.unwrap_or(0);
+    let cacheable_prompt_bytes = prepared.cacheable_prompt_bytes;
+    if reused_prefix_bytes == 0 || cacheable_prompt_bytes == 0 {
+        return 0;
+    }
+
+    let reuse_ratio = reused_prefix_bytes as f64 / cacheable_prompt_bytes as f64;
+    let mut estimated = (prompt_token_total as f64 * reuse_ratio).round() as u64;
+    estimated = estimated.min(prompt_token_total);
+
+    if reused_prefix_bytes < cacheable_prompt_bytes && estimated >= prompt_token_total {
+        prompt_token_total.saturating_sub(1)
+    } else {
+        estimated
     }
 }
 
@@ -431,7 +463,8 @@ mod tests {
         CacheMetricsSource, PreparedRequestMetrics, RequestCacheMetrics, RequestMetricsIdentity,
         RequestMetricsSnapshot, RequestMetricsState, RequestMetricsTiming, RequestMetricsTracker,
         RequestMutationFlags, ResponseUsage, build_final_request_metrics,
-        hydrate_request_metrics_state, prepare_request_metrics, resolve_cache_usage,
+        hydrate_request_metrics_state, normalized_estimated_cache_read_tokens,
+        prepare_request_metrics, resolve_cache_usage,
     };
     use bb_core::types::{AgentMessage, ContentBlock, UserMessage};
     use serde_json::json;
@@ -550,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cache_usage_uses_prefix_estimate_for_estimated_metrics() {
+    fn resolve_cache_usage_uses_normalized_prefix_estimate_for_estimated_metrics() {
         let prepared = PreparedRequestMetrics {
             request_id: "req".to_string(),
             stable_prefix_hash: "stable".to_string(),
@@ -581,12 +614,51 @@ mod tests {
         let resolved = resolve_cache_usage(&prepared, &usage);
         assert_eq!(resolved.cache_metrics_source, CacheMetricsSource::Estimated);
         assert_eq!(resolved.prompt_token_total, 93);
-        assert_eq!(resolved.effective_cache_read_tokens, 12);
+        assert_eq!(resolved.effective_cache_read_tokens, 47);
         assert_eq!(resolved.effective_cache_write_tokens, 0);
-        assert_eq!(resolved.effective_input_tokens, 81);
+        assert_eq!(resolved.effective_input_tokens, 46);
         assert_eq!(resolved.provider_cache_read_tokens, Some(20));
-        assert_eq!(resolved.estimated_cache_read_tokens, Some(12));
+        assert_eq!(resolved.estimated_cache_read_tokens, Some(47));
         assert!(resolved.warm_request);
+    }
+
+    #[test]
+    fn normalized_estimate_does_not_peg_changed_prompts_to_hundred_percent() {
+        let prepared = PreparedRequestMetrics {
+            request_id: "req".to_string(),
+            stable_prefix_hash: "stable".to_string(),
+            stable_prefix_bytes: 10,
+            full_request_hash: "full".to_string(),
+            provider_messages_hash: "messages".to_string(),
+            tool_defs_hash: "tools".to_string(),
+            system_prompt_hash: "system".to_string(),
+            previous_request_hash: Some("prev".to_string()),
+            first_divergence_byte: Some(990),
+            first_divergence_token_estimate: Some(248),
+            reused_prefix_bytes_estimate: Some(999),
+            reused_prefix_tokens_estimate: Some(1_100),
+            cacheable_prompt_bytes: 1_000,
+            message_count: 1,
+            tool_count: 0,
+            cacheable_prompt: "prompt".to_string(),
+            context_epoch: 0,
+        };
+
+        let estimated = normalized_estimated_cache_read_tokens(&prepared, 1_000);
+        assert_eq!(estimated, 999);
+
+        let resolved = resolve_cache_usage(
+            &prepared,
+            &ResponseUsage {
+                input_tokens: 1_000,
+                output_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cache_metrics_source: CacheMetricsSource::Estimated,
+            },
+        );
+        assert_eq!(resolved.effective_cache_read_tokens, 999);
+        assert_eq!(resolved.effective_input_tokens, 1);
     }
 
     #[test]
@@ -705,13 +777,11 @@ mod tests {
 
         let prepared =
             prepare_request_metrics(&state, &snapshot).expect("prepare repeated request");
-        let estimated_read = prepared
-            .reused_prefix_tokens_estimate
-            .expect("estimated reused prefix tokens");
+        let prompt_token_total = 240;
+        let estimated_read = normalized_estimated_cache_read_tokens(&prepared, prompt_token_total);
         assert!(estimated_read > 0);
 
         let official_read = estimated_read.saturating_sub(4);
-        let prompt_token_total = estimated_read + 120;
         let official_usage = resolve_cache_usage(
             &prepared,
             &response_usage_with_source(
@@ -822,13 +892,11 @@ mod tests {
 
         let prepared =
             prepare_request_metrics(&state, &snapshot).expect("prepare repeated request");
-        let estimated_read = prepared
-            .reused_prefix_tokens_estimate
-            .expect("estimated reused prefix tokens");
+        let prompt_token_total = 320;
+        let estimated_read = normalized_estimated_cache_read_tokens(&prepared, prompt_token_total);
         assert!(estimated_read > 0);
 
         let official_read = estimated_read.saturating_sub(8);
-        let prompt_token_total = estimated_read + 180;
         let official_usage = resolve_cache_usage(
             &prepared,
             &response_usage_with_source(
@@ -903,5 +971,31 @@ mod tests {
             tracker.state().last_request_hash.as_deref(),
             Some(prepared.full_request_hash.as_str())
         );
+    }
+
+    #[test]
+    fn reset_history_clears_previous_prompt_and_bumps_epoch() {
+        let snapshot = RequestMetricsSnapshot {
+            system_prompt: "system".to_string(),
+            provider_messages: vec![serde_json::json!({ "role": "user", "content": "hello" })],
+            tool_definitions: vec![],
+            extra_tool_definitions: vec![],
+            model: "gpt-5".to_string(),
+            max_tokens: Some(64),
+            stream: true,
+            thinking: None,
+        };
+        let mut tracker = RequestMetricsTracker::new();
+        let prepared = tracker.prepare(&snapshot).expect("prepare");
+        tracker.commit(&prepared);
+
+        tracker.reset_history();
+        let prepared_after_reset = tracker.prepare(&snapshot).expect("prepare after reset");
+
+        assert_eq!(tracker.state().context_epoch, 1);
+        assert!(tracker.state().last_request_hash.is_none());
+        assert!(tracker.state().last_cacheable_prompt.is_none());
+        assert!(prepared_after_reset.previous_request_hash.is_none());
+        assert_eq!(prepared_after_reset.reused_prefix_bytes_estimate, None);
     }
 }

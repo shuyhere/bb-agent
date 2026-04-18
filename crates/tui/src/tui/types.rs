@@ -13,6 +13,7 @@ use super::transcript::Transcript;
 #[derive(Clone, Debug, Default)]
 pub struct TuiFooterData {
     pub line1: String,
+    pub line1_right: String,
     pub line2_left: String,
     pub line2_right: String,
 }

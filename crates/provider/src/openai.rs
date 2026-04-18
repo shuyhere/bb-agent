@@ -19,6 +19,10 @@ pub struct OpenAiProvider {
     client: Client,
 }
 
+pub(super) fn default_prompt_cache_key(model: &str) -> String {
+    format!("bb-agent:{model}")
+}
+
 impl Default for OpenAiProvider {
     fn default() -> Self {
         Self::new()
@@ -40,6 +44,11 @@ fn is_github_copilot_request(options: &RequestOptions) -> bool {
         .is_some_and(|value| value == "github-copilot")
         || options.base_url.contains("githubcopilot.com")
         || options.base_url.contains("/api/copilot")
+}
+
+fn is_standard_openai_api_base(base_url: &str) -> bool {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed == "https://api.openai.com/v1" || trimmed == "https://api.openai.com"
 }
 
 fn format_github_copilot_error(status: reqwest::StatusCode, body: &str, model: &str) -> String {
@@ -164,6 +173,10 @@ impl Provider for OpenAiProvider {
                 _ => "medium",
             };
             body["reasoning_effort"] = json!(effort);
+        }
+
+        if is_standard_openai_api_base(&options.base_url) {
+            body["prompt_cache_key"] = json!(default_prompt_cache_key(&request.model));
         }
 
         let is_copilot = is_github_copilot_request(&options);

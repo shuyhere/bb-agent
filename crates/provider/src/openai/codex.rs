@@ -12,6 +12,30 @@ use request::{
     codex_reasoning_effort, convert_messages_for_codex, convert_tools_for_codex, resolve_codex_url,
 };
 
+fn oauth_usage_info(usage: &Value) -> UsageInfo {
+    let cached = usage
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    UsageInfo {
+        input_tokens: input.saturating_sub(cached),
+        output_tokens: output,
+        cache_read_tokens: cached,
+        cache_write_tokens: 0,
+        cache_metrics_source: bb_core::types::CacheMetricsSource::Estimated,
+    }
+}
+
 impl OpenAiProvider {
     pub(super) async fn stream_codex_oauth(
         &self,
@@ -41,6 +65,8 @@ impl OpenAiProvider {
                 "summary": "auto"
             });
         }
+
+        body["prompt_cache_key"] = json!(super::default_prompt_cache_key(&request.model));
 
         let response = with_retry(
             options.max_retries,
@@ -188,26 +214,7 @@ impl OpenAiProvider {
                     }
                     "response.completed" => {
                         if let Some(usage) = event.get("response").and_then(|r| r.get("usage")) {
-                            let cached = usage
-                                .get("input_tokens_details")
-                                .and_then(|d| d.get("cached_tokens"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let input = usage
-                                .get("input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let output = usage
-                                .get("output_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let _ = tx.send(StreamEvent::Usage(UsageInfo {
-                                input_tokens: input.saturating_sub(cached),
-                                output_tokens: output,
-                                cache_read_tokens: cached,
-                                cache_write_tokens: 0,
-                                cache_metrics_source: bb_core::types::CacheMetricsSource::Official,
-                            }));
+                            let _ = tx.send(StreamEvent::Usage(oauth_usage_info(usage)));
                         }
                         let _ = tx.send(StreamEvent::Done);
                         return Ok(());
@@ -219,5 +226,26 @@ impl OpenAiProvider {
 
         let _ = tx.send(StreamEvent::Done);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oauth_usage_info;
+    use bb_core::types::CacheMetricsSource;
+    use serde_json::json;
+
+    #[test]
+    fn oauth_usage_is_marked_as_estimated() {
+        let usage = oauth_usage_info(&json!({
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "input_tokens_details": {"cached_tokens": 80}
+        }));
+
+        assert_eq!(usage.input_tokens, 40);
+        assert_eq!(usage.output_tokens, 30);
+        assert_eq!(usage.cache_read_tokens, 80);
+        assert_eq!(usage.cache_metrics_source, CacheMetricsSource::Estimated);
     }
 }

@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use bb_monitor::{
-    CacheMonitorTextInput, ContextResolutionInput, RuntimeContextUsage, SessionCacheMetricsSource,
-    UsageTotals, latest_request_metrics_for_session, render_cache_monitor_text,
-    render_footer_usage_text, resolve_context_window_status,
+    CacheMonitorTextInput, ContextResolutionInput, RequestCacheMetrics, RuntimeContextUsage,
+    SessionCacheMetricsSource, UsageTotals, latest_request_metrics_for_session,
+    render_cache_monitor_text, render_footer_usage_text, resolve_context_window_status,
 };
 use bb_session::store;
 use bb_tui::footer::detect_git_branch;
@@ -122,9 +122,7 @@ impl TuiController {
 
     pub(crate) fn publish_footer(&mut self) {
         self.send_command(TuiCommand::SetFooter(self.current_footer_data()));
-        self.send_command(TuiCommand::SetInputMonitor(
-            self.current_input_monitor_text(),
-        ));
+        self.send_command(TuiCommand::SetInputMonitor(None));
     }
 
     pub(crate) fn mark_local_settings_saved(&mut self) {
@@ -192,6 +190,7 @@ impl TuiController {
 
         TuiFooterData {
             line1,
+            line1_right: self.current_input_monitor_text().unwrap_or_default(),
             line2_left: render_footer_usage_text(&usage, false, &context),
             line2_right: right,
         }
@@ -218,19 +217,44 @@ impl TuiController {
                     .ok()
                     .flatten()
             });
-        let source = latest_request.as_ref().map_or_else(
-            || summary.cache_metrics_source.clone(),
-            |metrics| {
-                Some(SessionCacheMetricsSource::from_cache_metrics_source(Some(
+        let current_context_epoch = self
+            .session_setup
+            .request_metrics_tracker
+            .try_lock()
+            .ok()
+            .map(|tracker| tracker.state().context_epoch);
+        let latest_matches_current_cache_domain = latest_request.as_ref().is_some_and(|metrics| {
+            request_matches_cache_domain(
+                metrics,
+                &self.session_setup.model.provider,
+                &self.session_setup.model.id,
+                current_context_epoch,
+            )
+        });
+        let source = if latest_matches_current_cache_domain {
+            latest_request.as_ref().map(|metrics| {
+                SessionCacheMetricsSource::from_cache_metrics_source(Some(
                     &metrics.cache_metrics_source,
-                )))
-            },
-        );
+                ))
+            })
+        } else {
+            current_auth_cache_metrics_source(self.session_setup.auth.as_ref())
+                .or(summary.cache_metrics_source.clone())
+        };
+        let latest_hit_rate_pct = if latest_matches_current_cache_domain {
+            latest_request
+                .as_ref()
+                .and_then(|metrics| metrics.cache_read_hit_rate_pct)
+        } else if latest_request.is_some() {
+            Some(0.0)
+        } else {
+            None
+        };
 
         render_cache_monitor_text(&CacheMonitorTextInput {
             source,
             average_hit_rate_pct: summary.cache_read_hit_rate_pct,
-            latest_hit_rate_pct: latest_request.and_then(|metrics| metrics.cache_read_hit_rate_pct),
+            latest_hit_rate_pct,
             has_cache_activity: summary.cache_read_tokens > 0
                 || summary.cache_write_tokens > 0
                 || summary.input_tokens > 0,
@@ -372,6 +396,26 @@ where
     Some(section)
 }
 
+fn current_auth_cache_metrics_source(
+    auth: Option<&crate::login::ResolvedProviderAuth>,
+) -> Option<SessionCacheMetricsSource> {
+    auth.map(|auth| match auth.method {
+        crate::login::ProviderAuthMethod::OAuth => SessionCacheMetricsSource::Estimated,
+        crate::login::ProviderAuthMethod::ApiKey => SessionCacheMetricsSource::Official,
+    })
+}
+
+fn request_matches_cache_domain(
+    metrics: &RequestCacheMetrics,
+    provider: &str,
+    model: &str,
+    current_context_epoch: Option<u64>,
+) -> bool {
+    metrics.provider == provider
+        && metrics.model == model
+        && current_context_epoch.is_none_or(|epoch| metrics.context_epoch == epoch)
+}
+
 fn footer_line1(cwd: &str, conn: &rusqlite::Connection, session_id: &str) -> String {
     let mut line1 = if let Some(branch) = detect_git_branch(cwd) {
         format!("{} ({branch})", shorten_home_path(cwd))
@@ -433,16 +477,17 @@ mod tests {
 
     use super::{
         QueuedPrompt, active_path_has_contextful_entries, build_status_line,
-        estimate_active_path_context_tokens, permission_posture_badge,
+        current_auth_cache_metrics_source, estimate_active_path_context_tokens,
+        permission_posture_badge, request_matches_cache_domain,
     };
     use bb_core::types::{
         AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
         StopReason, Usage,
     };
     use bb_monitor::{
-        ContextResolutionInput, RuntimeContextUsage, format_context_from_tokens,
-        format_context_percent, format_unknown_context, render_context_window_status,
-        resolve_context_window_status,
+        CacheMetricsSource, ContextResolutionInput, RequestCacheMetrics, RuntimeContextUsage,
+        SessionCacheMetricsSource, format_context_from_tokens, format_context_percent,
+        format_unknown_context, render_context_window_status, resolve_context_window_status,
     };
     use bb_session::{store, tree};
     use bb_tools::ExecutionPolicy;
@@ -640,6 +685,160 @@ mod tests {
         });
 
         assert_eq!(render_context_window_status(&status), "?/272k (auto)");
+    }
+
+    #[test]
+    fn stale_request_metrics_do_not_match_new_cache_domain() {
+        let metrics = RequestCacheMetrics {
+            request_id: "req".to_string(),
+            session_id: "session".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            turn_index: 1,
+            context_epoch: 0,
+            stable_prefix_hash: "stable".to_string(),
+            stable_prefix_bytes: 1,
+            full_request_hash: "full".to_string(),
+            provider_messages_hash: "messages".to_string(),
+            tool_defs_hash: "tools".to_string(),
+            system_prompt_hash: "system".to_string(),
+            previous_request_hash: None,
+            first_divergence_byte: None,
+            first_divergence_token_estimate: None,
+            reused_prefix_bytes_estimate: None,
+            reused_prefix_tokens_estimate: None,
+            prompt_bytes: 1,
+            message_count: 1,
+            tool_count: 0,
+            cache_metrics_source: CacheMetricsSource::Official,
+            provider_cache_read_tokens: Some(10),
+            provider_cache_write_tokens: Some(0),
+            estimated_cache_read_tokens: None,
+            estimated_cache_write_tokens: None,
+            cache_read_tokens: 10,
+            cache_write_tokens: 0,
+            input_tokens: 10,
+            output_tokens: 1,
+            prompt_token_total: 20,
+            cache_read_hit_rate_pct: Some(50.0),
+            cache_effective_utilization_pct: Some(50.0),
+            warm_request: true,
+            request_started_at_ms: 0,
+            first_stream_event_at_ms: None,
+            first_text_delta_at_ms: None,
+            finished_at_ms: 0,
+            ttft_ms: None,
+            total_latency_ms: 0,
+            tool_wait_ms: 0,
+            resume_latency_ms: None,
+            post_compaction: false,
+            system_prompt_mutated: false,
+            context_rewritten: false,
+            request_rewritten: false,
+        };
+        let auth = crate::login::ResolvedProviderAuth {
+            source: crate::login::AuthSource::BbAuth,
+            credential_provider: "openai-codex".to_string(),
+            method: crate::login::ProviderAuthMethod::OAuth,
+            credential: "token".to_string(),
+            account_id: Some("acct".to_string()),
+            account_label: Some("acct".to_string()),
+            authority: None,
+        };
+
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-5.4",
+            Some(0)
+        ));
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-4.1",
+            Some(1)
+        ));
+        assert!(request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-4.1",
+            Some(0)
+        ));
+        assert_eq!(
+            current_auth_cache_metrics_source(Some(&auth)),
+            Some(SessionCacheMetricsSource::Estimated)
+        );
+    }
+
+    #[test]
+    fn model_mismatch_uses_current_auth_source_and_zeroes_latest() {
+        let metrics = RequestCacheMetrics {
+            request_id: "req".to_string(),
+            session_id: "session".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            turn_index: 1,
+            context_epoch: 0,
+            stable_prefix_hash: "stable".to_string(),
+            stable_prefix_bytes: 1,
+            full_request_hash: "full".to_string(),
+            provider_messages_hash: "messages".to_string(),
+            tool_defs_hash: "tools".to_string(),
+            system_prompt_hash: "system".to_string(),
+            previous_request_hash: None,
+            first_divergence_byte: None,
+            first_divergence_token_estimate: None,
+            reused_prefix_bytes_estimate: None,
+            reused_prefix_tokens_estimate: None,
+            prompt_bytes: 1,
+            message_count: 1,
+            tool_count: 0,
+            cache_metrics_source: CacheMetricsSource::Official,
+            provider_cache_read_tokens: Some(10),
+            provider_cache_write_tokens: Some(0),
+            estimated_cache_read_tokens: None,
+            estimated_cache_write_tokens: None,
+            cache_read_tokens: 10,
+            cache_write_tokens: 0,
+            input_tokens: 10,
+            output_tokens: 1,
+            prompt_token_total: 20,
+            cache_read_hit_rate_pct: Some(50.0),
+            cache_effective_utilization_pct: Some(50.0),
+            warm_request: true,
+            request_started_at_ms: 0,
+            first_stream_event_at_ms: None,
+            first_text_delta_at_ms: None,
+            finished_at_ms: 0,
+            ttft_ms: None,
+            total_latency_ms: 0,
+            tool_wait_ms: 0,
+            resume_latency_ms: None,
+            post_compaction: false,
+            system_prompt_mutated: false,
+            context_rewritten: false,
+            request_rewritten: false,
+        };
+        let auth = crate::login::ResolvedProviderAuth {
+            source: crate::login::AuthSource::BbAuth,
+            credential_provider: "openai-codex".to_string(),
+            method: crate::login::ProviderAuthMethod::OAuth,
+            credential: "token".to_string(),
+            account_id: Some("acct".to_string()),
+            account_label: Some("acct".to_string()),
+            authority: None,
+        };
+
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-5.4",
+            Some(metrics.context_epoch),
+        ));
+        assert_eq!(
+            current_auth_cache_metrics_source(Some(&auth)),
+            Some(SessionCacheMetricsSource::Estimated)
+        );
     }
 
     #[test]
