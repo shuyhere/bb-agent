@@ -10,6 +10,7 @@ use crate::retry::with_retry;
 use crate::transforms::convert_messages_for_anthropic;
 use crate::{CompletionRequest, Provider, ProviderAuthMode, RequestOptions, StreamEvent};
 
+use bb_core::types::CacheMetricsSource;
 use events::process_sse_event;
 
 /// Anthropic Messages API provider.
@@ -61,7 +62,8 @@ impl Provider for AnthropicProvider {
         let url = format!("{}/v1/messages", options.base_url.trim_end_matches('/'));
         let is_oauth = matches!(options.auth_mode, ProviderAuthMode::OAuth);
 
-        let messages = convert_messages_for_anthropic(&request.messages);
+        let mut messages = convert_messages_for_anthropic(&request.messages);
+        apply_cache_control_to_last_user_message(&mut messages);
 
         let mut tools: Vec<Value> = request
             .tools
@@ -85,19 +87,15 @@ impl Provider for AnthropicProvider {
         });
 
         if is_oauth {
-            let mut system_blocks = vec![json!({
-                "type": "text",
-                "text": "You are Claude Code, Anthropic's official CLI for Claude."
-            })];
+            let mut system_blocks = vec![system_text_block(
+                "You are Claude Code, Anthropic's official CLI for Claude.",
+            )];
             if !request.system_prompt.is_empty() {
-                system_blocks.push(json!({
-                    "type": "text",
-                    "text": request.system_prompt
-                }));
+                system_blocks.push(system_text_block(&request.system_prompt));
             }
             body["system"] = json!(system_blocks);
         } else if !request.system_prompt.is_empty() {
-            body["system"] = json!(request.system_prompt);
+            body["system"] = json!([system_text_block(&request.system_prompt)]);
         }
 
         if !tools.is_empty() {
@@ -216,7 +214,11 @@ impl Provider for AnthropicProvider {
                             return Ok(());
                         }
                         if let Ok(event) = serde_json::from_str::<Value>(data) {
-                            process_sse_event(&event, &tx);
+                            process_sse_event(
+                                &event,
+                                &tx,
+                                cache_metrics_source_for_auth_mode(&options.auth_mode),
+                            );
                         }
                     }
                 }
@@ -228,6 +230,113 @@ impl Provider for AnthropicProvider {
     }
 }
 
+fn cache_metrics_source_for_auth_mode(auth_mode: &ProviderAuthMode) -> CacheMetricsSource {
+    match auth_mode {
+        ProviderAuthMode::ApiKey => CacheMetricsSource::Official,
+        ProviderAuthMode::OAuth => CacheMetricsSource::Estimated,
+    }
+}
+
+fn anthropic_cache_control() -> Value {
+    json!({ "type": "ephemeral" })
+}
+
+fn system_text_block(text: &str) -> Value {
+    json!({
+        "type": "text",
+        "text": text,
+        "cache_control": anthropic_cache_control(),
+    })
+}
+
+fn apply_cache_control_to_last_user_message(messages: &mut [Value]) {
+    let Some(last_message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.get("role").and_then(|value| value.as_str()) == Some("user"))
+    else {
+        return;
+    };
+
+    match last_message.get_mut("content") {
+        Some(Value::Array(parts)) => {
+            if let Some(Value::Object(last_part)) = parts.last_mut() {
+                let block_type = last_part.get("type").and_then(|value| value.as_str());
+                if matches!(block_type, Some("text" | "image" | "tool_result")) {
+                    last_part.insert("cache_control".to_string(), anthropic_cache_control());
+                }
+            }
+        }
+        Some(Value::String(text)) => {
+            let converted = json!([{
+                "type": "text",
+                "text": text.clone(),
+                "cache_control": anthropic_cache_control(),
+            }]);
+            last_message["content"] = converted;
+        }
+        _ => {}
+    }
+}
+
 fn supports_adaptive_thinking(model: &str) -> bool {
     model.contains("claude-opus-4-6") || model.contains("claude-sonnet-4-6")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CacheMetricsSource, ProviderAuthMode, apply_cache_control_to_last_user_message,
+        cache_metrics_source_for_auth_mode, system_text_block,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn api_key_uses_official_cache_metrics_and_oauth_uses_estimates() {
+        assert_eq!(
+            cache_metrics_source_for_auth_mode(&ProviderAuthMode::ApiKey),
+            CacheMetricsSource::Official
+        );
+        assert_eq!(
+            cache_metrics_source_for_auth_mode(&ProviderAuthMode::OAuth),
+            CacheMetricsSource::Estimated
+        );
+    }
+
+    #[test]
+    fn system_blocks_include_ephemeral_cache_control() {
+        let block = system_text_block("system prompt");
+        assert_eq!(block["type"], "text");
+        assert_eq!(block["text"], "system prompt");
+        assert_eq!(block["cache_control"], json!({ "type": "ephemeral" }));
+    }
+
+    #[test]
+    fn adds_cache_control_to_last_user_message_text_block() {
+        let mut messages = vec![
+            json!({"role": "assistant", "content": "previous"}),
+            json!({"role": "user", "content": [{"type": "text", "text": "hello"}]}),
+        ];
+
+        apply_cache_control_to_last_user_message(&mut messages);
+
+        assert_eq!(
+            messages[1]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn converts_string_user_message_into_cacheable_text_block() {
+        let mut messages = vec![json!({"role": "user", "content": "hello"})];
+
+        apply_cache_control_to_last_user_message(&mut messages);
+
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[0]["content"][0]["text"], "hello");
+        assert_eq!(
+            messages[0]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
 }

@@ -29,7 +29,7 @@ fn event_index(event: &Value) -> Option<u64> {
     event.get("index").and_then(|value| value.as_u64())
 }
 
-fn usage_info(usage: &Value) -> UsageInfo {
+fn usage_info(usage: &Value, cache_metrics_source: CacheMetricsSource) -> UsageInfo {
     UsageInfo {
         input_tokens: usage
             .get("input_tokens")
@@ -47,7 +47,7 @@ fn usage_info(usage: &Value) -> UsageInfo {
             .get("cache_creation_input_tokens")
             .and_then(|value| value.as_u64())
             .unwrap_or(0),
-        cache_metrics_source: CacheMetricsSource::Official,
+        cache_metrics_source,
     }
 }
 
@@ -76,7 +76,11 @@ fn server_tool_result_name(block_type: &str) -> Option<&str> {
     (!stripped.is_empty() && stripped != block_type).then_some(stripped)
 }
 
-pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<StreamEvent>) {
+pub(super) fn process_sse_event(
+    event: &Value,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+    cache_metrics_source: CacheMetricsSource,
+) {
     match event_type(event) {
         Some("message_start") => {
             BLOCK_ID_MAP
@@ -87,7 +91,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
                 .get("message")
                 .and_then(|message| message.get("usage"))
             {
-                let _ = tx.send(StreamEvent::Usage(usage_info(usage)));
+                let _ = tx.send(StreamEvent::Usage(usage_info(usage, cache_metrics_source)));
             }
         }
         Some("content_block_start") => {
@@ -233,7 +237,7 @@ pub(super) fn process_sse_event(event: &Value, tx: &mpsc::UnboundedSender<Stream
         }
         Some("message_delta") => {
             if let Some(usage) = event.get("usage") {
-                let _ = tx.send(StreamEvent::Usage(usage_info(usage)));
+                let _ = tx.send(StreamEvent::Usage(usage_info(usage, cache_metrics_source)));
             }
         }
         Some("message_stop") => {
@@ -270,6 +274,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -281,6 +286,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -288,6 +294,7 @@ mod tests {
                 "index": 0
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         drop(tx);
 
@@ -330,6 +337,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         drop(tx);
 
@@ -363,6 +371,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         assert!(drain_events(&mut rx).is_empty());
     }
@@ -380,6 +389,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         assert!(drain_events(&mut rx).is_empty());
     }
@@ -396,6 +406,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         assert!(drain_events(&mut rx).is_empty());
     }
@@ -414,6 +425,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -428,6 +440,7 @@ mod tests {
                 }
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
         process_sse_event(
             &json!({
@@ -435,11 +448,41 @@ mod tests {
                 "index": 0
             }),
             &tx,
+            CacheMetricsSource::Official,
         );
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], StreamEvent::ToolCallStart { .. }));
         assert!(matches!(events[1], StreamEvent::Usage(_)));
+    }
+
+    #[test]
+    fn usage_events_preserve_requested_cache_metric_source() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        process_sse_event(
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 4,
+                        "cache_read_input_tokens": 3,
+                        "cache_creation_input_tokens": 1
+                    }
+                }
+            }),
+            &tx,
+            CacheMetricsSource::Estimated,
+        );
+
+        match rx.blocking_recv().expect("usage") {
+            StreamEvent::Usage(usage) => {
+                assert_eq!(usage.cache_metrics_source, CacheMetricsSource::Estimated);
+                assert_eq!(usage.cache_read_tokens, 3);
+                assert_eq!(usage.cache_write_tokens, 1);
+            }
+            other => panic!("expected Usage, got {:?}", other),
+        }
     }
 }

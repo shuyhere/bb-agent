@@ -1,4 +1,4 @@
-use super::OpenAiProvider;
+use super::{OpenAiProvider, default_prompt_cache_key};
 use bb_core::error::{BbError, BbResult};
 use bb_core::types::CacheMetricsSource;
 use futures::StreamExt;
@@ -121,6 +121,7 @@ fn build_responses_request_body(request: &CompletionRequest, messages: Vec<Value
         "stream": true,
         "store": false,
         "text": { "verbosity": "medium" },
+        "prompt_cache_key": default_prompt_cache_key(&request.model),
     });
 
     if let Some(max_tokens) = request.max_tokens {
@@ -563,5 +564,6 @@ mod tests {
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert_eq!(body["max_output_tokens"], 1024);
+        assert_eq!(body["prompt_cache_key"], "bb-agent:gpt-5.4");
     }
 }
