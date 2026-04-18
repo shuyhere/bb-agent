@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-04-18
+
+### Added
+
+- added `/exit` as a shared TUI slash-command alias for `/quit`, including help/menu/autocomplete coverage
+
+### Changed
+
+- cache metrics now explicitly follow auth mode: API-key sessions report `official` cache-hit provenance while OAuth sessions report `estimate`
+- provider-side cache-affinity shaping is now restored for OpenAI and Anthropic baseline requests, improving cache-monitor consistency and estimate-vs-official comparisons
+- the TUI cache monitor now renders on the footer/path line and labels cache source directly as `cache hit (official|estimate|mixed|unknown)`
+
+### Fixed
+
+- OAuth estimated cache-hit normalization no longer pegs changed prompts to misleading `100.0%` latest-hit readings
+- switching models or auth sources now resets latest-request cache state so the monitor starts cold instead of reusing stale latest-hit/source data from the previous cache domain
+- clean `bb-tui` test builds no longer fail on the stale `wrap_visual_line` test-only re-export visibility issue
+
+### Improved
+
+- cache-monitor wording, placement, and reset behavior are now more trustworthy for manual validation across provider/auth combinations
+
 ## [0.0.17] - 2026-04-17
 
 ### Added
@@ -199,6 +221,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.18]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.18
 [0.0.17]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.17
 [0.0.16]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.16
 [0.0.15]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.15
