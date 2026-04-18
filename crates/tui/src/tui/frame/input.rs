@@ -6,7 +6,7 @@ mod wrapping;
 mod tests;
 
 use crate::theme::theme;
-use crate::utils::{pad_to_width, truncate_to_width};
+use crate::utils::{pad_to_width, truncate_to_width, visible_width};
 
 use super::super::{runtime::TuiState, types::TuiMode};
 use attachments::render_attachment_lines;
@@ -40,9 +40,8 @@ pub(crate) fn render_input(
     } = input_wrap;
 
     let inner_width = width.max(1);
-    let show_input_monitor = state.input_monitor.is_some() && height >= 4;
-    let monitor_lines = usize::from(show_input_monitor);
-    let inner_height = height.saturating_sub(2 + monitor_lines);
+    let show_input_monitor = state.input_monitor.is_some() && height >= 3;
+    let inner_height = height.saturating_sub(2);
 
     let mut display_lines = render_attachment_lines(state, inner_width);
     let attachment_rows = display_lines.len();
@@ -76,23 +75,16 @@ pub(crate) fn render_input(
         lines.push(pad_to_width(&body, inner_width));
     }
 
-    lines.push(format_border_bottom(width, lines_below, &border_color));
-
-    if let Some(input_monitor) = state
+    let bottom_border = if let Some(input_monitor) = state
         .input_monitor
         .as_deref()
         .filter(|_| show_input_monitor)
     {
-        lines.push(pad_to_width(
-            &format!(
-                "{}{}{}",
-                theme().dim,
-                truncate_to_width(input_monitor, width),
-                theme().reset
-            ),
-            width,
-        ));
-    }
+        format_border_bottom_with_monitor(width, lines_below, &border_color, input_monitor)
+    } else {
+        format_border_bottom(width, lines_below, &border_color)
+    };
+    lines.push(bottom_border);
 
     let cursor = if state.mode != TuiMode::Normal {
         None
@@ -116,4 +108,19 @@ pub(crate) fn render_input(
     };
 
     (lines, cursor)
+}
+
+fn format_border_bottom_with_monitor(
+    width: usize,
+    lines_below: usize,
+    border_color: &str,
+    input_monitor: &str,
+) -> String {
+    let t = theme();
+    let monitor = truncate_to_width(input_monitor, width.saturating_sub(1));
+    let monitor_width = visible_width(&monitor);
+    let left_width = width.saturating_sub(monitor_width);
+    let left_border =
+        crate::utils::strip_ansi(&format_border_bottom(left_width, lines_below, border_color));
+    format!("{border_color}{left_border}{}{monitor}{}", t.dim, t.reset)
 }

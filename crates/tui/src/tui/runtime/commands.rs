@@ -430,7 +430,6 @@ impl TuiState {
                 + measure_input(&visible_input, visible_cursor, input_inner_width)
                     .lines
                     .len()
-                + usize::from(self.input_monitor.is_some())
         };
         compute_layout_with_footer(
             self.size,

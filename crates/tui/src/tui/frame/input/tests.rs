@@ -64,7 +64,7 @@ fn measure_input_tracks_cursor_after_wrapping() {
 }
 
 #[test]
-fn input_monitor_renders_below_input_border() {
+fn input_monitor_renders_in_bottom_right_of_input_border() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),
         Size {
@@ -84,13 +84,14 @@ fn input_monitor_renders_below_input_border() {
         .collect::<Vec<_>>();
 
     assert!(plain[1].contains("hello"));
-    assert!(plain[2].contains("─"));
-    assert!(plain[3].contains("cache hit 80.0%"));
+    assert!(plain[2].contains("cache hit 80.0%"));
+    assert!(plain[2].contains("latest 66.7%"));
+    assert_eq!(plain.len(), 4);
     assert!(cursor.is_some());
 }
 
 #[test]
-fn current_layout_reserves_extra_row_for_input_monitor_when_space_allows() {
+fn current_layout_does_not_grow_for_input_monitor() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),
         Size {
@@ -104,7 +105,7 @@ fn current_layout_reserves_extra_row_for_input_monitor_when_space_allows() {
     state.input_monitor = Some("cache hit 50.0%".to_string());
     let monitored_height = state.current_layout().input.height;
 
-    assert_eq!(monitored_height, base_height + 1);
+    assert_eq!(monitored_height, base_height);
 }
 
 #[test]

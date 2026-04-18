@@ -1,4 +1,4 @@
-use crate::session::{SessionCacheMetricsSource, render_cache_metrics_source};
+use crate::session::SessionCacheMetricsSource;
 use crate::usage::{ContextWindowStatus, UsageTotals};
 
 pub fn format_compact_tokens(count: u64) -> String {
@@ -80,8 +80,12 @@ pub fn render_cache_monitor_text(input: &CacheMonitorTextInput) -> Option<String
         return None;
     }
 
-    let source_text =
-        render_cache_metrics_source(source.unwrap_or(&SessionCacheMetricsSource::Unknown));
+    let source_text = match source.unwrap_or(&SessionCacheMetricsSource::Unknown) {
+        SessionCacheMetricsSource::Official => "cache hit (official)",
+        SessionCacheMetricsSource::Estimated => "cache hit (estimate)",
+        SessionCacheMetricsSource::Mixed => "cache hit (mixed)",
+        SessionCacheMetricsSource::Unknown => "cache hit (unknown)",
+    };
     let avg_text = avg
         .map(|value| format!("avg {:.1}%", value))
         .unwrap_or_else(|| "avg —".to_string());
@@ -89,7 +93,7 @@ pub fn render_cache_monitor_text(input: &CacheMonitorTextInput) -> Option<String
         .map(|value| format!("latest {:.1}%", value))
         .unwrap_or_else(|| "latest —".to_string());
 
-    Some(format!("cache {source_text} • {avg_text} • {latest_text}"))
+    Some(format!("{source_text} • {avg_text} • {latest_text}"))
 }
 
 /// Render the compact usage text currently used in BB-Agent footers and other
@@ -188,7 +192,7 @@ mod tests {
 
         assert_eq!(
             render_cache_monitor_text(&input).as_deref(),
-            Some("cache official • avg 22.2% • latest 20.0%")
+            Some("cache hit (official) • avg 22.2% • latest 20.0%")
         );
     }
 
@@ -203,7 +207,7 @@ mod tests {
 
         assert_eq!(
             render_cache_monitor_text(&input).as_deref(),
-            Some("cache estimated • avg 18.5% • latest —")
+            Some("cache hit (estimate) • avg 18.5% • latest —")
         );
     }
 
