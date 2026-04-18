@@ -52,6 +52,9 @@ impl TuiController {
             headers,
             enabled: true,
         });
+        if let Ok(mut tracker) = self.session_setup.request_metrics_tracker.try_lock() {
+            tracker.reset_history();
+        }
         self.publish_footer();
         true
     }

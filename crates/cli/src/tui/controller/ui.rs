@@ -217,14 +217,21 @@ impl TuiController {
                     .ok()
                     .flatten()
             });
-        let latest_matches_current_model = latest_request.as_ref().is_some_and(|metrics| {
-            request_matches_model(
+        let current_context_epoch = self
+            .session_setup
+            .request_metrics_tracker
+            .try_lock()
+            .ok()
+            .map(|tracker| tracker.state().context_epoch);
+        let latest_matches_current_cache_domain = latest_request.as_ref().is_some_and(|metrics| {
+            request_matches_cache_domain(
                 metrics,
                 &self.session_setup.model.provider,
                 &self.session_setup.model.id,
+                current_context_epoch,
             )
         });
-        let source = if latest_matches_current_model {
+        let source = if latest_matches_current_cache_domain {
             latest_request.as_ref().map(|metrics| {
                 SessionCacheMetricsSource::from_cache_metrics_source(Some(
                     &metrics.cache_metrics_source,
@@ -234,7 +241,7 @@ impl TuiController {
             current_auth_cache_metrics_source(self.session_setup.auth.as_ref())
                 .or(summary.cache_metrics_source.clone())
         };
-        let latest_hit_rate_pct = if latest_matches_current_model {
+        let latest_hit_rate_pct = if latest_matches_current_cache_domain {
             latest_request
                 .as_ref()
                 .and_then(|metrics| metrics.cache_read_hit_rate_pct)
@@ -398,8 +405,15 @@ fn current_auth_cache_metrics_source(
     })
 }
 
-fn request_matches_model(metrics: &RequestCacheMetrics, provider: &str, model: &str) -> bool {
-    metrics.provider == provider && metrics.model == model
+fn request_matches_cache_domain(
+    metrics: &RequestCacheMetrics,
+    provider: &str,
+    model: &str,
+    current_context_epoch: Option<u64>,
+) -> bool {
+    metrics.provider == provider
+        && metrics.model == model
+        && current_context_epoch.is_none_or(|epoch| metrics.context_epoch == epoch)
 }
 
 fn footer_line1(cwd: &str, conn: &rusqlite::Connection, session_id: &str) -> String {
@@ -464,7 +478,7 @@ mod tests {
     use super::{
         QueuedPrompt, active_path_has_contextful_entries, build_status_line,
         current_auth_cache_metrics_source, estimate_active_path_context_tokens,
-        permission_posture_badge, request_matches_model,
+        permission_posture_badge, request_matches_cache_domain,
     };
     use bb_core::types::{
         AgentMessage, AssistantContent, AssistantMessage, EntryBase, EntryId, SessionEntry,
@@ -674,6 +688,89 @@ mod tests {
     }
 
     #[test]
+    fn stale_request_metrics_do_not_match_new_cache_domain() {
+        let metrics = RequestCacheMetrics {
+            request_id: "req".to_string(),
+            session_id: "session".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4.1".to_string(),
+            turn_index: 1,
+            context_epoch: 0,
+            stable_prefix_hash: "stable".to_string(),
+            stable_prefix_bytes: 1,
+            full_request_hash: "full".to_string(),
+            provider_messages_hash: "messages".to_string(),
+            tool_defs_hash: "tools".to_string(),
+            system_prompt_hash: "system".to_string(),
+            previous_request_hash: None,
+            first_divergence_byte: None,
+            first_divergence_token_estimate: None,
+            reused_prefix_bytes_estimate: None,
+            reused_prefix_tokens_estimate: None,
+            prompt_bytes: 1,
+            message_count: 1,
+            tool_count: 0,
+            cache_metrics_source: CacheMetricsSource::Official,
+            provider_cache_read_tokens: Some(10),
+            provider_cache_write_tokens: Some(0),
+            estimated_cache_read_tokens: None,
+            estimated_cache_write_tokens: None,
+            cache_read_tokens: 10,
+            cache_write_tokens: 0,
+            input_tokens: 10,
+            output_tokens: 1,
+            prompt_token_total: 20,
+            cache_read_hit_rate_pct: Some(50.0),
+            cache_effective_utilization_pct: Some(50.0),
+            warm_request: true,
+            request_started_at_ms: 0,
+            first_stream_event_at_ms: None,
+            first_text_delta_at_ms: None,
+            finished_at_ms: 0,
+            ttft_ms: None,
+            total_latency_ms: 0,
+            tool_wait_ms: 0,
+            resume_latency_ms: None,
+            post_compaction: false,
+            system_prompt_mutated: false,
+            context_rewritten: false,
+            request_rewritten: false,
+        };
+        let auth = crate::login::ResolvedProviderAuth {
+            source: crate::login::AuthSource::BbAuth,
+            credential_provider: "openai-codex".to_string(),
+            method: crate::login::ProviderAuthMethod::OAuth,
+            credential: "token".to_string(),
+            account_id: Some("acct".to_string()),
+            account_label: Some("acct".to_string()),
+            authority: None,
+        };
+
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-5.4",
+            Some(0)
+        ));
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-4.1",
+            Some(1)
+        ));
+        assert!(request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-4.1",
+            Some(0)
+        ));
+        assert_eq!(
+            current_auth_cache_metrics_source(Some(&auth)),
+            Some(SessionCacheMetricsSource::Estimated)
+        );
+    }
+
+    #[test]
     fn model_mismatch_uses_current_auth_source_and_zeroes_latest() {
         let metrics = RequestCacheMetrics {
             request_id: "req".to_string(),
@@ -732,7 +829,12 @@ mod tests {
             authority: None,
         };
 
-        assert!(!request_matches_model(&metrics, "openai", "gpt-5.4"));
+        assert!(!request_matches_cache_domain(
+            &metrics,
+            "openai",
+            "gpt-5.4",
+            Some(metrics.context_epoch),
+        ));
         assert_eq!(
             current_auth_cache_metrics_source(Some(&auth)),
             Some(SessionCacheMetricsSource::Estimated)
