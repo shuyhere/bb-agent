@@ -139,6 +139,13 @@ const SHARED_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         help_detail: "Quit bb-agent",
         accepts_arguments: false,
     },
+    SlashCommandSpec {
+        command: "/exit",
+        menu_detail: "Quit (alias)",
+        help_usage: "/exit",
+        help_detail: "Quit bb-agent (alias for /quit)",
+        accepts_arguments: false,
+    },
 ];
 
 pub fn shared_slash_commands() -> &'static [SlashCommandSpec] {
@@ -242,6 +249,7 @@ mod tests {
     fn shared_registry_contains_copy_command() {
         let commands = shared_slash_command_select_items();
         assert!(commands.iter().any(|item| item.value == "/copy"));
+        assert!(commands.iter().any(|item| item.value == "/exit"));
     }
 
     #[test]
@@ -252,6 +260,7 @@ mod tests {
         assert!(help.contains("/install [-l|--local] <source>"));
         assert!(help.contains("npm:bb-example-skill"));
         assert!(help.contains("/update"));
+        assert!(help.contains("/exit"));
     }
 
     #[test]
@@ -260,6 +269,8 @@ mod tests {
         assert!(matches_shared_local_slash_submission("/name demo"));
         assert!(matches_shared_local_slash_submission("/install npm:demo"));
         assert!(matches_shared_local_slash_submission("/update"));
+        assert!(matches_shared_local_slash_submission("/exit"));
         assert!(!matches_shared_local_slash_submission("/help extra"));
+        assert!(!matches_shared_local_slash_submission("/exit now"));
     }
 }
