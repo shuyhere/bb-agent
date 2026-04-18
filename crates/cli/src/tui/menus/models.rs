@@ -328,6 +328,9 @@ impl TuiController {
             format!("Model: {display}")
         };
         self.options.model_display = Some(display);
+        if let Ok(mut tracker) = self.session_setup.request_metrics_tracker.try_lock() {
+            tracker.reset_history();
+        }
         self.publish_footer();
         self.send_command(TuiCommand::SetStatusLine(status));
     }
@@ -697,10 +700,8 @@ mod tests {
         .expect("cargo toml");
         let _home = EnvVarGuard::set_path("HOME", tempdir.path());
 
-        crate::login::save_api_key("openrouter", "key-1111".to_string())
-            .expect("save first key");
-        crate::login::save_api_key("openrouter", "key-2222".to_string())
-            .expect("save second key");
+        crate::login::save_api_key("openrouter", "key-1111".to_string()).expect("save first key");
+        crate::login::save_api_key("openrouter", "key-2222".to_string()).expect("save second key");
 
         Settings {
             models: Some(vec![ModelOverride {
@@ -750,8 +751,18 @@ mod tests {
             .iter()
             .find(|item| item.label == "API key • ending in 1111")
             .expect("saved key 1111 option");
-        assert!(key_2222.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
-        assert!(key_1111.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
+        assert!(
+            key_2222
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("profile "))
+        );
+        assert!(
+            key_1111
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("profile "))
+        );
     }
 
     #[test]

@@ -43,6 +43,12 @@ impl RequestMetricsTracker {
         self.state.context_epoch = self.state.context_epoch.saturating_add(1);
     }
 
+    pub fn reset_history(&mut self) {
+        self.state.last_request_hash = None;
+        self.state.last_cacheable_prompt = None;
+        self.increment_context_epoch();
+    }
+
     pub fn hydrate(&mut self, snapshot: &RequestMetricsSnapshot) -> Result<()> {
         hydrate_request_metrics_state(&mut self.state, snapshot)
     }
@@ -965,5 +971,31 @@ mod tests {
             tracker.state().last_request_hash.as_deref(),
             Some(prepared.full_request_hash.as_str())
         );
+    }
+
+    #[test]
+    fn reset_history_clears_previous_prompt_and_bumps_epoch() {
+        let snapshot = RequestMetricsSnapshot {
+            system_prompt: "system".to_string(),
+            provider_messages: vec![serde_json::json!({ "role": "user", "content": "hello" })],
+            tool_definitions: vec![],
+            extra_tool_definitions: vec![],
+            model: "gpt-5".to_string(),
+            max_tokens: Some(64),
+            stream: true,
+            thinking: None,
+        };
+        let mut tracker = RequestMetricsTracker::new();
+        let prepared = tracker.prepare(&snapshot).expect("prepare");
+        tracker.commit(&prepared);
+
+        tracker.reset_history();
+        let prepared_after_reset = tracker.prepare(&snapshot).expect("prepare after reset");
+
+        assert_eq!(tracker.state().context_epoch, 1);
+        assert!(tracker.state().last_request_hash.is_none());
+        assert!(tracker.state().last_cacheable_prompt.is_none());
+        assert!(prepared_after_reset.previous_request_hash.is_none());
+        assert_eq!(prepared_after_reset.reused_prefix_bytes_estimate, None);
     }
 }
