@@ -122,9 +122,7 @@ impl TuiController {
 
     pub(crate) fn publish_footer(&mut self) {
         self.send_command(TuiCommand::SetFooter(self.current_footer_data()));
-        self.send_command(TuiCommand::SetInputMonitor(
-            self.current_input_monitor_text(),
-        ));
+        self.send_command(TuiCommand::SetInputMonitor(None));
     }
 
     pub(crate) fn mark_local_settings_saved(&mut self) {
@@ -192,6 +190,7 @@ impl TuiController {
 
         TuiFooterData {
             line1,
+            line1_right: self.current_input_monitor_text().unwrap_or_default(),
             line2_left: render_footer_usage_text(&usage, false, &context),
             line2_right: right,
         }

@@ -767,3 +767,21 @@ fn edit_diff_rows_only_highlight_changed_lines_and_fill_width() {
     assert_eq!(crate::utils::visible_width(removed), width);
     assert_eq!(crate::utils::visible_width(added), width);
 }
+
+#[test]
+fn footer_path_line_can_render_right_aligned_cache_hit_text() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 80,
+            height: 20,
+        },
+    );
+    state.footer.line1 = "~/project (main)".to_string();
+    state.footer.line1_right = "cache hit (estimate) • avg 44.0% • latest 38.0%".to_string();
+
+    let rendered = super::chrome::render_footer(&state, 80, 2);
+    let plain = crate::utils::strip_ansi(&rendered[0]);
+    assert!(plain.contains("~/project (main)"));
+    assert!(plain.contains("cache hit (estimate) • avg 44.0% • latest 38.0%"));
+}

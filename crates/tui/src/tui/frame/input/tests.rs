@@ -64,7 +64,7 @@ fn measure_input_tracks_cursor_after_wrapping() {
 }
 
 #[test]
-fn input_monitor_renders_in_bottom_right_of_input_border() {
+fn input_monitor_does_not_render_inside_input_block() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),
         Size {
@@ -74,7 +74,7 @@ fn input_monitor_renders_in_bottom_right_of_input_border() {
     );
     state.input = "hello".to_string();
     state.cursor = state.input.len();
-    state.input_monitor = Some("cache hit 80.0% • effective 66.7% • R12k".to_string());
+    state.input_monitor = Some("cache hit (estimate) • avg 80.0% • latest 66.7%".to_string());
 
     let wrap = measure_input(&state.input, state.cursor, 48);
     let (lines, cursor) = render_input(&state, 2, 48, 4, wrap);
@@ -84,8 +84,11 @@ fn input_monitor_renders_in_bottom_right_of_input_border() {
         .collect::<Vec<_>>();
 
     assert!(plain[1].contains("hello"));
-    assert!(plain[2].contains("cache hit 80.0%"));
-    assert!(plain[2].contains("latest 66.7%"));
+    assert!(
+        plain
+            .iter()
+            .all(|line| !line.contains("cache hit (estimate)"))
+    );
     assert_eq!(plain.len(), 4);
     assert!(cursor.is_some());
 }

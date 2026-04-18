@@ -199,6 +199,7 @@ fn build_footer_data(session_setup: &SessionRuntimeSetup) -> TuiFooterData {
 
     TuiFooterData {
         line1,
+        line1_right: String::new(),
         line2_left,
         line2_right,
     }
