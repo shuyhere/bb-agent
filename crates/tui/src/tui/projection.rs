@@ -6,7 +6,7 @@ mod render;
 
 use compose::{collect_visible_blocks, compose_projection};
 #[cfg(test)]
-pub(super) use render::wrap_visual_line;
+use render::wrap_visual_line;
 pub(crate) use render::wrap_visual_preview_lines;
 use render::{render_collapsed_content_lines, render_content_lines, render_header_lines};
 

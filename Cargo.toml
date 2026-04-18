@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.17"
+version = "0.0.18"
 edition = "2024"
 license = "MIT"
 authors = ["BB-Agent Contributors"]
@@ -44,14 +44,14 @@ rand = "0.8"
 base64 = "0.22"
 
 # Internal crates
-bb-core = { version = "0.0.17", path = "crates/core" }
-bb-session = { version = "0.0.17", path = "crates/session" }
-bb-tools = { version = "0.0.17", path = "crates/tools" }
-bb-provider = { version = "0.0.17", path = "crates/provider" }
-bb-hooks = { version = "0.0.17", path = "crates/hooks" }
-bb-plugin-host = { version = "0.0.17", path = "crates/plugin-host" }
-bb-tui = { version = "0.0.17", path = "crates/tui" }
-bb-monitor = { version = "0.0.17", path = "crates/bb-monitor" }
+bb-core = { version = "0.0.18", path = "crates/core" }
+bb-session = { version = "0.0.18", path = "crates/session" }
+bb-tools = { version = "0.0.18", path = "crates/tools" }
+bb-provider = { version = "0.0.18", path = "crates/provider" }
+bb-hooks = { version = "0.0.18", path = "crates/hooks" }
+bb-plugin-host = { version = "0.0.18", path = "crates/plugin-host" }
+bb-tui = { version = "0.0.18", path = "crates/tui" }
+bb-monitor = { version = "0.0.18", path = "crates/bb-monitor" }
 
 [profile.release]
 strip = "debuginfo"
