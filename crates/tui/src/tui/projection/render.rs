@@ -9,6 +9,7 @@ use super::super::transcript::{BlockKind, TranscriptBlock};
 const COMPACT_CONTEXT_PREVIEW_LINES: usize = 5;
 const COMPACT_CONTEXT_HEADER: &str = "[Compact Context]";
 const COMPACT_CONTEXT_EXPAND_HINT: &str = TOOL_EXPAND_HINT;
+const LEGACY_TOOL_EXPAND_HINT: &str = "click or use Ctrl+Shift+O to enter tool expand mode";
 const RESET_SGR: &str = "\x1b[0m";
 
 pub(super) fn render_header_lines(
@@ -186,8 +187,12 @@ fn render_markdown_content_lines(
         .collect()
 }
 
+fn contains_expand_hint_text(content: &str) -> bool {
+    content.contains(TOOL_EXPAND_HINT) || content.contains(LEGACY_TOOL_EXPAND_HINT)
+}
+
 fn response_prefixes(depth: usize, content: &str) -> (&str, &str) {
-    if content.contains("click or use Ctrl+Shift+O") {
+    if contains_expand_hint_text(content) {
         ("  ", "  ")
     } else if depth > 2 {
         ("     ", "     ")

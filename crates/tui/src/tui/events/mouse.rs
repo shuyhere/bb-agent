@@ -84,12 +84,7 @@ impl TuiState {
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(block_id) = self.transcript_block_at_screen_row(event.row)
-                    && self
-                        .transcript
-                        .block(block_id)
-                        .is_some_and(is_mouse_toggleable_block)
-                {
+                if let Some(block_id) = self.mouse_toggle_block_at_screen_row(event.row) {
                     self.toggle_block(block_id);
                     return;
                 }
@@ -131,6 +126,17 @@ impl TuiState {
             return None;
         }
         Some(block_id)
+    }
+
+    fn mouse_toggle_block_at_screen_row(&self, row: u16) -> Option<BlockId> {
+        let mut current = self.transcript_block_at_screen_row(row)?;
+        loop {
+            let block = self.transcript.block(current)?;
+            if is_mouse_toggleable_block(block) {
+                return Some(current);
+            }
+            current = block.parent?;
+        }
     }
 
     fn transcript_col_at_screen_col(&self, column: u16) -> usize {

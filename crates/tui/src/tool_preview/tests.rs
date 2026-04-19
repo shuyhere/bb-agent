@@ -83,6 +83,12 @@ fn relaxed_arg_extraction_handles_multiline_bash_command_strings() {
 }
 
 #[test]
+fn tool_expand_hint_mentions_click_and_shortcut() {
+    assert!(crate::ui_hints::TOOL_EXPAND_HINT.contains("Click"));
+    assert!(crate::ui_hints::TOOL_EXPAND_HINT.contains("Ctrl+Shift+O"));
+}
+
+#[test]
 fn truncated_preview_mentions_ctrl_o_expand() {
     let text = (1..=14)
         .map(|i| format!("line {i}"))
