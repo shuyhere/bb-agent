@@ -1,5 +1,5 @@
-pub(crate) const TOOL_EXPAND_HINT: &str = "Ctrl+Shift+O to expand";
-pub(crate) const TOOL_COLLAPSE_HINT: &str = "Ctrl+Shift+O to collapse";
+pub(crate) const TOOL_EXPAND_HINT: &str = "Click or Ctrl+Shift+O to expand";
+pub(crate) const TOOL_COLLAPSE_HINT: &str = "Click or Ctrl+Shift+O to collapse";
 pub(crate) const TUI_TOOL_STATUS_HINT: &str =
     "Ctrl+Shift+O expands tools • Enter submits • Shift+Enter newline • wheel scrolls transcript";
 pub(crate) const TUI_HEADER_TOOL_HINT: &str = "Ctrl+Shift+O expands tools";

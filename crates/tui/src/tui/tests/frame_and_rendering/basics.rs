@@ -125,14 +125,12 @@ fn local_action_status_spinner_uses_tui_color_theme() {
     let _ = state.apply_command(crate::tui::TuiCommand::SetStatusLine(
         "Resuming session...".to_string(),
     ));
-    let _ = state.apply_command(crate::tui::TuiCommand::SetLocalActionActive(
-        true,
-    ));
+    let _ = state.apply_command(crate::tui::TuiCommand::SetLocalActionActive(true));
     state.prepare_for_render();
     let frame = build_frame(&state);
     let layout = state.current_layout();
-    let status_lines = &frame.lines
-        [layout.status.y as usize..(layout.status.y + layout.status.height) as usize];
+    let status_lines =
+        &frame.lines[layout.status.y as usize..(layout.status.y + layout.status.height) as usize];
     let status_line = status_lines
         .iter()
         .find(|line| crate::utils::strip_ansi(line).contains("Resuming session..."))
@@ -303,6 +301,44 @@ fn mouse_click_on_tool_result_row_toggles_parent_tool_block() {
     });
 
     assert_eq!(state.mode, TuiMode::Normal);
+    assert!(state.expanded_tool_blocks.contains(&tool));
+}
+
+#[test]
+fn mouse_click_on_wrapped_expand_hint_row_toggles_tool_block() {
+    let mut transcript = Transcript::new();
+    let tool = transcript.append_root_block(
+        NewBlock::new(BlockKind::ToolUse, "Bash(long output)").with_expandable(true),
+    );
+    let _result = transcript
+        .append_child_block(
+            tool,
+            NewBlock::new(BlockKind::ToolResult, "output").with_content(format!(
+                "Ran 1 command ({})",
+                crate::ui_hints::TOOL_EXPAND_HINT
+            )),
+        )
+        .expect("tool result");
+
+    let mut state = TuiState::new(
+        TuiAppConfig {
+            transcript,
+            ..TuiAppConfig::default()
+        },
+        Size {
+            width: 32,
+            height: 16,
+        },
+    );
+
+    let screen_row = screen_row_for_first_content(&state, tool) + 1;
+    state.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: screen_row,
+        modifiers: KeyModifiers::NONE,
+    });
+
     assert!(state.expanded_tool_blocks.contains(&tool));
 }
 
