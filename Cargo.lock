@@ -113,7 +113,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bb-cli"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "bb-core"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "chrono",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "bb-hooks"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "bb-monitor"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "bb-plugin-host"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "bb-provider"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "bb-session"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "bb-core",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "bb-tools"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "bb-tui"
-version = "0.0.18"
+version = "0.0.19"
 dependencies = [
  "anyhow",
  "bb-core",

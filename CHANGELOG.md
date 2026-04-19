@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-04-19
+
+### Changed
+
+- tool expand/collapse hints now explicitly advertise mouse support again (`Click or Ctrl+Shift+O to expand/collapse`), and mouse toggles are more robust when clicking wrapped or nested transcript rows
+
+### Fixed
+
+- bash timeout/cancel is now a true hard stop: after killing a timed-out or cancelled bash process, BB no longer waits forever for inherited stdout/stderr pipes to reach EOF
+- pressing `Esc` during a cancellable turn/tool/local action now requests cancellation before local TUI behaviors like clearing input, jumping to bottom, or leaving transcript mode can consume the key
+
+### Improved
+
+- regression coverage now includes detached-child bash timeout hangs plus focused TUI Esc-priority and click-to-expand interaction cases
+
 ## [0.0.18] - 2026-04-18
 
 ### Added
@@ -221,6 +236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.19]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.19
 [0.0.18]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.18
 [0.0.17]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.17
 [0.0.16]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.16
