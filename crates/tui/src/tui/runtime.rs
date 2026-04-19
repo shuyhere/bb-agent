@@ -176,6 +176,23 @@ impl TuiState {
         self.has_active_turn() || self.has_running_tool() || self.local_action_active
     }
 
+    pub(crate) fn request_cancel_local_action(&mut self) -> bool {
+        if !self.has_cancellable_action() {
+            return false;
+        }
+
+        if !matches!(
+            self.pending_submissions.back(),
+            Some(TuiSubmission::CancelLocalAction)
+        ) {
+            self.pending_submissions
+                .push_back(TuiSubmission::CancelLocalAction);
+        }
+        self.status_line = "cancel requested".to_string();
+        self.dirty = true;
+        true
+    }
+
     pub fn prepare_for_render(&mut self) {
         self.refresh_projection(!self.viewport.auto_follow);
     }

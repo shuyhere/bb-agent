@@ -284,6 +284,78 @@ fn escape_from_transcript_returns_to_normal() {
 }
 
 #[test]
+fn escape_requests_cancel_before_clearing_input() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    let _ = state.apply_command(TuiCommand::TurnStart { turn_index: 0 });
+    state.input = "keep this input".to_string();
+    state.cursor = state.input.len();
+
+    state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(state.input, "keep this input");
+    assert_eq!(state.cursor, "keep this input".len());
+    assert_eq!(state.status_line, "cancel requested");
+    assert_eq!(
+        state.take_pending_submissions(),
+        vec![TuiSubmission::CancelLocalAction]
+    );
+}
+
+#[test]
+fn escape_requests_cancel_before_resetting_scroll() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    let _ = state.apply_command(TuiCommand::TurnStart { turn_index: 0 });
+    state.viewport.auto_follow = false;
+    state.viewport.viewport_top = 7;
+
+    state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(!state.viewport.auto_follow);
+    assert_eq!(state.viewport.viewport_top, 7);
+    assert_eq!(state.status_line, "cancel requested");
+    assert_eq!(
+        state.take_pending_submissions(),
+        vec![TuiSubmission::CancelLocalAction]
+    );
+}
+
+#[test]
+fn escape_requests_cancel_before_leaving_transcript_mode() {
+    let mut state = TuiState::new(
+        TuiAppConfig::default(),
+        Size {
+            width: 80,
+            height: 24,
+        },
+    );
+    let _ = state.apply_command(TuiCommand::TurnStart { turn_index: 0 });
+    state.mode = TuiMode::Transcript;
+    state.viewport.auto_follow = false;
+
+    state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(state.mode, TuiMode::Transcript);
+    assert!(!state.viewport.auto_follow);
+    assert_eq!(state.status_line, "cancel requested");
+    assert_eq!(
+        state.take_pending_submissions(),
+        vec![TuiSubmission::CancelLocalAction]
+    );
+}
+
+#[test]
 fn ctrl_y_toggles_selection_mode_without_leaving_tui() {
     let mut state = TuiState::new(
         TuiAppConfig::default(),

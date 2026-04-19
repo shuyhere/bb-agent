@@ -162,6 +162,9 @@ impl TuiState {
 
         match key.code {
             KeyCode::Esc => {
+                if self.request_cancel_local_action() {
+                    return;
+                }
                 if !self.input.is_empty() {
                     self.input.clear();
                     self.cursor = 0;
@@ -173,10 +176,6 @@ impl TuiState {
                 } else if !self.viewport.auto_follow {
                     self.viewport.jump_to_bottom();
                     self.status_line = String::new();
-                } else if self.has_cancellable_action() {
-                    self.pending_submissions
-                        .push_back(TuiSubmission::CancelLocalAction);
-                    self.status_line = "cancel requested".to_string();
                 } else {
                     self.status_line = "press Ctrl+C to exit".to_string();
                 }
@@ -238,10 +237,7 @@ impl TuiState {
             KeyCode::Esc => {
                 self.slash_menu = None;
                 self.at_file_menu = None;
-                self.pending_submissions
-                    .push_back(TuiSubmission::CancelLocalAction);
-                self.status_line = "cancel requested".to_string();
-                self.dirty = true;
+                self.request_cancel_local_action();
             }
             KeyCode::Enter => {
                 self.submit_auth_dialog_input();
