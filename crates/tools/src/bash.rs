@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
 use serde_json::{Value, json};
 use std::future;
-use tokio::io::AsyncReadExt;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::bash_policy::{BashSafetyDisposition, classify_bash_command};
@@ -24,7 +25,32 @@ use safety::{
     request_bash_approval,
 };
 
+const POST_KILL_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(100);
+
 pub struct BashTool;
+
+async fn drain_pipe<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    per_read_timeout: Option<Duration>,
+) -> std::io::Result<bool> {
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = if let Some(timeout) = per_read_timeout {
+            match tokio::time::timeout(timeout, reader.read(&mut chunk)).await {
+                Ok(result) => result?,
+                Err(_) => return Ok(false),
+            }
+        } else {
+            reader.read(&mut chunk).await?
+        };
+
+        if n == 0 {
+            return Ok(true);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
 
 #[async_trait]
 impl Tool for BashTool {
@@ -195,12 +221,13 @@ impl Tool for BashTool {
             }
         }
 
+        let post_kill_drain_timeout = (cancelled || timed_out).then_some(POST_KILL_DRAIN_READ_TIMEOUT);
         if let Some(stdout) = stdout.as_mut() {
-            // The child may exit before both pipes have been fully read. Drain any remaining bytes
-            // through the live redactor so streamed output stays in sync with the final result.
+            // After a normal exit, fully drain any remaining bytes so streamed output matches the
+            // final result. After timeout/cancel, only do a short bounded drain so detached
+            // subprocesses that keep stdout open cannot hang the tool forever waiting for EOF.
             let drained_from = stdout_buf.len();
-            stdout
-                .read_to_end(&mut stdout_buf)
+            let _fully_drained = drain_pipe(stdout, &mut stdout_buf, post_kill_drain_timeout)
                 .await
                 .map_err(|e| BbError::Tool(format!("Failed draining bash stdout: {e}")))?;
             if let Some(ref on_output) = ctx.on_output {
@@ -213,8 +240,7 @@ impl Tool for BashTool {
         }
         if let Some(stderr) = stderr.as_mut() {
             let drained_from = stderr_buf.len();
-            stderr
-                .read_to_end(&mut stderr_buf)
+            let _fully_drained = drain_pipe(stderr, &mut stderr_buf, post_kill_drain_timeout)
                 .await
                 .map_err(|e| BbError::Tool(format!("Failed draining bash stderr: {e}")))?;
             if let Some(ref on_output) = ctx.on_output {
@@ -292,6 +318,7 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+    use std::time::Duration;
 
     fn make_ctx(dir: &Path) -> ToolContext {
         ToolContext {
@@ -503,6 +530,42 @@ mod tests {
             )
             .await
             .unwrap();
+
+        assert!(result.is_error);
+        let details = result.details.unwrap();
+        assert_eq!(details["timedOut"], true);
+        assert_eq!(details["cancelled"], false);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_timeout_does_not_wait_for_detached_child_pipe_eof() {
+        let setsid_available = std::process::Command::new("bash")
+            .arg("-lc")
+            .arg("command -v setsid >/dev/null")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !setsid_available {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool;
+        let result = tokio::time::timeout(
+            Duration::from_millis(750),
+            tool.execute(
+                json!({
+                    "command": "setsid bash -lc 'sleep 5' & printf 'started\\n'; sleep 5",
+                    "timeout": 0.05
+                }),
+                &make_ctx(dir.path()),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("timed out bash should return promptly")
+        .unwrap();
 
         assert!(result.is_error);
         let details = result.details.unwrap();
