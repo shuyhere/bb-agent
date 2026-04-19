@@ -4,6 +4,9 @@ impl TuiState {
     pub(super) fn on_transcript_key(&mut self, key: KeyEvent) {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, KeyModifiers::NONE) => {
+                if self.request_cancel_local_action() {
+                    return;
+                }
                 self.mode = TuiMode::Normal;
                 self.viewport.auto_follow = true;
                 self.status_line = self.mode_help_text();
