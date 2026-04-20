@@ -1,0 +1,20 @@
+{
+  "name": "bb-shape",
+  "version": "0.3.0",
+  "description": "Anything-to-Agent: give bb a URL, document, or description and it builds a specialized agent.",
+  "license": "MIT",
+  "main": "src/index.js",
+  "files": [
+    "src",
+    "skills",
+    "tools",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "bb": {
+    "extensions": ["src/index.js"],
+    "skills": ["skills/"]
+  }
+}
