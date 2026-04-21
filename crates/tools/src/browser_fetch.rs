@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use bb_core::error::{BbError, BbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 use crate::support::{emit_progress_line, text_result};
@@ -33,6 +34,14 @@ pub struct BrowserFetchInput {
 }
 
 pub struct BrowserFetchTool;
+
+pub fn resolve_browser_executable_path() -> Option<PathBuf> {
+    resolve_browser_executable()
+}
+
+pub fn missing_browser_setup_message() -> String {
+    missing_browser_error_message()
+}
 
 #[async_trait]
 impl Tool for BrowserFetchTool {
