@@ -146,7 +146,7 @@ BB-Agent uses layered configuration:
 ```json
 {
   "execution_mode": "safety",
-  "default_model": "claude-sonnet-4-20250514",
+  "default_model": "claude-opus-4-6",
   "default_provider": "anthropic",
   "default_thinking": "medium",
   "execution_mode": "safety",

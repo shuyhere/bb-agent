@@ -15,6 +15,8 @@ mod transcript_validation;
 
 #[cfg(test)]
 mod provider_tests;
+#[cfg(test)]
+mod model_arg_tests;
 
 pub use config::{
     AgentSessionConfig, CustomMessageDelivery, PromptOptions, PromptSource,

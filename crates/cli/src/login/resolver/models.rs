@@ -73,15 +73,16 @@ fn preferred_model_for_provider(provider: &str) -> Option<String> {
     match provider {
         "anthropic" => Some("claude-opus-4-6".to_string()),
         "openai" | "openai-codex" => Some("gpt-5.4".to_string()),
-        "google" => Some("gemini-3.1-pro".to_string()),
+        "google" => Some("gemini-3.1-pro-preview".to_string()),
         "github-copilot" => {
             let cached = github_copilot_cached_models();
             cached
                 .iter()
-                .find(|id| id.contains("opus-4-6"))
+                .find(|id| id.eq_ignore_ascii_case("gpt-5.4"))
                 .cloned()
+                .or_else(|| cached.iter().find(|id| id.contains("opus-4-6")).cloned())
                 .or_else(|| cached.iter().find(|id| id.contains("opus")).cloned())
-                .or_else(|| Some("claude-opus-4-6".to_string()))
+                .or_else(|| Some("gpt-5.4".to_string()))
         }
         _ => None,
     }
