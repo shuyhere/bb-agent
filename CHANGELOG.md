@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-05-06
+
+### Added
+
+- added the reviewed Shape extension package with its skill, reference material, JavaScript extension entrypoint, Python knowledge-search helper, and test coverage
+
+### Changed
+
+- refreshed the builtin model registry across Anthropic, OpenAI, GitHub Copilot, Google, Groq, and OpenRouter with newer model IDs, limits, costs, reasoning metadata, and provider base URLs
+- updated startup/login default model choices and provider documentation examples to point at the refreshed model list
+
+### Improved
+
+- added focused coverage for default model argument selection and representative builtin registry entries
+
 ## [0.0.19] - 2026-04-19
 
 ### Changed
@@ -236,6 +251,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - latest published package includes the post-0.0.7 startup, auth, model-default, and update-notice improvements
 
+[0.0.20]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.20
 [0.0.19]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.19
 [0.0.18]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.18
 [0.0.17]: https://github.com/shuyhere/bb-agent/releases/tag/v0.0.17
