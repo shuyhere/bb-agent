@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::parse_model_arg;
+    use crate::agent_session::parse_model_arg;
 
     #[test]
     fn defaults_to_latest_builtin_models_for_core_providers() {
