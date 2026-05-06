@@ -6,7 +6,7 @@ pub fn parse_model_arg(
     let default_model = match default_provider.as_str() {
         "anthropic" => "claude-opus-4-6",
         "openai" | "openai-codex" => "gpt-5.4",
-        "google" => "gemini-3.1-pro",
+        "google" => "gemini-3.1-pro-preview",
         "github-copilot" => "gpt-5.4",
         _ => "gpt-5.4",
     };

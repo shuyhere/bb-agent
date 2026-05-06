@@ -116,6 +116,7 @@ pub(super) fn simple_cost(input: f64, output: f64) -> CostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::ModelRegistry;
 
     #[test]
     fn multimodal_runtime_helper_sets_reasoning_and_base_url() {
@@ -149,5 +150,19 @@ mod tests {
         assert!(!model.reasoning);
         assert_eq!(model.base_url.as_deref(), Some("https://api.example.com"));
         assert_eq!(model.input, vec![ModelInput::Text]);
+    }
+
+    #[test]
+    fn builtin_registry_includes_updated_representative_models() {
+        let registry = ModelRegistry::new();
+
+        assert!(registry.find("anthropic", "claude-sonnet-4-5").is_some());
+        assert!(registry.find("openai", "gpt-5.5").is_some());
+        assert!(registry.find("google", "gemini-3.1-pro-preview").is_some());
+        assert!(registry
+            .find("groq", "meta-llama/llama-4-maverick-17b-128e-instruct")
+            .is_some());
+        assert!(registry.find("openrouter", "anthropic/claude-opus-4.6").is_some());
+        assert!(registry.find("github-copilot", "gpt-5.5").is_some());
     }
 }

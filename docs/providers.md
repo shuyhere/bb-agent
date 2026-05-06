@@ -6,13 +6,13 @@ BB-Agent supports multiple LLM providers out of the box.
 
 | Provider | Auth Method | Models |
 |----------|-------------|--------|
-| **Anthropic** | OAuth or `ANTHROPIC_API_KEY` | Claude Opus, Sonnet, Haiku |
-| **OpenAI** | OAuth or `OPENAI_API_KEY` | GPT-4o, GPT-4.1, o1, o3, o4-mini |
-| **GitHub Copilot** | OAuth/device flow or `GH_COPILOT_TOKEN` | Copilot chat models |
-| **Google** | `GOOGLE_API_KEY` | Gemini 2.5 Pro, Flash |
-| **Groq** | `GROQ_API_KEY` | Llama, Mixtral |
+| **Anthropic** | OAuth or `ANTHROPIC_API_KEY` | Claude 3.x, Claude 4.x, latest aliases |
+| **OpenAI** | OAuth or `OPENAI_API_KEY` | GPT-4.x, GPT-4o, GPT-5.x, o-series |
+| **GitHub Copilot** | OAuth/device flow or `GH_COPILOT_TOKEN` | Claude 4.x, GPT-4.1/4o/5.x, Gemini previews, Grok Code |
+| **Google** | `GOOGLE_API_KEY` | Gemini 1.5/2.x/3.x, Gemma 3/4 |
+| **Groq** | `GROQ_API_KEY` | Llama 3/4, Kimi K2, GPT-OSS, Qwen, Compound |
 | **xAI** | `XAI_API_KEY` | Grok |
-| **OpenRouter** | `OPENROUTER_API_KEY` | 100+ models |
+| **OpenRouter** | `OPENROUTER_API_KEY` | Curated Claude, Gemini, GPT-5, DeepSeek models |
 | **Custom** | Configurable | Any OpenAI-compatible API |
 
 ## Authentication
@@ -77,10 +77,10 @@ bb login    # Shows ✓/✗ for each provider
 
 ```bash
 bb --model sonnet                                # Fuzzy match
-bb --model claude-sonnet-4-20250514              # Exact model ID
-bb --model anthropic/claude-sonnet-4-20250514    # Provider/model
+bb --model claude-sonnet-4-6                     # Exact model ID
+bb --model anthropic/claude-sonnet-4-6           # Provider/model
 bb --model sonnet:high                           # Model with thinking level
-bb --provider google --model gemini-2.5-flash    # Explicit provider
+bb --provider google --model gemini-3.1-pro-preview # Explicit provider
 ```
 
 ### Thinking Levels
@@ -112,7 +112,7 @@ Press `Ctrl+P` to cycle through models, or use:
 /model openai/gpt-4o
 /model openai:gpt-4o
 /model sonnet:high
-/model anthropic/claude-sonnet-4-20250514:low
+/model anthropic/claude-sonnet-4-6:low
 ```
 
 `/model` now accepts common provider/model and thinking-suffix formats directly during a conversation.
@@ -123,7 +123,7 @@ In `settings.json`:
 ```json
 {
   "default_provider": "anthropic",
-  "default_model": "claude-sonnet-4-20250514",
+  "default_model": "claude-opus-4-6",
   "default_thinking": "medium"
 }
 ```
