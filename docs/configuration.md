@@ -220,5 +220,5 @@ Templates fully replace the default system prompt when used.
 | `GROQ_API_KEY` | Groq API key |
 | `XAI_API_KEY` | xAI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
-| `BB_BROWSER` | Path to Chrome/Chromium binary for `browser_fetch` |
+| `BB_BROWSER` | Path to Chrome/Chromium binary for `browser_fetch` (or run `bb setup browser`) |
 | `BB_TUI_COMPAT` | Enable ASCII-safe TUI compatibility mode |

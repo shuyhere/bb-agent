@@ -77,6 +77,7 @@ bb login              # Interactive provider selection
 bb login anthropic    # Login to Anthropic (OAuth)
 bb login openai-codex # Login to OpenAI (OAuth)
 bb login google       # Login to Google (API key)
+bb setup browser      # Detect/configure Chrome/Chromium for browser_fetch
 ```
 
 Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
@@ -94,6 +95,7 @@ bb -r                                 # Resume: pick from previous sessions
 bb --model sonnet                     # Use a specific model
 bb --model sonnet:high                # Model with extended thinking
 bb --list-models                      # List all available models
+bb setup browser                      # Detect/configure Chrome/Chromium for browser_fetch
 ```
 
 ## Features

@@ -106,7 +106,7 @@ Fetch a page using a real headless Chrome/Chromium browser. Use when `web_fetch`
 | `max_chars` | number | | Max characters (default: 20000) |
 | `timeout` | number | | Timeout in seconds (default: 25) |
 
-Requires Chrome or Chromium installed. Set `BB_BROWSER` env var to specify a custom binary path.
+Requires Chrome or Chromium installed. Set `BB_BROWSER` env var to specify a custom binary path, or run `bb setup browser` to detect/configure a compatible local browser.
 
 ## Restricting Tools
 
