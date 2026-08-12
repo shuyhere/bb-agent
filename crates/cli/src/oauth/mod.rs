@@ -3,10 +3,12 @@ pub mod callback_server;
 pub mod github_copilot;
 pub mod openai_codex;
 pub mod pkce;
+pub mod xai;
 
 pub use anthropic::login_anthropic;
 pub(crate) use github_copilot::login_github_copilot;
 pub use openai_codex::login_openai_codex;
+pub use xai::login_xai;
 
 /// Credentials returned from a successful OAuth flow.
 #[derive(Clone)]

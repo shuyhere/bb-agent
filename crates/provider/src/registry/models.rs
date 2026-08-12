@@ -4,6 +4,7 @@ mod google;
 mod groq;
 mod openai;
 mod openrouter;
+mod xai;
 
 use super::types::{ApiType, CostConfig, Model, ModelInput};
 
@@ -15,6 +16,7 @@ pub(crate) fn builtin_models() -> Vec<Model> {
     models.extend(google::builtin_models());
     models.extend(groq::builtin_models());
     models.extend(openrouter::builtin_models());
+    models.extend(xai::builtin_models());
     models
 }
 
@@ -159,10 +161,16 @@ mod tests {
         assert!(registry.find("anthropic", "claude-sonnet-4-5").is_some());
         assert!(registry.find("openai", "gpt-5.5").is_some());
         assert!(registry.find("google", "gemini-3.1-pro-preview").is_some());
-        assert!(registry
-            .find("groq", "meta-llama/llama-4-maverick-17b-128e-instruct")
-            .is_some());
-        assert!(registry.find("openrouter", "anthropic/claude-opus-4.6").is_some());
+        assert!(
+            registry
+                .find("groq", "meta-llama/llama-4-maverick-17b-128e-instruct")
+                .is_some()
+        );
+        assert!(
+            registry
+                .find("openrouter", "anthropic/claude-opus-4.6")
+                .is_some()
+        );
         assert!(registry.find("github-copilot", "gpt-5.5").is_some());
     }
 }

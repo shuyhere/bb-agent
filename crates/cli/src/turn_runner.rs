@@ -103,7 +103,7 @@ mod tools;
 pub(crate) use persistence::{
     append_user_message_with_images, get_leaf_raw, open_sibling_conn, wrap_conn,
 };
-pub(crate) use runner::{run_turn, run_turn_inner};
+pub(crate) use runner::{effective_thinking_for_request, run_turn, run_turn_inner};
 
 #[cfg(test)]
 mod tests;

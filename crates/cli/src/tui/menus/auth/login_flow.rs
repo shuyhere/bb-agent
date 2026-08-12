@@ -32,6 +32,9 @@ impl TuiController {
                     ApiType::GoogleGenerative => {
                         "https://generativelanguage.googleapis.com".to_string()
                     }
+                    _ if target_provider == "xai" => {
+                        crate::oauth::xai::DEFAULT_INFERENCE_BASE_URL.to_string()
+                    }
                     _ => "https://api.openai.com/v1".to_string(),
                 })
         };

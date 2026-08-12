@@ -333,7 +333,10 @@ async fn build_request(
         model: config.model.id.clone(),
         max_tokens: Some(config.model.max_tokens as u32),
         stream: true,
-        thinking: config.thinking.clone(),
+        // Only forward thinking controls when the selected model advertises
+        // reasoning support. Models like xAI grok-build-0.1 reject
+        // reasoning_effort and would 400 if we always sent the session level.
+        thinking: effective_thinking_for_request(config.model.reasoning, config.thinking.clone()),
     };
 
     if let Some(result) = send_extension_event_safe(
@@ -459,6 +462,21 @@ async fn collect_stream_events(
     })
 }
 
+/// Resolve the thinking level that should be sent to the provider for a model.
+///
+/// Session UI may keep a global thinking preference (e.g. medium), but models
+/// that do not support extended reasoning must not receive provider-specific
+/// controls such as OpenAI-compatible `reasoning_effort`.
+pub(crate) fn effective_thinking_for_request(
+    model_supports_reasoning: bool,
+    thinking: Option<String>,
+) -> Option<String> {
+    if !model_supports_reasoning {
+        return None;
+    }
+    thinking.filter(|level| !level.eq_ignore_ascii_case("off") && !level.trim().is_empty())
+}
+
 fn request_metrics_snapshot(request: &CompletionRequest) -> RequestMetricsSnapshot {
     RequestMetricsSnapshot {
         system_prompt: request.system_prompt.clone(),
@@ -469,6 +487,36 @@ fn request_metrics_snapshot(request: &CompletionRequest) -> RequestMetricsSnapsh
         max_tokens: request.max_tokens,
         stream: request.stream,
         thinking: request.thinking.clone(),
+    }
+}
+
+#[cfg(test)]
+mod thinking_gate_tests {
+    use super::effective_thinking_for_request;
+
+    #[test]
+    fn drops_thinking_when_model_lacks_reasoning() {
+        assert_eq!(
+            effective_thinking_for_request(false, Some("medium".into())),
+            None
+        );
+        assert_eq!(
+            effective_thinking_for_request(false, Some("high".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn keeps_thinking_when_model_supports_reasoning() {
+        assert_eq!(
+            effective_thinking_for_request(true, Some("medium".into())),
+            Some("medium".into())
+        );
+        assert_eq!(
+            effective_thinking_for_request(true, Some("off".into())),
+            None
+        );
+        assert_eq!(effective_thinking_for_request(true, None), None);
     }
 }
 
