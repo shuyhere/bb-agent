@@ -8,7 +8,7 @@ fn provider_title(provider: &str) -> &str {
         "github-copilot" => "GitHub Copilot",
         "google" => "Google Gemini",
         "groq" => "Groq",
-        "xai" => "xAI",
+        "xai" => "xAI / Grok",
         "openrouter" => "OpenRouter",
         _ => provider,
     }
@@ -202,7 +202,7 @@ impl TuiController {
                 .iter()
                 .map(|provider| {
                     let methods = match *provider {
-                        "anthropic" | "openai" => "OAuth + API key",
+                        "anthropic" | "openai" | "xai" => "OAuth + API key",
                         "github-copilot" => "OAuth",
                         _ => "API key",
                     };
@@ -305,11 +305,20 @@ impl TuiController {
             }
             "xai" => {
                 items.push(SelectItem {
+                    label: "SuperGrok / X Premium+ OAuth".to_string(),
+                    detail: Some(auth_method_detail(
+                        "xai",
+                        crate::login::ProviderAuthMethod::OAuth,
+                        "Device login via accounts.x.ai — no API key required",
+                    )),
+                    value: "oauth:xai".to_string(),
+                });
+                items.push(SelectItem {
                     label: "xAI API key".to_string(),
                     detail: Some(auth_method_detail(
                         "xai",
                         crate::login::ProviderAuthMethod::ApiKey,
-                        "Use XAI_API_KEY or paste a key",
+                        "Use XAI_API_KEY or paste a key from console.x.ai",
                     )),
                     value: "api_key:xai".to_string(),
                 });
@@ -492,6 +501,32 @@ mod tests {
     }
 
     #[test]
+    fn xai_login_method_menu_offers_oauth_and_api_key() {
+        let _lock = env_lock().lock().unwrap();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set_path("HOME", tempdir.path());
+
+        let (mut controller, mut command_rx) = build_test_controller(tempdir.path().to_path_buf());
+        controller.open_login_method_menu("xai");
+        let commands = drain_commands(&mut command_rx);
+        let menu = commands
+            .into_iter()
+            .find_map(|command| match command {
+                TuiCommand::OpenSelectMenu { menu_id, items, .. } => Some((menu_id, items)),
+                _ => None,
+            })
+            .expect("login method menu");
+
+        assert_eq!(menu.0, LOGIN_METHOD_MENU_ID);
+        assert!(
+            menu.1
+                .iter()
+                .any(|item| item.value == "oauth:xai" && item.label.contains("SuperGrok"))
+        );
+        assert!(menu.1.iter().any(|item| item.value == "api_key:xai"));
+    }
+
+    #[test]
     fn openai_login_method_detail_reports_multiple_saved_options() {
         let _lock = env_lock().lock().unwrap();
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -638,8 +673,18 @@ mod tests {
             .iter()
             .find(|item| item.label == "Saved API key • ending in 1111")
             .expect("saved key 1111 option");
-        assert!(key_2222.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
-        assert!(key_1111.detail.as_deref().is_some_and(|detail| detail.contains("profile ")));
+        assert!(
+            key_2222
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("profile "))
+        );
+        assert!(
+            key_1111
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("profile "))
+        );
         assert!(
             menu.2
                 .iter()

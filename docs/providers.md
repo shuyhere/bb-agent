@@ -11,18 +11,19 @@ BB-Agent supports multiple LLM providers out of the box.
 | **GitHub Copilot** | OAuth/device flow or `GH_COPILOT_TOKEN` | Claude 4.x, GPT-4.1/4o/5.x, Gemini previews, Grok Code |
 | **Google** | `GOOGLE_API_KEY` | Gemini 1.5/2.x/3.x, Gemma 3/4 |
 | **Groq** | `GROQ_API_KEY` | Llama 3/4, Kimi K2, GPT-OSS, Qwen, Compound |
-| **xAI** | `XAI_API_KEY` | Grok |
+| **xAI** | SuperGrok / Premium+ OAuth or `XAI_API_KEY` | Grok (builtin registry + OpenAI-compatible API) |
 | **OpenRouter** | `OPENROUTER_API_KEY` | Curated Claude, Gemini, GPT-5, DeepSeek models |
 | **Custom** | Configurable | Any OpenAI-compatible API |
 
 ## Authentication
 
-### OAuth Login (Anthropic, OpenAI, GitHub Copilot)
+### OAuth Login (Anthropic, OpenAI, GitHub Copilot, xAI)
 
 ```bash
 bb login anthropic        # Opens browser for OAuth
 bb login openai-codex     # Opens browser for OAuth
 bb login github-copilot   # GitHub device flow + Copilot token exchange
+bb login xai              # Choose SuperGrok OAuth or API key
 ```
 
 For GitHub Copilot, `bb` now supports:
@@ -38,12 +39,33 @@ Current limitations:
 - Copilot request behavior is wired through the OpenAI-compatible runtime path and may still need endpoint/header adjustments for some models or enterprise installations
 - Enterprise endpoint behavior still needs more real-world validation
 
+#### xAI SuperGrok / X Premium+ OAuth
+
+xAI dual auth works like Anthropic: OAuth and API key can coexist for provider `xai`.
+
+```bash
+bb login xai              # Prompt: 1) SuperGrok OAuth  2) API key
+bb --model xai/grok-build-0.1 -p "hello"
+```
+
+Details:
+- Device-code login against `auth.x.ai` / `accounts.x.ai` (no loopback callback required)
+- Uses xAI's **public Grok CLI OIDC client** (no client secret; same ecosystem as Grok CLI / Hermes SuperGrok OAuth)
+- Tokens stored under the `xai-oauth` auth profile; API keys remain under `xai`
+- Inference uses OpenAI-compatible `https://api.x.ai/v1` with the OAuth access token as Bearer
+- Automatic refresh when the access token is near expiry
+
+Limitations:
+- Requires SuperGrok or X Premium+ entitlement for OAuth API access
+- xAI may return **HTTP 403** for some accounts even when the web subscription is active (tier / allowlist). In that case use `XAI_API_KEY` instead
+- OAuth is subscription-session access, not Console pay-as-you-go billing
+
 ### API Key Login
 
 ```bash
 bb login google         # Prompts for API key
 bb login groq
-bb login xai
+bb login xai            # Choose method 2 for API key
 bb login openrouter
 ```
 

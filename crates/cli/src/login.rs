@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use crate::oauth::OAuthCredentials;
 
 use providers::{
-    get_provider_status, is_oauth_provider, known_providers, normalize_provider_for_model_selection,
+    get_provider_status, is_oauth_provider, known_providers,
+    normalize_provider_for_model_selection, provider_supports_dual_auth,
 };
 use store::{
     AuthEntry, AuthProfile, load_auth, provider_storage_key, stored_auth_methods_for_store,

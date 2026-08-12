@@ -45,6 +45,7 @@ pub(crate) async fn run_oauth_login(
             let authority = github_copilot_domain().unwrap_or_else(|| "github.com".to_string());
             oauth::login_github_copilot(&authority, callbacks).await?
         }
+        "xai" => oauth::login_xai(callbacks).await?,
         other => anyhow::bail!("No OAuth flow for provider: {other}"),
     };
 
@@ -64,11 +65,38 @@ pub(crate) async fn handle_login(provider: Option<&str>) -> Result<()> {
         return handle_oauth_login_cli(&provider).await;
     }
 
+    // xAI supports dual auth: keep API-key login available while adding OAuth.
+    if provider == "xai" {
+        return handle_xai_login_cli().await;
+    }
+
     if is_oauth_provider(provider.as_str()) {
         return handle_oauth_login_cli(&provider).await;
     }
 
     handle_api_key_login_cli(&provider)
+}
+
+async fn handle_xai_login_cli() -> Result<()> {
+    println!("xAI / Grok sign-in method:");
+    println!("  1. SuperGrok / X Premium+ OAuth (device login, no API key)");
+    println!("  2. API key (XAI_API_KEY / console.x.ai)");
+    print!("Select method [1/2, default 1]: ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice = input.trim();
+    if choice.is_empty() || choice == "1" || choice.eq_ignore_ascii_case("oauth") {
+        handle_oauth_login_cli("xai").await
+    } else if choice == "2"
+        || choice.eq_ignore_ascii_case("api-key")
+        || choice.eq_ignore_ascii_case("key")
+    {
+        handle_api_key_login_cli("xai")
+    } else {
+        anyhow::bail!("Invalid selection. Choose 1 (OAuth) or 2 (API key).");
+    }
 }
 
 pub(crate) async fn handle_logout(provider: Option<&str>) -> Result<()> {
@@ -91,7 +119,11 @@ pub(crate) async fn handle_logout(provider: Option<&str>) -> Result<()> {
 fn prompt_for_provider_login() -> Result<String> {
     println!("Available providers:");
     for (i, (name, _, _url)) in known_providers().iter().enumerate() {
-        let method_label = provider_auth_method(name).label();
+        let method_label = if provider_supports_dual_auth(name) {
+            "OAuth + API key"
+        } else {
+            provider_auth_method(name).label()
+        };
         let status = get_provider_status(name);
         let hint = provider_login_hint(name);
         println!(
@@ -213,6 +245,14 @@ async fn handle_oauth_login_cli(provider: &str) -> Result<()> {
         if !status.cached_models.is_empty() {
             println!("  Refreshed Copilot models: {}", status.cached_models.len());
         }
+    }
+    if provider == "xai" {
+        println!("  Method: SuperGrok / X Premium+ OAuth");
+        println!(
+            "  Inference: {}",
+            crate::oauth::xai::DEFAULT_INFERENCE_BASE_URL
+        );
+        println!("  Tip: use --model xai/grok-build-0.1 or another xAI model");
     }
     println!("  Stored in: {}", auth_path().display());
     Ok(())

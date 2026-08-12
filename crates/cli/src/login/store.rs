@@ -102,6 +102,8 @@ pub(super) fn provider_storage_key(provider: &str, method: ProviderAuthMethod) -
         ("openai", ProviderAuthMethod::ApiKey) => "openai".to_string(),
         ("anthropic", ProviderAuthMethod::OAuth) => "anthropic-oauth".to_string(),
         ("anthropic", ProviderAuthMethod::ApiKey) => "anthropic".to_string(),
+        ("xai", ProviderAuthMethod::OAuth) => "xai-oauth".to_string(),
+        ("xai", ProviderAuthMethod::ApiKey) => "xai".to_string(),
         ("github-copilot", ProviderAuthMethod::OAuth) => "github-copilot".to_string(),
         (_, ProviderAuthMethod::ApiKey) => provider,
         (_, ProviderAuthMethod::OAuth) => provider,
@@ -937,8 +939,8 @@ pub(crate) fn configured_providers() -> Vec<String> {
 mod tests {
     use super::{
         AUTH_STORE_VERSION, AuthEntry, AuthProfile, AuthStore, ProviderConfigRecord, load_auth,
-        save_api_key, save_auth, save_oauth_state, stored_auth_entry_for_method,
-        stored_auth_methods_for_store, stored_auth_profiles,
+        provider_storage_key, save_api_key, save_auth, save_oauth_state,
+        stored_auth_entry_for_method, stored_auth_methods_for_store, stored_auth_profiles,
     };
     use crate::login::ProviderAuthMethod;
     use serde_json::json;
@@ -1069,6 +1071,66 @@ mod tests {
         assert!(
             stored_auth_entry_for_method(&store, "anthropic", ProviderAuthMethod::OAuth).is_some()
         );
+    }
+
+    #[test]
+    fn provider_storage_key_separates_xai_oauth_and_api_key() {
+        assert_eq!(
+            provider_storage_key("xai", ProviderAuthMethod::ApiKey),
+            "xai"
+        );
+        assert_eq!(
+            provider_storage_key("xai", ProviderAuthMethod::OAuth),
+            "xai-oauth"
+        );
+    }
+
+    #[test]
+    fn stored_auth_methods_distinguish_xai_api_key_and_oauth() {
+        let store = AuthStore {
+            last_provider: Some("xai".to_string()),
+            active_auth_methods: HashMap::from([("xai".to_string(), ProviderAuthMethod::OAuth)]),
+            active_auth_profiles: HashMap::from([(
+                "xai".to_string(),
+                "xai-oauth-profile".to_string(),
+            )]),
+            profiles: HashMap::from([(
+                "xai".to_string(),
+                vec![
+                    AuthProfile {
+                        id: "xai-api-profile".to_string(),
+                        method: ProviderAuthMethod::ApiKey,
+                        created_at_ms: Some(10),
+                        updated_at_ms: Some(10),
+                        entry: AuthEntry::ApiKey {
+                            key: "xai-secret".to_string(),
+                        },
+                    },
+                    AuthProfile {
+                        id: "xai-oauth-profile".to_string(),
+                        method: ProviderAuthMethod::OAuth,
+                        created_at_ms: Some(20),
+                        updated_at_ms: Some(20),
+                        entry: AuthEntry::OAuth {
+                            access: "oauth-secret".to_string(),
+                            refresh: "refresh-secret".to_string(),
+                            expires: i64::MAX,
+                            extra: json!({"token_endpoint": "https://auth.x.ai/oauth2/token"}),
+                        },
+                    },
+                ],
+            )]),
+            provider_configs: HashMap::new(),
+            providers: HashMap::new(),
+            version: AUTH_STORE_VERSION,
+        };
+
+        assert_eq!(
+            stored_auth_methods_for_store(&store, "xai"),
+            vec![ProviderAuthMethod::OAuth, ProviderAuthMethod::ApiKey]
+        );
+        assert!(stored_auth_entry_for_method(&store, "xai", ProviderAuthMethod::ApiKey).is_some());
+        assert!(stored_auth_entry_for_method(&store, "xai", ProviderAuthMethod::OAuth).is_some());
     }
 
     #[test]

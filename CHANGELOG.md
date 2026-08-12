@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- xAI dual auth: SuperGrok / X Premium+ device-code OAuth alongside existing `XAI_API_KEY` login
+- builtin xAI / Grok model registry entries with `https://api.x.ai/v1` base URLs
+- CLI and TUI login method chooser for xAI (OAuth vs API key), token refresh, and entitlement-aware error messages
+
+### Improved
+
+- xAI sessions no longer fall back to the OpenAI default base URL when a model has no explicit `base_url`
+- provider requests only send thinking / `reasoning_effort` when the selected model advertises reasoning support (prevents 400s on models like `grok-build-0.1`)
+- xAI builtin registry marks `grok-build-0.1` and `grok-composer-2.5-fast` as non-reasoning
+
 ## [0.0.20] - 2026-05-06
 
 ### Added

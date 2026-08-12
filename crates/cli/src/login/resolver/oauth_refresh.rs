@@ -470,6 +470,7 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
 
     let provider = match provider {
         "anthropic-oauth" => "anthropic",
+        "xai-oauth" => "xai",
         other => other,
     };
 
@@ -486,6 +487,23 @@ async fn do_refresh(provider: &str, refresh_token: &str) -> Option<String> {
         )
         .await
         .ok()?,
+        "xai" => {
+            // Prefer the discovery token_endpoint stored at login when present.
+            let store = load_auth();
+            let token_endpoint =
+                stored_auth_profile_for_method(&store, "xai", ProviderAuthMethod::OAuth).and_then(
+                    |profile| match &profile.entry {
+                        AuthEntry::OAuth { extra, .. } => extra
+                            .get("token_endpoint")
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string),
+                        _ => None,
+                    },
+                );
+            oauth::xai::refresh_xai_token(refresh_token, token_endpoint.as_deref())
+                .await
+                .ok()?
+        }
         _ => return None,
     };
 

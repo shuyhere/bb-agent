@@ -73,7 +73,7 @@ pub(crate) fn provider_display_name(provider: &str) -> Cow<'_, str> {
         "openai" => Cow::Borrowed("OpenAI"),
         "google" => Cow::Borrowed("Google Gemini"),
         "groq" => Cow::Borrowed("Groq"),
-        "xai" => Cow::Borrowed("xAI"),
+        "xai" => Cow::Borrowed("xAI / Grok"),
         "openrouter" => Cow::Borrowed("OpenRouter"),
         _ => Cow::Borrowed(provider),
     }
@@ -133,6 +133,10 @@ pub(crate) fn provider_login_hint(provider: &str) -> String {
                 "Uses GitHub device/browser auth, then exchanges the GitHub token for a Copilot runtime token. Supports github.com or GitHub Enterprise Server. Current target: {target}."
             )
         }
+        "xai" => {
+            "Supports SuperGrok / X Premium+ device OAuth or XAI_API_KEY. OAuth uses xAI's public Grok CLI client; entitlement is controlled by xAI."
+                .to_string()
+        }
         other => {
             let (env_var, url) = provider_meta(other);
             if url.is_empty() {
@@ -149,8 +153,14 @@ pub(crate) fn provider_oauth_variant(provider: &str) -> Option<&'static str> {
         "anthropic" => Some("anthropic"),
         "openai" | "openai-codex" => Some("openai-codex"),
         "github-copilot" => Some("github-copilot"),
+        "xai" => Some("xai"),
         _ => None,
     }
+}
+
+/// Providers that offer both subscription OAuth and API-key login.
+pub(crate) fn provider_supports_dual_auth(provider: &str) -> bool {
+    matches!(provider, "anthropic" | "openai" | "xai")
 }
 
 pub(crate) fn provider_api_key_variant(provider: &str) -> Option<&'static str> {
@@ -181,7 +191,7 @@ mod tests {
     use super::{
         ProviderAuthMethod, is_oauth_provider, normalize_provider_for_model_selection,
         provider_api_key_variant, provider_auth_method, provider_display_name, provider_login_hint,
-        provider_meta, provider_oauth_variant,
+        provider_meta, provider_oauth_variant, provider_supports_dual_auth,
     };
 
     #[test]
@@ -208,6 +218,9 @@ mod tests {
         assert!(is_oauth_provider("anthropic"));
         assert!(is_oauth_provider("github-copilot"));
         assert!(!is_oauth_provider("google"));
+        // xAI keeps dual-auth routing instead of pure OAUTH_PROVIDERS so CLI
+        // API-key login remains available.
+        assert!(!is_oauth_provider("xai"));
 
         assert_eq!(
             provider_auth_method("openai-codex"),
@@ -220,9 +233,12 @@ mod tests {
         assert_eq!(provider_auth_method("openrouter").label(), "API key");
 
         assert_eq!(provider_oauth_variant("openai"), Some("openai-codex"));
+        assert_eq!(provider_oauth_variant("xai"), Some("xai"));
         assert_eq!(provider_oauth_variant("google"), None);
         assert_eq!(provider_api_key_variant("openai-codex"), Some("openai"));
+        assert_eq!(provider_api_key_variant("xai"), Some("xai"));
         assert_eq!(provider_api_key_variant("github-copilot"), None);
+        assert!(provider_supports_dual_auth("xai"));
     }
 
     #[test]
@@ -230,6 +246,10 @@ mod tests {
         let oauth_hint = provider_login_hint("openai-codex");
         assert!(oauth_hint.contains("browser OAuth"));
         assert!(oauth_hint.contains("ChatGPT Plus or Pro"));
+
+        let xai_hint = provider_login_hint("xai");
+        assert!(xai_hint.contains("SuperGrok"));
+        assert!(xai_hint.contains("XAI_API_KEY"));
 
         let api_key_hint = provider_login_hint("google");
         assert!(api_key_hint.contains("GOOGLE_API_KEY"));

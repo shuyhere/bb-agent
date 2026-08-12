@@ -76,10 +76,11 @@ If you prefer, you can also log in from a normal terminal:
 bb login              # Interactive provider selection
 bb login anthropic    # Login to Anthropic (OAuth)
 bb login openai-codex # Login to OpenAI (OAuth)
+bb login xai          # xAI: SuperGrok OAuth or API key
 bb login google       # Login to Google (API key)
 ```
 
-Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.
+Or set environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `GOOGLE_API_KEY`, etc.
 
 That's it! Run `bb` to launch the interactive TUI. Type your prompt and press Enter.
 
@@ -106,7 +107,7 @@ bb --list-models                      # List all available models
 - **Extensions** — JS/TS plugin system for custom tools, commands, and hooks
 - **Skills** — markdown-based instruction files that auto-load contextual knowledge
 - **System prompt templates** — save and switch between named prompt configurations
-- **OAuth login** — browser/device login for Anthropic, OpenAI, and GitHub Copilot
+- **OAuth login** — browser/device login for Anthropic, OpenAI, GitHub Copilot, and xAI SuperGrok / Premium+
 
 ## System Prompt Templates
 

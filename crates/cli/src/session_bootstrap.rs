@@ -260,10 +260,13 @@ pub(crate) async fn prepare_session_runtime(
     let base_url = if provider_name == "github-copilot" {
         crate::login::github_copilot_api_base_url()
     } else {
-        model
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.openai.com/v1".into())
+        model.base_url.clone().unwrap_or_else(|| {
+            if provider_name == "xai" {
+                crate::oauth::xai::DEFAULT_INFERENCE_BASE_URL.into()
+            } else {
+                "https://api.openai.com/v1".into()
+            }
+        })
     };
 
     let provider: Arc<dyn Provider> = match model.api {

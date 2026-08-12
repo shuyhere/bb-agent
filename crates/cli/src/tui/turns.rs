@@ -185,11 +185,14 @@ impl TuiController {
                 execution_mode: self.session_setup.tool_ctx.execution_mode,
                 request_approval: self.session_setup.tool_ctx.request_approval.clone(),
             },
-            thinking: if self.session_setup.thinking_level == "off" {
-                None
-            } else {
-                Some(self.session_setup.thinking_level.clone())
-            },
+            thinking: crate::turn_runner::effective_thinking_for_request(
+                self.session_setup.model.reasoning,
+                if self.session_setup.thinking_level == "off" {
+                    None
+                } else {
+                    Some(self.session_setup.thinking_level.clone())
+                },
+            ),
             retry_enabled: self.session_setup.retry_enabled,
             retry_max_retries: self.session_setup.retry_max_retries,
             retry_base_delay_ms: self.session_setup.retry_base_delay_ms,
